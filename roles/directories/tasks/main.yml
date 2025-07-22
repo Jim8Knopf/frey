@@ -1,0 +1,14 @@
+---
+- name: Create main data directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: '0755'
+  loop:
+    - "{{ docker_data_root }}"
+    - "{{ docker_data_root }}/configs"
+    - "{{ docker_data_root }}/data"
+    - "{{ docker_data_root }}/logs"
+    - "{{ backup_location }}"
