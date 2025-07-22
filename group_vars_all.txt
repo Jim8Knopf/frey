@@ -1,0 +1,123 @@
+---
+# Enhanced Raspberry Pi 5 Off-Grid Media & AI Hub Configuration
+# Main language: English, German content support included
+
+# ================================
+# USER CONFIGURATION
+# ================================
+media_user: media
+media_uid: 1000
+media_gid: 1000
+
+# ================================
+# STORAGE PATHS
+# ================================
+base_dir: /opt
+media_dir: "{{ base_dir }}/media"
+appdata_dir: "{{ base_dir }}/appdata"
+downloads_dir: "{{ base_dir }}/downloads"
+photos_dir: "{{ base_dir }}/photos"
+ai_dir: "{{ base_dir }}/ai"
+backups_dir: "{{ base_dir }}/backups"
+logs_dir: "{{ base_dir }}/logs"
+stacks_dir: "{{ base_dir }}/stacks"  # For Dockge
+
+# ================================
+# NETWORK CONFIGURATION
+# ================================
+domain_name: pi5hub.local
+timezone: Australia/Melbourne
+
+# ================================
+# SERVICE PORTS
+# ================================
+# Media Stack
+jellyfin_port: 8096
+sonarr_port: 8989
+radarr_port: 7878
+readarr_port: 8787
+qbittorrent_port: 8080
+prowlarr_port: 9696
+audiobookshelf_port: 13378
+bazarr_port: 6767
+
+# AI Stack
+ollama_port: 11434
+openwebui_port: 3000
+
+# Photos & Home
+immich_port: 2283
+homeassistant_port: 8123
+
+# Infrastructure
+traefik_port: 80
+traefik_dashboard_port: 8081
+portainer_port: 9000
+dockge_port: 5001
+
+# Monitoring
+grafana_port: 3001
+prometheus_port: 9090
+node_exporter_port: 9100
+cadvisor_port: 8082
+loki_port: 3100
+promtail_port: 9080
+uptime_kuma_port: 3002
+
+# File Management
+filebrowser_port: 8083
+code_server_port: 8084
+
+# Network Tools
+speedtest_port: 8085
+adguardhome_port: 3053
+
+# ================================
+# SECURITY SETTINGS
+# ================================
+enable_fail2ban: true
+enable_ufw: true
+ssh_port: 22
+
+# Default passwords (CHANGE THESE!)
+default_grafana_password: "admin123"
+default_qbittorrent_password: "adminadmin"
+default_code_server_password: "codeserver123"
+
+# ================================
+# OPTIMIZATION SETTINGS
+# ================================
+# SSD Optimization
+enable_ssd_optimization: true
+enable_trim: true
+
+# German Content Support
+german_locale: de_DE.UTF-8
+enable_german_indexers: true
+
+# ================================
+# POWER MANAGEMENT (12V setup)
+# ================================
+enable_power_monitoring: true
+low_power_threshold: 11.8  # Volts
+critical_power_threshold: 11.0  # Volts
+enable_graceful_shutdown: true
+
+# ================================
+# AUTOMATION SETTINGS
+# ================================
+watchtower_interval: 86400  # 24 hours
+backup_retention_days: 7
+
+# ================================
+# FEATURE TOGGLES
+# ================================
+# Services to deploy (set to false to skip)
+deploy_media_stack: true
+deploy_ai_stack: true
+deploy_photo_management: true
+deploy_homeassistant: true
+deploy_monitoring: true
+deploy_networking: true
+deploy_file_management: true
+deploy_backup: true

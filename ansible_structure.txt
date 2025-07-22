@@ -1,0 +1,80 @@
+# 🚀 Raspberry Pi 5 Off-Grid Media & AI Hub - Ansible Projekt
+
+## 📁 Projektstruktur
+
+```
+pi5-hub-ansible/
+├── README.md
+├── deploy.sh                    # Haupt-Deployment-Script
+├── ansible.cfg                  # Ansible Konfiguration
+├── requirements.yml             # Ansible Collections
+├── inventory/
+│   └── hosts.yml               # Host-Inventar
+├── group_vars/
+│   └── all.yml                 # Globale Variablen
+├── playbooks/
+│   └── site.yml                # Haupt-Playbook
+├── roles/
+│   ├── common/                 # Basis-System-Setup
+│   ├── security/               # Sicherheit (UFW, Fail2Ban)
+│   ├── ssd_optimization/       # SSD Optimierungen
+│   ├── docker/                 # Docker Installation
+│   ├── directories/            # Verzeichnis-Setup
+│   ├── dockge/                # Docker Management UI
+│   ├── monitoring/             # Prometheus, Grafana, etc.
+│   ├── media_stack/           # Jellyfin, Sonarr, etc.
+│   ├── ai_stack/              # Ollama, Open WebUI
+│   ├── photo_management/       # Immich
+│   ├── homeassistant/         # Home Assistant
+│   ├── infrastructure/        # Traefik, Portainer
+│   ├── networking/            # AdGuard, SpeedTest
+│   ├── file_management/       # FileBrowser, Code Server
+│   ├── backup/                # Backup-Strategien
+│   └── power_management/      # Power Monitoring
+├── scripts/
+│   ├── maintenance.sh         # Wartungs-Script
+│   ├── health_check.sh        # Gesundheits-Check
+│   └── optimize.sh            # Performance-Optimierung
+└── templates/
+    └── .env.j2                # Umgebungsvariablen
+```
+
+## 🎯 Verwendung
+
+### 1. Repository klonen
+```bash
+git clone <repository-url>
+cd pi5-hub-ansible
+```
+
+### 2. Inventory anpassen
+```bash
+# inventory/hosts.yml bearbeiten
+nano inventory/hosts.yml
+```
+
+### 3. Variablen konfigurieren
+```bash
+# group_vars/all.yml anpassen
+nano group_vars/all.yml
+```
+
+### 4. Deployment starten
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+## 📋 Nächste Schritte
+
+1. Jede Rolle in separate Dateien aufteilen
+2. Templates und Handler hinzufügen
+3. Variablen für verschiedene Umgebungen
+4. Tests und Validierung implementieren
+
+## 🔧 Anpassungen
+
+- **Passwörter**: Alle Standard-Passwörter in `group_vars/all.yml` ändern
+- **Ports**: Service-Ports nach Bedarf anpassen
+- **Pfade**: Speicher-Pfade für Ihr Setup konfigurieren
+- **Services**: Nicht benötigte Services deaktivieren

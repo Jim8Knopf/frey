@@ -1,0 +1,165 @@
+---
+- name: Deploy Enhanced Raspberry Pi 5 Off-Grid Media & AI Hub
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+  
+  pre_tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: always
+
+    - name: Display deployment info
+      debug:
+        msg: |
+          🚀 Starting Pi 5 Hub deployment
+          Target: {{ inventory_hostname }}
+          User: {{ ansible_user }}
+          Services: {% if deploy_media_stack %}Media, {% endif %}{% if deploy_ai_stack %}AI, {% endif %}{% if deploy_monitoring %}Monitoring, {% endif %}{% if deploy_photo_management %}Photos{% endif %}
+
+  roles:
+    - role: common
+      tags: [common, base]
+    
+    - role: security
+      tags: [security]
+      when: enable_ufw or enable_fail2ban
+    
+    - role: ssd_optimization
+      tags: [ssd, optimization]
+      when: enable_ssd_optimization
+    
+    - role: docker
+      tags: [docker, base]
+    
+    - role: directories
+      tags: [directories, base]
+    
+    - role: dockge
+      tags: [dockge, management]
+    
+    - role: monitoring
+      tags: [monitoring]
+      when: deploy_monitoring
+    
+    - role: media_stack
+      tags: [media]
+      when: deploy_media_stack
+    
+    - role: ai_stack
+      tags: [ai]
+      when: deploy_ai_stack
+    
+    - role: photo_management
+      tags: [photos]
+      when: deploy_photo_management
+    
+    - role: homeassistant
+      tags: [homeassistant]
+      when: deploy_homeassistant
+    
+    - role: infrastructure
+      tags: [infrastructure]
+    
+    - role: networking
+      tags: [networking]
+      when: deploy_networking
+    
+    - role: file_management
+      tags: [files]
+      when: deploy_file_management
+    
+    - role: backup
+      tags: [backup]
+      when: deploy_backup
+    
+    - role: power_management
+      tags: [power]
+      when: enable_power_monitoring
+
+  post_tasks:
+    - name: Display service URLs
+      debug:
+        msg: |
+          
+          🎯 DEPLOYMENT COMPLETED SUCCESSFULLY! 🎯
+          
+          📺 MEDIA SERVICES:
+          {% if deploy_media_stack %}
+          Jellyfin (Media Server):    http://{{ ansible_host }}:{{ jellyfin_port }}
+          Sonarr (TV Shows):          http://{{ ansible_host }}:{{ sonarr_port }}
+          Radarr (Movies):            http://{{ ansible_host }}:{{ radarr_port }}
+          Readarr (Books):            http://{{ ansible_host }}:{{ readarr_port }}
+          Bazarr (Subtitles):         http://{{ ansible_host }}:{{ bazarr_port }}
+          AudioBookshelf:             http://{{ ansible_host }}:{{ audiobookshelf_port }}
+          qBittorrent:                http://{{ ansible_host }}:{{ qbittorrent_port }}
+          Prowlarr (Indexers):        http://{{ ansible_host }}:{{ prowlarr_port }}
+          {% endif %}
+          
+          {% if deploy_ai_stack %}
+          🤖 AI SERVICES:
+          Ollama API:                 http://{{ ansible_host }}:{{ ollama_port }}
+          Open WebUI:                 http://{{ ansible_host }}:{{ openwebui_port }}
+          {% endif %}
+          
+          {% if deploy_photo_management %}
+          📷 PHOTOS:
+          Immich (Photos):            http://{{ ansible_host }}:{{ immich_port }}
+          {% endif %}
+          
+          {% if deploy_homeassistant %}
+          🏠 SMART HOME:
+          Home Assistant:             http://{{ ansible_host }}:{{ homeassistant_port }}
+          {% endif %}
+          
+          🛠️ MANAGEMENT:
+          Dockge (Docker UI):         http://{{ ansible_host }}:{{ dockge_port }}
+          Portainer:                  http://{{ ansible_host }}:{{ portainer_port }}
+          {% if deploy_file_management %}
+          FileBrowser:                http://{{ ansible_host }}:{{ filebrowser_port }}
+          Code Server:                http://{{ ansible_host }}:{{ code_server_port }}
+          {% endif %}
+          
+          {% if deploy_monitoring %}
+          📊 MONITORING:
+          Grafana:                    http://{{ ansible_host }}:{{ grafana_port }}
+          Prometheus:                 http://{{ ansible_host }}:{{ prometheus_port }}
+          Uptime Kuma:                http://{{ ansible_host }}:{{ uptime_kuma_port }}
+          {% endif %}
+          
+          {% if deploy_networking %}
+          🌐 NETWORK TOOLS:
+          AdGuard Home:               http://{{ ansible_host }}:{{ adguardhome_port }}
+          SpeedTest:                  http://{{ ansible_host }}:{{ speedtest_port }}
+          {% endif %}
+          Traefik Dashboard:          http://{{ ansible_host }}:{{ traefik_dashboard_port }}
+          
+          🔑 DEFAULT CREDENTIALS (CHANGE IMMEDIATELY!):
+          qBittorrent:     admin / {{ default_qbittorrent_password }}
+          Grafana:         admin / {{ default_grafana_password }}
+          Code Server:     Password: {{ default_code_server_password }}
+          
+          ⚡ NEXT STEPS:
+          1. Change all default passwords!
+          2. Configure your media indexers in Prowlarr
+          3. Set up monitoring dashboards in Grafana
+          4. Configure your router to use AdGuard Home DNS
+          5. Access Dockge for easy container management
+          
+          📖 Happy self-hosting! 🏠✨
+      tags: always
+
+    - name: Create maintenance reminder
+      copy:
+        content: |
+          #!/bin/bash
+          echo "🔧 Maintenance Scripts Available:"
+          echo "Health Check:    sudo {{ base_dir }}/scripts/health_check.sh"
+          echo "Maintenance:     sudo {{ base_dir }}/scripts/maintenance.sh"  
+          echo "Optimization:    sudo {{ base_dir }}/scripts/optimize.sh"
+        dest: "{{ base_dir }}/README_MAINTENANCE.sh"
+        mode: '0755'
+      tags: always

@@ -1,0 +1,12 @@
+---
+# Ansible Collections Requirements
+collections:
+  - name: community.docker
+    version: ">=3.0.0"
+  - name: community.general
+    version: ">=5.0.0"
+  - name: ansible.posix
+    version: ">=1.0.0"
+
+# Python Requirements (für Docker-Module)
+# pip install docker docker-compose

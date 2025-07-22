@@ -1,0 +1,14 @@
+---
+all:
+  children:
+    pi5_hubs:
+      hosts:
+        pi5-hub:
+          ansible_host: 192.168.1.100  # IP Ihres Pi 5
+          ansible_user: pi              # SSH-Benutzer
+          ansible_ssh_private_key_file: ~/.ssh/id_rsa  # SSH-Schlüssel
+          ansible_python_interpreter: /usr/bin/python3
+      vars:
+        # Hub-spezifische Variablen
+        is_pi5: true
+        enable_hardware_acceleration: true
