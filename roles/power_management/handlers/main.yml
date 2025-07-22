@@ -1,0 +1,10 @@
+---
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: start power monitor
+  ansible.builtin.systemd:
+    name: power-monitor
+    state: started
+    enabled: yes

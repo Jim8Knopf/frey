@@ -1,0 +1,33 @@
+---
+- name: Create Tandoor data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+  loop:
+    - "{{ stacks_dir }}/cookbook"
+    - "{{ appdata_dir }}/tandoor-db"
+    - "{{ appdata_dir }}/tandoor-media"
+
+- name: Deploy Tandoor environment file
+  ansible.builtin.template:
+    src: .env.j2
+    dest: "{{ stacks_dir }}/cookbook/.env"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Deploy Tandoor compose file
+  ansible.builtin.template:
+    src: docker-compose-tandoor.yml.j2
+    dest: "{{ stacks_dir }}/cookbook/docker-compose.yml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Start Tandoor stack containers using compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ stacks_dir }}/cookbook"
+    state: present

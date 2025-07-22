@@ -1,0 +1,65 @@
+---
+- name: Install security packages
+  ansible.builtin.apt:
+    name:
+      - fail2ban
+      - ufw
+      - unattended-upgrades
+      - logwatch
+    state: present
+
+- name: Configure UFW default policies
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: 'incoming', policy: 'deny' }
+    - { direction: 'outgoing', policy: 'allow' }
+  when: enable_ufw
+
+- name: Configure UFW rules for enabled services (TCP)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: >-
+    [
+      '{{ ssh_port }}',
+      '{{ dockge_port }}'
+    ]
+    {% if deploy_infrastructure %} + [ '{{ traefik_port }}', '{{ traefik_dashboard_port }}', '{{ portainer_port }}' ] {% endif %}
+    {% if deploy_media_stack %} + [ '{{ jellyfin_port }}', '{{ sonarr_port }}', '{{ radarr_port }}', '{{ readarr_port }}', '{{ bazarr_port }}', '{{ audiobookshelf_port }}', '{{ qbittorrent_port }}', '{{ prowlarr_port }}' ] {% endif %}
+    {% if deploy_ai_stack %} + [ '{{ ollama_port }}', '{{ openwebui_port }}' ] {% endif %}
+    {% if deploy_photo_management %} + [ '{{ immich_port }}' ] {% endif %}
+    {% if deploy_homeassistant %} + [ '{{ homeassistant_port }}' ] {% endif %}
+    {% if deploy_monitoring %} + [ '{{ grafana_port }}', '{{ prometheus_port }}', '{{ uptime_kuma_port }}' ] {% endif %}
+    {% if deploy_networking %} + [ '{{ adguardhome_port }}', '{{ speedtest_port }}' ] {% endif %}
+    {% if deploy_file_management %} + [ '{{ filebrowser_port }}', '{{ code_server_port }}' ] {% endif %}
+  when: enable_ufw
+
+- name: Configure UFW rules for AdGuard DNS
+  community.general.ufw:
+    rule: allow
+    port: "53"
+    proto: "{{ item }}"
+  loop: [ 'tcp', 'udp' ]
+  when: enable_ufw and deploy_networking
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+  when: enable_ufw
+
+- name: Configure Fail2Ban jail
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+  notify: restart fail2ban
+  when: enable_fail2ban
+
+- name: Enable automatic security updates
+  ansible.builtin.lineinfile:
+    path: /etc/apt/apt.conf.d/50unattended-upgrades
+    regexp: '^//.*"${distro_id}:${distro_codename}-security";'
+    line: '        "${distro_id}:${distro_codename}-security";'
+    state: present

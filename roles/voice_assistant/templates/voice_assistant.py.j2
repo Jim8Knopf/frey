@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+
+import os
+import json
+import struct
+import logging
+import requests
+import ollama
+import pyaudio
+import pvporcupine
+import sounddevice as sd
+from vosk import Model, KaldiRecognizer
+import urllib.request
+import zipfile
+import shutil
+
+# --- Configuration (from Ansible) ---
+WAKE_WORD = "{{ voice_assistant_wake_word }}"
+OLLAMA_MODEL = "{{ voice_assistant_ollama_model }}"
+PIPER_URL = "http://localhost:{{ piper_port }}/"
+PIPER_VOICE = "{{ voice_assistant_piper_voice }}"
+PORCUPINE_ACCESS_KEY = "{{ porcupine_access_key }}"
+VOSK_MODEL_PATH = "{{ appdata_dir }}/vosk-model"
+VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+VOSK_MODEL_NAME = "vosk-model-small-en-us-0.15"
+
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class VoiceAssistant:
+    def __init__(self):
+        self.porcupine = None
+        self.pa = None
+        self.audio_stream = None
+        self.vosk_model = self._get_vosk_model()
+        
+        try:
+            self.porcupine = pvporcupine.create(
+                access_key=PORCUPINE_ACCESS_KEY,
+                keywords=[WAKE_WORD]
+            )
+            self.pa = pyaudio.PyAudio()
+            self.audio_stream = self.pa.open(
+                rate=self.porcupine.sample_rate,
+                channels=1,
+                format=pyaudio.paInt16,
+                input=True,
+                frames_per_buffer=self.porcupine.frame_length
+            )
+            logging.info(f"Listening for wake word: '{WAKE_WORD}'")
+        except Exception as e:
+            logging.error(f"Failed to initialize Porcupine or audio stream: {e}")
+            raise
+
+    def _get_vosk_model(self):
+        model_dir = os.path.join(VOSK_MODEL_PATH, VOSK_MODEL_NAME)
+        if not os.path.exists(model_dir):
+            logging.info(f"Vosk model not found at {VOSK_MODEL_PATH}. Downloading...")
+            os.makedirs(VOSK_MODEL_PATH, exist_ok=True)
+            zip_path = os.path.join(VOSK_MODEL_PATH, "vosk-model.zip")
+            
+            try:
+                urllib.request.urlretrieve(VOSK_MODEL_URL, zip_path)
+                logging.info("Download complete. Extracting...")
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(VOSK_MODEL_PATH)
+                os.remove(zip_path)
+                logging.info("Vosk model extracted successfully.")
+            except Exception as e:
+                logging.error(f"Failed to download or extract Vosk model: {e}")
+                shutil.rmtree(VOSK_MODEL_PATH, ignore_errors=True)
+                return None
+        
+        return Model(model_dir)
+
+    def speak(self, text):
+        logging.info(f"Speaking: {text}")
+        url = f"{PIPER_URL}?voice={PIPER_VOICE}"
+        try:
+            with requests.get(url, params={'text': text}, stream=True) as response:
+                response.raise_for_status()
+                # Most Piper models

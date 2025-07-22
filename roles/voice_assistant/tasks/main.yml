@@ -1,0 +1,65 @@
+---
+- name: Install voice assistant system dependencies
+  ansible.builtin.apt:
+    name:
+      - python3-pip
+      - python3-venv
+      - portaudio19-dev
+      - libasound2-dev
+      - libatlas-base-dev # for numpy, often a vosk dependency
+    state: present
+
+- name: Create voice assistant script directory
+  ansible.builtin.file:
+    path: "{{ base_dir }}/voice_assistant"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+
+- name: Create Python virtual environment for voice assistant
+  ansible.builtin.command:
+    cmd: "python3 -m venv {{ base_dir }}/voice_assistant/venv"
+    creates: "{{ base_dir }}/voice_assistant/venv/bin/pip"
+  become: true
+  become_user: "{{ media_user }}"
+
+- name: Copy Python requirements file
+  ansible.builtin.copy:
+    src: requirements.txt
+    dest: "{{ base_dir }}/voice_assistant/requirements.txt"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Install Python dependencies in virtual environment
+  ansible.builtin.pip:
+    requirements: "{{ base_dir }}/voice_assistant/requirements.txt"
+    virtualenv: "{{ base_dir }}/voice_assistant/venv"
+  become: true
+  become_user: "{{ media_user }}"
+  notify: restart voice assistant
+
+- name: Deploy voice assistant script
+  ansible.builtin.template:
+    src: voice_assistant.py.j2
+    dest: "{{ base_dir }}/voice_assistant/assistant.py"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+  notify: restart voice assistant
+
+- name: Deploy and enable voice assistant systemd service
+  ansible.builtin.template:
+    src: voice_assistant.service.j2
+    dest: /etc/systemd/system/voice_assistant.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart voice assistant
+
+- name: Ensure voice assistant service is started and enabled
+  ansible.builtin.systemd:
+    name: voice_assistant
+    state: started
+    enabled: yes

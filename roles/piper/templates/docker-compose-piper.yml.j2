@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  piper:
+    image: rhasspy/wyoming-piper
+    container_name: piper
+    restart: unless-stopped
+    ports:
+      - "{{ piper_port }}:10200"
+    volumes:
+      - "{{ appdata_dir }}/piper:/data"
+    command:
+      {% for voice in piper_voices %}
+      - --voice
+      - "{{ voice }}"
+      {% endfor %}
+      - --download-dir
+      - /data
+    networks:
+      - default
+
+networks:
+  default:
+    name: voice_network

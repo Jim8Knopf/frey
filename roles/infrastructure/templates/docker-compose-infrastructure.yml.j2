@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "{{ traefik_port }}:80"
+      - "443:443" # For future HTTPS
+      - "{{ traefik_dashboard_port }}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - "{{ appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
+      - "{{ appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+    ports:
+      - "{{ portainer_port }}:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "{{ appdata_dir }}/portainer/data:/data"
+
+networks:
+  default:
+    name: infrastructure_network

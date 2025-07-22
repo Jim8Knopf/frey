@@ -1,0 +1,140 @@
+version: '3.8'
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    user: "{{ media_uid }}:{{ media_gid }}"
+    restart: unless-stopped
+    ports:
+      - "{{ jellyfin_port }}:8096"
+    volumes:
+      - "{{ appdata_dir }}/jellyfin:/config"
+      - "{{ media_dir }}:/media"
+      - /opt/vc/lib:/opt/vc/lib
+    environment:
+      - JELLYFIN_PublishedServerUrl=http://{{ ansible_host }}:{{ jellyfin_port }}
+    devices:
+      - /dev/vcsm-cma:/dev/vcsm-cma
+      - /dev/vchiq:/dev/vchiq
+    group_add:
+      - "video"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.{{ domain_name }}`)"
+      - "traefik.http.routers.jellyfin.entrypoints=web"
+      - "traefik.http.services.jellyfin.loadbalancer.server.port={{ jellyfin_port }}"
+    networks:
+      - default
+      - infrastructure_network
+
+  sonarr:
+    image: linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    ports:
+      - "{{ sonarr_port }}:8989"
+    volumes:
+      - "{{ appdata_dir }}/sonarr:/config"
+      - "{{ media_dir }}/tv:/tv"
+      - "{{ downloads_dir }}:/downloads"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+
+  radarr:
+    image: linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    ports:
+      - "{{ radarr_port }}:7878"
+    volumes:
+      - "{{ appdata_dir }}/radarr:/config"
+      - "{{ media_dir }}/movies:/movies"
+      - "{{ downloads_dir }}:/downloads"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+
+  readarr:
+    image: linuxserver/readarr:develop
+    container_name: readarr
+    restart: unless-stopped
+    ports:
+      - "{{ readarr_port }}:8787"
+    volumes:
+      - "{{ appdata_dir }}/readarr:/config"
+      - "{{ media_dir }}/audiobooks:/audiobooks"
+      - "{{ downloads_dir }}:/downloads"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+
+  bazarr:
+    image: linuxserver/bazarr:latest
+    container_name: bazarr
+    restart: unless-stopped
+    ports:
+      - "{{ bazarr_port }}:6767"
+    volumes:
+      - "{{ appdata_dir }}/bazarr:/config"
+      - "{{ media_dir }}/movies:/movies"
+      - "{{ media_dir }}/tv:/tv"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    container_name: audiobookshelf
+    restart: unless-stopped
+    ports:
+      - "{{ audiobookshelf_port }}:80"
+    volumes:
+      - "{{ appdata_dir }}/audiobookshelf:/config"
+      - "{{ media_dir }}/audiobooks:/audiobooks"
+      - "{{ media_dir }}/music:/music"
+    environment:
+      - AUDIOBOOKSHELF_UID={{ media_uid }}
+      - AUDIOBOOKSHELF_GID={{ media_gid }}
+
+  qbittorrent:
+    image: linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    ports:
+      - "{{ qbittorrent_port }}:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    volumes:
+      - "{{ appdata_dir }}/qbittorrent:/config"
+      - "{{ downloads_dir }}:/downloads"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+      - WEBUI_PORT={{ qbittorrent_port }}
+
+  prowlarr:
+    image: linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    ports:
+      - "{{ prowlarr_port }}:9696"
+    volumes:
+      - "{{ appdata_dir }}/prowlarr:/config"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+
+networks:
+  default:
+    name: media_network
+  infrastructure_network:
+    external: true
+    name: infrastructure_network

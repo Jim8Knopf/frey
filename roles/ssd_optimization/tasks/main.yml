@@ -1,0 +1,35 @@
+---
+- name: Enable TRIM for SSD longevity
+  ansible.builtin.systemd:
+    name: fstrim.timer
+    enabled: yes
+    state: started
+  when: enable_trim
+
+- name: Configure SSD-friendly mount options in /etc/fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(UUID=\S+\s+/\s+ext4\s+)defaults(\s+.*)$'
+    replace: '\1defaults,noatime,discard\2'
+  notify: remount root
+  when: enable_ssd_optimization
+
+- name: Reduce swappiness for SSD performance
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: '10'
+    state: present
+    reload: yes
+
+- name: Configure log rotation to be less frequent
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.conf
+    regexp: '^rotate'
+    line: 'rotate 4'
+
+- name: Disable unnecessary logging to reduce SSD writes
+  ansible.builtin.systemd:
+    name: rsyslog
+    enabled: no
+    state: stopped
+  when: enable_ssd_optimization

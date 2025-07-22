@@ -25,8 +25,27 @@ stacks_dir: "{{ base_dir }}/stacks"  # For Dockge
 # ================================
 # NETWORK CONFIGURATION
 # ================================
-domain_name: pi5hub.local
-timezone: Australia/Melbourne
+domain_name: frey
+timezone: Australia/Hobart
+
+# DNS Rewrites for AdGuard Home
+# This will make services available at http://<service>.<domain_name>
+dns_rewrites:
+  - name: jellyfin
+  - name: sonarr
+  - name: radarr
+  - name: readarr
+  - name: bazarr
+  - name: audiobookshelf
+  - name: qbittorrent
+  - name: prowlarr
+  - name: dockge
+  - name: portainer
+  - name: grafana
+  - name: uptime-kuma
+  - name: traefik
+  - name: immich
+  - name: cookbook
 
 # ================================
 # SERVICE PORTS
@@ -72,6 +91,12 @@ code_server_port: 8084
 speedtest_port: 8085
 adguardhome_port: 3053
 
+# Cookbook
+cookbook_port: 8090
+
+# Voice Assistant
+piper_port: 10200
+
 # ================================
 # SECURITY SETTINGS
 # ================================
@@ -83,6 +108,8 @@ ssh_port: 22
 default_grafana_password: "admin123"
 default_qbittorrent_password: "adminadmin"
 default_code_server_password: "codeserver123"
+default_postgres_password: "a_very_secure_password_change_me"
+tandoor_secret_key: "a_very_secret_key_for_tandoor_change_me"
 
 # ================================
 # OPTIMIZATION SETTINGS
@@ -120,4 +147,23 @@ deploy_homeassistant: true
 deploy_monitoring: true
 deploy_networking: true
 deploy_file_management: true
-deploy_backup: true
+deploy_backup: false
+deploy_infrastructure: true
+deploy_cookbook: true  # For Tandoor recipes
+deploy_piper: true     # For Text-to-Speech service
+
+# ================================
+# VOICE ASSISTANT
+# ================================
+deploy_voice_assistant: true
+voice_assistant_wake_word: "computer"          # e.g., "computer", "alexa", "jarvis"
+porcupine_access_key: "YOUR_PICOVOICE_ACCESS_KEY" # Get a free key from https://console.picovoice.ai/
+voice_assistant_ollama_model: "llama3:latest"  # The Ollama model to use
+# The default voice the assistant should use for responses. Must be one of the voices loaded below.
+voice_assistant_piper_voice: "en_US-lessac-medium"
+# List of voices to load into the Piper TTS service.
+# Find more here: https://rhasspy.github.io/piper-samples/
+piper_voices:
+  - "en_US-lessac-medium"   # US English
+  - "en_AU-southern-female" # Australian English
+  - "de_DE-thorsten-medium" # German

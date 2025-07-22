@@ -1,0 +1,21 @@
+---
+- name: Create media stack directory
+  ansible.builtin.file:
+    path: "{{ stacks_dir }}/media"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+
+- name: Deploy media stack compose file
+  ansible.builtin.template:
+    src: docker-compose-media.yml.j2
+    dest: "{{ stacks_dir }}/media/docker-compose.yml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Start media stack containers using compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ stacks_dir }}/media"
+    state: present

@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+    restart: unless-stopped
+    ports:
+      - "{{ filebrowser_port }}:80"
+    volumes:
+      - "{{ base_dir }}:/srv"
+      - "{{ appdata_dir }}/filebrowser/database:/database"
+      - "{{ appdata_dir }}/filebrowser/config:/config"
+    environment:
+      - FB_DATABASE=/database/filebrowser.db
+      - FB_CONFIG_FILE=/config/settings.json
+
+  code-server:
+    image: codercom/code-server:latest
+    container_name: code-server
+    restart: unless-stopped
+    ports:
+      - "{{ code_server_port }}:8080"
+    volumes:
+      - "{{ base_dir }}:/home/coder/project"
+      - "{{ appdata_dir }}/code-server:/home/coder/.local/share/code-server"
+    environment:
+      - PASSWORD={{ default_code_server_password | default('codeserver123') }}
+      - SUDO_PASSWORD={{ default_code_server_password | default('codeserver123') }}
+
+networks:
+  default:
+    name: filetools_network

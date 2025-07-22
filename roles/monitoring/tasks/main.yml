@@ -1,0 +1,62 @@
+---
+- name: Create monitoring data directories
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+  loop:
+    - prometheus
+    - grafana
+    - loki
+    - promtail
+    - uptime-kuma
+
+- name: Create monitoring stack directory
+  ansible.builtin.file:
+    path: "{{ stacks_dir }}/monitoring"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+
+- name: Deploy monitoring stack compose file
+  ansible.builtin.template:
+    src: docker-compose-monitoring.yml.j2
+    dest: "{{ stacks_dir }}/monitoring/docker-compose.yml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Create Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ appdata_dir }}/prometheus/prometheus.yml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Create Grafana provisioning directories
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/grafana/provisioning/{{ item }}"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+  loop:
+    - dashboards
+    - datasources
+
+- name: Configure Grafana datasources
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: "{{ appdata_dir }}/grafana/provisioning/datasources/datasources.yml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Start monitoring stack using compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ stacks_dir }}/monitoring"
+    state: present
