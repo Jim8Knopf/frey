@@ -2,43 +2,47 @@
 
 This is a list of potential improvements and next steps to make the project more robust and professional.
 
-## 🚀 Next Steps
+## 🚀 High-Priority Tasks
 
-- [ ] **Enhance Security: Encrypt Passwords with Ansible Vault**
-  - **Why?** To securely store sensitive data like passwords and safely manage the project in a Git repository.
+- [ ] **Encrypt All Secrets with Ansible Vault**
+  - **Why?** To securely store all sensitive data (passwords, API keys) and safely manage the project in a public Git repository. This is the most critical security improvement.
   - **How?**
-    1. Create an encrypted file: `ansible-vault create group_vars/secrets.yml`
-    2. Move passwords from `group_vars/all.yml` there.
-    3. Run playbook with `--ask-vault-pass`.
+    1. Create an encrypted file: `ansible-vault create group_vars/secrets.yml`.
+    2. Move all secrets from `group_vars/all.yml` to the new `secrets.yml`.
+    3. Update playbooks to reference the vaulted variables.
+    4. Run playbooks with `--ask-vault-pass`.
+  - **AI Prompt:** "Encrypt all sensitive data in `group_vars/all.yml` using Ansible Vault. Create a new `group_vars/secrets.yml` file, move all passwords and API keys there, and update all roles and templates to use the new variables from the vault file."
 
-- [ ] **Complete Traefik Integration**
-  - **Why?** To make all services accessible via easy-to-remember domains (e.g., `grafana.frey`) instead of IP addresses and ports.
-  - **How?** Add Traefik labels (as already done for Jellyfin and Dockge) to the Docker Compose files of the remaining services (e.g., Grafana, Portainer, Sonarr, Radarr, etc.).
-
-- [ ] **Optimize Backup Script**
-  - **Why?** To reduce backup size and duration by excluding unnecessary cache directories.
-  - **How?** Extend the backup script (`roles/backup/templates/backup.sh.j2`) with `--exclude` parameters for `tar`, e.g., for `appdata/jellyfin/cache`.
-
-- [ ] **Enable HTTPS with Let's Encrypt**
-  - **Why?** To encrypt all communication with the services. This is an advanced step that requires a publicly accessible domain and open ports (80/443).
-  - **How?** Extend the Traefik configuration with a "Certificate Resolver" for Let's Encrypt.
-
-- [ ] **Set Up System Notifications**
-  - **Why?** To be proactively informed about system status, completed backups, or issues.
-  - **How?** Add a service like `ntfy` or `gotify` and adapt the scripts (e.g., `backup.sh`, `health_check.sh`) to send a notification upon completion or failure.
+- [ ] **Complete Traefik Integration & Enable Internal HTTPS**
+  - **Why?** To make all services accessible via easy-to-remember domains and to encrypt all internal traffic, even without a public domain.
+  - **How?** Add Traefik labels to all remaining services. Configure Traefik to use self-signed certificates for all internal services.
+  - **AI Prompt:** "Add Traefik labels to all services in the `docker-compose-*.yml.j2` files that do not have them yet. Then, modify the Traefik static configuration (`traefik.yml.j2`) to enable a self-signed certificate provider and apply it to all routers by default."
 
 - [ ] **Adapt Project Structure to Best Practices (Refactoring)**
-  - **Why?** To make the project more maintainable, clearer, and scalable in the long term. A dedicated `ansible/` structure clearly separates the automation logic from the rest of the project management (like `deploy.sh`, `README.md`) and facilitates the integration of future tools (e.g., CI/CD, other scripts). It is a common convention that improves readability for you and others.
+  - **Why?** To make the project more maintainable, clearer, and scalable in the long term by separating automation logic from project management files.
   - **How?**
-    1. Create a new directory `ansible/` in the project's root directory.
-    2. Move the following directories and files into the new `ansible/` folder:
-        - `roles/`
-        - `group_vars/`
-        - `inventory/`
-        - `playbooks/` (falls vorhanden)
-        - `ansible.cfg`
-        - `requirements.yml`
-    3. Adapt the `deploy.sh` script to use the paths correctly (e.g., `ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/site.yml`).
+    1. Create a new directory `ansible/`.
+    2. Move `roles/`, `group_vars/`, `inventory/`, `playbooks/`, `ansible.cfg`, and `requirements.yml` into it.
+    3. Adapt the `deploy.sh` script to use the new paths.
+  - **AI Prompt:** "Refactor the project structure. Create a new `ansible/` directory and move the `roles`, `group_vars`, `inventory`, `playbooks`, `ansible.cfg`, and `requirements.yml` directories/files into it. Then, update the `deploy.sh` script to correctly call `ansible-playbook` with the new paths."
+
+## 📈 Next Level Enhancements
+
+- [ ] **Refine Variable Scoping**
+  - **Why?** To make roles more self-contained and reusable, and to clean up the global `group_vars/all.yml` file.
+  - **How?** Move default variable definitions (like ports) from `group_vars/all.yml` to `roles/ROLENAME/defaults/main.yml` for each role.
+  - **AI Prompt:** "Refactor the Ansible variables for the `media_stack` role. Create a `roles/media_stack/defaults/main.yml` file and move all default port definitions (e.g., `jellyfin_port`, `sonarr_port`) from `group_vars/all.yml` into it. The values in `group_vars/all.yml` should only be present if they override the default."
+
+- [ ] **Implement System Notifications**
+  - **Why?** To be proactively informed about system status, completed backups, or deployment issues.
+  - **How?** Add a service like `ntfy` and adapt the `deploy.sh` and `backup.sh` scripts to send notifications on success or failure.
+  - **AI Prompt:** "Integrate `ntfy` into the project. Add a new role to deploy `ntfy` as a Docker container. Modify the `deploy.sh` and `backup.sh` scripts to send notifications via a POST request to a configured `ntfy` topic on success and failure."
+
+- [ ] **Add Post-Deployment Health Checks**
+  - **Why?** To automatically verify that all services are running correctly after a deployment, preventing silent failures.
+  - **How?** Add a new task block at the end of `playbooks/site.yml` that uses the `ansible.builtin.uri` module to check the HTTP status of each service's web endpoint.
+  - **AI Prompt:** "Add a new task block to the end of `playbooks/site.yml` named 'Verify Service Health'. Use the `ansible.builtin.uri` module to send a GET request to the main page of each deployed service (e.g., `http://jellyfin.{{ domain_name }}`) and assert that the response status is 200."
+
 
 ## 💡 Possible Enhancements (Maybe)
 
@@ -49,3 +53,8 @@ This is a list of potential improvements and next steps to make the project more
 - [ ] **Archive YouTube Channels with Tube-Archivist**
   - **Why?** To locally back up important videos from YouTube channels and make them accessible via Jellyfin, independent of online availability and ad-free.
   - **How?** Add Tube-Archivist as a Docker container and configure it with the desired channels or playlists.
+
+- [ ] **Implement and Test Backup & Restore Strategy**
+  - **Why?** To ensure that backups are not just created, but are also valid and usable for a full recovery. A backup that hasn't been tested is not a backup.
+  - **How?** Create a new Ansible playbook or role to automate the restoration of a key service (e.g., Jellyfin) from a backup onto a clean state. Document the process.
+  - **AI Prompt:** "Create a new Ansible role named `restore`. This role should contain tasks to stop a service, wipe its configuration volume, and restore the data from the latest backup created by the `backup` role. Start with Jellyfin as the first service to support and make the role tag-based."

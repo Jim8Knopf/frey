@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Farben für Output
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -40,72 +40,72 @@ cat << 'BANNER'
 BANNER
 echo -e "${NC}"
 
-# Voraussetzungen prüfen
-echo_info "Prüfe Voraussetzungen..."
+# Checking prerequisites
+echo_info "Checking prerequisites..."
 
 if ! command -v ansible-playbook &> /dev/null; then
-    echo_error "Ansible ist nicht installiert!"
-    echo "Installiere Ansible: pip install ansible"
+    echo_error "Ansible is not installed!"
+    echo "Please install Ansible: pip install ansible"
     exit 1
 fi
 
 if [ ! -f "inventory/hosts.yml" ]; then
-    echo_error "Inventory-Datei nicht gefunden!"
-    echo "Bitte inventory/hosts.yml konfigurieren"
+    echo_error "Inventory file not found!"
+    echo "Please configure inventory/hosts.yml"
     exit 1
 fi
 
-# Ansible Collections installieren
-echo_info "Installiere Ansible Collections..."
+# Installing Ansible Collections
+echo_info "Installing Ansible Collections..."
 ansible-galaxy install -r requirements.yml
 
-# Syntax-Check
-echo_info "Führe Syntax-Check durch..."
+# Running syntax check
+echo_info "Running syntax check..."
 ansible-playbook --syntax-check -i inventory/hosts.yml playbooks/site.yml
 
-# Deployment-Optionen
-echo_info "Deployment-Optionen:"
-echo "1) Vollständiges Deployment"
-echo "2) Nur System-Setup (common, security, ssd_optimization)"
-echo "3) Nur Docker Services"
-echo "4) Dry-Run (Check-Modus)"
-echo "5) Bestimmte Rolle ausführen"
+# Deployment Options
+echo_info "Deployment Options:"
+echo "1) Full Deployment"
+echo "2) System Setup Only"
+echo "3) Docker Services Only"
+echo "4) Dry-Run (Check Mode)"
+echo "5) Run a Specific Role"
 
-read -p "Wählen Sie eine Option (1-5): " choice
+read -p "Select an option (1-5): " choice
 
 case $choice in
     1)
-        echo_info "Starte vollständiges Deployment..."
+        echo_info "Starting full deployment..."
         ansible-playbook -i inventory/hosts.yml playbooks/site.yml
         ;;
     2)
-        echo_info "Starte System-Setup..."
+        echo_info "Starting system setup..."
         ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "system"
         ;;
     3)
-        echo_info "Starte Docker Services..."
+        echo_info "Starting Docker services..."
         ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "docker,services"
         ;;
     4)
-        echo_info "Führe Dry-Run durch..."
+        echo_info "Performing dry-run..."
         ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check --diff
         ;;
     5)
-        echo "Verfügbare Rollen:"
+        echo "Available roles:"
         ls -1 roles/ | sed 's/^/  - /'
-        read -p "Rolle eingeben: " role_name
+        read -p "Enter role name: " role_name
         if [ -d "roles/$role_name" ]; then
             ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "$role_name"
         else
-            echo_error "Rolle '$role_name' nicht gefunden!"
+            echo_error "Role '$role_name' not found!"
             exit 1
         fi
         ;;
     *)
-        echo_error "Ungültige Auswahl!"
+        echo_error "Invalid selection!"
         exit 1
         ;;
 esac
 
-echo_success "Deployment abgeschlossen!"
-echo_info "Logs finden Sie in: /var/log/ansible/"
+echo_success "Deployment complete!"
+echo_info "Logs can be found in: /var/log/ansible/"

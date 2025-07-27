@@ -1,50 +1,79 @@
-# Raspberry Pi 5 Hub Ansible Projekt
+# Frey - A Raspberry Pi 5 Hub Ansible Project
 
-Ein umfassendes Ansible-Projekt zur automatisierten Einrichtung eines Raspberry Pi 5 als zentraler Hub für verschiedene Services.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A comprehensive Ansible project for the automated setup of a Raspberry Pi 5 as a central hub for various services.
 
 ## Features
 
-- 🔧 **System-Setup**: Basis-Konfiguration und Optimierungen
-- 🔒 **Sicherheit**: UFW Firewall, Fail2Ban
-- 💾 **SSD-Optimierung**: Spezielle Optimierungen für SSD-Storage
-- 🐳 **Docker Stack**: Containerisierte Services
+- 🔧 **System Setup**: Base configuration and optimizations
+- 🔒 **Security**: UFW Firewall, Fail2Ban
+- 💾 **SSD Optimization**: Special optimizations for SSD storage
+- 🐳 **Docker Stack**: Containerized services
 - 📊 **Monitoring**: Prometheus, Grafana
 - 🎬 **Media Stack**: Jellyfin, Sonarr, Radarr
 - 🤖 **AI Stack**: Ollama, Open WebUI
-- 📸 **Foto-Management**: Immich
+- 📸 **Photo Management**: Immich
 - 🏠 **Home Assistant**: Smart Home Integration
-- 🌐 **Netzwerk**: AdGuard, SpeedTest
+- 🌐 **Network**: AdGuard, SpeedTest
 - 📁 **File Management**: FileBrowser, Code Server
-- 🗄️ **Backup**: Automatisierte Backup-Strategien
+- 🗄️ **Backup**: Automated backup strategies
 
-## Verwendung
+## Usage
 
-1. Inventory anpassen: `inventory/hosts.yml`
-2. Variablen konfigurieren: `group_vars/all.yml`
-3. Deployment starten: `./deploy.sh`
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/Jim8Knopf/frey.git
+    cd frey
+    ```
+2.  **Configure your setup:**
+    - Adjust the inventory in `inventory/hosts.yml` to match your Raspberry Pi's IP address.
+    - Configure the main variables in `group_vars/all.yml`. See the Configuration section below for details.
+3.  **Start the deployment:**
+    ```bash
+    ./deploy.sh
+    ```
+    The script will present a menu with different deployment options.
 
-## Struktur
+## Configuration
+
+The main configuration file is `group_vars/all.yml`. Here are some of the most important variables to review:
+
+-   `domain_name`: The local domain for your services (e.g., `frey`). This will make your services available at `http://jellyfin.frey`, `http://grafana.frey`, etc.
+-   `media_uid` & `media_gid`: The user and group ID for file permissions. Use the `id` command on your host to find the correct values.
+-   `timezone`: Set your local timezone (e.g., `Europe/Berlin`).
+-   `*_port`: Review the default ports for all services to avoid conflicts on your network.
+
+## Post-Installation
+
+After a successful deployment, your services will be available at the domains configured via Traefik and AdGuard. For example, if your `domain_name` is `frey`:
+
+-   **Jellyfin:** `http://jellyfin.frey`
+-   **Grafana:** `http://grafana.frey`
+-   **Portainer:** `http://portainer.frey`
+
+## Structure
 
 ```
-pi5-hub-ansible/
-├── README.md
-├── deploy.sh                    # Haupt-Deployment-Script
-├── ansible.cfg                  # Ansible Konfiguration
-├── requirements.yml             # Ansible Collections
-├── inventory/
-├── group_vars/
-├── playbooks/
-├── roles/
-├── scripts/
-└── templates/
+frey/ 
+ ├── README.md 
+ ├── deploy.sh # Main Deployment Script 
+ ├── ansible.cfg # Ansible Configuration 
+ ├── requirements.yml # Ansible Collections 
+ ├── inventory/ 
+ ├── group_vars/ 
+ ├── playbooks/ 
+ ├── roles/ 
+ ├── scripts/ 
+ └── templates/
 ```
 
-## Anforderungen
+## Requirements
 
 - Ansible >= 2.15
 - Python >= 3.8
-- SSH-Zugriff zum Raspberry Pi
+- SSH access to the Raspberry Pi
 
-## Lizenz
+## License
 
 MIT License

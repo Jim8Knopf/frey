@@ -132,6 +132,92 @@ services:
       - PGID={{ media_gid }}
       - TZ={{ timezone }}
 
+  audiobookrequest:
+    image: ghcr.io/markbeep/audiobookrequest:latest
+    container_name: audiobookrequest
+    restart: unless-stopped
+    ports:
+      - "{{ audiobookrequest_port }}:3000"
+    volumes:
+      - "{{ appdata_dir }}/audiobookrequest:/config"
+      - "{{ media_dir }}/audiobooks:/audiobooks"
+      - "{{ downloads_dir }}:/downloads"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.audiobookrequest.rule=Host(`audiobookrequest.{{ domain_name }}`)"
+      - "traefik.http.routers.audiobookrequest.entrypoints=web"
+      - "traefik.http.services.audiobookrequest.loadbalancer.server.port=3000"
+
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    restart: unless-stopped
+    ports:
+      - "{{ jellyseerr_port }}:5055"
+    volumes:
+      - "{{ appdata_dir }}/jellyseerr:/app/config"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+      - LOG_LEVEL=info
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyseerr.rule=Host(`jellyseerr.{{ domain_name }}`)"
+      - "traefik.http.routers.jellyseerr.entrypoints=web"
+      - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
+    networks:
+      - default
+      - infrastructure_network
+
+  lidarr:
+    image: linuxserver/lidarr:latest
+    container_name: lidarr
+    restart: unless-stopped
+    ports:
+      - "{{ lidarr_port }}:8686"
+    volumes:
+      - "{{ appdata_dir }}/lidarr:/config"
+      - "{{ media_dir }}/music:/music"
+      - "{{ downloads_dir }}:/downloads"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lidarr.rule=Host(`lidarr.{{ domain_name }}`)"
+      - "traefik.http.routers.lidarr.entrypoints=web"
+      - "traefik.http.services.lidarr.loadbalancer.server.port=8686"
+    networks:
+      - default
+      - infrastructure_network
+
+  jellystat:
+    image: cyfershep/jellystat:latest
+    container_name: jellystat
+    restart: unless-stopped
+    ports:
+      - "{{ jellystat_port }}:8080"
+    volumes:
+      - "{{ appdata_dir }}/jellystat:/config"
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellystat.rule=Host(`jellystat.{{ domain_name }}`)"
+      - "traefik.http.routers.jellystat.entrypoints=web"
+      - "traefik.http.services.jellystat.loadbalancer.server.port=8080"
+    networks:
+      - default
+      - infrastructure_network
+
 networks:
   default:
     name: media_network
