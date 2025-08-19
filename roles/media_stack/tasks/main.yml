@@ -7,6 +7,17 @@
     group: "{{ media_user }}"
     mode: '0755'
 
+- name: Create required database directories
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+  loop:
+    - jellystat-db
+    - jellystat
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2
@@ -14,8 +25,117 @@
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
     mode: '0644'
+  register: compose_template_result
+
+- name: Validate Docker Compose file syntax
+  ansible.builtin.command:
+    cmd: docker compose -f "{{ stacks_dir }}/media/docker-compose.yml" config --quiet
+  register: compose_validation
+  failed_when: compose_validation.rc != 0
+  changed_when: false
+
+- name: Pull Docker images individually to handle failures gracefully
+  community.docker.docker_image:
+    name: "{{ item }}"
+    source: pull
+    state: present
+  loop:
+    - "linuxserver/jellyfin:latest"
+    - "linuxserver/sonarr:latest"
+    - "linuxserver/radarr:latest"
+    - "linuxserver/prowlarr:latest"
+    - "linuxserver/qbittorrent:latest"
+    - "linuxserver/bazarr:latest"
+    - "linuxserver/lidarr:latest"
+    - "fallenbagel/jellyseerr:latest"
+    - "ghcr.io/advplyr/audiobookshelf:latest"
+    - "postgres:15-alpine"
+    # - "linuxserver/readarr:develop"
+  register: image_pull_results
+  ignore_errors: true
+  
+- name: Pull Jellystat image with fallback strategy
+  block:
+    - name: Try pulling Jellystat from Docker Hub (primary)
+      community.docker.docker_image:
+        name: "cyfershepard/jellystat:latest"
+        source: pull
+        state: present
+      register: jellystat_primary
+  rescue:
+    - name: Try alternative Jellystat tag (fallback 1)
+      community.docker.docker_image:
+        name: "cyfershepard/jellystat:main"
+        source: pull
+        state: present
+      register: jellystat_fallback1
+      ignore_errors: true
+      
+    - name: Try unstable Jellystat tag (fallback 2)
+      community.docker.docker_image:
+        name: "cyfershepard/jellystat:unstable"
+        source: pull
+        state: present
+      register: jellystat_fallback2
+      ignore_errors: true
+      when: jellystat_fallback1 is failed
+
+    - name: Update compose file to use available Jellystat tag
+      ansible.builtin.replace:
+        path: "{{ stacks_dir }}/media/docker-compose.yml"
+        regexp: 'cyfershepard/jellystat:latest'
+        replace: "{{ jellystat_image_tag | default('cyfershepard/jellystat:main') }}"
+      vars:
+        jellystat_image_tag: >-
+          {%- if jellystat_fallback1 is succeeded -%}
+          cyfershepard/jellystat:main
+          {%- elif jellystat_fallback2 is succeeded -%}
+          cyfershepard/jellystat:unstable
+          {%- else -%}
+          cyfershepard/jellystat:main
+          {%- endif -%}
+      when: jellystat_primary is failed
+
+- name: Report failed image pulls
+  ansible.builtin.debug:
+    msg: "Warning: Failed to pull image {{ item.item }}. Error: {{ item.msg | default('Unknown error') }}"
+  loop: "{{ image_pull_results.results }}"
+  when: 
+    - item is failed
+    - image_pull_results.results is defined
+  loop_control:
+    label: "{{ item.item }}"
 
 - name: Start media stack containers using compose
   community.docker.docker_compose_v2:
     project_src: "{{ stacks_dir }}/media"
     state: present
+    remove_orphans: true
+  register: compose_result
+  retries: 2
+  delay: 10
+  until: compose_result is succeeded
+
+- name: Verify critical services are running
+  ansible.builtin.uri:
+    url: "http://localhost:{{ item.port }}"
+    method: GET
+    status_code: [200, 302, 401]  # 401 is OK for services that need auth
+  loop:
+    - { service: "jellyfin", port: "{{ jellyfin_port }}" }
+    - { service: "sonarr", port: "{{ sonarr_port }}" }
+    - { service: "radarr", port: "{{ radarr_port }}" }
+    - { service: "prowlarr", port: "{{ prowlarr_port }}" }
+  register: service_health_check
+  retries: 3
+  delay: 15
+  ignore_errors: true
+  when: compose_result is succeeded
+
+- name: Report service health status
+  ansible.builtin.debug:
+    msg: "{{ item.item.service | title }} service is {{ 'healthy' if item is succeeded else 'not responding' }} on port {{ item.item.port }}"
+  loop: "{{ service_health_check.results }}"
+  when: service_health_check.results is defined
+  loop_control:
+    label: "{{ item.item.service }}"

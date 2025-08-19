@@ -98,22 +98,22 @@ services:
     networks: [frey-net]
     restart: unless-stopped
 
-  readarr:
-    image: linuxserver/readarr:develop # Using develop branch for audiobook support
-    container_name: readarr
-    environment:
-      - PUID={{ media_uid }}
-      - PGID={{ media_gid }}
-      - TZ={{ timezone }}
-    volumes:
-      - "{{ appdata_dir }}/readarr:/config"
-      - "{{ downloads_dir }}:/downloads"
-      - "{{ media_dir }}/audiobooks:/audiobooks"
-      - "{{ media_dir }}/ebooks:/ebooks"
-    ports:
-      - "{{ readarr_port }}:8787"
-    networks: [frey-net]
-    restart: unless-stopped
+  # readarr:
+  #   image: hotio/readarr:nightly # Using develop branch for audiobook support
+  #   container_name: readarr
+  #   environment:
+  #     - PUID={{ media_uid }}
+  #     - PGID={{ media_gid }}
+  #     - TZ={{ timezone }}
+  #   volumes:
+  #     - "{{ appdata_dir }}/readarr:/config"
+  #     - "{{ downloads_dir }}:/downloads"
+  #     - "{{ media_dir }}/audiobooks:/audiobooks"
+  #     - "{{ media_dir }}/ebooks:/ebooks"
+  #   ports:
+  #     - "{{ readarr_port }}:8787"
+  #   networks: [frey-net]
+  #   restart: unless-stopped
 
   lidarr:
     image: linuxserver/lidarr:latest
@@ -159,20 +159,43 @@ services:
       - "{{ media_dir }}/audiobooks:/audiobooks"
       - "{{ media_dir }}/podcasts:/podcasts"
     ports:
-      - "{{ audiobookshelf_port }}:13378"
+      - "{{ audiobookshelf_port }}:80"
     networks: [frey-net]
     restart: unless-stopped
 
+  # Fixed Jellystat configuration
   jellystat:
-    image: ghcr.io/cyfershepard/jellystat:latest
+    image: cyfershepard/jellystat:latest
     container_name: jellystat
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
       - TZ={{ timezone }}
+      # Required environment variables for Jellystat
+      - POSTGRES_USER=jellystat
+      - POSTGRES_PASSWORD={{ default_postgres_password }}
+      - POSTGRES_IP=jellystat-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=jfstat
+      - JWT_SECRET={{ tandoor_secret_key }}  # Reusing existing secret
     volumes:
-      - "{{ appdata_dir }}/jellystat:/config"
+      - "{{ appdata_dir }}/jellystat:/app/backend/backup-data"
     ports:
-      - "{{ jellystat_port }}:8086"
+      - "{{ jellystat_port }}:3000"
+    networks: [frey-net]
+    restart: unless-stopped
+    depends_on:
+      - jellystat-db
+
+  # PostgreSQL database for Jellystat
+  jellystat-db:
+    image: postgres:15-alpine
+    container_name: jellystat-db
+    environment:
+      - POSTGRES_DB=jfstat
+      - POSTGRES_USER=jellystat
+      - POSTGRES_PASSWORD={{ default_postgres_password }}
+    volumes:
+      - "{{ appdata_dir }}/jellystat-db:/var/lib/postgresql/data"
     networks: [frey-net]
     restart: unless-stopped
