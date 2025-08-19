@@ -26,6 +26,9 @@ This is a list of potential improvements and next steps to make the project more
     3. Adapt the `deploy.sh` script to use the new paths.
   - **AI Prompt:** "Refactor the project structure. Create a new `ansible/` directory and move the `roles`, `group_vars`, `inventory`, `playbooks`, `ansible.cfg`, and `requirements.yml` directories/files into it. Then, update the `deploy.sh` script to correctly call `ansible-playbook` with the new paths."
 
+  - [ ] **one ore multiple DBs**
+  - [ ] media user everywhere?
+
 ## 📈 Next Level Enhancements
 
 - [ ] **Refine Variable Scoping**
@@ -58,3 +61,9 @@ This is a list of potential improvements and next steps to make the project more
   - **Why?** To ensure that backups are not just created, but are also valid and usable for a full recovery. A backup that hasn't been tested is not a backup.
   - **How?** Create a new Ansible playbook or role to automate the restoration of a key service (e.g., Jellyfin) from a backup onto a clean state. Document the process.
   - **AI Prompt:** "Create a new Ansible role named `restore`. This role should contain tasks to stop a service, wipe its configuration volume, and restore the data from the latest backup created by the `backup` role. Start with Jellyfin as the first service to support and make the role tag-based."
+
+
+❌ Security vulnerabilities (hardcoded passwords)
+❌ Missing input validation
+❌ Incomplete error handling
+❌ Network architecture could be simplified

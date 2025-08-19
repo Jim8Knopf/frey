@@ -3,6 +3,10 @@
   hosts: all
   become: yes
 
+  vars_files:
+    - ../group_vars/all/main.yml
+    - ../group_vars/all/secrets.yml
+
   pre_tasks:
     - name: Update package cache
       apt:
@@ -11,21 +15,18 @@
       tags: always
 
     - name: Display deployment info
-      debug:
+      ansible.builtin.debug:
         msg: |
           🚀 Starting Pi 5 Hub deployment
-          Target: {{ inventory_hostname }}
-          User: {{ ansible_user }}
+          Target: {{ ansible_host }}
+          User: {{ ansible_user_id }}
           Services: {% if deploy_media_stack %}Media, {% endif %}{% if deploy_ai_stack %}AI, {% endif %}{% if deploy_monitoring %}Monitoring, {% endif %}{% if deploy_photo_management %}Photos{% endif %}
 
-  roles:
-    - role: common
-      tags: [common, base]
-    
+  roles:    
     - role: security
       tags: [security]
       when: enable_ufw or enable_fail2ban
-    
+      
     - role: ssd_optimization
       tags: [ssd, optimization]
       when: enable_ssd_optimization
@@ -79,6 +80,10 @@
       tags: [piper, voice, ai]
       when: deploy_piper
 
+    - role: my_new_service
+      tags: [my_new_service, services]
+      when: deploy_my_new_service
+
     - role: voice_assistant
       tags: [voice, ai]
       when: deploy_voice_assistant
@@ -100,7 +105,7 @@
       tags: always
 
     - name: Display service URLs
-      debug:
+      ansible.builtin.debug:
         msg: |
           
           🎯 DEPLOYMENT COMPLETED! Your services are available at:
@@ -124,7 +129,7 @@
       tags: always
 
     - name: Create maintenance reminder
-      copy:
+      ansible.builtin.copy:
         content: |
           #!/bin/bash
           echo "🔧 Maintenance Scripts Available:"

@@ -1,3 +1,0 @@
----
-# This role is intentionally empty.
-# Docker is installed via the 'geerlingguy.docker' role from Ansible Galaxy.

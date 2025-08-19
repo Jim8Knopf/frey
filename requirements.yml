@@ -8,5 +8,7 @@ collections:
   - name: ansible.posix
     version: ">=1.0.0"
 
-# Python Requirements (für Docker-Module)
-# pip install docker docker-compose
+# Ansible Roles Requirements
+roles:
+  - name: geerlingguy.docker
+    version: "7.4.7"

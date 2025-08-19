@@ -10,9 +10,14 @@ media_uid: 1000
 media_gid: 1000
 
 # ================================
+# DOCKER CONFIGURATION
+# ================================
+docker_users: [ "{{ media_user }}" ]
+
+# ================================
 # STORAGE PATHS
 # ================================
-base_dir: /opt
+base_dir: /opt/frey
 media_dir: "{{ base_dir }}/media"
 appdata_dir: "{{ base_dir }}/appdata"
 downloads_dir: "{{ base_dir }}/downloads"
@@ -62,7 +67,6 @@ qbittorrent_port: 8080
 prowlarr_port: 9696
 audiobookshelf_port: 13378
 bazarr_port: 6767
-audiobookrequest_port: 3000
 jellyseerr_port: 5055
 lidarr_port: 8686
 jellystat_port: 8086
@@ -111,18 +115,28 @@ enable_fail2ban: true
 enable_ufw: true
 ssh_port: 22
 
-# Default passwords (CHANGE THESE!)
-default_grafana_password: "admin123"
-default_qbittorrent_password: "adminadmin"
-default_code_server_password: "codeserver123"
-default_postgres_password: "a_very_secure_password_change_me"
-tandoor_secret_key: "a_very_secret_key_for_tandoor_change_me"
+# Dynamically generated list of TCP ports to open in the firewall based on feature toggles.
+# This centralizes the logic and makes the security role cleaner.
+firewall_tcp_ports: "{{
+  [ssh_port, dockge_port] +
+  (deploy_infrastructure | ternary([traefik_port, traefik_dashboard_port, portainer_port], [])) +
+  (deploy_media_stack | ternary([jellyfin_port, sonarr_port, radarr_port, readarr_port, bazarr_port, audiobookshelf_port, qbittorrent_port, prowlarr_port, jellyseerr_port, lidarr_port, jellystat_port], [])) +
+  (deploy_ai_stack | ternary([ollama_port, openwebui_port], [])) +
+  (deploy_photo_management | ternary([immich_port], [])) +
+  (deploy_homeassistant | ternary([homeassistant_port], [])) +
+  (deploy_monitoring | ternary([grafana_port, prometheus_port, uptime_kuma_port], [])) +
+  (deploy_networking | ternary([adguardhome_port, speedtest_port], [])) +
+  (deploy_file_management | ternary([filebrowser_port, code_server_port], [])) +
+  (deploy_cookbook | ternary([cookbook_port], [])) +
+  (deploy_piper | ternary([piper_port], []))
+  }}"
+
 
 # ================================
 # OPTIMIZATION SETTINGS
 # ================================
 # SSD Optimization
-enable_ssd_optimization: true
+enable_ssd_optimization: false
 enable_trim: true
 
 # German Content Support
@@ -148,22 +162,22 @@ backup_retention_days: 7
 # ================================
 # Services to deploy (set to false to skip)
 deploy_media_stack: true
-deploy_ai_stack: true
+deploy_ai_stack: false
 deploy_photo_management: true
-deploy_homeassistant: true
-deploy_monitoring: true
-deploy_networking: true
-deploy_file_management: true
+deploy_homeassistant: false
+deploy_monitoring: false
+deploy_networking: false
+deploy_file_management: false
 deploy_backup: false
-deploy_infrastructure: true
-deploy_cookbook: true  # For Tandoor recipes
-deploy_piper: true     # For Text-to-Speech service
+deploy_infrastructure: false
+deploy_piper: false
+deploy_cookbook: false
 
 # ================================
 # VOICE ASSISTANT
 # ================================
 deploy_voice_assistant: true
-voice_assistant_wake_word: "computer"          # e.g., "computer", "alexa", "jarvis"
+voice_assistant_wake_word: "frey"          # e.g., "computer", "alexa", "jarvis"
 porcupine_access_key: "YOUR_PICOVOICE_ACCESS_KEY" # Get a free key from https://console.picovoice.ai/
 voice_assistant_ollama_model: "llama3:latest"  # The Ollama model to use
 # The default voice the assistant should use for responses. Must be one of the voices loaded below.

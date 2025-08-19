@@ -30,12 +30,12 @@ echo_error() {
     echo -e "${RED}❌ $1${NC}"
 }
 
-# Banner
+# Banner9o
 echo -e "${BLUE}"
 cat << 'BANNER'
 ╔═══════════════════════════════════════════╗
 ║           Pi5 Hub Ansible Deploy          ║
-║     Raspberry Pi 5 Automation Suite      ║
+║     Raspberry Pi 5 Automation Suite       ║
 ╚═══════════════════════════════════════════╝
 BANNER
 echo -e "${NC}"

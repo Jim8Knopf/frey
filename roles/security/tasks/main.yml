@@ -22,19 +22,7 @@
     rule: allow
     port: "{{ item }}"
     proto: tcp
-  loop: >-
-    [
-      '{{ ssh_port }}',
-      '{{ dockge_port }}'
-    ]
-    {% if deploy_infrastructure %} + [ '{{ traefik_port }}', '{{ traefik_dashboard_port }}', '{{ portainer_port }}' ] {% endif %}
-    {% if deploy_media_stack %} + [ '{{ jellyfin_port }}', '{{ sonarr_port }}', '{{ radarr_port }}', '{{ readarr_port }}', '{{ bazarr_port }}', '{{ audiobookshelf_port }}', '{{ qbittorrent_port }}', '{{ prowlarr_port }}', '{{ audiobookrequest_port }}', '{{ jellyseerr_port }}', '{{ lidarr_port }}', '{{ jellystat_port }}' ] {% endif %}
-    {% if deploy_ai_stack %} + [ '{{ ollama_port }}', '{{ openwebui_port }}' ] {% endif %}
-    {% if deploy_photo_management %} + [ '{{ immich_port }}' ] {% endif %}
-    {% if deploy_homeassistant %} + [ '{{ homeassistant_port }}' ] {% endif %}
-    {% if deploy_monitoring %} + [ '{{ grafana_port }}', '{{ prometheus_port }}', '{{ uptime_kuma_port }}' ] {% endif %}
-    {% if deploy_networking %} + [ '{{ adguardhome_port }}', '{{ speedtest_port }}' ] {% endif %}
-    {% if deploy_file_management %} + [ '{{ filebrowser_port }}', '{{ code_server_port }}' ] {% endif %}
+  loop: "{{ firewall_tcp_ports }}"
   when: enable_ufw
 
 - name: Configure UFW rules for AdGuard DNS

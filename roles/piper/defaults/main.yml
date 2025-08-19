@@ -1,6 +1,6 @@
 ---
 # piper default variables
-deploy_piper: true
+deploy_piper: false
 piper_port: 10200
 # List of voices to load into the Piper TTS service.
 piper_voices:

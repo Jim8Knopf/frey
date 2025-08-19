@@ -1,2 +1,3 @@
 ---
 # ssd_optimization default variables
+enable_ssd_optimization: false
