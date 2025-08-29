@@ -20,7 +20,7 @@ services:
 
   sonarr:
     image: linuxserver/sonarr:latest
-    container_name: sonarr
+    container_name: show_downloader
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -36,7 +36,7 @@ services:
 
   radarr:
     image: linuxserver/radarr:latest
-    container_name: radarr
+    container_name: movie_downloader
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -52,7 +52,7 @@ services:
 
   prowlarr:
     image: linuxserver/prowlarr:latest
-    container_name: prowlarr
+    container_name: indexer_manager
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -84,7 +84,7 @@ services:
 
   bazarr:
     image: linuxserver/bazarr:latest
-    container_name: bazarr
+    container_name: subtitle_manager
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -98,26 +98,9 @@ services:
     networks: [frey-net]
     restart: unless-stopped
 
-  # readarr:
-  #   image: hotio/readarr:nightly # Using develop branch for audiobook support
-  #   container_name: readarr
-  #   environment:
-  #     - PUID={{ media_uid }}
-  #     - PGID={{ media_gid }}
-  #     - TZ={{ timezone }}
-  #   volumes:
-  #     - "{{ appdata_dir }}/readarr:/config"
-  #     - "{{ downloads_dir }}:/downloads"
-  #     - "{{ media_dir }}/audiobooks:/audiobooks"
-  #     - "{{ media_dir }}/ebooks:/ebooks"
-  #   ports:
-  #     - "{{ readarr_port }}:8787"
-  #   networks: [frey-net]
-  #   restart: unless-stopped
-
   lidarr:
     image: linuxserver/lidarr:latest
-    container_name: lidarr
+    container_name: music_downloader
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -133,7 +116,7 @@ services:
 
   jellyseerr:
     image: fallenbagel/jellyseerr:latest
-    container_name: jellyseerr
+    container_name: tv_and_movie_request_manager
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -162,6 +145,17 @@ services:
       - "{{ audiobookshelf_port }}:80"
     networks: [frey-net]
     restart: unless-stopped
+
+  audiobookrequest:
+    image: markbeep/audiobookrequest:latest
+    ports:
+      - "{{ audiobookrequest_port }}:5432"
+    volumes:
+      - ./config:/config
+    environment:
+      ABR_APP__PORT: 5432
+      ABR_APP__OPENAPI_ENABLED: true
+
 
   # Fixed Jellystat configuration
   jellystat:

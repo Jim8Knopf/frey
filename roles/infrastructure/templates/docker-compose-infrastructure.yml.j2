@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   traefik:
     image: traefik:latest
@@ -13,6 +11,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - "{{ appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
       - "{{ appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
+    networks:
+      - proxy
 
   portainer:
     image: portainer/portainer-ce:latest
@@ -23,7 +23,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{ appdata_dir }}/portainer/data:/data"
+    networks:
+      - proxy
 
 networks:
-  default:
-    name: infrastructure_network
+  proxy:
+    external: true

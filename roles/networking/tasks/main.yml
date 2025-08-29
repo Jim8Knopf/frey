@@ -7,6 +7,17 @@
     group: "{{ media_user }}"
     mode: '0755'
 
+- name: Create AdGuard Home directories
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/adguardhome/{{ item }}"
+    state: directory
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0755'
+  loop:
+    - work
+    - conf
+
 - name: Configure AdGuard Home
   ansible.builtin.template:
     src: AdGuardHome.yaml.j2

@@ -3,6 +3,25 @@
 # Main language: English, German content support included
 
 # ================================
+# FEATURE TOGGLES
+# ================================
+# Services to deploy (set to false to skip)
+deploy_infrastructure: false
+deploy_networking: false
+
+enable_access_point: false
+deploy_media_stack: false
+# ---
+deploy_file_management: false
+deploy_ai_stack: false
+deploy_photo_management: false
+deploy_homeassistant: false
+deploy_monitoring: false
+deploy_backup: false
+deploy_piper: false
+deploy_cookbook: false
+enable_power_monitoring: false # checks something else
+# ================================
 # USER CONFIGURATION
 # ================================
 media_user: media
@@ -39,7 +58,6 @@ dns_rewrites:
   - name: jellyfin
   - name: sonarr
   - name: radarr
-  - name: readarr
   - name: bazarr
   - name: audiobookshelf
   - name: qbittorrent
@@ -56,16 +74,41 @@ dns_rewrites:
   - name: jellystat
 
 # ================================
+# ADVANCED NETWORKING (Optional)
+# ================================
+# Configure a macvlan network to bind services to a specific physical interface.
+# This makes containers appear as separate devices on your secondary network.
+enable_macvlan: false
+macvlan_physical_interface: "wlan0" # IMPORTANT: Change to your secondary interface name (e.g., wlan1)
+macvlan_network_name: "macvlan_net"
+macvlan_subnet: "192.168.1.0/24" # IMPORTANT: Change to the subnet of your secondary network
+macvlan_gateway: "192.168.1.1"   # IMPORTANT: Change to the gateway of your secondary network
+macvlan_ip_range: "192.168.1.200/28" # Optional: A small range of IPs for Docker to assign from
+
+# ================================
+# ACCESS POINT CONFIGURATION (Optional)
+# ================================
+# Turns the Pi into a Wi-Fi Access Point.
+ap_interface: "wlan1"             # The interface for the local AP (e.g., the USB Wi-Fi adapter)
+internet_interface: "wlan0"       # The interface connected to public Wi-Fi (e.g., the built-in Wi-Fi)
+ap_ssid: "FreyHub"
+ap_password: "YourSecurePassword" # CHANGE THIS! Must be 8-63 characters.
+ap_ip_address: "192.168.4.1"      # Static IP for the Pi on its own network
+ap_dhcp_range_start: "192.168.4.10"
+ap_dhcp_range_end: "192.168.4.50"
+ap_dhcp_lease_time: "12h"
+
+# ================================
 # SERVICE PORTS
 # ================================
 # Media Stack
 jellyfin_port: 8096
 sonarr_port: 8989
 radarr_port: 7878
-readarr_port: 8787
 qbittorrent_port: 8080
 prowlarr_port: 9696
 audiobookshelf_port: 13378
+audiobookrequest_port: 5432
 bazarr_port: 6767
 jellyseerr_port: 5055
 lidarr_port: 8686
@@ -120,7 +163,7 @@ ssh_port: 22
 firewall_tcp_ports: "{{
   [ssh_port, dockge_port] +
   (deploy_infrastructure | ternary([traefik_port, traefik_dashboard_port, portainer_port], [])) +
-  (deploy_media_stack | ternary([jellyfin_port, sonarr_port, radarr_port, readarr_port, bazarr_port, audiobookshelf_port, qbittorrent_port, prowlarr_port, jellyseerr_port, lidarr_port, jellystat_port], [])) +
+  (deploy_media_stack | ternary([jellyfin_port, sonarr_port, radarr_port, bazarr_port, audiobookshelf_port, qbittorrent_port, prowlarr_port, jellyseerr_port, lidarr_port, jellystat_port], [])) +
   (deploy_ai_stack | ternary([ollama_port, openwebui_port], [])) +
   (deploy_photo_management | ternary([immich_port], [])) +
   (deploy_homeassistant | ternary([homeassistant_port], [])) +
@@ -146,10 +189,9 @@ enable_german_indexers: true
 # ================================
 # POWER MANAGEMENT (12V setup)
 # ================================
-enable_power_monitoring: true
 low_power_threshold: 11.8  # Volts
 critical_power_threshold: 11.0  # Volts
-enable_graceful_shutdown: true
+enable_graceful_shutdown: false
 
 # ================================
 # AUTOMATION SETTINGS
@@ -157,21 +199,6 @@ enable_graceful_shutdown: true
 watchtower_interval: 86400  # 24 hours
 backup_retention_days: 7
 
-# ================================
-# FEATURE TOGGLES
-# ================================
-# Services to deploy (set to false to skip)
-deploy_media_stack: true
-deploy_ai_stack: false
-deploy_photo_management: true
-deploy_homeassistant: false
-deploy_monitoring: false
-deploy_networking: false
-deploy_file_management: false
-deploy_backup: false
-deploy_infrastructure: false
-deploy_piper: false
-deploy_cookbook: false
 
 # ================================
 # VOICE ASSISTANT

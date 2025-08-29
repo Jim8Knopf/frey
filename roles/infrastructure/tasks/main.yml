@@ -34,6 +34,11 @@
     group: "{{ media_user }}"
     mode: '0644'
 
+- name: Create proxy network for Traefik
+  community.docker.docker_network:
+    name: proxy
+    state: present
+
 - name: Start infrastructure containers using compose
   community.docker.docker_compose_v2:
     project_src: "{{ stacks_dir }}/infrastructure"

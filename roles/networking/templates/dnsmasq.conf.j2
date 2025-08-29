@@ -1,0 +1,16 @@
+# Listen only on the AP interface
+interface={{ ap_interface }}
+# Never forward plain names (without a dot or domain part)
+domain-needed
+# Never forward addresses in the non-routed address spaces.
+bogus-priv
+
+# DHCP range and lease time
+dhcp-range={{ ap_dhcp_range_start }},{{ ap_dhcp_range_end }},255.255.255.0,{{ ap_dhcp_lease_time }}
+
+# Set the router (gateway) for clients
+dhcp-option=option:router,{{ ap_ip_address }}
+
+# Set the DNS server for clients to be AdGuard Home running on the Pi itself
+# This makes your .frey domains work for all connected devices.
+dhcp-option=option:dns-server,{{ ap_ip_address }}

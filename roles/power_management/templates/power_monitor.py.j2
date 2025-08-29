@@ -39,7 +39,7 @@ def graceful_shutdown():
     logging.warning("Syncing filesystem...")
     subprocess.run(['sync'])
     logging.critical("Executing system shutdown now.")
-    subprocess.run(['shutdown', '-h', 'now'])
+    subprocess.run(['shutdown', '-h', 'time 5'])
 
 def main():
     logging.info(f"Power monitoring started. Low: {LOW_VOLTAGE_THRESHOLD}V, Critical: {CRITICAL_VOLTAGE_THRESHOLD}V")

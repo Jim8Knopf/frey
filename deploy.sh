@@ -76,26 +76,26 @@ read -p "Select an option (1-5): " choice
 case $choice in
     1)
         echo_info "Starting full deployment..."
-        ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --ask-become-pass
         ;;
     2)
         echo_info "Starting system setup..."
-        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "system"
+        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "system" --ask-become-pass
         ;;
     3)
         echo_info "Starting Docker services..."
-        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "docker,services"
+        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "docker,services" --ask-become-pass
         ;;
     4)
         echo_info "Performing dry-run..."
-        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check --diff
+        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check --diff --ask-become-pass
         ;;
     5)
         echo "Available roles:"
         ls -1 roles/ | sed 's/^/  - /'
         read -p "Enter role name: " role_name
         if [ -d "roles/$role_name" ]; then
-            ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "$role_name"
+            ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "$role_name" --ask-become-pass
         else
             echo_error "Role '$role_name' not found!"
             exit 1

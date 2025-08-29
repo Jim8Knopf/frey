@@ -4,3 +4,17 @@
   community.docker.docker_container:
     name: adguardhome
     restart: yes
+    
+- name: restart hostapd
+  ansible.builtin.service:
+    name: hostapd
+    state: restarted
+
+- name: restart dnsmasq
+  ansible.builtin.service:
+    name: dnsmasq
+    state: restarted
+
+- name: save iptables rules
+  ansible.builtin.command:
+    cmd: netfilter-persistent save
