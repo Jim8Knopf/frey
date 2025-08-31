@@ -62,6 +62,13 @@ This is a list of potential improvements and next steps to make the project more
   - **How?** Create a new Ansible playbook or role to automate the restoration of a key service (e.g., Jellyfin) from a backup onto a clean state. Document the process.
   - **AI Prompt:** "Create a new Ansible role named `restore`. This role should contain tasks to stop a service, wipe its configuration volume, and restore the data from the latest backup created by the `backup` role. Start with Jellyfin as the first service to support and make the role tag-based."
 
+- [ ] fix this:
+```bash
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: community.general.yaml has been deprecated. The plugin has been superseded by the the option `result_format=yaml` in callback plugin ansible.builtin.default from ansible-core 2.13 onwards. This feature will be removed from collection 'community.general' version 12.0.0.
+```
+
+
 
 ❌ Security vulnerabilities (hardcoded passwords)
 ❌ Missing input validation

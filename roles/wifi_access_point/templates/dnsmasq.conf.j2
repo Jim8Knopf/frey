@@ -1,0 +1,34 @@
+# DHCP server configuration for WiFi AP
+# Basic settings
+bind-interfaces
+interface={{ wifi_ap_interface }}
+listen-address={{ wifi_ap_ip }}
+
+# Process settings
+user=root
+group=root
+pid-file=/var/run/dnsmasq/dnsmasq.pid
+
+# DNS settings
+port=53
+no-resolv
+server=8.8.8.8
+server=8.8.4.4
+
+# DNS options
+domain-needed
+bogus-priv
+
+# DHCP range and lease time
+dhcp-range={{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '') }}.100,{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '') }}.200,255.255.255.0,24h
+dhcp-option=option:router,{{ wifi_ap_ip }}
+dhcp-option=option:dns-server,{{ wifi_ap_ip }}
+
+# Logging
+log-queries
+log-dhcp
+
+# Local DNS
+local=/frey/
+domain=frey
+expand-hosts

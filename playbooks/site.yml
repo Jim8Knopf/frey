@@ -44,6 +44,10 @@
     - role: networking
       tags: [networking]
       when: deploy_networking
+
+    - role: wifi_access_point
+      tags: [wifi, networking]
+      when: deploy_wifi_access_point
     
     - role: dockge
       tags: [dockge, management]

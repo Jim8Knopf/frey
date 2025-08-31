@@ -1,4 +1,12 @@
 ---
+- name: Restart Docker to restore its network rules (recovery task)
+  ansible.builtin.service:
+    name: docker
+    state: restarted
+  # This is a workaround. A previous run may have used iptables-persistent
+  # to save a ruleset that wiped Docker's custom chains.
+  # Restarting the daemon forces it to recreate them before we start containers.
+
 - name: Create network tools stack directory
   ansible.builtin.file:
     path: "{{ stacks_dir }}/network"
@@ -39,3 +47,108 @@
   community.docker.docker_compose_v2:
     project_src: "{{ stacks_dir }}/network"
     state: present
+
+# # roles/wifi_access_point/tasks/main.yml
+# - name: Install required packages for WiFi AP
+#   ansible.builtin.apt:
+#     name:
+#       - hostapd
+#       - dnsmasq
+#       - iptables-persistent
+#     state: present
+#     update_cache: yes
+
+# - name: Stop and disable services during configuration
+#   ansible.builtin.systemd:
+#     name: "{{ item }}"
+#     state: stopped
+#     enabled: false
+#   loop:
+#     - hostapd
+#     - dnsmasq
+
+# - name: Configure hostapd for WiFi AP
+#   ansible.builtin.template:
+#     src: ../../hostapd.conf.j2
+#     dest: /etc/hostapd/hostapd.conf
+#     owner: root
+#     group: root
+#     mode: '0644'
+#   notify: restart hostapd
+
+# - name: Configure hostapd daemon
+#   ansible.builtin.lineinfile:
+#     path: /etc/default/hostapd
+#     regexp: '^#?DAEMON_CONF='
+#     line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
+
+# - name: Configure dnsmasq for DHCP
+#   ansible.builtin.template:
+#     src: ../../dnsmasq.conf.j2
+#     dest: /etc/dnsmasq.conf
+#     owner: root
+#     group: root
+#     mode: '0644'
+#     backup: yes
+#   notify: restart dnsmasq
+
+# - name: Configure static IP for AP interface
+#   ansible.builtin.template:
+#     src: dhcpcd.conf.j2
+#     dest: /etc/dhcpcd.conf
+#     owner: root
+#     group: root
+#     mode: '0644'
+#     backup: yes
+#   notify: restart dhcpcd
+
+# - name: Enable IP forwarding
+#   ansible.posix.sysctl:
+#     name: net.ipv4.ip_forward
+#     value: '1'
+#     state: present
+#     reload: yes
+    
+# - name: Configure iptables rules script
+#   ansible.builtin.template:
+#     src: iptables-rules.sh.j2
+#     dest: /etc/iptables-rules.sh
+#     owner: root
+#     group: root
+#     mode: '0755'
+
+# - name: Apply iptables rules
+#   ansible.builtin.command:
+#     cmd: /etc/iptables-rules.sh
+#   changed_when: true
+#   notify: save iptables rules
+
+# - name: Create systemd service to apply iptables on boot
+#   ansible.builtin.template:
+#     src: apply-iptables.service.j2
+#     dest: /etc/systemd/system/apply-iptables.service
+#     owner: root
+#     group: root
+#     mode: '0644'
+#   notify: reload systemd
+
+# - name: Enable iptables service
+#   ansible.builtin.systemd:
+#     name: apply-iptables
+#     enabled: yes
+#     daemon_reload: yes
+
+# - name: Unmask hostapd service
+#   ansible.builtin.systemd:
+#     name: hostapd
+#     masked: no
+
+# - name: Start and enable WiFi AP services
+#   ansible.builtin.systemd:
+#     name: "{{ item }}"
+#     state: started
+#     enabled: yes
+#     daemon_reload: yes
+#   loop:
+#     - hostapd
+#     - dnsmasq
