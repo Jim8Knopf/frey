@@ -9,6 +9,7 @@
       - wifi_ap_password is defined
       - wifi_ap_country is defined
       - wifi_ap_ip is defined
+      - wifi_client_interface is defined
     msg: "One or more required wifi_access_point variables are not set. Please check your configuration."
 
 - name: Show WiFi connection info
@@ -122,11 +123,42 @@
   notify: restart dnsmasq
 
 - name: Enable IP forwarding
-  ansible.posix.sysctl:
+  ansible.builtin.sysctl:
     name: net.ipv4.ip_forward
     value: '1'
+    sysctl_set: yes
     state: present
     reload: yes
+
+- name: Set up NAT rules for internet routing
+  ansible.builtin.iptables:
+    table: nat
+    chain: POSTROUTING
+    out_interface: "{{ wifi_client_interface }}"
+    jump: MASQUERADE
+    state: present
+
+- name: Allow forwarding between interfaces
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ wifi_ap_interface }}"
+    out_interface: "{{ wifi_client_interface }}"
+    jump: ACCEPT
+    state: present
+
+- name: Allow established connections
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ wifi_client_interface }}"
+    out_interface: "{{ wifi_ap_interface }}"
+    ctstate: ESTABLISHED,RELATED
+    jump: ACCEPT
+    state: present
+
+- name: Save iptables rules
+  ansible.builtin.shell: |
+    iptables-save > /etc/iptables/rules.v4
+  changed_when: true
 
 - name: Configure iptables rules
   ansible.builtin.template:
@@ -320,3 +352,18 @@
       ansible.builtin.shell: |
         journalctl -u hostapd -n 50 --no-pager
       when: hostapd_start is failed
+
+- name: Verify routing configuration
+  ansible.builtin.shell: |
+    echo "=== IP Forwarding Status ==="
+    sysctl net.ipv4.ip_forward
+    echo "=== NAT Rules ==="
+    iptables -t nat -L -n -v
+    echo "=== Forward Rules ==="
+    iptables -L FORWARD -n -v
+  register: routing_status
+  changed_when: false
+
+- name: Display routing configuration
+  ansible.builtin.debug:
+    msg: "{{ routing_status.stdout_lines }}"
