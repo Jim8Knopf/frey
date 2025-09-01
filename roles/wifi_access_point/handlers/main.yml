@@ -24,6 +24,11 @@
     name: networking
     state: restarted
 
+- name: restart netfilter-persistent
+  ansible.builtin.service:
+    name: netfilter-persistent
+    state: restarted
+
 - name: save iptables rules
   ansible.builtin.command:
     cmd: netfilter-persistent save

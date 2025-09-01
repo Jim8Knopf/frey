@@ -6,8 +6,8 @@ interface {{ wifi_ap_interface }}
 static ip_address={{ wifi_ap_ip }}/24
 nohook wpa_supplicant
 
-# Keep DHCP client active on ethernet
-interface eth0
+# Keep DHCP client active on the internet-facing interface
+interface {{ wifi_client_interface }}
 request dhcp_server_identifier
 require dhcp_server_identifier
 slaac private

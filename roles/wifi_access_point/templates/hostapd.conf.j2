@@ -9,13 +9,13 @@ driver=nl80211
 # Basic WiFi settings
 ssid={{ wifi_ap_ssid }}
 country_code={{ wifi_ap_country }}
-hw_mode=g
+hw_mode={{ wifi_ap_hw_mode }}
 channel={{ wifi_ap_channel | default(6) }}
 
 # Security settings
-macaddr_acl=0
-auth_algs=1
-ignore_broadcast_ssid=0
+macaddr_acl={{ wifi_ap_macaddr_acl }}
+auth_algs={{ wifi_ap_auth_algs }}
+ignore_broadcast_ssid={{ wifi_ap_ignore_broadcast_ssid }}
 wpa=2
 wpa_passphrase={{ wifi_ap_password }}
 wpa_key_mgmt=WPA-PSK
@@ -23,8 +23,8 @@ wpa_pairwise=CCMP
 rsn_pairwise=CCMP
 
 # Performance features
-ieee80211n=1
-wmm_enabled=1
+ieee80211n={{ wifi_ap_ieee80211n }}
+wmm_enabled={{ wifi_ap_wmm_enabled }}
 ht_capab=[HT40][SHORT-GI-20][DSSS_CCK-40]
 
 # Regulatory settings

@@ -20,7 +20,7 @@ domain-needed
 bogus-priv
 
 # DHCP range and lease time
-dhcp-range={{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '') }}.100,{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '') }}.200,255.255.255.0,24h
+dhcp-range={{ wifi_ap_dhcp_range_start }},{{ wifi_ap_dhcp_range_end }},255.255.255.0,24h
 dhcp-option=option:router,{{ wifi_ap_ip }}
 dhcp-option=option:dns-server,{{ wifi_ap_ip }}
 

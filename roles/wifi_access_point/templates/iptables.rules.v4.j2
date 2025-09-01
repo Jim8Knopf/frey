@@ -5,8 +5,8 @@
 :OUTPUT ACCEPT [0:0]
 
 # Allow established connections
--A FORWARD -i {{ ansible_default_ipv4.interface }} -o {{ wifi_ap_interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT
--A FORWARD -i {{ wifi_ap_interface }} -o {{ ansible_default_ipv4.interface }} -j ACCEPT
+-A FORWARD -i {{ wifi_client_interface }} -o {{ wifi_ap_interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i {{ wifi_ap_interface }} -o {{ wifi_client_interface }} -j ACCEPT
 
 # Allow DNS and DHCP on AP interface
 -A INPUT -i {{ wifi_ap_interface }} -p udp --dport 53 -j ACCEPT
@@ -22,6 +22,6 @@ COMMIT
 :POSTROUTING ACCEPT [0:0]
 
 # NAT for AP network
--A POSTROUTING -s {{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '.0/24') }} -o {{ ansible_default_ipv4.interface }} -j MASQUERADE
+-A POSTROUTING -s {{ wifi_ap_network }} -o {{ wifi_client_interface }} -j MASQUERADE
 
 COMMIT
