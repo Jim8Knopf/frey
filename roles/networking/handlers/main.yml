@@ -1,6 +1,0 @@
----
-# networking handlers
-- name: restart adguardhome
-  community.docker.docker_container:
-    name: adguardhome
-    restart: yes

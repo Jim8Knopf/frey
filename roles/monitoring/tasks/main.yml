@@ -12,6 +12,7 @@
     - loki
     - promtail
     - uptime-kuma
+    - speedtest
 
 - name: Create monitoring stack directory
   ansible.builtin.file:

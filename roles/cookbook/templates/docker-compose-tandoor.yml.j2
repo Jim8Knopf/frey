@@ -47,8 +47,6 @@ services:
     restart: unless-stopped
 
 networks:
-  default:
-    name: cookbook_network
-  infrastructure_network:
+  proxy:
     external: true
-    name: infrastructure_network
+  

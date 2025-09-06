@@ -26,16 +26,26 @@
     - role: security
       tags: [security]
       when: enable_ufw or enable_fail2ban
-      
+
     - role: ssd_optimization
       tags: [ssd, optimization]
       when: enable_ssd_optimization
     
     - role: geerlingguy.docker
       tags: [docker, base]
-    
+
     - role: directories
       tags: [directories, base]
+    
+    - role: infrastructure
+      tags: [infrastructure, management]
+      when: deploy_infrastructure
+    
+    
+
+    - role: wifi_access_point
+      tags: [wifi, networking]
+      when: deploy_wifi_access_point
     
     - role: dockge
       tags: [dockge, management]
@@ -43,31 +53,19 @@
     - role: monitoring
       tags: [monitoring]
       when: deploy_monitoring
-    
+
     - role: media_stack
       tags: [media]
       when: deploy_media_stack
-    
+
     - role: ai_stack
       tags: [ai]
       when: deploy_ai_stack
-    
+
     - role: photo_management
       tags: [photos]
       when: deploy_photo_management
-    
-    - role: homeassistant
-      tags: [homeassistant]
-      when: deploy_homeassistant
-    
-    - role: infrastructure
-      tags: [infrastructure, management]
-      when: deploy_infrastructure
-    
-    - role: networking
-      tags: [networking]
-      when: deploy_networking
-    
+
     - role: file_management
       tags: [files]
       when: deploy_file_management
@@ -79,10 +77,6 @@
     - role: piper
       tags: [piper, voice, ai]
       when: deploy_piper
-
-    - role: my_new_service
-      tags: [my_new_service, services]
-      when: deploy_my_new_service
 
     - role: voice_assistant
       tags: [voice, ai]
@@ -122,8 +116,7 @@
           1. Change all default passwords!
           2. Configure your media indexers in Prowlarr
           3. Set up monitoring dashboards in Grafana
-          4. Configure your router to use AdGuard Home DNS
-          5. Access Dockge for easy container management
+          4. Access Dockge for easy container management
           
           📖 Happy self-hosting! 🏠✨
       tags: always

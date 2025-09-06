@@ -50,7 +50,6 @@
     - "fallenbagel/jellyseerr:latest"
     - "ghcr.io/advplyr/audiobookshelf:latest"
     - "postgres:15-alpine"
-    # - "linuxserver/readarr:develop"
   register: image_pull_results
   ignore_errors: true
   

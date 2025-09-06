@@ -115,9 +115,24 @@ services:
       - WATCHTOWER_INCLUDE_RESTARTING=true
     command: --schedule "0 0 2 * * *"  # 2 AM daily
 
+  speedtest-tracker:
+    image: lscr.io/linuxserver/speedtest-tracker:latest
+    container_name: speedtest-tracker
+    environment:
+      - PUID={{ media_uid }}
+      - PGID={{ media_gid }}
+      - TZ={{ timezone }}
+      - OOKLA_EULA_GDPR=true
+    volumes:
+      - '{{ appdata_dir }}/speedtest:/config'
+    ports:
+      - '{{ speedtest_port }}:80'
+    restart: unless-stopped
+    networks:
+      - default
+
 networks:
   default:
     name: monitoring_network
-  infrastructure_network:
+  proxy:
     external: true
-    name: infrastructure_network

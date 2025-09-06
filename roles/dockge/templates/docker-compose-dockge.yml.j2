@@ -19,9 +19,4 @@ services:
       - "traefik.http.routers.dockge.entrypoints=web"
       - "traefik.http.services.dockge.loadbalancer.server.port=5001"
 
-networks:
-  default:
-    name: management_network
-  infrastructure_network:
-    external: true
-    name: infrastructure_network
+    

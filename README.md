@@ -1,3 +1,7 @@
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags "directories,docker,dockge,media,networking" 
+ 
+
 # Frey - A Raspberry Pi 5 Hub Ansible Project
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

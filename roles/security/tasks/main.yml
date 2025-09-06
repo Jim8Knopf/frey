@@ -33,6 +33,28 @@
   loop: [ 'tcp', 'udp' ]
   when: enable_ufw and deploy_networking
 
+- name: Configure UFW rules for WiFi Access Point
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    from: "{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
+  loop:
+    - { port: '53', proto: 'udp' }  # DNS
+    - { port: '53', proto: 'tcp' }  # DNS
+    - { port: '67', proto: 'udp' }  # DHCP
+  when: enable_ufw and deploy_wifi_access_point
+
+# Allow access to services from WiFi AP network
+- name: Configure UFW rules for services from WiFi AP network
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    from: "{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
+  loop: "{{ firewall_tcp_ports }}"
+  when: enable_ufw and deploy_wifi_access_point
+
 - name: Enable UFW
   community.general.ufw:
     state: enabled

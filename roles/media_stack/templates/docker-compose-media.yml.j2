@@ -1,6 +1,6 @@
 networks:
-  frey-net:
-    driver: bridge
+  proxy:
+    external: true
 
 services:
   jellyfin:
@@ -20,7 +20,7 @@ services:
 
   sonarr:
     image: linuxserver/sonarr:latest
-    container_name: sonarr
+    container_name: show_downloader
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -31,12 +31,17 @@ services:
       - "{{ media_dir }}/tv:/tv"
     ports:
       - "{{ sonarr_port }}:8989"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sonarr.rule=Host(`sonarr.{{ domain_name }}`)"
+      - "traefik.http.routers.sonarr.entrypoints=web"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
 
   radarr:
     image: linuxserver/radarr:latest
-    container_name: radarr
+    container_name: movie_downloader
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -47,12 +52,17 @@ services:
       - "{{ media_dir }}/movies:/movies"
     ports:
       - "{{ radarr_port }}:7878"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.radarr.rule=Host(`radarr.{{ domain_name }}`)"
+      - "traefik.http.routers.radarr.entrypoints=web"
+      - "traefik.http.services.radarr.loadbalancer.server.port=7878"
 
   prowlarr:
     image: linuxserver/prowlarr:latest
-    container_name: prowlarr
+    container_name: indexer_manager
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -61,8 +71,13 @@ services:
       - "{{ appdata_dir }}/prowlarr:/config"
     ports:
       - "{{ prowlarr_port }}:9696"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prowlarr.rule=Host(`prowlarr.{{ domain_name }}`)"
+      - "traefik.http.routers.prowlarr.entrypoints=web"
+      - "traefik.http.services.prowlarr.loadbalancer.server.port=9696"
 
   qbittorrent:
     image: linuxserver/qbittorrent:latest
@@ -79,12 +94,17 @@ services:
       - "{{ qbittorrent_port }}:{{ qbittorrent_port }}"
       - "6881:6881"
       - "6881:6881/udp"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.qbittorrent.rule=Host(`qbittorrent.{{ domain_name }}`)"
+      - "traefik.http.routers.qbittorrent.entrypoints=web"
+      - "traefik.http.services.qbittorrent.loadbalancer.server.port={{ qbittorrent_port }}"
 
   bazarr:
     image: linuxserver/bazarr:latest
-    container_name: bazarr
+    container_name: subtitle_manager
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -95,29 +115,17 @@ services:
       - "{{ media_dir }}/tv:/tv"
     ports:
       - "{{ bazarr_port }}:6767"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
-
-  # readarr:
-  #   image: hotio/readarr:nightly # Using develop branch for audiobook support
-  #   container_name: readarr
-  #   environment:
-  #     - PUID={{ media_uid }}
-  #     - PGID={{ media_gid }}
-  #     - TZ={{ timezone }}
-  #   volumes:
-  #     - "{{ appdata_dir }}/readarr:/config"
-  #     - "{{ downloads_dir }}:/downloads"
-  #     - "{{ media_dir }}/audiobooks:/audiobooks"
-  #     - "{{ media_dir }}/ebooks:/ebooks"
-  #   ports:
-  #     - "{{ readarr_port }}:8787"
-  #   networks: [frey-net]
-  #   restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bazarr.rule=Host(`bazarr.{{ domain_name }}`)"
+      - "traefik.http.routers.bazarr.entrypoints=web"
+      - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
 
   lidarr:
     image: linuxserver/lidarr:latest
-    container_name: lidarr
+    container_name: music_downloader
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -128,12 +136,17 @@ services:
       - "{{ media_dir }}/music:/music"
     ports:
       - "{{ lidarr_port }}:8686"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lidarr.rule=Host(`lidarr.{{ domain_name }}`)"
+      - "traefik.http.routers.lidarr.entrypoints=web"
+      - "traefik.http.services.lidarr.loadbalancer.server.port=8686"
 
   jellyseerr:
     image: fallenbagel/jellyseerr:latest
-    container_name: jellyseerr
+    container_name: tv_and_movie_request_manager
     environment:
       - PUID={{ media_uid }}
       - PGID={{ media_gid }}
@@ -143,8 +156,13 @@ services:
       - "{{ appdata_dir }}/jellyseerr:/app/config"
     ports:
       - "{{ jellyseerr_port }}:5055"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyseerr.rule=Host(`jellyseerr.{{ domain_name }}`)"
+      - "traefik.http.routers.jellyseerr.entrypoints=web"
+      - "traefik.http.services.jellyseerr.loadbalancer.server.port=5055"
 
   audiobookshelf:
     image: ghcr.io/advplyr/audiobookshelf:latest
@@ -160,8 +178,24 @@ services:
       - "{{ media_dir }}/podcasts:/podcasts"
     ports:
       - "{{ audiobookshelf_port }}:80"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.audiobookshelf.rule=Host(`audiobookshelf.{{ domain_name }}`)"
+      - "traefik.http.routers.audiobookshelf.entrypoints=web"
+      - "traefik.http.services.audiobookshelf.loadbalancer.server.port=80"
+
+  audiobookrequest:
+    image: markbeep/audiobookrequest:latest
+    ports:
+      - "{{ audiobookrequest_port }}:5432"
+    volumes:
+      - ./config:/config
+    environment:
+      ABR_APP__PORT: 5432
+      ABR_APP__OPENAPI_ENABLED: true
+
 
   # Fixed Jellystat configuration
   jellystat:
@@ -182,10 +216,15 @@ services:
       - "{{ appdata_dir }}/jellystat:/app/backend/backup-data"
     ports:
       - "{{ jellystat_port }}:3000"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
     depends_on:
       - jellystat-db
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellystat.rule=Host(`jellystat.{{ domain_name }}`)"
+      - "traefik.http.routers.jellystat.entrypoints=web"
+      - "traefik.http.services.jellystat.loadbalancer.server.port=3000"
 
   # PostgreSQL database for Jellystat
   jellystat-db:
@@ -197,5 +236,5 @@ services:
       - POSTGRES_PASSWORD={{ default_postgres_password }}
     volumes:
       - "{{ appdata_dir }}/jellystat-db:/var/lib/postgresql/data"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
