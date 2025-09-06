@@ -13,6 +13,12 @@ services:
       - "{{ appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
     networks:
       - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name }}`)"
+      - "traefik.http.routers.traefik.entrypoints=web"
+      - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+
 
   portainer:
     image: portainer/portainer-ce:latest

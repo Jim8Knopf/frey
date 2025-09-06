@@ -10,7 +10,7 @@ deploy_infrastructure: true
 deploy_networking: true
 deploy_wifi_access_point: true
 
-deploy_media_stack: false
+deploy_media_stack: true
 # ---
 deploy_file_management: false
 deploy_ai_stack: false

@@ -15,8 +15,13 @@ services:
       - "{{ media_dir }}:/data/media"
     ports:
       - "{{ jellyfin_port }}:8096"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyfin.rule=Host(`jellyfin.{{ domain_name }}`)"
+      - "traefik.http.routers.jellyfin.entrypoints=web"
+      - "traefik.http.services.jellyfin.loadbalancer.server.port=8096"
 
   sonarr:
     image: linuxserver/sonarr:latest
@@ -195,9 +200,15 @@ services:
     environment:
       ABR_APP__PORT: 5432
       ABR_APP__OPENAPI_ENABLED: true
+    networks: [proxy]
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.audiobookrequest.rule=Host(`audiobookrequest.{{ domain_name }}`)"
+      - "traefik.http.routers.audiobookrequest.entrypoints=web"
+      - "traefik.http.services.audiobookrequest.loadbalancer.server.port=80"
 
-
-  # Fixed Jellystat configuration
+# Fixed Jellystat configuration
   jellystat:
     image: cyfershepard/jellystat:latest
     container_name: jellystat
