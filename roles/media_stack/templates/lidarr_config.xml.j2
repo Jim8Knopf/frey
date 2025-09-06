@@ -1,0 +1,54 @@
+<Config>
+  <Port>{{ lidarr_port }}</Port>
+  <UrlBase></UrlBase>
+  <BindAddress>0.0.0.0</BindAddress>
+  <LogLevel>Info</LogLevel>
+  <AuthenticationMethod>Forms</AuthenticationMethod>
+  <UpdateMechanism>Docker</UpdateMechanism>
+  <AnalyticsEnabled>False</AnalyticsEnabled>
+  <LogRotations>10</LogRotations>
+  <EnableSsl>False</EnableSsl>
+  <SslPort>8686</SslPort>
+  <SslCertPath></SslCertPath>
+  <SslCertPassword></SslCertPassword>
+  <Branch>master</Branch>
+  <LaunchBrowser>False</LaunchBrowser>
+  <ApiKey>{{ lidarr_api_key }}</ApiKey>
+  <AuthenticationRequired>Enabled</AuthenticationRequired>
+  <Username>{{ lidarr_username }}</Username>
+  <Password>{{ lidarr_password }}</Password>
+  <CalendarSyncTime>60</CalendarSyncTime>
+  <ProxyEnabled>False</ProxyEnabled>
+  <ProxyType>Http</ProxyType>
+  <ProxyBypassFilter></ProxyBypassFilter>
+  <ProxyHostname></ProxyHostname>
+  <ProxyPort>80</ProxyPort>
+  <ProxyUsername></ProxyUsername>
+  <ProxyPassword></ProxyPassword>
+  <DownloadClient>
+    <Type>qBittorrent</Type>
+    <Name>qBittorrent</Name>
+    <Host>qbittorrent</Host>
+    <Port>{{ qbittorrent_port }}</Port>
+    <Username>admin</Username>
+    <Password>{{ default_qbittorrent_password }}</Password>
+    <Category>music</Category>
+    <Priority>0</Priority>
+    <EnableCompletedDownloadHandling>True</EnableCompletedDownloadHandling>
+    <CompletedDownloadHandlingPath></CompletedDownloadHandlingPath>
+    <RemoveCompletedDownloads>False</RemoveCompletedDownloads>
+    <UseSsl>False</UseSsl>
+    <VerifySsl>False</VerifySsl>
+    <UrlBase></UrlBase>
+  </DownloadClient>
+  <Indexer>
+    <Type>Prowlarr</Type>
+    <Name>Prowlarr</Name>
+    <Host>prowlarr</Host>
+    <Port>{{ prowlarr_port }}</Port>
+    <ApiKey>{{ prowlarr_api_key }}</ApiKey>
+    <UseSsl>False</UseSsl>
+    <VerifySsl>False</VerifySsl>
+    <UrlBase></UrlBase>
+  </Indexer>
+</Config>

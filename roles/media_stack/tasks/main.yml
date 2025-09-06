@@ -18,6 +18,38 @@
     - jellystat-db
     - jellystat
 
+- name: Template Sonarr config.xml
+  ansible.builtin.template:
+    src: sonarr_config.xml.j2
+    dest: "{{ appdata_dir }}/sonarr/config.xml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Template Radarr config.xml
+  ansible.builtin.template:
+    src: radarr_config.xml.j2
+    dest: "{{ appdata_dir }}/radarr/config.xml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Template Prowlarr config.xml
+  ansible.builtin.template:
+    src: prowlarr_config.xml.j2
+    dest: "{{ appdata_dir }}/prowlarr/config.xml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
+- name: Template Lidarr config.xml
+  ansible.builtin.template:
+    src: lidarr_config.xml.j2
+    dest: "{{ appdata_dir }}/lidarr/config.xml"
+    owner: "{{ media_user }}"
+    group: "{{ media_user }}"
+    mode: '0644'
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2

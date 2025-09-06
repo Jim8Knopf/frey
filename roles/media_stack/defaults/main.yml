@@ -1,2 +1,14 @@
 ---
 # media_stack default variables
+
+sonarr_username: "sonarr_user"
+sonarr_password: "sonarr_pass_change_me"
+
+radarr_username: "radarr_user"
+radarr_password: "radarr_pass_change_me"
+
+prowlarr_username: "prowlarr_user"
+prowlarr_password: "prowlarr_pass_change_me"
+
+lidarr_username: "lidarr_user"
+lidarr_password: "lidarr_pass_change_me"
