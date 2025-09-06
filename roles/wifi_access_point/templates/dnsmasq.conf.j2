@@ -1,8 +1,9 @@
 # DHCP server configuration for WiFi AP
 # Basic settings
 bind-interfaces
-interface={{ wifi_ap_interface }}
 listen-address={{ wifi_ap_ip }}
+interface={{ wifi_ap_interface }}
+except-interface=lo
 
 # Process settings
 user=root
@@ -18,6 +19,7 @@ server=8.8.4.4
 # DNS options
 domain-needed
 bogus-priv
+local-ttl=120
 
 # DHCP range and lease time
 dhcp-range={{ wifi_ap_dhcp_range_start }},{{ wifi_ap_dhcp_range_end }},255.255.255.0,24h
@@ -32,3 +34,6 @@ log-dhcp
 local=/frey/
 domain=frey
 expand-hosts
+{% for service in dns_rewrites %}
+address=/{{ service.name }}.{{ domain_name }}/{{ ansible_host }}
+{% endfor %}

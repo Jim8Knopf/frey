@@ -67,7 +67,8 @@ This is a list of potential improvements and next steps to make the project more
 [WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
 [DEPRECATION WARNING]: community.general.yaml has been deprecated. The plugin has been superseded by the the option `result_format=yaml` in callback plugin ansible.builtin.default from ansible-core 2.13 onwards. This feature will be removed from collection 'community.general' version 12.0.0.
 ```
-
+- [ ] add cockpit
+- [ ] umlautarr
 
 
 ❌ Security vulnerabilities (hardcoded passwords)

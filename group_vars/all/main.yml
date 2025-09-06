@@ -175,8 +175,8 @@ firewall_tcp_ports: "{{
   (deploy_ai_stack | ternary([ollama_port, openwebui_port], [])) +
   (deploy_photo_management | ternary([immich_port], [])) +
   (deploy_homeassistant | ternary([homeassistant_port], [])) +
-  (deploy_monitoring | ternary([grafana_port, prometheus_port, uptime_kuma_port], [])) +
-  (deploy_networking | ternary([adguardhome_port, speedtest_port], [])) +
+  (deploy_monitoring | ternary([grafana_port, prometheus_port, uptime_kuma_port, speedtest_port], [])) +
+  (deploy_networking | ternary([adguardhome_port], [])) +
   (deploy_file_management | ternary([filebrowser_port, code_server_port], [])) +
   (deploy_cookbook | ternary([cookbook_port], [])) +
   (deploy_piper | ternary([piper_port], []))

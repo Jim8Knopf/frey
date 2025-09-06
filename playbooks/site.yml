@@ -41,9 +41,7 @@
       tags: [infrastructure, management]
       when: deploy_infrastructure
     
-    - role: networking
-      tags: [networking]
-      when: deploy_networking
+    
 
     - role: wifi_access_point
       tags: [wifi, networking]
@@ -118,8 +116,7 @@
           1. Change all default passwords!
           2. Configure your media indexers in Prowlarr
           3. Set up monitoring dashboards in Grafana
-          4. Configure your router to use AdGuard Home DNS
-          5. Access Dockge for easy container management
+          4. Access Dockge for easy container management
           
           📖 Happy self-hosting! 🏠✨
       tags: always
