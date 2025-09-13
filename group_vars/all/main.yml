@@ -104,7 +104,13 @@ wifi_ap_dhcp_range_start: "192.168.4.10"
 wifi_ap_dhcp_range_end: "192.168.4.50"
 wifi_ap_interface: "wlan1"  # Secondary WiFi interface for AP
 wifi_client_interface: "wlan0"  # Primary WiFi interface for internet
-
+wifi_ap_network: "192.168.4.0/24"
+wifi_ap_hw_mode: g
+wifi_ap_macaddr_acl: 0
+wifi_ap_auth_algs: 1
+wifi_ap_ignore_broadcast_ssid: 0
+wifi_ap_ieee80211n: 1
+wifi_ap_wmm_enabled: 1
 
 # ==============================================================================
 # SERVICE PORTS

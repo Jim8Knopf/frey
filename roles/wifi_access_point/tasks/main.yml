@@ -163,6 +163,17 @@
     state: started
     enabled: yes
 
+- name: Create dnsmasq run directory
+  ansible.builtin.file:
+    path: /var/run/dnsmasq
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Flush handlers to apply network changes
+  meta: flush_handlers
+
 - name: Wait for the AP interface to have an IP address
   ansible.builtin.command: ip addr show {{ wifi_ap_interface }}
   register: ip_addr_output

@@ -1,6 +1,6 @@
 # DHCP server configuration for WiFi AP
 # Basic settings
-bind-interfaces
+bind-dynamic
 listen-address={{ wifi_ap_ip }}
 interface={{ wifi_ap_interface }}
 except-interface=lo
@@ -25,6 +25,7 @@ local-ttl=120
 dhcp-range={{ wifi_ap_dhcp_range_start }},{{ wifi_ap_dhcp_range_end }},255.255.255.0,24h
 dhcp-option=option:router,{{ wifi_ap_ip }}
 dhcp-option=option:dns-server,{{ wifi_ap_ip }}
+dhcp-authoritative
 
 # Logging
 log-queries
