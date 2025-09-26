@@ -15,12 +15,12 @@ import zipfile
 import shutil
 
 # --- Configuration (from Ansible) ---
-WAKE_WORD = "{{ voice_assistant_wake_word }}"
-OLLAMA_MODEL = "{{ voice_assistant_ollama_model }}"
-PIPER_URL = "http://localhost:{{ piper_port }}/"
-PIPER_VOICE = "{{ voice_assistant_piper_voice }}"
-PORCUPINE_ACCESS_KEY = "{{ porcupine_access_key }}"
-VOSK_MODEL_PATH = "{{ appdata_dir }}/vosk-model"
+WAKE_WORD = "{{ voice_assistant.wake_word }}"
+OLLAMA_MODEL = "{{ voice_assistant.ollama_model }}"
+PIPER_URL = "http://localhost:{{ ports.voice_assistant.piper }}/"
+PIPER_VOICE = "{{ voice_assistant.piper_voice }}"
+PORCUPINE_ACCESS_KEY = "{{ voice_assistant.porcupine_access_key }}"
+VOSK_MODEL_PATH = "{{ storage.appdata_dir }}/vosk-model"
 VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 VOSK_MODEL_NAME = "vosk-model-small-en-us-0.15"
 

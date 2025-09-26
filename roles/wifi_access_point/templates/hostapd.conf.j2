@@ -3,28 +3,28 @@ ctrl_interface=/var/run/hostapd
 ctrl_interface_group=0
 
 # Interface configuration
-interface={{ wifi_ap_interface }}
+interface={{ wifi.interface }}
 driver=nl80211
 
 # Basic WiFi settings
-ssid={{ wifi_ap_ssid }}
-country_code={{ wifi_ap_country }}
-hw_mode={{ wifi_ap_hw_mode }}
-channel={{ wifi_ap_channel | default(6) }}
+ssid={{ wifi.ssid }}
+country_code={{ wifi.country }}
+hw_mode={{ wifi.hw_mode }}
+channel={{ wifi.channel | default(6) }}
 
 # Security settings
-macaddr_acl={{ wifi_ap_macaddr_acl }}
-auth_algs={{ wifi_ap_auth_algs }}
-ignore_broadcast_ssid={{ wifi_ap_ignore_broadcast_ssid }}
+macaddr_acl={{ wifi.macaddr_acl }}
+auth_algs={{ wifi.auth_algs }}
+ignore_broadcast_ssid={{ wifi.ignore_broadcast_ssid }}
 wpa=2
-wpa_passphrase={{ wifi_ap_password }}
+wpa_passphrase={{ wifi.password }}
 wpa_key_mgmt=WPA-PSK
 wpa_pairwise=CCMP
 rsn_pairwise=CCMP
 
 # Performance features
-ieee80211n={{ wifi_ap_ieee80211n }}
-wmm_enabled={{ wifi_ap_wmm_enabled }}
+ieee80211n={{ wifi.ieee80211n }}
+wmm_enabled={{ wifi.wmm_enabled }}
 
 # No AP isolation
 ap_isolate=0

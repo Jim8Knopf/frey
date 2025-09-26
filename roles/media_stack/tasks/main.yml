@@ -185,10 +185,10 @@
     method: GET
     status_code: [200, 302, 401]  # 401 is OK for services that need auth
   loop:
-    - { service: "jellyfin", port: "{{ jellyfin_port }}" }
-    - { service: "sonarr", port: "{{ sonarr_port }}" }
-    - { service: "radarr", port: "{{ radarr_port }}" }
-    - { service: "prowlarr", port: "{{ prowlarr_port }}" }
+    - { service: "jellyfin", port: "{{ media_stack.jellyfin.port }}" }
+    - { service: "sonarr", port: "{{ media_stack.sonarr.port }}" }
+    - { service: "radarr", port: "{{ media_stack.radarr.port }}" }
+    - { service: "prowlarr", port: "{{ media_stack.prowlarr.port }}" }
   register: service_health_check
   retries: 3
   delay: 15

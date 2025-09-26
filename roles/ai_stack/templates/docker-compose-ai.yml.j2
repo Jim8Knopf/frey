@@ -9,7 +9,7 @@ services:
       - /dev/dri
     restart: unless-stopped
     ports:
-      - "{{ ollama_port }}:11434"
+      - "{{ (ports.ai_stack.ollama | default(11434)) }}:11434"
     volumes:
       - "{{ appdata_dir }}/ollama:/root/.ollama"
 
@@ -18,7 +18,7 @@ services:
     container_name: open-webui
     restart: unless-stopped
     ports:
-      - "{{ openwebui_port }}:8080"
+      - "{{ (ports.ai_stack.openwebui | default(8080)) }}:8080"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
     depends_on:

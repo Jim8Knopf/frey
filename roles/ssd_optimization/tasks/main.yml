@@ -6,13 +6,29 @@
     state: started
   when: enable_trim
 
-- name: Configure SSD-friendly mount options in /etc/fstab
-  ansible.builtin.replace:
-    path: /etc/fstab
-    regexp: '^(UUID=\S+\s+/\s+ext4\s+)defaults(\s+.*)$'
-    replace: '\1defaults,noatime,discard\2'
-  notify: remount root
-  when: enable_ssd_optimization
+- name: Enable fstrim.timer
+  ansible.builtin.systemd:
+    name: fstrim.timer
+    state: started
+    enabled: true
+  when: optimization.ssd.trim
+
+- name: Configure noatime for SSD mounts
+  ansible.builtin.mount:
+    path: "{{ item.mount_point }}"
+    fstype: "{{ item.fstype }}"
+    opts: "{{ item.options + ',noatime' if 'noatime' not in item.options else item.options }}"
+    state: mounted
+  loop: "{{ ansible_mounts | selectattr('device', 'match', '/dev/sd[a-z][1-9]') | list }}" # Adjust regex for your SSDs
+  when: optimization.ssd.enable
+
+- name: Configure swappiness for SSDs
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: '10'
+    state: present
+    reload: true
+  when: optimization.ssd.enable
 
 - name: Reduce swappiness for SSD performance
   ansible.posix.sysctl:

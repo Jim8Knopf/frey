@@ -1,2 +1,14 @@
 ---
 # directories default variables
+
+# Preferred base dir variable; falls back to storage.base_dir if present
+base_dir: "{{ storage.base_dir | default('/opt/frey') }}"
+media_dir: "{{ storage.media_dir | default(base_dir + '/media') }}"
+appdata_dir: "{{ storage.appdata_dir | default(base_dir + '/appdata') }}"
+downloads_dir: "{{ storage.downloads_dir | default(base_dir + '/downloads') }}"
+photos_dir: "{{ storage.photos_dir | default(media_dir + '/photos') }}"
+ai_dir: "{{ storage.ai_dir | default(base_dir + '/ai') }}"
+backups_dir: "{{ storage.backups_dir | default(base_dir + '/backups') }}"
+logs_dir: "{{ storage.logs_dir | default(base_dir + '/logs') }}"
+stacks_dir: "{{ storage.stacks_dir | default(base_dir + '/stacks') }}"
+media_user: "{{ user.name | default('media') }}"

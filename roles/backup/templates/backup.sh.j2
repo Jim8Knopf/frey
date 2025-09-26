@@ -9,7 +9,7 @@ set -euo pipefail
 BACKUP_SRC_DIR1="{{ appdata_dir }}"
 BACKUP_SRC_DIR2="{{ stacks_dir }}"
 BACKUP_DST_DIR="{{ backups_dir }}"
-RETENTION_DAYS={{ backup_retention_days }}
+RETENTION_DAYS={{ automation.backup_retention_days | default(7) }}
 BASE_DIR="{{ base_dir }}"
 
 # --- Script Logic ---

@@ -7,6 +7,9 @@
     - ../group_vars/all/main.yml
     - ../group_vars/all/secrets.yml
 
+  vars:
+    features: "{{ features | default({}) }}"
+
   pre_tasks:
     - name: Update package cache
       apt:
@@ -20,16 +23,103 @@
           🚀 Starting Pi 5 Hub deployment
           Target: {{ ansible_host }}
           User: {{ ansible_user_id }}
-          Services: {% if deploy_media_stack %}Media, {% endif %}{% if deploy_ai_stack %}AI, {% endif %}{% if deploy_monitoring %}Monitoring, {% endif %}{% if deploy_photo_management %}Photos{% endif %}
+                Services: {% if features.media_stack %}Media, {% endif %}{% if features.ai_stack %}AI, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
+    - name: "Security"
+      ansible.builtin.debug:
+        msg: "Security pre-task: UFW or Fail2Ban enabled."
+      when: security.ufw.enable or security.fail2ban.enable
+    - name: "SSD Optimization"
+      ansible.builtin.debug:
+        msg: "SSD Optimization pre-task enabled."
+      when: optimization.ssd.enable
+    - name: "Base Directories"
+      ansible.builtin.debug:
+        msg: "Base Directories pre-task."
+      tags: [directories]
+
+- name: "Setup Core Infrastructure"
+  hosts: frey
+  become: true
+  tasks:
+    - name: Include Docker role if infrastructure enabled
+      import_role:
+        name: geerlingguy.docker
+      when: features is defined and features.infrastructure
+
+- name: "Setup WiFi Access Point"
+  hosts: frey
+  become: true
+  roles:
+    - role: wifi_access_point
+      when: features is defined and features.wifi_access_point
+
+- name: "Deploy Services"
+  hosts: frey
+  become: true
+  roles:
+    - role: monitoring
+      when: features is defined and features.monitoring
+    - role: media_stack
+      when: features is defined and features.media_stack
+    - role: ai_stack
+      when: features is defined and features.ai_stack
+    - role: photo_management
+      when: features is defined and features.photo_management
+    - role: file_management
+      when: features is defined and features.file_management
+    - role: cookbook
+      when: features is defined and features.cookbook
+    - role: piper
+      when: features is defined and features.piper
+    - role: voice_assistant
+      when: features is defined and features.voice_assistant
+    - role: backup
+      when: features is defined and features.backup
+    - role: power_management
+      when: features is defined and features.power_monitoring
+
+- name: "Finalize Setup"
+  hosts: frey
+  become: true
+  tasks:
+    - name: Create Maintenance Scripts Readme
+      ansible.builtin.template:
+        src: README_MAINTENANCE.sh.j2
+        dest: "{{ storage.base_dir | default('/opt/frey') }}/README_MAINTENANCE.sh"
+        owner: root
+        group: root
+        mode: '0755'
+      vars:
+        health_check_urls: >
+          {{ [
+            'http://traefik.' ~ (network.domain_name | default('local')),
+            'http://portainer.' ~ (network.domain_name | default('local')),
+            'http://dockge.' ~ (network.domain_name | default('local'))
+          ] + (network.dns_rewrites | default([])) | map('extract', attribute='name') | map('regex_replace', '^(.*)$', 'http://\\1.' ~ (network.domain_name | default('local'))) | list }}
+
+    - name: Display Maintenance Information
+      ansible.builtin.debug:
+        msg: |
+          =============================================================================
+          Frey Ansible Deployment Complete!
+          =============================================================================
+          - Traefik Dashboard: http://traefik.{{ network.domain_name | default('local') }}
+          - Portainer:         http://portainer.{{ network.domain_name | default('local') }}
+          - Dockge:            http://dockge.{{ network.domain_name | default('local') }}
+
+          For maintenance scripts, see the generated file:
+          echo "Health Check:    sudo {{ (storage.base_dir | default('/opt/frey')) }}/scripts/health_check.sh"
+          echo "Maintenance:     sudo {{ (storage.base_dir | default('/opt/frey')) }}/scripts/maintenance.sh"
+          echo "Optimization:    sudo {{ (storage.base_dir | default('/opt/frey')) }}/scripts/optimize.sh"
 
   roles:    
     - role: security
       tags: [security]
-      when: enable_ufw or enable_fail2ban
+      when: (enable_ufw | default(false)) or (enable_fail2ban | default(false))
 
     - role: ssd_optimization
       tags: [ssd, optimization]
-      when: enable_ssd_optimization
+      when: enable_ssd_optimization | default(false)
     
     - role: geerlingguy.docker
       tags: [docker, base]
@@ -39,62 +129,62 @@
     
     - role: infrastructure
       tags: [infrastructure, management]
-      when: deploy_infrastructure
+      when: features is defined and features.infrastructure
     
     
 
     - role: wifi_access_point
       tags: [wifi, networking]
-      when: deploy_wifi_access_point
+      when: features is defined and features.wifi_access_point
     
     - role: dockge
       tags: [dockge, management]
     
     - role: monitoring
       tags: [monitoring]
-      when: deploy_monitoring
+      when: features is defined and features.monitoring
 
     - role: media_stack
       tags: [media]
-      when: deploy_media_stack
+      when: features is defined and features.media_stack
 
     - role: ai_stack
       tags: [ai]
-      when: deploy_ai_stack
+      when: features is defined and features.ai_stack
 
     - role: photo_management
       tags: [photos]
-      when: deploy_photo_management
+      when: features is defined and features.photo_management
 
     - role: file_management
       tags: [files]
-      when: deploy_file_management
+      when: features is defined and features.file_management
     
     - role: cookbook
       tags: [cookbook, services]
-      when: deploy_cookbook
+      when: features is defined and features.cookbook
     
     - role: piper
       tags: [piper, voice, ai]
-      when: deploy_piper
+      when: features is defined and features.piper
 
     - role: voice_assistant
       tags: [voice, ai]
-      when: deploy_voice_assistant
+      when: features is defined and features.voice_assistant
 
     - role: backup
       tags: [backup]
-      when: deploy_backup
+      when: features is defined and features.backup
     
     - role: power_management
       tags: [power]
-      when: enable_power_monitoring
+      when: enable_power_monitoring | default(false)
 
   post_tasks:
     - name: Copy maintenance scripts to target
       copy:
         src: ../scripts/
-        dest: "{{ base_dir }}/scripts/"
+        dest: "{{ storage.base_dir | default('/opt/frey') }}/scripts/"
         mode: '0755'
       tags: always
 
@@ -103,14 +193,14 @@
         msg: |
           
           🎯 DEPLOYMENT COMPLETED! Your services are available at:
-          {% for service in dns_rewrites %}
-          - http://{{ service.name }}.{{ domain_name }}
+          {% for service in (network.dns_rewrites | default([])) %}
+          - http://{{ service.name }}.{{ network.domain_name | default('local') }}
           {% endfor %}
           
           🔑 DEFAULT CREDENTIALS (CHANGE IMMEDIATELY!):
-          qBittorrent:     admin / {{ media.qbittorrent.default_password }}
-          Grafana:         admin / {{ monitoring.grafana.default_password }}
-          Code Server:     Password: {{ media.code_server.default_password }}
+          qBittorrent:     admin / {{ (media.qbittorrent.default_password | default('changeme')) }}
+          Grafana:         admin / {{ (monitoring.grafana.default_password | default('changeme')) }}
+          Code Server:     Password: {{ (media.code_server.default_password | default('changeme')) }}
           
           ⚡ NEXT STEPS:
           1. Change all default passwords!
@@ -126,9 +216,9 @@
         content: |
           #!/bin/bash
           echo "🔧 Maintenance Scripts Available:"
-          echo "Health Check:    sudo {{ base_dir }}/scripts/health_check.sh"
-          echo "Maintenance:     sudo {{ base_dir }}/scripts/maintenance.sh"  
-          echo "Optimization:    sudo {{ base_dir }}/scripts/optimize.sh"
+          echo "Health Check:    sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/health_check.sh"
+          echo "Maintenance:     sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/maintenance.sh"  
+          echo "Optimization:    sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/optimize.sh"
         dest: "{{ base_dir }}/README_MAINTENANCE.sh"
         mode: '0755'
       tags: always
