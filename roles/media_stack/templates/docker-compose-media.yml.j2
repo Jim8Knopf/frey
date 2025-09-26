@@ -214,11 +214,11 @@ services:
       - TZ={{ timezone }}
       # Required environment variables for Jellystat
       - POSTGRES_USER=jellystat
-      - POSTGRES_PASSWORD={{ default_postgres_password }}
+      - POSTGRES_PASSWORD={{ postgres.default_password }}
       - POSTGRES_IP=jellystat-db
       - POSTGRES_PORT=5432
       - POSTGRES_DATABASE=jfstat
-      - JWT_SECRET={{ tandoor_secret_key }}  # Reusing existing secret
+      - JWT_SECRET={{ media.tandoor.secret_key }}  # Reusing existing secret
     volumes:
       - "{{ appdata_dir }}/jellystat:/app/backend/backup-data"
     ports:
@@ -240,7 +240,7 @@ services:
     environment:
       - POSTGRES_DB=jfstat
       - POSTGRES_USER=jellystat
-      - POSTGRES_PASSWORD={{ default_postgres_password }}
+      - POSTGRES_PASSWORD={{ postgres.default_password }}
     volumes:
       - "{{ appdata_dir }}/jellystat-db:/var/lib/postgresql/data"
     networks: [proxy]
