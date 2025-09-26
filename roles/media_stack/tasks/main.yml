@@ -18,6 +18,70 @@
     - jellystat-db
     - jellystat
 
+- name: Ensure Sonarr appdata directory exists
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/sonarr"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: '0775'
+
+- name: Ensure Radarr appdata directory exists
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/radarr"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: '0775'
+
+- name: Ensure Prowlarr appdata directory exists
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/prowlarr"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: '0775'
+
+- name: Ensure Lidarr appdata directory exists
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/lidarr"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: '0775'
+
+#- name: Template Sonarr config.xml
+#  ansible.builtin.template:
+#    src: sonarr_config.xml.j2
+#    dest: "{{ appdata_dir }}/sonarr/config.xml"
+#    owner: "{{ media_user }}"
+#    group: "{{ media_user }}"
+#    mode: '0644'
+#
+#- name: Template Radarr config.xml
+#  ansible.builtin.template:
+#    src: radarr_config.xml.j2
+#    dest: "{{ appdata_dir }}/radarr/config.xml"
+#    owner: "{{ media_user }}"
+#    group: "{{ media_user }}"
+#    mode: '0644'
+#
+#- name: Template Prowlarr config.xml
+#  ansible.builtin.template:
+#    src: prowlarr_config.xml.j2
+#    dest: "{{ appdata_dir }}/prowlarr/config.xml"
+#    owner: "{{ media_user }}"
+#    group: "{{ media_user }}"
+#    mode: '0644'
+#
+#- name: Template Lidarr config.xml
+#  ansible.builtin.template:
+#    src: lidarr_config.xml.j2
+#    dest: "{{ appdata_dir }}/lidarr/config.xml"
+#    owner: "{{ media_user }}"
+#    group: "{{ media_user }}"
+#    mode: '0644'
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2
@@ -138,3 +202,17 @@
   when: service_health_check.results is defined
   loop_control:
     label: "{{ item.item.service }}"
+
+- name: Ensure all *arr appdata files and directories are owned by UID 1000 and writable
+  ansible.builtin.file:
+    path: "{{ appdata_dir }}/{{ item }}"
+    state: directory
+    recurse: yes
+    owner: "1000"
+    group: "1000"
+    mode: '0775'
+  loop:
+    - sonarr
+    - radarr
+    - prowlarr
+    - lidarr

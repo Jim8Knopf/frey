@@ -15,7 +15,7 @@ services:
       - "{{ media_dir }}:/data/media"
     ports:
       - "{{ jellyfin_port }}:8096"
-    networks: [frey-net]
+    networks: [proxy]
     restart: unless-stopped
 
   sonarr:
@@ -195,9 +195,16 @@ services:
     environment:
       ABR_APP__PORT: 5432
       ABR_APP__OPENAPI_ENABLED: true
+    networks: [proxy]
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.audiobookrequest.rule=Host(`audiobookrequest.{{ domain_name }}`)"
+      - "traefik.http.routers.audiobookrequest.entrypoints=web"
+      - "traefik.http.services.audiobookrequest.loadbalancer.server.port=80"
 
 
-  # Fixed Jellystat configuration
+# Fixed Jellystat configuration
   jellystat:
     image: cyfershepard/jellystat:latest
     container_name: jellystat
@@ -207,11 +214,11 @@ services:
       - TZ={{ timezone }}
       # Required environment variables for Jellystat
       - POSTGRES_USER=jellystat
-      - POSTGRES_PASSWORD={{ default_postgres_password }}
+      - POSTGRES_PASSWORD={{ postgres.default_password }}
       - POSTGRES_IP=jellystat-db
       - POSTGRES_PORT=5432
       - POSTGRES_DATABASE=jfstat
-      - JWT_SECRET={{ tandoor_secret_key }}  # Reusing existing secret
+      - JWT_SECRET={{ media.tandoor.secret_key }}  # Reusing existing secret
     volumes:
       - "{{ appdata_dir }}/jellystat:/app/backend/backup-data"
     ports:
@@ -233,7 +240,7 @@ services:
     environment:
       - POSTGRES_DB=jfstat
       - POSTGRES_USER=jellystat
-      - POSTGRES_PASSWORD={{ default_postgres_password }}
+      - POSTGRES_PASSWORD={{ postgres.default_password }}
     volumes:
       - "{{ appdata_dir }}/jellystat-db:/var/lib/postgresql/data"
     networks: [proxy]
