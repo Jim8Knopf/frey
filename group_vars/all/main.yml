@@ -2,230 +2,243 @@
 # ================================
 # FEATURE TOGGLES
 # ================================
-# Services to deploy (set to false to skip)
-# These toggles control which roles are executed. The separation into roles
-# allows for a modular and maintainable setup.
+features:
+  infrastructure: true
+  networking: true
+  wifi_access_point: true
+  media_stack: true
+  file_management: false
+  ai_stack: false
+  photo_management: false
+  homeassistant: false
+  monitoring: false
+  backup: false
+  piper: false
+  cookbook: false
+  power_monitoring: false
 
-deploy_infrastructure: true
-deploy_networking: true
-deploy_wifi_access_point: true
+# (No deploy_* compatibility mappings here — use `features.*` toggles)
 
-deploy_media_stack: true
-# ---
-deploy_file_management: false
-deploy_ai_stack: false
-deploy_photo_management: false
-deploy_homeassistant: false
-deploy_monitoring: false
-deploy_backup: false
-deploy_piper: false
-deploy_cookbook: false
-enable_power_monitoring: false # checks something else
-
+# ================================
 # USER CONFIGURATION
 # ================================
-media_user: media
-media_uid: 1000
-media_gid: 1000
+user:
+  name: media
+  uid: 1000
+  gid: 1000
 
 # ================================
 # DOCKER CONFIGURATION
 # ================================
-docker_users: [ "{{ media_user }}" ]
+docker:
+  users: [ "{{ user.name }}" ]
 
 # ================================
 # STORAGE PATHS
 # ================================
-base_dir: /opt/frey
-media_dir: "{{ base_dir }}/media"
-appdata_dir: "{{ base_dir }}/appdata"
-downloads_dir: "{{ base_dir }}/downloads"
-photos_dir: "{{ base_dir }}/photos"
-ai_dir: "{{ base_dir }}/ai"
-backups_dir: "{{ base_dir }}/backups"
-logs_dir: "{{ base_dir }}/logs"
-stacks_dir: "{{ base_dir }}/stacks"  # For Dockge
+storage:
+  base_dir: /opt/frey
+  media_dir: "{{ storage.base_dir }}/media"
+  appdata_dir: "{{ storage.base_dir }}/appdata"
+  downloads_dir: "{{ storage.base_dir }}/downloads"
+  photos_dir: "{{ storage.base_dir }}/photos"
+  ai_dir: "{{ storage.base_dir }}/ai"
+  backups_dir: "{{ storage.base_dir }}/backups"
+  logs_dir: "{{ storage.base_dir }}/logs"
+  stacks_dir: "{{ storage.base_dir }}/stacks"  # For Dockge
 
 # ==============================================================================
 # ROLE: INFRASTRUCTURE & NETWORKING
 # ==============================================================================
-# These settings configure the core networking services.
-# 'infrastructure' role: Deploys the Traefik reverse proxy.
-# 'networking' role: Deploys network tools like AdGuard Home DNS.
-# ==============================================================================
-domain_name: frey
-timezone: Australia/Hobart
-
-# DNS Rewrites for AdGuard Home
-# This will make services available at http://<service>.<domain_name>
-dns_rewrites:
-  - name: jellyfin
-  - name: sonarr
-  - name: radarr
-  - name: bazarr
-  - name: audiobookshelf
-  - name: qbittorrent
-  - name: prowlarr
-  - name: dockge
-  - name: portainer
-  - name: grafana
-  - name: uptime-kuma
-  - name: traefik
-  - name: immich
-  - name: cookbook
-  - name: jellyseerr
-  - name: lidarr
-  - name: jellystat
-
-# Configure a macvlan network to bind services to a specific physical interface.
-# This makes containers appear as separate devices on your secondary network.
-enable_macvlan: false
-macvlan_physical_interface: "wlan0" # IMPORTANT: Change to your secondary interface name (e.g., wlan1)
-macvlan_network_name: "macvlan_net"
-macvlan_subnet: "192.168.1.0/24" # IMPORTANT: Change to the subnet of your secondary network
-macvlan_gateway: "192.168.1.1"   # IMPORTANT: Change to the gateway of your secondary network
-macvlan_ip_range: "192.168.1.200/28" # Optional: A small range of IPs for Docker to assign from
+network:
+  domain_name: frey
+  timezone: Australia/Hobart
+  dns_rewrites:
+    - name: jellyfin
+    - name: sonarr
+    - name: radarr
+    - name: bazarr
+    - name: audiobookshelf
+    - name: qbittorrent
+    - name: prowlarr
+    - name: dockge
+    - name: portainer
+    - name: grafana
+    - name: uptime-kuma
+    - name: traefik
+    - name: immich
+    - name: cookbook
+    - name: jellyseerr
+    - name: lidarr
+    - name: jellystat
+  macvlan:
+    enable: false
+    physical_interface: "wlan0"
+    network_name: "macvlan_net"
+    subnet: "192.168.1.0/24"
+    gateway: "192.168.1.1"
+    ip_range: "192.168.1.200/28"
 
 # ==============================================================================
 # ROLE: WIFI_ACCESS_POINT
 # ==============================================================================
-# These settings configure the host to act as a WiFi Access Point.
-# This role modifies host-level networking and is kept separate from the
-# Docker-based networking services for clarity and modularity.
-# ==============================================================================
-wifi_ap_ssid: "FreyHub"
-wifi_ap_password: "YourSecurePassword" # CHANGE THIS! Must be 8-63 characters.
-wifi_ap_channel: 7
-wifi_ap_country: "AU"
-
-# Interface and IP configuration for the Access Point
-wifi_ap_ip: "192.168.4.1"
-wifi_ap_dhcp_range_start: "192.168.4.10"
-wifi_ap_dhcp_range_end: "192.168.4.50"
-wifi_ap_interface: "wlan1"  # Secondary WiFi interface for AP
-wifi_client_interface: "wlan0"  # Primary WiFi interface for internet
-wifi_ap_network: "192.168.4.0/24"
-wifi_ap_hw_mode: g
-wifi_ap_macaddr_acl: 0
-wifi_ap_auth_algs: 1
-wifi_ap_ignore_broadcast_ssid: 0
-wifi_ap_ieee80211n: 1
-wifi_ap_wmm_enabled: 1
+wifi:
+  ssid: "FreyHub"
+  password: "YourSecurePassword"
+  channel: 7
+  country: "AU"
+  ip: "192.168.4.1"
+  dhcp_range_start: "192.168.4.10"
+  dhcp_range_end: "192.168.4.50"
+  interface: "wlan1"
+  client_interface: "wlan0"
+  network: "192.168.4.0/24"
+  hw_mode: g
+  macaddr_acl: 0
+  auth_algs: 1
+  ignore_broadcast_ssid: 0
+  ieee80211n: 1
+  wmm_enabled: 1
 
 # ==============================================================================
 # SERVICE PORTS
 # ==============================================================================
-# Media Stack
-jellyfin_port: 8096
-sonarr_port: 8989
-radarr_port: 7878
-qbittorrent_port: 8080
-prowlarr_port: 9696
-audiobookshelf_port: 13378
-audiobookrequest_port: 5432
-bazarr_port: 6767
-jellyseerr_port: 5055
-lidarr_port: 8686
-jellystat_port: 8086
+ports:
+  ai_stack:
+    ollama: 11434
+    openwebui: 3000
+  photos_home:
+    immich: 2283
+    homeassistant: 8123
+  infrastructure:
+    traefik: 80
+    traefik_dashboard: 8081
+    portainer: 9000
+    dockge: 5001
+  monitoring:
+    grafana: 3001
+    prometheus: 9090
+    node_exporter: 9100
+    cadvisor: 8082
+    loki: 3100
+    promtail: 9080
+    uptime_kuma: 3002
+  file_management:
+    filebrowser: 8083
+    code_server: 8084
+  network_tools:
+    speedtest: 8085
+    adguardhome: 3053
+  cookbook:
+    cookbook: 8090
+  voice_assistant:
+    piper: 10200
 
-# AI Stack
-ollama_port: 11434
-openwebui_port: 3000
-
-# Photos & Home
-immich_port: 2283
-homeassistant_port: 8123
-
-# Infrastructure
-traefik_port: 80
-traefik_dashboard_port: 8081
-portainer_port: 9000
-dockge_port: 5001
-
-# Monitoring
-grafana_port: 3001
-prometheus_port: 9090
-node_exporter_port: 9100
-cadvisor_port: 8082
-loki_port: 3100
-promtail_port: 9080
-uptime_kuma_port: 3002
-
-# File Management
-filebrowser_port: 8083
-code_server_port: 8084
-
-# Network Tools
-speedtest_port: 8085
-adguardhome_port: 3053
-
-# Cookbook
-cookbook_port: 8090
-
-# Voice Assistant
-piper_port: 10200
+# ==============================================================================
+# MEDIA STACK
+# ==============================================================================
+media_stack:
+  media_uid: "{{ user.uid }}"
+  media_gid: "{{ user.gid }}"
+  timezone: "{{ network.timezone }}"
+  appdata_dir: "{{ storage.appdata_dir }}"
+  media_dir: "{{ storage.media_dir }}"
+  downloads_dir: "{{ storage.downloads_dir }}"
+  domain_name: "{{ network.domain_name }}"
+  jellyfin:
+    port: 8096
+  sonarr:
+    port: 8989
+    user: "sonarr_user"
+    password: "sonarr_pass_change_me"
+  radarr:
+    port: 7878
+    user: "radarr_user"
+    password: "radarr_pass_change_me"
+  prowlarr:
+    port: 9696
+    user: "prowlarr_user"
+    password: "prowlarr_pass_change_me"
+  qbittorrent:
+    port: 8080
+  bazarr:
+    port: 6767
+  lidarr:
+    port: 8686
+    user: "lidarr_user"
+    password: "lidarr_pass_change_me"
+  jellyseerr:
+    port: 5055
+  audiobookshelf:
+    port: 13378
+  audiobookrequest:
+    port: 5432
+  jellystat:
+    port: 8086
+  postgres:
+    default_password: "change_me"
+  tandoor:
+    secret_key: "change_me"
 
 # ==============================================================================
 # SECURITY SETTINGS
 # ==============================================================================
-enable_fail2ban: true
-enable_ufw: true
-ssh_port: 22
-
-# Dynamically generated list of TCP ports to open in the firewall based on feature toggles.
-# This centralizes the logic and makes the security role cleaner.
-firewall_tcp_ports: "{{
-  [ssh_port, dockge_port] +
-  (deploy_infrastructure | ternary([traefik_port, traefik_dashboard_port, portainer_port], [])) +
-  (deploy_media_stack | ternary([jellyfin_port, sonarr_port, radarr_port, bazarr_port, audiobookshelf_port, qbittorrent_port, prowlarr_port, jellyseerr_port, lidarr_port, jellystat_port], [])) +
-  (deploy_ai_stack | ternary([ollama_port, openwebui_port], [])) +
-  (deploy_photo_management | ternary([immich_port], [])) +
-  (deploy_homeassistant | ternary([homeassistant_port], [])) +
-  (deploy_monitoring | ternary([grafana_port, prometheus_port, uptime_kuma_port, speedtest_port], [])) +
-  (deploy_networking | ternary([adguardhome_port], [])) +
-  (deploy_file_management | ternary([filebrowser_port, code_server_port], [])) +
-  (deploy_cookbook | ternary([cookbook_port], [])) +
-  (deploy_piper | ternary([piper_port], []))
-  }}"
-
+security:
+  fail2ban:
+    enable: true
+  ufw:
+    enable: true
+  ssh_port: 22
+  firewall_tcp_ports: "{{
+    [security.ssh_port, ports.infrastructure.dockge] +
+    (features.infrastructure | ternary([ports.infrastructure.traefik, ports.infrastructure.traefik_dashboard, ports.infrastructure.portainer], [])) +
+    (features.media_stack | ternary([media_stack.jellyfin.port, media_stack.sonarr.port, media_stack.radarr.port, media_stack.bazarr.port, media_stack.audiobookshelf.port, media_stack.qbittorrent.port, media_stack.prowlarr.port, media_stack.jellyseerr.port, media_stack.lidarr.port, media_stack.jellystat.port], [])) +
+    (features.ai_stack | ternary([ports.ai_stack.ollama, ports.ai_stack.openwebui], [])) +
+    (features.photo_management | ternary([ports.photos_home.immich], [])) +
+    (features.homeassistant | ternary([ports.photos_home.homeassistant], [])) +
+    (features.monitoring | ternary([ports.monitoring.grafana, ports.monitoring.prometheus, ports.monitoring.uptime_kuma, ports.network_tools.speedtest], [])) +
+    (features.networking | ternary([ports.network_tools.adguardhome], [])) +
+    (features.file_management | ternary([ports.file_management.filebrowser, ports.file_management.code_server], [])) +
+    (features.cookbook | ternary([ports.cookbook.cookbook], [])) +
+    (features.voice_assistant | ternary([ports.voice_assistant.piper], []))
+    }}"
 
 # ==============================================================================
 # OPTIMIZATION SETTINGS
 # ==============================================================================
-# SSD Optimization
-enable_ssd_optimization: false
-enable_trim: true
-
-# German Content Support
-german_locale: de_DE.UTF-8
-enable_german_indexers: true
+optimization:
+  ssd:
+    enable: false
+    trim: true
+  german_content:
+    locale: de_DE.UTF-8
+    enable_indexers: true
 
 # ==============================================================================
 # POWER MANAGEMENT (12V setup)
 # ==============================================================================
-low_power_threshold: 11.8  # Volts
-critical_power_threshold: 11.0  # Volts
-enable_graceful_shutdown: false
+power:
+  low_threshold: 11.8
+  critical_threshold: 11.0
+  enable_graceful_shutdown: false
 
 # ================================
 # AUTOMATION SETTINGS
 # ================================
-watchtower_interval: 86400  # 24 hours
-backup_retention_days: 7
-
+automation:
+  watchtower_interval: 86400
+  backup_retention_days: 7
 
 # ================================
 # VOICE ASSISTANT
 # ================================
-deploy_voice_assistant: false
-voice_assistant_wake_word: "frey"          # e.g., "computer", "alexa", "jarvis"
-porcupine_access_key: "YOUR_PICOVOICE_ACCESS_KEY" # Get a free key from https://console.picovoice.ai/
-voice_assistant_ollama_model: "llama3:latest"  # The Ollama model to use
-# The default voice the assistant should use for responses. Must be one of the voices loaded below.
-voice_assistant_piper_voice: "en_US-lessac-medium"
-# List of voices to load into the Piper TTS service.
-# Find more here: https://rhasspy.github.io/piper-samples/
-piper_voices:
-  - "en_US-lessac-medium"   # US English
-  - "en_AU-southern-female" # Australian English
-  - "de_DE-thorsten-medium" # German
+voice_assistant:
+  deploy: false
+  wake_word: "frey"
+  porcupine_access_key: "YOUR_PICOVOICE_ACCESS_KEY"
+  ollama_model: "llama3:latest"
+  piper_voice: "en_US-lessac-medium"
+  piper_voices:
+    - "en_US-lessac-medium"
+    - "en_AU-southern-female"
+    - "de_DE-thorsten-medium"

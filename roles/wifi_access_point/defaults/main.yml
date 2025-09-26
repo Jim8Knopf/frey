@@ -1,25 +1,19 @@
 ---
-# Default variables for wifi_access_point role
+# defaults file for wifi_access_point
 
-# Interface configuration
-wifi_ap_interface: wlan0
-wifi_ap_country: GB  # Set your country code
-wifi_ap_channel: 6   # WiFi channel (1-11 for most countries)
-
-# Network configuration
-wifi_ap_ip: "192.168.4.1"
-wifi_ap_network: "192.168.4.0/24"
-wifi_ap_dhcp_range_start: "192.168.4.50"
-wifi_ap_dhcp_range_end: "192.168.4.150"
-
-# WiFi network settings
-wifi_ap_ssid: "FreyNetwork"  # Override this in your inventory variables
-wifi_ap_password: "ChangeMe123!"  # Override this in your inventory variables
-
-# Advanced settings (optional)
-wifi_ap_hw_mode: "g"  # Can be 'g' for 2.4GHz or 'a' for 5GHz
-wifi_ap_ieee80211n: 1  # Enable 802.11n
-wifi_ap_wmm_enabled: 1  # Enable QoS
-wifi_ap_macaddr_acl: 0  # No MAC address filtering
-wifi_ap_auth_algs: 1  # 1=WPA, 2=WEP, 3=both
-wifi_ap_ignore_broadcast_ssid: 0  # Do not hide SSID
+wifi:
+  interface: wlan0
+  country: GB
+  channel: 6
+  ip: "192.168.4.1"
+  network: "192.168.4.0/24"
+  dhcp_range_start: "192.168.4.50"
+  dhcp_range_end: "192.168.4.150"
+  ssid: "FreyNetwork"
+  password: "ChangeMe123!"
+  hw_mode: "g"
+  ieee80211n: 1
+  wmm_enabled: 1
+  macaddr_acl: 0
+  auth_algs: 1
+  ignore_broadcast_ssid: 0

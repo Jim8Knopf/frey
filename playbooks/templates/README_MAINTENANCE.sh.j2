@@ -1,0 +1,26 @@
+#!/bin/bash
+# Generated maintenance README for Frey deployment
+echo "Frey Maintenance and Health Check"
+echo "================================="
+
+{% if health_check_urls is defined and health_check_urls | length > 0 %}
+echo "Health check URLs:"
+{% for url in health_check_urls %}
+echo "- {{ url }}"
+{% endfor %}
+{% else %}
+echo "No health check URLs defined."
+{% endif %}
+
+echo
+echo "Scripts"
+echo "-------"
+echo "Health Check:    sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/health_check.sh"
+echo "Maintenance:     sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/maintenance.sh"
+echo "Optimization:    sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/optimize.sh"
+
+echo
+echo "Visit your services at:"
+{% for service in (network.dns_rewrites | default([])) %}
+echo "- http://{{ service.name }}.{{ network.domain_name | default('local') }}"
+{% endfor %}

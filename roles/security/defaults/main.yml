@@ -1,2 +1,10 @@
 ---
 # security default variables
+enable_ufw: false
+enable_fail2ban: false
+
+# default firewall ports
+firewall_tcp_ports:
+  - 22
+  - 80
+  - 443

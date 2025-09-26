@@ -4,9 +4,10 @@ services:
     container_name: traefik
     restart: unless-stopped
     ports:
-      - "{{ traefik_port }}:80"
+      - "{{ (ports.infrastructure.traefik | default(80)) }}:80"
       - "443:443" # For future HTTPS
-      - "{{ traefik_dashboard_port }}:8080"
+  # Traefik dashboard is exposed internally on port 8080 and routed via Traefik rules.
+  # Avoid publishing the dashboard to the host to prevent port collisions on busy hosts.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - "{{ appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
@@ -15,7 +16,7 @@ services:
       - proxy
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name }}`)"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.traefik.entrypoints=web"
       - "traefik.http.services.traefik.loadbalancer.server.port=8080"
 
@@ -25,7 +26,7 @@ services:
     container_name: portainer
     restart: unless-stopped
     ports:
-      - "{{ portainer_port }}:9000"
+      - "{{ (ports.infrastructure.portainer | default(9000)) }}:9000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{ appdata_dir }}/portainer/data:/data"
@@ -33,7 +34,7 @@ services:
       - proxy
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.portainer.rule=Host(`portainer.{{ domain_name }}`)"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.portainer.entrypoints=web"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 

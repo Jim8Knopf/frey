@@ -21,3 +21,4 @@
   community.docker.docker_compose_v2:
     project_src: "{{ stacks_dir }}/dockge"
     state: present
+  when: not ansible_check_mode

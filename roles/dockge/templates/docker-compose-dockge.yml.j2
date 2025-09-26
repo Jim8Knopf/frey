@@ -6,7 +6,7 @@ services:
     container_name: dockge
     restart: unless-stopped
     ports:
-      - "{{ dockge_port }}:5001"
+      - "{{ (ports.infrastructure.dockge | default(5001)) }}:5001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{ appdata_dir }}/dockge:/app/data"
@@ -15,7 +15,7 @@ services:
       - DOCKGE_STACKS_DIR=/opt/stacks
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.dockge.rule=Host(`dockge.{{ domain_name }}`)"
+      - "traefik.http.routers.dockge.rule=Host(`dockge.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.dockge.entrypoints=web"
       - "traefik.http.services.dockge.loadbalancer.server.port=5001"
 
