@@ -16,6 +16,4 @@ scrape_configs:
       - targets: ['cadvisor:8080']
 
   - job_name: 'docker-containers'
-    docker_sd_configs:
-      - host: unix:///var/run/docker.sock
-        refresh_interval: 5s
+    # docker service discovery removed to avoid needing access to the host docker socket

@@ -1,3 +1,4 @@
----
 # monitoring default variables
+# This role uses central dot-notation variables from group_vars (e.g. ports.monitoring.*, storage.*, media_stack.*)
+# Keep only minimal role-local fallbacks here.
 speedtest_tracker_port: 8787

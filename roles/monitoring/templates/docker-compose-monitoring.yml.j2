@@ -1,15 +1,15 @@
-version: '3.8'
-
 services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
     restart: unless-stopped
+    user: "0"
     ports:
-      - "{{ prometheus_port }}:9090"
+      - "{{ ports.monitoring.prometheus }}:9090"
     volumes:
-      - "{{ appdata_dir }}/prometheus:/etc/prometheus"
-      - "{{ appdata_dir }}/prometheus/data:/prometheus"
+      - "{{ storage.appdata_dir }}/prometheus:/etc/prometheus"
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - "{{ storage.appdata_dir }}/prometheus/data:/prometheus"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -24,7 +24,7 @@ services:
     container_name: node-exporter
     restart: unless-stopped
     ports:
-      - "{{ node_exporter_port }}:9100"
+      - "{{ ports.monitoring.node_exporter }}:9100"
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
@@ -40,7 +40,7 @@ services:
     container_name: cadvisor
     restart: unless-stopped
     ports:
-      - "{{ cadvisor_port }}:8080"
+      - "{{ ports.monitoring.cadvisor }}:8080"
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
@@ -56,41 +56,41 @@ services:
     container_name: grafana
     restart: unless-stopped
     ports:
-      - "{{ grafana_port }}:3000"
+      - "{{ ports.monitoring.grafana }}:3000"
     volumes:
-      - "{{ appdata_dir }}/grafana:/var/lib/grafana"
-      - "{{ appdata_dir }}/grafana/provisioning:/etc/grafana/provisioning"
+      - "{{ storage.appdata_dir }}/grafana:/var/lib/grafana"
+      - "{{ storage.appdata_dir }}/grafana/provisioning:/etc/grafana/provisioning"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD={{ default_grafana_password | default('admin123') }}
+      - GF_SECURITY_ADMIN_PASSWORD={{ monitoring.grafana.default_password | default('admin123') }}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`grafana.{{ domain_name }}`)"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.{{ network.domain_name | default('local') }}`)"
       - "traefik.http.routers.grafana.entrypoints=web"
-      - "traefik.http.services.grafana.loadbalancer.server.port={{ grafana_port }}"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
     networks:
       - default
-      - infrastructure_network
+      - proxy
 
   loki:
     image: grafana/loki:latest
     container_name: loki
     restart: unless-stopped
     ports:
-      - "{{ loki_port }}:3100"
+      - "{{ ports.monitoring.loki }}:3100"
     volumes:
-      - "{{ appdata_dir }}/loki:/loki"
-    command: -config.file=/etc/loki/local-config.yaml
+      - "{{ storage.appdata_dir }}/loki:/loki"
+    # Loki will read /etc/loki/local-config.yaml if present; we also mount storage at /loki for indexes
 
   promtail:
     image: grafana/promtail:latest
     container_name: promtail
     restart: unless-stopped
     volumes:
-      - "{{ logs_dir }}:/var/log:ro"
+      - "{{ storage.logs_dir }}:/var/log:ro"
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - "{{ appdata_dir }}/promtail:/etc/promtail"
+      - "{{ storage.appdata_dir }}/promtail:/etc/promtail"
     command: -config.file=/etc/promtail/config.yml
 
   uptime-kuma:
@@ -98,9 +98,9 @@ services:
     container_name: uptime-kuma
     restart: unless-stopped
     ports:
-      - "{{ uptime_kuma_port }}:3001"
+      - "{{ ports.monitoring.uptime_kuma }}:3001"
     volumes:
-      - "{{ appdata_dir }}/uptime-kuma:/app/data"
+      - "{{ storage.appdata_dir }}/uptime-kuma:/app/data"
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   watchtower:
@@ -111,7 +111,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_POLL_INTERVAL={{ watchtower_interval }}
+      - WATCHTOWER_POLL_INTERVAL={{ automation.watchtower_interval }}
       - WATCHTOWER_INCLUDE_RESTARTING=true
     command: --schedule "0 0 2 * * *"  # 2 AM daily
 
@@ -119,14 +119,14 @@ services:
     image: lscr.io/linuxserver/speedtest-tracker:latest
     container_name: speedtest-tracker
     environment:
-      - PUID={{ media_uid }}
-      - PGID={{ media_gid }}
-      - TZ={{ timezone }}
+      - PUID={{ media_stack.media_uid | default(user.uid | default(1000)) }}
+      - PGID={{ media_stack.media_gid | default(user.gid | default(1000)) }}
+      - TZ={{ network.timezone | default('UTC') }}
       - OOKLA_EULA_GDPR=true
     volumes:
-      - '{{ appdata_dir }}/speedtest:/config'
+      - '{{ storage.appdata_dir }}/speedtest:/config'
     ports:
-      - '{{ speedtest_port }}:80'
+      - '{{ ports.network_tools.speedtest }}:80'
     restart: unless-stopped
     networks:
       - default

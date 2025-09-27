@@ -1,0 +1,48 @@
+# roles/media_stack/templates/service_connections.yml.j2
+# Generated service connection information for manual reference
+
+media_services:
+  network:
+    name: {{ media_stack.network.name }}
+    subnet: {{ media_stack.network.subnet }}
+    
+  internal_addresses:
+{% for service_name, service_config in media_stack.services.items() %}
+    {{ service_name }}:
+      ip: {{ service_config.internal_ip }}
+      port: {{ service_config.port }}
+      url: http://{{ service_config.internal_ip }}:{{ service_config.port }}
+      container: {{ service_config.container_name }}
+{% if service_config.api_key is defined %}
+      api_key: "{{ service_config.api_key }}"
+{% endif %}
+{% endfor %}
+
+# Connection examples for manual configuration
+configuration_examples:
+  prowlarr_to_sonarr:
+    url: {{ media_stack.internal_urls.sonarr }}
+    api_key: {{ media_stack.services.sonarr.api_key }}
+    
+  prowlarr_to_radarr:
+    url: {{ media_stack.internal_urls.radarr }}
+    api_key: {{ media_stack.services.radarr.api_key }}
+    
+  qbittorrent_connection:
+    host: {{ media_stack.services.qbittorrent.internal_ip }}
+    port: {{ media_stack.services.qbittorrent.port }}
+    username: admin
+    # Password stored in Ansible vault
+    
+  jellyfin_libraries:
+    movies: /data/media/movies
+    tv: /data/media/tv
+    music: /data/media/music
+    audiobooks: /data/media/audiobooks
+
+# Download client categories (auto-created by qBittorrent)
+download_categories:
+  sonarr: "{{ media_stack.downloads_dir }}/complete/sonarr/"
+  radarr: "{{ media_stack.downloads_dir }}/complete/radarr/"
+  lidarr: "{{ media_stack.downloads_dir }}/complete/lidarr/"
+  manual: "{{ media_stack.downloads_dir }}/complete/manual/"

@@ -14,7 +14,7 @@ services:
       - "{{ media_stack.appdata_dir }}/jellyfin:/config"
       - "{{ media_stack.media_dir }}:/data/media"
     ports:
-      - "{{ media_stack.jellyfin.port }}:8096"
+      - "{{ media_stack.services.jellyfin.port }}:8096"
     networks: [proxy]
     restart: unless-stopped
 
@@ -30,7 +30,7 @@ services:
       - "{{ media_stack.downloads_dir }}:/downloads"
       - "{{ media_stack.media_dir }}/tv:/tv"
     ports:
-      - "{{ media_stack.sonarr.port }}:8989"
+      - "{{ media_stack.services.sonarr.port }}:8989"
     networks: [proxy]
     restart: unless-stopped
     labels:
@@ -51,7 +51,7 @@ services:
       - "{{ media_stack.downloads_dir }}:/downloads"
       - "{{ media_stack.media_dir }}/movies:/movies"
     ports:
-      - "{{ media_stack.radarr.port }}:7878"
+      - "{{ media_stack.services.radarr.port }}:7878"
     networks: [proxy]
     restart: unless-stopped
     labels:
@@ -70,7 +70,7 @@ services:
     volumes:
       - "{{ media_stack.appdata_dir }}/prowlarr:/config"
     ports:
-      - "{{ media_stack.prowlarr.port }}:9696"
+      - "{{ media_stack.services.prowlarr.port }}:9696"
     networks: [proxy]
     restart: unless-stopped
     labels:
@@ -86,12 +86,12 @@ services:
       - PUID={{ media_stack.media_uid }}
       - PGID={{ media_stack.media_gid }}
       - TZ={{ media_stack.timezone }}
-      - WEBUI_PORT={{ media_stack.qbittorrent.port }}
+      - WEBUI_PORT={{ media_stack.services.qbittorrent.port }}
     volumes:
       - "{{ media_stack.appdata_dir }}/qbittorrent:/config"
       - "{{ media_stack.downloads_dir }}:/downloads"
     ports:
-      - "{{ media_stack.qbittorrent.port }}:{{ media_stack.qbittorrent.port }}"
+      - "{{ media_stack.services.qbittorrent.port }}:{{ media_stack.services.qbittorrent.port }}"
       - "6881:6881"
       - "6881:6881/udp"
     networks: [proxy]
@@ -100,7 +100,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.qbittorrent.rule=Host(`qbittorrent.{{ media_stack.domain_name }}`)"
       - "traefik.http.routers.qbittorrent.entrypoints=web"
-      - "traefik.http.services.qbittorrent.loadbalancer.server.port={{ media_stack.qbittorrent.port }}"
+      - "traefik.http.services.qbittorrent.loadbalancer.server.port={{ media_stack.services.qbittorrent.port }}"
 
   bazarr:
     image: linuxserver/bazarr:latest
@@ -114,7 +114,7 @@ services:
       - "{{ media_stack.media_dir }}/movies:/movies"
       - "{{ media_stack.media_dir }}/tv:/tv"
     ports:
-      - "{{ media_stack.bazarr.port }}:6767"
+      - "{{ media_stack.services.bazarr.port }}:6767"
     networks: [proxy]
     restart: unless-stopped
     labels:
@@ -135,7 +135,7 @@ services:
       - "{{ media_stack.downloads_dir }}:/downloads"
       - "{{ media_stack.media_dir }}/music:/music"
     ports:
-      - "{{ media_stack.lidarr.port }}:8686"
+      - "{{ media_stack.services.lidarr.port }}:8686"
     networks: [proxy]
     restart: unless-stopped
     labels:
@@ -155,7 +155,7 @@ services:
     volumes:
       - "{{ media_stack.appdata_dir }}/jellyseerr:/app/config"
     ports:
-      - "{{ media_stack.jellyseerr.port }}:5055"
+      - "{{ media_stack.services.jellyseerr.port }}:5055"
     networks: [proxy]
     restart: unless-stopped
     labels:
@@ -177,7 +177,7 @@ services:
       - "{{ media_stack.media_dir }}/audiobooks:/audiobooks"
       - "{{ media_stack.media_dir }}/podcasts:/podcasts"
     ports:
-      - "{{ media_stack.audiobookshelf.port }}:80"
+      - "{{ media_stack.services.audiobookshelf.port }}:80"
     networks: [proxy]
     restart: unless-stopped
     labels:
@@ -189,7 +189,7 @@ services:
   audiobookrequest:
     image: markbeep/audiobookrequest:latest
     ports:
-      - "{{ media_stack.audiobookrequest.port }}:5432"
+      - "{{ media_stack.services.audiobookrequest.port }}:5432"
     volumes:
       - ./config:/config
     environment:
@@ -209,20 +209,19 @@ services:
     image: cyfershepard/jellystat:latest
     container_name: jellystat
     environment:
-      - PUID={{ media_stack.media_uid }}
-      - PGID={{ media_stack.media_gid }}
-      - TZ={{ media_stack.timezone }}
-      # Required environment variables for Jellystat
-      - POSTGRES_USER=jellystat
-      - POSTGRES_PASSWORD={{ media_stack.postgres.default_password }}
-      - POSTGRES_IP=jellystat-db
-      - POSTGRES_PORT=5432
-      - POSTGRES_DATABASE=jfstat
-      - JWT_SECRET={{ media_stack.tandoor.secret_key }}  # Reusing existing secret
+      PUID: {{ media_stack.media_uid }}
+      PGID: {{ media_stack.media_gid }}
+      TZ: {{ media_stack.timezone }}
+      POSTGRES_USER: jellystat
+      POSTGRES_PASSWORD: {{ (vault.media.jellystat.postgres_password | default(vault.media.jellystat.default_password | default('changeme'))) if (vault is defined and vault.media is defined and vault.media.jellystat is defined) else 'changeme' }}
+      POSTGRES_IP: jellystat-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DATABASE: jfstat
+      JWT_SECRET: {{ (media_stack.tandoor.secret_key) if (media_stack is defined and media_stack.tandoor is defined and media_stack.tandoor.secret_key is defined) else (vault.media.jellystat.jwt_secret if (vault is defined and vault.media is defined and vault.media.jellystat is defined and vault.media.jellystat.jwt_secret is defined) else 'changeme_jwt') }}
     volumes:
       - "{{ media_stack.appdata_dir }}/jellystat:/app/backend/backup-data"
     ports:
-      - "{{ media_stack.jellystat.port }}:3000"
+      - "{{ media_stack.services.jellystat.port }}:3000"
     networks: [proxy]
     restart: unless-stopped
     depends_on:
@@ -238,9 +237,9 @@ services:
     image: postgres:15-alpine
     container_name: jellystat-db
     environment:
-      - POSTGRES_DB=jfstat
-      - POSTGRES_USER=jellystat
-      - POSTGRES_PASSWORD={{ media_stack.postgres.default_password }}
+      POSTGRES_DB: jfstat
+      POSTGRES_USER: jellystat
+      POSTGRES_PASSWORD: {{ (vault.media.jellystat.postgres_password | default(vault.media.jellystat.default_password | default('changeme'))) if (vault is defined and vault.media is defined and vault.media.jellystat is defined) else 'changeme' }}
     volumes:
       - "{{ media_stack.appdata_dir }}/jellystat-db:/var/lib/postgresql/data"
     networks: [proxy]

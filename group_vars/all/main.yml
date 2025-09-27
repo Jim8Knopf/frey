@@ -7,15 +7,16 @@ features:
   networking: true
   wifi_access_point: true
   media_stack: true
+  monitoring: true
   file_management: false
   ai_stack: false
   photo_management: false
   homeassistant: false
-  monitoring: false
   backup: false
   piper: false
   cookbook: false
   power_monitoring: false
+  voice_assistant: false
 
 # (No deploy_* compatibility mappings here — use `features.*` toggles)
 
@@ -135,52 +136,6 @@ ports:
     piper: 10200
 
 # ==============================================================================
-# MEDIA STACK
-# ==============================================================================
-media_stack:
-  media_uid: "{{ user.uid }}"
-  media_gid: "{{ user.gid }}"
-  timezone: "{{ network.timezone }}"
-  appdata_dir: "{{ storage.appdata_dir }}"
-  media_dir: "{{ storage.media_dir }}"
-  downloads_dir: "{{ storage.downloads_dir }}"
-  domain_name: "{{ network.domain_name }}"
-  jellyfin:
-    port: 8096
-  sonarr:
-    port: 8989
-    user: "sonarr_user"
-    password: "sonarr_pass_change_me"
-  radarr:
-    port: 7878
-    user: "radarr_user"
-    password: "radarr_pass_change_me"
-  prowlarr:
-    port: 9696
-    user: "prowlarr_user"
-    password: "prowlarr_pass_change_me"
-  qbittorrent:
-    port: 8080
-  bazarr:
-    port: 6767
-  lidarr:
-    port: 8686
-    user: "lidarr_user"
-    password: "lidarr_pass_change_me"
-  jellyseerr:
-    port: 5055
-  audiobookshelf:
-    port: 13378
-  audiobookrequest:
-    port: 5432
-  jellystat:
-    port: 8086
-  postgres:
-    default_password: "change_me"
-  tandoor:
-    secret_key: "change_me"
-
-# ==============================================================================
 # SECURITY SETTINGS
 # ==============================================================================
 security:
@@ -192,7 +147,18 @@ security:
   firewall_tcp_ports: "{{
     [security.ssh_port, ports.infrastructure.dockge] +
     (features.infrastructure | ternary([ports.infrastructure.traefik, ports.infrastructure.traefik_dashboard, ports.infrastructure.portainer], [])) +
-    (features.media_stack | ternary([media_stack.jellyfin.port, media_stack.sonarr.port, media_stack.radarr.port, media_stack.bazarr.port, media_stack.audiobookshelf.port, media_stack.qbittorrent.port, media_stack.prowlarr.port, media_stack.jellyseerr.port, media_stack.lidarr.port, media_stack.jellystat.port], [])) +
+    (features.media_stack | ternary([
+      media_stack.services.jellyfin.port,
+      media_stack.services.sonarr.port,
+      media_stack.services.radarr.port,
+      media_stack.services.bazarr.port,
+      media_stack.services.audiobookshelf.port,
+      media_stack.services.qbittorrent.port,
+      media_stack.services.prowlarr.port,
+      media_stack.services.jellyseerr.port,
+      media_stack.services.lidarr.port,
+      media_stack.services.jellystat.port
+    ], [])) +
     (features.ai_stack | ternary([ports.ai_stack.ollama, ports.ai_stack.openwebui], [])) +
     (features.photo_management | ternary([ports.photos_home.immich], [])) +
     (features.homeassistant | ternary([ports.photos_home.homeassistant], [])) +
@@ -242,3 +208,97 @@ voice_assistant:
     - "en_US-lessac-medium"
     - "en_AU-southern-female"
     - "de_DE-thorsten-medium"
+
+# Add to group_vars/all/main.yml
+
+# ==============================================================================
+# MEDIA STACK - ENHANCED WITH INTERNAL NETWORKING
+# ==============================================================================
+media_stack:
+  media_uid: "{{ user.uid }}"
+  media_gid: "{{ user.gid }}"
+  timezone: "{{ network.timezone }}"
+  appdata_dir: "{{ storage.appdata_dir }}"
+  media_dir: "{{ storage.media_dir }}"
+  downloads_dir: "{{ storage.downloads_dir }}"
+  domain_name: "{{ network.domain_name }}"
+  
+  # Internal network configuration
+  network:
+    name: "media_network"
+    subnet: "172.20.0.0/24"
+    gateway: "172.20.0.1"
+  
+  # Services with internal IPs
+  services:
+    jellyfin:
+      port: 8096
+      internal_ip: "172.20.0.10"
+      container_name: "jellyfin"
+    
+    sonarr:
+      port: 8989
+      internal_ip: "172.20.0.20"
+      container_name: "sonarr"
+      api_key: "{{ vault.media.sonarr.api_key if vault is defined and vault.media is defined and vault.media.sonarr is defined else '' }}"
+      
+    radarr:
+      port: 7878
+      internal_ip: "172.20.0.21"
+      container_name: "radarr"
+      api_key: "{{ vault.media.radarr.api_key if vault is defined and vault.media is defined and vault.media.radarr is defined else '' }}"
+      
+    prowlarr:
+      port: 9696
+      internal_ip: "172.20.0.22"
+      container_name: "prowlarr"
+      api_key: "{{ vault.media.prowlarr.api_key if vault is defined and vault.media is defined and vault.media.prowlarr is defined else '' }}"
+      
+    qbittorrent:
+      port: 8080
+      internal_ip: "172.20.0.30"
+      container_name: "qbittorrent"
+      
+    bazarr:
+      port: 6767
+      internal_ip: "172.20.0.23"
+      container_name: "bazarr"
+      
+    lidarr:
+      port: 8686
+      internal_ip: "172.20.0.24"
+      container_name: "lidarr"
+      api_key: "{{ vault.media.lidarr.api_key if vault is defined and vault.media is defined and vault.media.lidarr is defined else '' }}"
+      
+    jellyseerr:
+      port: 5055
+      internal_ip: "172.20.0.40"
+      container_name: "jellyseerr"
+      
+    audiobookshelf:
+      port: 13378
+      internal_ip: "172.20.0.50"
+      container_name: "audiobookshelf"
+      
+    audiobookrequest:
+      port: 5432
+      internal_ip: "172.20.0.51"
+      container_name: "audiobookrequest"
+      
+    jellystat:
+      port: 8086
+      internal_ip: "172.20.0.60"
+      container_name: "jellystat"
+      
+    jellystat_db:
+      internal_ip: "172.20.0.61"
+      container_name: "jellystat-db"
+
+  # Service URLs for internal communication
+  internal_urls:
+    sonarr: "http://{{ media_stack.services.sonarr.internal_ip }}:{{ media_stack.services.sonarr.port }}"
+    radarr: "http://{{ media_stack.services.radarr.internal_ip }}:{{ media_stack.services.radarr.port }}"
+    prowlarr: "http://{{ media_stack.services.prowlarr.internal_ip }}:{{ media_stack.services.prowlarr.port }}"
+    qbittorrent: "http://{{ media_stack.services.qbittorrent.internal_ip }}:{{ media_stack.services.qbittorrent.port }}"
+    jellyfin: "http://{{ media_stack.services.jellyfin.internal_ip }}:{{ media_stack.services.jellyfin.port }}"
+    lidarr: "http://{{ media_stack.services.lidarr.internal_ip }}:{{ media_stack.services.lidarr.port }}"

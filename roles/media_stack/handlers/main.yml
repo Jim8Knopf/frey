@@ -1,2 +1,37 @@
----
-# media_stack handlers
+# roles/media_stack/handlers/main.yml
+
+- name: restart media stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks_dir }}/media"
+    state: present
+    restarted: true
+
+- name: restart qbittorrent
+  community.docker.docker_container:
+    name: "{{ media_stack.services.qbittorrent.container_name }}"
+    state: started
+    restart: true
+
+- name: restart sonarr
+  community.docker.docker_container:
+    name: "{{ media_stack.services.sonarr.container_name }}"
+    state: started
+    restart: true
+
+- name: restart radarr
+  community.docker.docker_container:
+    name: "{{ media_stack.services.radarr.container_name }}"
+    state: started
+    restart: true
+
+- name: restart prowlarr
+  community.docker.docker_container:
+    name: "{{ media_stack.services.prowlarr.container_name }}"
+    state: started
+    restart: true
+
+- name: restart lidarr
+  community.docker.docker_container:
+    name: "{{ media_stack.services.lidarr.container_name }}"
+    state: started
+    restart: true

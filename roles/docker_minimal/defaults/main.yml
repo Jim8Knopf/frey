@@ -1,0 +1,13 @@
+---
+# Minimal defaults for docker_minimal role
+docker_minimal_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin
+
+# Optional Docker daemon options (will be written to /etc/docker/daemon.json if non-empty)
+docker_minimal_daemon_options: {}
+
+# Which users to add to the docker group. By default, pick up `docker.users` if present.
+docker_minimal_docker_users: "{{ docker.users | default([]) }}"
