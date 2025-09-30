@@ -13,35 +13,32 @@
   ansible.builtin.file:
     path: "{{ storage.stacks_dir }}/media"
     state: directory
-    owner: "{{ user.name }}"
-    group: "{{ user.name }}"
+    owner: "{{ media_stack.media_uid }}"
+    group: "{{ media_stack.media_gid }}"
     mode: '0755'
 
-- name: Pre-pull critical images to avoid timeouts
+- name: Pre-pull all enabled media stack images
   community.docker.docker_image:
-    name: "{{ item }}"
+    name: "{{ item.image }}"
     source: pull
     state: present
     timeout: 300
-  loop:
-    - "linuxserver/jellyfin:latest"
-    - "linuxserver/sonarr:latest"
-    - "linuxserver/radarr:latest"
-    - "linuxserver/prowlarr:latest"
+  loop: "{{ media_stack.services.values() | selectattr('enabled', 'equalto', true) | list }}"
+  loop_control:
+    label: "{{ item.image }}"
   register: image_pull_results
   retries: 2
   delay: 10
   failed_when: false
 
+- name: Set failed pulls fact
+  ansible.builtin.set_fact:
+    failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item.image') | list }}"
+
 - name: Report failed image pulls
   ansible.builtin.debug:
-    msg: "Warning: Failed to pull {{ item.item }}. Will retry during compose."
-  loop: "{{ image_pull_results.results }}"
-  when: 
-    - item is failed
-    - image_pull_results.results is defined
-  loop_control:
-    label: "{{ item.item }}"
+    msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
+  when: failed_pulls | length > 0
 
 - name: Deploy media stack compose file
   ansible.builtin.template:
@@ -58,9 +55,11 @@
     nl -ba /opt/frey/stacks/media/docker-compose.yml
   register: compose_snippet
   changed_when: false
+  when: debug_enabled | default(false)
 
 - debug:
     var: compose_snippet.stdout_lines
+  when: debug_enabled | default(false)
 
 - name: Validate Docker Compose file syntax
   ansible.builtin.command:
@@ -99,27 +98,3 @@
       ansible.builtin.fail:
         msg: "Media stack deployment failed. Check the logs above and ensure all required directories exist."
 
-- name: Wait for services to be ready
-  ansible.builtin.uri:
-    url: "http://localhost:{{ item.port }}"
-    method: GET
-    status_code: [200, 302, 401, 403]
-    timeout: 10
-  loop:
-    - { service: "jellyfin", port: "{{ media_stack.services.jellyfin.port }}" }
-    - { service: "sonarr", port: "{{ media_stack.services.sonarr.port }}" }
-    - { service: "radarr", port: "{{ media_stack.services.radarr.port }}" }
-    - { service: "prowlarr", port: "{{ media_stack.services.prowlarr.port }}" }
-  register: service_health_check
-  retries: 6
-  delay: 10
-  failed_when: false
-
-- name: Report service health status
-  ansible.builtin.debug:
-    msg: |
-      Service Health Status:
-      {% for result in service_health_check.results %}
-      - {{ result.item.service }}: {{ 'HEALTHY' if result is succeeded else 'NOT READY' }}
-      {% endfor %}
-  when: service_health_check.results is defined

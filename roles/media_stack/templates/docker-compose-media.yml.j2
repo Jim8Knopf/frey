@@ -4,6 +4,8 @@ networks:
     ipam:
       config:
         - subnet: 172.39.0.0/24
+  proxy:
+    external: true
 
 services:
   {% if media_stack.vpn.enabled | default(false) -%}
@@ -68,6 +70,7 @@ services:
     networks:
       servarrnetwork:
         ipv4_address: 172.39.0.{{ 10 + loop.index0 }}
+      proxy: {}
 {% endif %}
 {% if service_name == 'qbittorrent' %}
     healthcheck:

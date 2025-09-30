@@ -13,6 +13,7 @@ services:
       - "{{ stacks_dir }}:/opt/stacks"
     environment:
       - DOCKGE_STACKS_DIR=/opt/stacks
+      - DOCKGE_ENABLE_CONSOLE=true
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dockge.rule=Host(`dockge.{{ domain_name | default(network.domain_name | default('local')) }}`)"

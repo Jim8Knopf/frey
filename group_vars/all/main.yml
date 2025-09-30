@@ -255,6 +255,39 @@ media_stack:
     port: 8888
 
   services:
+    jellyseerr:
+      enabled: true
+      image: "fallenbagel/jellyseerr:latest"
+      container_name: "jellyseerr"
+      port: 5055
+      internal_ip: "172.20.0.40"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/jellyseerr:/app/config"
+
+    audiobookshelf:
+      enabled: true
+      image: "ghcr.io/advplyr/audiobookshelf:latest"
+      container_name: "audiobookshelf"
+      port: 13378
+      ports: 
+        - 13378:80
+      internal_ip: "172.20.0.50"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/audiobookshelf:/config"
+        - "{{ media_stack.media_dir }}/audiobooks:/audiobooks"
+        - "{{ media_stack.media_dir }}/podcasts:/podcasts"
+
+    jellyfin:
+      enabled: true
+      image: "lscr.io/linuxserver/jellyfin:latest"
+      container_name: "jellyfin"
+      port: 8096
+      internal_ip: "172.20.0.10"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/jellyfin:/config"
+        - "{{ media_stack.media_dir }}/tv:/data/tvshows"
+        - "{{ media_stack.media_dir }}/movies:/data/movies"
+    
     qbittorrent:
       enabled: true
       image: "lscr.io/linuxserver/qbittorrent:latest"
@@ -286,17 +319,6 @@ media_stack:
         - /etc/localtime:/etc/localtime:ro
         - ./nzbget:/config                        # TODO
 
-    jellyfin:
-      enabled: true
-      image: "lscr.io/linuxserver/jellyfin:latest"
-      container_name: "jellyfin"
-      port: 8096
-      internal_ip: "172.20.0.10"
-      volumes:
-        - "{{ media_stack.appdata_dir }}/jellyfin:/config"
-        - "{{ media_stack.media_dir }}/tv:/data/tvshows"
-        - "{{ media_stack.media_dir }}/movies:/data/movies"
-    
     prowlarr:
       enabled: true
       image: "lscr.io/linuxserver/prowlarr:latest"
@@ -349,26 +371,18 @@ media_stack:
         - "{{ media_stack.appdata_dir }}/lidarr:/config"
         - "{{ media_stack.downloads_dir }}:/downloads"
         - "{{ media_stack.media_dir }}/music:/music"
-
-    jellyseerr:
+        
+    audiobookrequest:
       enabled: true
-      image: "fallenbagel/jellyseerr:latest"
-      container_name: "jellyseerr"
-      port: 5055
-      internal_ip: "172.20.0.40"
+      image: "markbeep/audiobookrequest:latest"
+      container_name: "audiobookrequest"
+      port: 5432
+      internal_ip: "172.20.0.32"
       volumes:
-        - "{{ media_stack.appdata_dir }}/jellyseerr:/app/config"
-
-    audiobookshelf:
-      enabled: false
-      image: "lscr.io/linuxserver/audiobookshelf:latest"
-      container_name: "audiobookshelf"
-      port: 13378
-      internal_ip: "172.20.0.50"
-      volumes:
-        - "{{ media_stack.appdata_dir }}/audiobookshelf:/config"
-        - "{{ media_stack.media_dir }}/audiobooks:/audiobooks"
-        - "{{ media_stack.media_dir }}/podcasts:/podcasts"
+        - ./config:/config
+      environment:
+        - "ABR_APP__PORT=5432"
+        - "ABR_APP__OPENAPI_ENABLED=true"
 
     jellystat:
       enabled: false
