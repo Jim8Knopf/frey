@@ -234,10 +234,8 @@ voice_assistant:
     - "en_AU-southern-female"
     - "de_DE-thorsten-medium"
 
-# Add to group_vars/all/main.yml
-
 # ==============================================================================
-# MEDIA STACK - ENHANCED WITH INTERNAL NETWORKING
+# MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
 # ==============================================================================
 media_stack:
   media_uid: "{{ user.uid }}"
@@ -246,100 +244,159 @@ media_stack:
   media_dir: "{{ storage.media_dir }}"
   downloads_dir: "{{ storage.downloads_dir }}"
   domain_name: "{{ network.domain_name }}"
-  
-  # Internal network configuration
+
   network:
     name: "media_network"
     subnet: "172.20.0.0/24"
     gateway: "172.20.0.1"
-  
+
   vpn:
     enabled: false
     port: 8888
-    service: airvpn
-    type: wireguard
-    inputPorts: port
-    country: "AU"
-    city: "Perth"
-    heathDuration: 120s
 
-  wireguard:
-    pubicKey: "your_public"
-    privatKey: "your_private"
-    presharedKey: "your_preshared"
-    addresses: "your_ip"
-  
-  # Services with internal IPs
   services:
+    qbittorrent:
+      enabled: true
+      image: "lscr.io/linuxserver/qbittorrent:latest"
+      container_name: "qbittorrent"
+      port: 8080
+      ports: 
+       - 8080:8080 # Web UI
+       - 6881:6881 # Torrent Port
+      internal_ip: "172.20.0.30"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/qbittorrent:/config"
+        - "{{ media_stack.downloads_dir }}:/downloads"
+      environment:
+        - "WEBUI_PORT=8080"
+        - "TORRENT_PORT=6881"
+        - TORRENTING_PORT={{ media_stack.vpn.port }} # airvpn forwarded port, pulled from .env
+
+
+    nzbget:
+      enabled: false
+      image: "lscr.io/linuxserver/nzbget:latest"
+      container_name: "nzbget"
+      port: 6789:6789
+      internal_ip: "172.20.0.31"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/nzbget:/config"
+        - "{{ media_stack.downloads_dir }}:/downloads"
+        - /data:/data
+        - /etc/localtime:/etc/localtime:ro
+        - ./nzbget:/config                        # TODO
+
     jellyfin:
+      enabled: true
+      image: "lscr.io/linuxserver/jellyfin:latest"
+      container_name: "jellyfin"
       port: 8096
       internal_ip: "172.20.0.10"
-      container_name: "jellyfin"
-      
-    jellyseerr:
-      port: 5055
-      internal_ip: "172.20.0.40"
-      container_name: "jellyseerr"
-      
-    audiobookshelf:
-      port: 13378
-      internal_ip: "172.20.0.50"
-      container_name: "audiobookshelf"
-      
-    audiobookrequest:
-      port: 5432
-      internal_ip: "172.20.0.51"
-      container_name: "audiobookrequest"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/jellyfin:/config"
+        - "{{ media_stack.media_dir }}/tv:/data/tvshows"
+        - "{{ media_stack.media_dir }}/movies:/data/movies"
     
-    sonarr:
-      port: 8989
-      internal_ip: "172.20.0.20"
-      container_name: "sonarr"
-      
-    radarr:
-      port: 7878
-      internal_ip: "172.20.0.21"
-      container_name: "radarr"
-      
     prowlarr:
+      enabled: true
+      image: "lscr.io/linuxserver/prowlarr:latest"
+      container_name: "prowlarr"
       port: 9696
       internal_ip: "172.20.0.22"
-      container_name: "prowlarr"
-      
+      volumes:
+        - "{{ media_stack.appdata_dir }}/prowlarr:/config"
+
+    sonarr:
+      enabled: true
+      image: "lscr.io/linuxserver/sonarr:latest"
+      container_name: "sonarr"
+      port: 8989
+      internal_ip: "172.20.0.20"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/sonarr:/config"
+        - "{{ media_stack.downloads_dir }}:/downloads"
+        - "{{ media_stack.media_dir }}/tv:/tv"
+
+    radarr:
+      enabled: true
+      image: "lscr.io/linuxserver/radarr:latest"
+      container_name: "radarr"
+      port: 7878
+      internal_ip: "172.20.0.21"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/radarr:/config"
+        - "{{ media_stack.downloads_dir }}:/downloads"
+        - "{{ media_stack.media_dir }}/movies:/movies"
+
     bazarr:
+      enabled: true
+      image: "lscr.io/linuxserver/bazarr:latest"
+      container_name: "bazarr"
       port: 6767
       internal_ip: "172.20.0.23"
-      container_name: "bazarr"
-      
+      volumes:
+        - "{{ media_stack.appdata_dir }}/bazarr:/config"
+        - "{{ media_stack.media_dir }}/movies:/movies"
+        - "{{ media_stack.media_dir }}/tv:/tv"
+
     lidarr:
+      enabled: true
+      image: "lscr.io/linuxserver/lidarr:latest"
+      container_name: "lidarr"
       port: 8686
       internal_ip: "172.20.0.24"
-      container_name: "lidarr"
-      
-    qbittorrent:
-      port: 8080
-      internal_ip: "172.20.0.30"
-      container_name: "qbittorrent"
-      
-    nzbget:
-      port: 6789
-      internal_ip: "172.20.0.31"
-      container_name: "nzbget"
-      
+      volumes:
+        - "{{ media_stack.appdata_dir }}/lidarr:/config"
+        - "{{ media_stack.downloads_dir }}:/downloads"
+        - "{{ media_stack.media_dir }}/music:/music"
+
+    jellyseerr:
+      enabled: true
+      image: "fallenbagel/jellyseerr:latest"
+      container_name: "jellyseerr"
+      port: 5055
+      internal_ip: "172.20.0.40"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/jellyseerr:/app/config"
+
+    audiobookshelf:
+      enabled: false
+      image: "lscr.io/linuxserver/audiobookshelf:latest"
+      container_name: "audiobookshelf"
+      port: 13378
+      internal_ip: "172.20.0.50"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/audiobookshelf:/config"
+        - "{{ media_stack.media_dir }}/audiobooks:/audiobooks"
+        - "{{ media_stack.media_dir }}/podcasts:/podcasts"
+
     jellystat:
+      enabled: false
+      image: "cyfershep/jellystat:latest"
+      container_name: "jellystat"
       port: 8086
       internal_ip: "172.20.0.60"
-      container_name: "jellystat"
-      
-    jellystat_db:
-      internal_ip: "172.20.0.61"
-      container_name: "jellystat-db"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/jellystat/config.json:/app/config/config.json"
 
-  # Service URLs for internal communication
-  internal_urls:
-    sonarr: "http://{{ media_stack.services.sonarr.internal_ip }}:{{ media_stack.services.sonarr.port }}"
-    radarr: "http://{{ media_stack.services.radarr.internal_ip }}:{{ media_stack.services.radarr.port }}"
-    prowlarr: "http://{{ media_stack.services.prowlarr.internal_ip }}:{{ media_stack.services.prowlarr.port }}"
-    qbittorrent: "http://{{ media_stack.services.qbittorrent.internal_ip }}:{{ media_stack.services.qbittorrent.port }}"
-    jellyfin: "http://{{ media_stack.services.jellyfin.internal_ip }}:{{ media_stack.services.jellyfin.port }}"
-    lidarr: "http://{{ media_stack.services.lidarr.internal_ip }}:{{ media_stack.services.lidarr.port }}"
+    jellystat_db:
+      enabled: false # Jellystat dependency
+      image: "postgres:15"
+      container_name: "jellystat-db"
+      internal_ip: "172.20.0.61"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
+      environment:
+        - "POSTGRES_DB=jellystat"
+        - "POSTGRES_USER=jellystat"
+        - "POSTGRES_PASSWORD=jellystat"
+
+    ytdl-sub:
+      enabled: false
+      image: "ghcr.io/jmbannon/ytdl-sub:latest"
+      container_name: "ytdl-sub"
+      internal_ip: "172.20.0.70"
+      volumes:
+        - "{{ media_stack.appdata_dir }}/ytdl-sub:/config"
+        - "{{ media_stack.downloads_dir }}:/downloads"
+
