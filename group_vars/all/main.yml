@@ -146,7 +146,11 @@ security:
   ssh_port: 22
   firewall_tcp_ports: "{{
     [security.ssh_port, ports.infrastructure.dockge] +
-    (features.infrastructure | ternary([ports.infrastructure.traefik, ports.infrastructure.traefik_dashboard, ports.infrastructure.portainer], [])) +
+    (features.infrastructure | ternary([
+      ports.infrastructure.traefik, 
+      ports.infrastructure.traefik_dashboard, 
+      ports.infrastructure.portainer
+    ], [])) +
     (features.media_stack | ternary([
       media_stack.services.jellyfin.port,
       media_stack.services.sonarr.port,
@@ -159,14 +163,35 @@ security:
       media_stack.services.lidarr.port,
       media_stack.services.jellystat.port
     ], [])) +
-    (features.ai_stack | ternary([ports.ai_stack.ollama, ports.ai_stack.openwebui], [])) +
-    (features.photo_management | ternary([ports.photos_home.immich], [])) +
-    (features.homeassistant | ternary([ports.photos_home.homeassistant], [])) +
-    (features.monitoring | ternary([ports.monitoring.grafana, ports.monitoring.prometheus, ports.monitoring.uptime_kuma, ports.network_tools.speedtest], [])) +
-    (features.networking | ternary([ports.network_tools.adguardhome], [])) +
-    (features.file_management | ternary([ports.file_management.filebrowser, ports.file_management.code_server], [])) +
-    (features.cookbook | ternary([ports.cookbook.cookbook], [])) +
-    (features.voice_assistant | ternary([ports.voice_assistant.piper], []))
+    (features.ai_stack | ternary([
+      ports.ai_stack.ollama, 
+      ports.ai_stack.openwebui
+    ], [])) +
+    (features.photo_management | ternary([
+      ports.photos_home.immich
+    ], [])) +
+    (features.homeassistant | ternary([
+      ports.photos_home.homeassistant
+    ], [])) +
+    (features.monitoring | ternary([
+      ports.monitoring.grafana, 
+      ports.monitoring.prometheus, 
+      ports.monitoring.uptime_kuma, 
+      ports.network_tools.speedtest
+    ], [])) +
+    (features.networking | ternary([
+      ports.network_tools.adguardhome
+    ], [])) +
+    (features.file_management | ternary([
+      ports.file_management.filebrowser, 
+      ports.file_management.code_server
+    ], [])) +
+    (features.cookbook | ternary([
+      ports.cookbook.cookbook
+    ], [])) +
+    (features.voice_assistant | ternary([
+      ports.voice_assistant.piper
+    ], []))
     }}"
 
 # ==============================================================================
@@ -217,7 +242,6 @@ voice_assistant:
 media_stack:
   media_uid: "{{ user.uid }}"
   media_gid: "{{ user.gid }}"
-  timezone: "{{ network.timezone }}"
   appdata_dir: "{{ storage.appdata_dir }}"
   media_dir: "{{ storage.media_dir }}"
   downloads_dir: "{{ storage.downloads_dir }}"
@@ -229,46 +253,28 @@ media_stack:
     subnet: "172.20.0.0/24"
     gateway: "172.20.0.1"
   
+  vpn:
+    enabled: false
+    port: 8888
+    service: airvpn
+    type: wireguard
+    inputPorts: port
+    country: "AU"
+    city: "Perth"
+    heathDuration: 120s
+
+  wireguard:
+    pubicKey: "your_public"
+    privatKey: "your_private"
+    presharedKey: "your_preshared"
+    addresses: "your_ip"
+  
   # Services with internal IPs
   services:
     jellyfin:
       port: 8096
       internal_ip: "172.20.0.10"
       container_name: "jellyfin"
-    
-    sonarr:
-      port: 8989
-      internal_ip: "172.20.0.20"
-      container_name: "sonarr"
-      api_key: "{{ vault.media.sonarr.api_key if vault is defined and vault.media is defined and vault.media.sonarr is defined else '' }}"
-      
-    radarr:
-      port: 7878
-      internal_ip: "172.20.0.21"
-      container_name: "radarr"
-      api_key: "{{ vault.media.radarr.api_key if vault is defined and vault.media is defined and vault.media.radarr is defined else '' }}"
-      
-    prowlarr:
-      port: 9696
-      internal_ip: "172.20.0.22"
-      container_name: "prowlarr"
-      api_key: "{{ vault.media.prowlarr.api_key if vault is defined and vault.media is defined and vault.media.prowlarr is defined else '' }}"
-      
-    qbittorrent:
-      port: 8080
-      internal_ip: "172.20.0.30"
-      container_name: "qbittorrent"
-      
-    bazarr:
-      port: 6767
-      internal_ip: "172.20.0.23"
-      container_name: "bazarr"
-      
-    lidarr:
-      port: 8686
-      internal_ip: "172.20.0.24"
-      container_name: "lidarr"
-      api_key: "{{ vault.media.lidarr.api_key if vault is defined and vault.media is defined and vault.media.lidarr is defined else '' }}"
       
     jellyseerr:
       port: 5055
@@ -284,6 +290,41 @@ media_stack:
       port: 5432
       internal_ip: "172.20.0.51"
       container_name: "audiobookrequest"
+    
+    sonarr:
+      port: 8989
+      internal_ip: "172.20.0.20"
+      container_name: "sonarr"
+      
+    radarr:
+      port: 7878
+      internal_ip: "172.20.0.21"
+      container_name: "radarr"
+      
+    prowlarr:
+      port: 9696
+      internal_ip: "172.20.0.22"
+      container_name: "prowlarr"
+      
+    bazarr:
+      port: 6767
+      internal_ip: "172.20.0.23"
+      container_name: "bazarr"
+      
+    lidarr:
+      port: 8686
+      internal_ip: "172.20.0.24"
+      container_name: "lidarr"
+      
+    qbittorrent:
+      port: 8080
+      internal_ip: "172.20.0.30"
+      container_name: "qbittorrent"
+      
+    nzbget:
+      port: 6789
+      internal_ip: "172.20.0.31"
+      container_name: "nzbget"
       
     jellystat:
       port: 8086

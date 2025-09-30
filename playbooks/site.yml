@@ -51,9 +51,9 @@
       tags: [security]
       when: security.ufw.enable or security.fail2ban.enable
 
-    - role: ssd_optimization
-      tags: [ssd, optimization]
-      when: optimization.ssd.enable
+    # - role: ssd_optimization
+    #   tags: [ssd, optimization]
+    #   when: optimization.ssd.enable
 
     - role: docker_minimal
       tags: [docker, base]
@@ -82,37 +82,37 @@
       tags: [media]
       when: features.media_stack
 
-    - role: ai_stack
-      tags: [ai]
-      when: features.ai_stack
+    # - role: ai_stack
+    #   tags: [ai]
+    #   when: features.ai_stack
 
-    - role: photo_management
-      tags: [photos]
-      when: features.photo_management
+    # - role: photo_management
+    #   tags: [photos]
+    #   when: features.photo_management
 
-    - role: file_management
-      tags: [files]
-      when: features.file_management
+    # - role: file_management
+    #   tags: [files]
+    #   when: features.file_management
 
-    - role: cookbook
-      tags: [cookbook, services]
-      when: features.cookbook
+    # - role: cookbook
+    #   tags: [cookbook, services]
+    #   when: features.cookbook
 
-    - role: piper
-      tags: [piper, voice, ai]
-      when: features.piper
+    # - role: piper
+    #   tags: [piper, voice, ai]
+    #   when: features.piper
 
-    - role: voice_assistant
-      tags: [voice, ai]
-      when: features.voice_assistant
+    # - role: voice_assistant
+    #   tags: [voice, ai]
+    #   when: features.voice_assistant
 
-    - role: backup
-      tags: [backup]
-      when: features.backup
+    # - role: backup
+    #   tags: [backup]
+    #   when: features.backup
 
-    - role: power_management
-      tags: [power]
-      when: features.power_monitoring
+    # - role: power_management
+    #   tags: [power]
+    #   when: features.power_monitoring
 
   post_tasks:
     - name: Copy maintenance scripts to target
