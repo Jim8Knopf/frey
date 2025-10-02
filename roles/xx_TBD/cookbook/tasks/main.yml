@@ -7,14 +7,14 @@
     group: "{{ media_user }}"
     mode: '0755'
   loop:
-    - "{{ stacks_dir }}/cookbook"
-    - "{{ appdata_dir }}/tandoor-db"
-    - "{{ appdata_dir }}/tandoor-media"
+    - "{{ docker.stacks }}/cookbook"
+    - "{{storage.appdata_dir }}/tandoor-db"
+    - "{{storage.appdata_dir }}/tandoor-media"
 
 - name: Deploy Tandoor environment file
   ansible.builtin.template:
     src: .env.j2
-    dest: "{{ stacks_dir }}/cookbook/.env"
+    dest: "{{ docker.stacks }}/cookbook/.env"
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
     mode: '0644'
@@ -22,12 +22,12 @@
 - name: Deploy Tandoor compose file
   ansible.builtin.template:
     src: docker-compose-tandoor.yml.j2
-    dest: "{{ stacks_dir }}/cookbook/docker-compose.yml"
+    dest: "{{ docker.stacks }}/cookbook/docker-compose.yml"
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
     mode: '0644'
 
 - name: Start Tandoor stack containers using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ stacks_dir }}/cookbook"
+    project_src: "{{ docker.stacks }}/cookbook"
     state: present

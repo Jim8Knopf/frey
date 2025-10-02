@@ -6,8 +6,8 @@ features:
   infrastructure: true
   networking: true
   wifi_access_point: true
-  media_stack: true
-  monitoring: true
+  media: true
+  monitoring: false
   file_management: false
   ai_stack: false
   photo_management: false
@@ -21,32 +21,20 @@ features:
 # (No deploy_* compatibility mappings here — use `features.*` toggles)
 
 # ================================
-# USER CONFIGURATION
+# CONFIGURATION
 # ================================
 user:
-  name: media
+  name: else
   uid: 1000
   gid: 1000
 
-# ================================
-# DOCKER CONFIGURATION
-# ================================
-docker:
-  users: [ "{{ user.name }}" ]
 
 # ================================
 # STORAGE PATHS
 # ================================
 storage:
   base_dir: /opt/frey
-  media_dir: "{{ storage.base_dir }}/media"
   appdata_dir: "{{ storage.base_dir }}/appdata"
-  downloads_dir: "{{ storage.base_dir }}/downloads"
-  photos_dir: "{{ storage.base_dir }}/photos"
-  ai_dir: "{{ storage.base_dir }}/ai"
-  backups_dir: "{{ storage.base_dir }}/backups"
-  logs_dir: "{{ storage.base_dir }}/logs"
-  stacks_dir: "{{ storage.base_dir }}/stacks"  # For Dockge
 
 # ==============================================================================
 # ROLE: INFRASTRUCTURE & NETWORKING
@@ -102,7 +90,7 @@ wifi:
   wmm_enabled: 1
 
 # ==============================================================================
-# SERVICE PORTS
+# TODO SERVICE PORTS 
 # ==============================================================================
 ports:
   ai_stack:
@@ -151,17 +139,17 @@ security:
       ports.infrastructure.traefik_dashboard, 
       ports.infrastructure.portainer
     ], [])) +
-    (features.media_stack | ternary([
-      media_stack.services.jellyfin.port,
-      media_stack.services.sonarr.port,
-      media_stack.services.radarr.port,
-      media_stack.services.bazarr.port,
-      media_stack.services.audiobookshelf.port,
-      media_stack.services.qbittorrent.port,
-      media_stack.services.prowlarr.port,
-      media_stack.services.jellyseerr.port,
-      media_stack.services.lidarr.port,
-      media_stack.services.jellystat.port
+    (features.media | ternary([
+      media.services.jellyfin.port,
+      media.services.sonarr.port,
+      media.services.radarr.port,
+      media.services.bazarr.port,
+      media.services.audiobookshelf.port,
+      media.services.qbittorrent.port,
+      media.services.prowlarr.port,
+      media.services.jellyseerr.port,
+      media.services.lidarr.port,
+      media.services.jellystat.port
     ], [])) +
     (features.ai_stack | ternary([
       ports.ai_stack.ollama, 
@@ -234,16 +222,61 @@ voice_assistant:
     - "en_AU-southern-female"
     - "de_DE-thorsten-medium"
 
+
+monitoring:
+  group:
+    name: monitoring
+    gid: 12341
+  user:
+    name: monitoring_manager
+    uid: 12341
+    groups: "{{ monitoring.group.name }}"
+  dir: "{{ storage.base_dir }}/monitoring"
+
+
+
+# ================================
+# DOCKER CONFIGURATION
+# ================================
+docker:
+  group:
+    name: docker
+    gid: 362537  
+  user:
+    name: docker
+    uid: 362537
+    groups: "{{ docker.group.name }}"
+  dir: "{{ storage.base_dir }}/dockge"
+  stacks: "{{docker.dir }}/stacks"
+  logs: "{{monitoring.dir }}/logs"
+
+
+# ==============================================================================
+# INFRASTRUCTURE - REFACTORED FOR DYNAMIC COMPOSE GENERATION
+# ==============================================================================
+infrastructure:
+  group:
+    name: infrastructure
+    gid: 46372
+  user:
+    name: infrastructure_manager
+    uid: 46372
+    groups: "{{ infrastructure.group.name }}"
+  dir: "{{ storage.base_dir }}/infrastructure"
+
 # ==============================================================================
 # MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
 # ==============================================================================
-media_stack:
-  media_uid: "{{ user.uid }}"
-  media_gid: "{{ user.gid }}"
-  appdata_dir: "{{ storage.appdata_dir }}"
-  media_dir: "{{ storage.media_dir }}"
-  downloads_dir: "{{ storage.downloads_dir }}"
-  domain_name: "{{ network.domain_name }}"
+media:
+  group:
+    name: media
+    gid: 63342
+  user:
+    name: media_manager
+    uid: 63342
+    groups: "{{ media.group.name }}"
+  dir: "{{ storage.base_dir }}/media"
+  downloads: "{{ storage.base_dir }}/downloads"
 
   network:
     name: "media_network"
@@ -262,7 +295,7 @@ media_stack:
       port: 5055
       internal_ip: "172.20.0.40"
       volumes:
-        - "{{ media_stack.appdata_dir }}/jellyseerr:/app/config"
+        - "{{ storage.appdata_dir }}/jellyseerr:/app/config"
 
     audiobookshelf:
       enabled: true
@@ -273,9 +306,9 @@ media_stack:
         - 13378:80
       internal_ip: "172.20.0.50"
       volumes:
-        - "{{ media_stack.appdata_dir }}/audiobookshelf:/config"
-        - "{{ media_stack.media_dir }}/audiobooks:/audiobooks"
-        - "{{ media_stack.media_dir }}/podcasts:/podcasts"
+        - "{{ storage.appdata_dir }}/audiobookshelf:/config"
+        - "{{ media.dir }}/audiobooks:/audiobooks"
+        - "{{ media.dir }}/podcasts:/podcasts"
 
     jellyfin:
       enabled: true
@@ -284,9 +317,9 @@ media_stack:
       port: 8096
       internal_ip: "172.20.0.10"
       volumes:
-        - "{{ media_stack.appdata_dir }}/jellyfin:/config"
-        - "{{ media_stack.media_dir }}/tv:/data/tvshows"
-        - "{{ media_stack.media_dir }}/movies:/data/movies"
+        - "{{ storage.appdata_dir }}/jellyfin:/config"
+        - "{{ media.dir }}/tv:/data/tvshows"
+        - "{{ media.dir }}/movies:/data/movies"
     
     qbittorrent:
       enabled: true
@@ -294,27 +327,28 @@ media_stack:
       container_name: "qbittorrent"
       port: 8080
       ports: 
+       - "{{ media.vpn.port }}:{{ media.vpn.port }}"
        - 8080:8080 # Web UI
        - 6881:6881 # Torrent Port
       internal_ip: "172.20.0.30"
       volumes:
-        - "{{ media_stack.appdata_dir }}/qbittorrent:/config"
-        - "{{ media_stack.downloads_dir }}:/downloads"
+        - "{{ storage.appdata_dir }}/qbittorrent:/config"
+        - "{{ media.downloads }}:/downloads"
       environment:
         - "WEBUI_PORT=8080"
         - "TORRENT_PORT=6881"
-        - TORRENTING_PORT={{ media_stack.vpn.port }} # airvpn forwarded port, pulled from .env
+        - TORRENTING_PORT={{ media.vpn.port }} # airvpn forwarded port, pulled from .env
 
 
     nzbget:
-      enabled: false
+      enabled: true
       image: "lscr.io/linuxserver/nzbget:latest"
       container_name: "nzbget"
-      port: 6789:6789
+      port: 6789
       internal_ip: "172.20.0.31"
       volumes:
-        - "{{ media_stack.appdata_dir }}/nzbget:/config"
-        - "{{ media_stack.downloads_dir }}:/downloads"
+        - "{{ storage.appdata_dir }}/nzbget:/config"
+        - "{{ media.downloads }}:/downloads"
         - /data:/data
         - /etc/localtime:/etc/localtime:ro
         - ./nzbget:/config                        # TODO
@@ -326,7 +360,20 @@ media_stack:
       port: 9696
       internal_ip: "172.20.0.22"
       volumes:
-        - "{{ media_stack.appdata_dir }}/prowlarr:/config"
+        - "{{ storage.appdata_dir }}/prowlarr:/config"
+
+    flaresolverr:
+      enabled: true
+      image: "ghcr.io/flaresolverr/flaresolverr:latest"
+      container_name: "flaresolverr"
+      port: 8191
+      internal_ip: "172.20.0.19"
+      volumes:
+        - "{{ storage.appdata_dir }}/prowlarr:/config"
+      environment:
+        - LOG_LEVEL=${LOG_LEVEL:-info}
+        - LOG_HTML=${LOG_HTML:-false}
+        - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
 
     sonarr:
       enabled: true
@@ -335,9 +382,9 @@ media_stack:
       port: 8989
       internal_ip: "172.20.0.20"
       volumes:
-        - "{{ media_stack.appdata_dir }}/sonarr:/config"
-        - "{{ media_stack.downloads_dir }}:/downloads"
-        - "{{ media_stack.media_dir }}/tv:/tv"
+        - "{{ storage.appdata_dir }}/sonarr:/config"
+        - "{{ media.downloads }}:/downloads"
+        - "{{ media.dir }}/tv:/tv"
 
     radarr:
       enabled: true
@@ -346,9 +393,9 @@ media_stack:
       port: 7878
       internal_ip: "172.20.0.21"
       volumes:
-        - "{{ media_stack.appdata_dir }}/radarr:/config"
-        - "{{ media_stack.downloads_dir }}:/downloads"
-        - "{{ media_stack.media_dir }}/movies:/movies"
+        - "{{ storage.appdata_dir }}/radarr:/config"
+        - "{{ media.downloads }}:/downloads"
+        - "{{ media.dir }}/movies:/movies"
 
     bazarr:
       enabled: true
@@ -357,9 +404,9 @@ media_stack:
       port: 6767
       internal_ip: "172.20.0.23"
       volumes:
-        - "{{ media_stack.appdata_dir }}/bazarr:/config"
-        - "{{ media_stack.media_dir }}/movies:/movies"
-        - "{{ media_stack.media_dir }}/tv:/tv"
+        - "{{ storage.appdata_dir }}/bazarr:/config"
+        - "{{ media.dir }}/movies:/movies"
+        - "{{ media.dir }}/tv:/tv"
 
     lidarr:
       enabled: true
@@ -368,9 +415,9 @@ media_stack:
       port: 8686
       internal_ip: "172.20.0.24"
       volumes:
-        - "{{ media_stack.appdata_dir }}/lidarr:/config"
-        - "{{ media_stack.downloads_dir }}:/downloads"
-        - "{{ media_stack.media_dir }}/music:/music"
+        - "{{ storage.appdata_dir }}/lidarr:/config"
+        - "{{ media.downloads }}:/downloads"
+        - "{{ media.dir }}/music:/music"
         
     audiobookrequest:
       enabled: true
@@ -391,7 +438,7 @@ media_stack:
       port: 8086
       internal_ip: "172.20.0.60"
       volumes:
-        - "{{ media_stack.appdata_dir }}/jellystat/config.json:/app/config/config.json"
+        - "{{ storage.appdata_dir }}/jellystat/config.json:/app/config/config.json"
 
     jellystat_db:
       enabled: false # Jellystat dependency
@@ -399,7 +446,7 @@ media_stack:
       container_name: "jellystat-db"
       internal_ip: "172.20.0.61"
       volumes:
-        - "{{ media_stack.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
+        - "{{ storage.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
       environment:
         - "POSTGRES_DB=jellystat"
         - "POSTGRES_USER=jellystat"
@@ -411,6 +458,6 @@ media_stack:
       container_name: "ytdl-sub"
       internal_ip: "172.20.0.70"
       volumes:
-        - "{{ media_stack.appdata_dir }}/ytdl-sub:/config"
-        - "{{ media_stack.downloads_dir }}:/downloads"
+        - "{{ storage.appdata_dir }}/ytdl-sub:/config"
+        - "{{ media.downloads }}:/downloads"
 

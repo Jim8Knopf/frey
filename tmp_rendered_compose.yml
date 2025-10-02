@@ -12,7 +12,7 @@ services:
       - TZ={{ network.timezone }}
     volumes:
       - "{{ storage.appdata_dir }}/jellyfin:/config"
-      - "{{ storage.media_dir }}:/data/media"
+      - "{{ storage.media.dir }}:/data/media"
     ports:
       - "8096:8096"
     networks: [proxy]
@@ -28,7 +28,7 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/sonarr:/config"
       - "{{ storage.downloads_dir }}:/downloads"
-      - "{{ storage.media_dir }}/tv:/tv"
+      - "{{ storage.media.dir }}/tv:/tv"
     ports:
       - "8989:8989"
     networks: [proxy]
@@ -49,7 +49,7 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/radarr:/config"
       - "{{ storage.downloads_dir }}:/downloads"
-      - "{{ storage.media_dir }}/movies:/movies"
+      - "{{ storage.media.dir }}/movies:/movies"
     ports:
       - "7878:7878"
     networks: [proxy]
@@ -111,8 +111,8 @@ services:
       - TZ={{ network.timezone }}
     volumes:
       - "{{ storage.appdata_dir }}/bazarr:/config"
-      - "{{ storage.media_dir }}/movies:/movies"
-      - "{{ storage.media_dir }}/tv:/tv"
+      - "{{ storage.media.dir }}/movies:/movies"
+      - "{{ storage.media.dir }}/tv:/tv"
     ports:
       - "6767:6767"
     networks: [proxy]
@@ -133,7 +133,7 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/lidarr:/config"
       - "{{ storage.downloads_dir }}:/downloads"
-      - "{{ storage.media_dir }}/music:/music"
+      - "{{ storage.media.dir }}/music:/music"
     ports:
       - "8686:8686"
     networks: [proxy]
@@ -174,8 +174,8 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/audiobookshelf/config:/config"
       - "{{ storage.appdata_dir }}/audiobookshelf/metadata:/metadata"
-      - "{{ storage.media_dir }}/audiobooks:/audiobooks"
-      - "{{ storage.media_dir }}/podcasts:/podcasts"
+      - "{{ storage.media.dir }}/audiobooks:/audiobooks"
+      - "{{ storage.media.dir }}/podcasts:/podcasts"
     ports:
       - "13378:80"
     networks: [proxy]

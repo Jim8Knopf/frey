@@ -8,7 +8,7 @@ networks:
     external: true
 
 services:
-  {% if media_stack.vpn.enabled | default(false) -%}
+  {% if media.vpn.enabled | default(false) -%}
   gluetun:
     image: qmcgaw/gluetun
     container_name: gluetun
@@ -20,8 +20,8 @@ services:
       servarrnetwork:
         ipv4_address: 172.39.0.2
     ports:
-      - "{{ media_stack.vpn.port }}:{{ media_stack.vpn.port }}" # airvpn forwarded port, pulled from .env
-      {% for service_name, service_config in media_stack.services.items() if service_config.enabled and service_config.port is defined -%}
+      - "{{ media.vpn.port }}:{{ media.vpn.port }}" # airvpn forwarded port, pulled from .env
+      {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined -%}
       - "{{ service_config.port }}:{{ service_config.port }}" # Port for {{ service_name }}
       {% endfor -%}
     volumes:
@@ -34,20 +34,23 @@ services:
     restart: unless-stopped
   {% endif %}
 
-{% for service_name, service_config in media_stack.services.items() if service_config.enabled and service_config.port is defined %}
+{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined %}
   {{ service_name }}:
     image: {{ service_config.image }}
     container_name: {{ service_name }}
     environment:
-      {{ ([
-        "PUID=" ~ user.uid,
-        "PGID=" ~ user.gid,
-        "TZ=" ~ network.timezone
-      ] + (service_config.environment | default([]))) | to_nice_yaml(indent=6) | indent(6) | trim }}
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.group.gid }}
+      - TZ={{ network.timezone }}
+{% if service_config.environment is defined %}
+{% for env_var in service_config.environment %}
+      - {{ env_var }}
+{% endfor %}
+{% endif %}
     restart: unless-stopped
     volumes:
       {{ service_config.volumes | to_nice_yaml(indent=6) | indent(6) | trim }}
-{% if media_stack.vpn.enabled | default(false) %}
+{% if media.vpn.enabled | default(false) %}
     depends_on:
       gluetun:
         condition: service_healthy
@@ -64,7 +67,7 @@ services:
     labels:
       - deunhealth.restart.on.unhealthy=true
       - "traefik.enable=true"
-      - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ media_stack.domain_name }}`)"
+      - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
       - "traefik.http.routers.{{service_name}}.entrypoints=web"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
     networks:

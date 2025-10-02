@@ -43,7 +43,15 @@
           🚀 Starting Pi 5 Hub deployment
           Target: {{ ansible_host }}
           User: {{ ansible_user_id }}
-          Services: {% if features.media_stack %}Media, {% endif %}{% if features.ai_stack %}AI, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
+          Services: {% if features.media %}Media, {% endif %}{% if features.ai_stack %}AI, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
+
+    - name: Create media subdirectories
+      ansible.builtin.file:
+        path: "{{ storage.base_dir | default('/opt/frey')}}"
+        state: directory
+        owner: "{{ user.uid }}"
+        group: "{{ user.gid }}"
+        mode: '0755'
 
   roles:
     # Core Infrastructure
@@ -57,9 +65,6 @@
 
     - role: docker_minimal
       tags: [docker, base]
-
-    - role: directories
-      tags: [directories, base]
 
     # Network and Management
     - role: wifi_access_point
@@ -78,9 +83,9 @@
       tags: [monitoring]
       when: features.monitoring
 
-    - role: media_stack
+    - role: media
       tags: [media]
-      when: features.media_stack
+      when: features.media
 
     # - role: ai_stack
     #   tags: [ai]
@@ -134,25 +139,3 @@
             'http://portainer.' ~ (network.domain_name | default('local')),
             'http://dockge.' ~ (network.domain_name | default('local'))
           ] + (network.dns_rewrites | default([])) | map(attribute='name') | map('regex_replace', '^(.*)$', 'http://\\1.' ~ (network.domain_name | default('local'))) | list }}
-
-    - name: Display service URLs
-      ansible.builtin.debug:
-        msg: |
-          🎯 DEPLOYMENT COMPLETED! Your services are available at:
-          {% for service in (network.dns_rewrites | default([])) %}
-          - http://{{ service.name }}.{{ network.domain_name | default('local') }}
-          {% endfor %}
-
-          🔑 DEFAULT CREDENTIALS (CHANGE IMMEDIATELY!):
-          qBittorrent:     admin / {{ media.qbittorrent.default_password }}
-          Grafana:         admin / {{ monitoring.grafana.default_password }}
-          Code Server:     Password: {{ media.code_server.default_password }}
-
-          ⚡ NEXT STEPS:
-          1. Change all default passwords!
-          2. Configure your media indexers in Prowlarr
-          3. Set up monitoring dashboards in Grafana
-          4. Access Dockge for easy container management
-
-          📖 Happy self-hosting! 🏠✨
-      tags: always

@@ -37,7 +37,7 @@ services:
     container_name: immich_machine_learning
     image: ghcr.io/immich-app/immich-machine-learning:release
     volumes:
-      - "{{ appdata_dir }}/immich-ml-cache:/cache"
+      - "{{storage.appdata_dir }}/immich-ml-cache:/cache"
     env_file:
       - .env
     restart: always
@@ -71,7 +71,7 @@ services:
     env_file:
       - .env
     volumes:
-      - "{{ appdata_dir }}/immich-db:/var/lib/postgresql/data"
+      - "{{storage.appdata_dir }}/immich-db:/var/lib/postgresql/data"
     restart: always
     networks:
       - proxy

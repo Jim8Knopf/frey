@@ -10,8 +10,8 @@ services:
   # Avoid publishing the dashboard to the host to prevent port collisions on busy hosts.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - "{{ appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
-      - "{{ appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
+      - "{{storage.appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
+      - "{{storage.appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
     networks:
       - proxy
     labels:
@@ -29,7 +29,7 @@ services:
       - "{{ (ports.infrastructure.portainer | default(9000)) }}:9000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - "{{ appdata_dir }}/portainer/data:/data"
+      - "{{storage.appdata_dir }}/portainer/data:/data"
     networks:
       - proxy
     labels:

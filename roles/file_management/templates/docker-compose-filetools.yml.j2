@@ -9,8 +9,8 @@ services:
       - "{{ filebrowser_port }}:80"
     volumes:
       - "{{ base_dir }}:/srv"
-      - "{{ appdata_dir }}/filebrowser/database:/database"
-      - "{{ appdata_dir }}/filebrowser/config:/config"
+      - "{{storage.appdata_dir }}/filebrowser/database:/database"
+      - "{{storage.appdata_dir }}/filebrowser/config:/config"
     environment:
       - FB_DATABASE=/database/filebrowser.db
       - FB_CONFIG_FILE=/config/settings.json
@@ -23,7 +23,7 @@ services:
       - "{{ code_server_port }}:8080"
     volumes:
       - "{{ base_dir }}:/home/coder/project"
-      - "{{ appdata_dir }}/code-server:/home/coder/.local/share/code-server"
+      - "{{storage.appdata_dir }}/code-server:/home/coder/.local/share/code-server"
     environment:
       - PASSWORD={{ default_code_server_password | default('codeserver123') }}
       - SUDO_PASSWORD={{ default_code_server_password | default('codeserver123') }}

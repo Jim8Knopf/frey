@@ -4,7 +4,7 @@ services:
     container_name: tandoor_db
     env_file: .env
     volumes:
-      - "{{ appdata_dir }}/tandoor-db:/var/lib/postgresql/data"
+      - "{{storage.appdata_dir }}/tandoor-db:/var/lib/postgresql/data"
     restart: unless-stopped
 
   redis:
@@ -17,7 +17,7 @@ services:
     container_name: tandoor_web
     env_file: .env
     volumes:
-      - "{{ appdata_dir }}/tandoor-media:/opt/recipes/mediafiles"
+      - "{{storage.appdata_dir }}/tandoor-media:/opt/recipes/mediafiles"
     ports:
       - "{{ cookbook_port }}:80"
     depends_on:
@@ -39,7 +39,7 @@ services:
     command: celery -A recipes worker -l INFO
     env_file: .env
     volumes:
-      - "{{ appdata_dir }}/tandoor-media:/opt/recipes/mediafiles"
+      - "{{storage.appdata_dir }}/tandoor-media:/opt/recipes/mediafiles"
     depends_on:
       - web
     restart: unless-stopped

@@ -19,7 +19,7 @@ networks:
   proxy:
     external: true
     volumes:
-      - "{{ appdata_dir }}/piper:/data"
+      - "{{storage.appdata_dir }}/piper:/data"
     command:
       {% for voice in piper_voices %}
       - --voice

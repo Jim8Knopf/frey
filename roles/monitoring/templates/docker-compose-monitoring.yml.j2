@@ -88,7 +88,7 @@ services:
     container_name: promtail
     restart: unless-stopped
     volumes:
-      - "{{ storage.logs_dir }}:/var/log:ro"
+      - "{{ monitoring.logs }}:/var/log:ro"
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - "{{ storage.appdata_dir }}/promtail:/etc/promtail"
     command: -config.file=/etc/promtail/config.yml
@@ -119,8 +119,8 @@ services:
     image: lscr.io/linuxserver/speedtest-tracker:latest
     container_name: speedtest-tracker
     environment:
-      - PUID={{ media_stack.media_uid | default(user.uid | default(1000)) }}
-      - PGID={{ media_stack.media_gid | default(user.gid | default(1000)) }}
+      - PUID={{ media.media_uid | default(user.uid | default(1000)) }}
+      - PGID={{ media.media_gid | default(user.gid | default(1000)) }}
       - TZ={{ network.timezone | default('UTC') }}
       - OOKLA_EULA_GDPR=true
     volumes:

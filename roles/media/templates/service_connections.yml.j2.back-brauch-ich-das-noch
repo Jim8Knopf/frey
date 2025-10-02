@@ -1,13 +1,13 @@
-# roles/media_stack/templates/service_connections.yml.j2
+# roles/media/templates/service_connections.yml.j2
 # Generated service connection information for manual reference
 
 media_services:
   network:
-    name: {{ media_stack.network.name }}
-    subnet: {{ media_stack.network.subnet }}
+    name: {{ media.network.name }}
+    subnet: {{ media.network.subnet }}
     
   internal_addresses:
-{% for service_name, service_config in media_stack.services.items() %}
+{% for service_name, service_config in media.services.items() %}
     {{ service_name }}:
       ip: {{ service_config.internal_ip }}
       port: {{ service_config.port }}
@@ -21,16 +21,16 @@ media_services:
 # Connection examples for manual configuration
 configuration_examples:
   prowlarr_to_sonarr:
-    url: {{ media_stack.internal_urls.sonarr }}
-    api_key: {{ media_stack.services.sonarr.api_key }}
+    url: {{ media.internal_urls.sonarr }}
+    api_key: {{ media.services.sonarr.api_key }}
     
   prowlarr_to_radarr:
-    url: {{ media_stack.internal_urls.radarr }}
-    api_key: {{ media_stack.services.radarr.api_key }}
+    url: {{ media.internal_urls.radarr }}
+    api_key: {{ media.services.radarr.api_key }}
     
   qbittorrent_connection:
-    host: {{ media_stack.services.qbittorrent.internal_ip }}
-    port: {{ media_stack.services.qbittorrent.port }}
+    host: {{ media.services.qbittorrent.internal_ip }}
+    port: {{ media.services.qbittorrent.port }}
     username: admin
     # Password stored in Ansible vault
     
@@ -42,7 +42,7 @@ configuration_examples:
 
 # Download client categories (auto-created by qBittorrent)
 download_categories:
-  sonarr: "{{ media_stack.downloads_dir }}/complete/sonarr/"
-  radarr: "{{ media_stack.downloads_dir }}/complete/radarr/"
-  lidarr: "{{ media_stack.downloads_dir }}/complete/lidarr/"
-  manual: "{{ media_stack.downloads_dir }}/complete/manual/"
+  sonarr: "{{ media.downloads }}/complete/sonarr/"
+  radarr: "{{ media.downloads }}/complete/radarr/"
+  lidarr: "{{ media.downloads }}/complete/lidarr/"
+  manual: "{{ media.downloads }}/complete/manual/"
