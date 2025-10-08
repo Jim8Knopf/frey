@@ -23,7 +23,7 @@ pi5-hub-ansible/
 │   ├── dockge/                # Docker Management UI
 │   ├── monitoring/             # Prometheus, Grafana, etc.
 │   ├── media/           # Jellyfin, Sonarr, etc.
-│   ├── ai_stack/              # Ollama, Open WebUI
+│   ├── aztomation/              # Ollama, Open WebUI
 │   ├── photo_management/       # Immich
 │   ├── homeassistant/         # Home Assistant
 │   ├── infrastructure/        # Traefik, Portainer

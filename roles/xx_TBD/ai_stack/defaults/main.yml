@@ -1,7 +1,0 @@
----
-deploy_ai_stack: false
-
-# NOTE: prefer using the central `features` toggles in `group_vars/all/main.yml`.
-# Keeping this default false avoids accidentally enabling the role when the
-# site playbook uses `when: deploy_ai_stack | default(false)` in addition to
-# `features.ai_stack`.

@@ -72,7 +72,7 @@ services:
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
     networks:
       servarrnetwork:
-        ipv4_address: 172.39.0.{{ 10 + loop.index0 }}
+        ipv4_address: 172.39.0.20
       proxy: {}
 {% endif %}
 {% if service_name == 'qbittorrent' %}

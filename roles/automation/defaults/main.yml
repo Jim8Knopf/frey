@@ -1,0 +1,6 @@
+---
+deploy_automation: false
+
+automation:
+  ollama:
+    gpu_enabled: false

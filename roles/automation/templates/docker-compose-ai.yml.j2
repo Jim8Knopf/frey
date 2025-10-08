@@ -1,0 +1,57 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+{% if automation.ollama.gpu_enabled %}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+{% endif %}
+    restart: unless-stopped
+    ports:
+      - "{{ (automation.ollama.port | default(11434)) }}:11434"
+    volumes:
+      - "{{storage.appdata_dir }}/ollama:/root/.ollama"
+    networks:
+      automationnetwork:
+        ipv4_address: 10.20.0.10
+
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    user: "{{ automation.user.uid }}:{{ automation.group.gid }}"
+    restart: unless-stopped
+    ports:
+      - "{{ (automation.openwebui.port | default(8080)) }}:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      - "{{ storage.appdata_dir }}/open-webui:/app/backend/data"
+    depends_on:
+      - ollama
+
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    user: "{{ automation.user.uid }}:{{ automation.group.gid }}"
+    environment:
+      - N8N_USER_FOLDER=/home/node/.n8n
+      - GENERIC_TIMEZONE={{ network.timezone }}
+      - NODE_ENV=production
+      - N8N_SECURE_COOKIE=false
+    ports:
+      - "{{ (automation.n8n.port | default(5678)) }:5678"
+    volumes:
+      - "{{storage.appdata_dir }}/n8n:/home/node/.n8n"
+    restart: unless-stopped
+
+networks:
+  automationnetwork:
+    name: automationnetwork
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
+  proxy:
+    external: true

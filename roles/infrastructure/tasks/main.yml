@@ -4,6 +4,7 @@
   vars:
     stack: "infrastructure" 
     folders: [traefik, portainer]
+    checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, docker.stacks]
 
 - name: Create Traefik static configuration
   ansible.builtin.template:

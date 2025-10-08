@@ -8,8 +8,8 @@ features:
   wifi_access_point: true
   media: true
   monitoring: true
+  automation: true
   file_management: false
-  ai_stack: false
   photo_management: false
   homeassistant: false
   backup: false
@@ -93,9 +93,6 @@ wifi:
 # TODO SERVICE PORTS 
 # ==============================================================================
 ports:
-  ai_stack:
-    ollama: 11434
-    openwebui: 3000
   photos_home:
     immich: 2283
     homeassistant: 8123
@@ -151,9 +148,10 @@ security:
       media.services.lidarr.port,
       media.services.jellystat.port
     ], [])) +
-    (features.ai_stack | ternary([
-      ports.ai_stack.ollama, 
-      ports.ai_stack.openwebui
+    (features.automation | ternary([
+      automation.ollama.port,
+      automation.openwebui.port,
+      automation.n8n.port
     ], [])) +
     (features.photo_management | ternary([
       ports.photos_home.immich
@@ -205,8 +203,23 @@ power:
 # AUTOMATION SETTINGS
 # ================================
 automation:
-  watchtower_interval: 86400
-  backup_retention_days: 7
+  watchtower_interval: 86400 #?
+  backup_retention_days: 7  #?
+  group:
+    name: automation
+    gid: 2886
+  user:
+    name: automation_manager
+    uid: 463288672
+    groups: "{{ automation.group.name }}"
+  dir: "{{ storage.base_dir }}/automation"
+
+  ollama:
+    port: 11434
+  openwebui:
+    port: 3000
+  n8n:
+    port: 5678
 
 # ================================
 # VOICE ASSISTANT

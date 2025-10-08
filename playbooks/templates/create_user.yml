@@ -1,4 +1,18 @@
 ---
+- name: Verify required variables are defined
+  ansible.builtin.assert:
+    that:
+      - item.defined
+    fail_msg: "Required variable '{{ item.name }}' is not defined."
+    quiet: true
+  loop:
+    - name: storage.base_dir
+      defined: "{{ storage.base_dir is defined }}"
+    - name: automation.user.name
+      defined: "{{ automation.user.name is defined }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 
 - name: Create the {{stack}} group
   ansible.builtin.group:
@@ -22,7 +36,7 @@
     group: "{{ docker.group.name }}"
     mode: '0755'
 
-- name: Create media subdirectories
+- name: Create {{stack}} subdirectories
   ansible.builtin.file:
     path: "{{ vars[stack].dir }}/{{ item }}"
     state: directory
