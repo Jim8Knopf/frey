@@ -1,24 +1,21 @@
 ---
-- name: Create Dockge directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
-    mode: '0755'
-  loop:
-    - "{{ stacks_dir }}/dockge"
+- name: Setup media stack user
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "docker" 
+    folders: [stacks]
+
 
 - name: Deploy Dockge compose file
   ansible.builtin.template:
     src: docker-compose-dockge.yml.j2
-    dest: "{{ stacks_dir }}/dockge/docker-compose.yml"
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
+    dest: "{{ docker.stacks }}/docker/docker-compose.yml"
+    owner: "{{ docker.user.name }}"
+    group: "{{ docker.group.name }}"
     mode: '0644'
 
 - name: Start Dockge container using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ stacks_dir }}/dockge"
+    project_src: "{{ docker.stacks }}/docker"
     state: present
   when: not ansible_check_mode

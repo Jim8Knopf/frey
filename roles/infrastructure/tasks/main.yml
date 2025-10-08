@@ -1,37 +1,24 @@
 ---
-- name: Create infrastructure data directories
-  ansible.builtin.file:
-    path: "{{ appdata_dir }}/{{ item }}"
-    state: directory
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
-    mode: '0755'
-  loop:
-    - traefik
-    - portainer
-
-- name: Create infrastructure stack directory
-  ansible.builtin.file:
-    path: "{{ stacks_dir }}/infrastructure"
-    state: directory
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
-    mode: '0755'
+- name: Setup media stack user
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "infrastructure" 
+    folders: [traefik, portainer]
 
 - name: Create Traefik static configuration
   ansible.builtin.template:
     src: traefik.yml.j2
-    dest: "{{ appdata_dir }}/traefik/traefik.yml"
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
+    dest: "{{ storage.appdata_dir }}/traefik/traefik.yml"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
     mode: '0644'
 
 - name: Deploy infrastructure compose file
   ansible.builtin.template:
     src: docker-compose-infrastructure.yml.j2
-    dest: "{{ stacks_dir }}/infrastructure/docker-compose.yml"
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
+    dest: "{{ docker.stacks }}/infrastructure/docker-compose.yml"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
     mode: '0644'
 
 - name: Create proxy network for Traefik
@@ -41,5 +28,5 @@
 
 - name: Start infrastructure containers using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ stacks_dir }}/infrastructure"
+    project_src: "{{ docker.stacks }}/infrastructure"
     state: present

@@ -1,0 +1,33 @@
+---
+
+- name: Create the {{stack}} group
+  ansible.builtin.group:
+    name: "{{ vars[stack].group.name }}"
+    gid: "{{ vars[stack].group.gid }}"
+    state: present
+
+- name: Create the {{stack}}_management user
+  ansible.builtin.user:
+    name: "{{ vars[stack].user.name }}"
+    uid: "{{ vars[stack].user.uid }}"
+    group: "{{ vars[stack].group.name }}"
+    state: present
+
+
+- name: Create docker stacks directory
+  ansible.builtin.file:
+    path: "{{ docker.stacks }}/{{ stack }}"
+    state: directory
+    owner: "{{ docker.user.uid }}"
+    group: "{{ docker.group.name }}"
+    mode: '0755'
+
+- name: Create media subdirectories
+  ansible.builtin.file:
+    path: "{{ vars[stack].dir }}/{{ item }}"
+    state: directory
+    owner: "{{ vars[stack].user.uid }}"
+    group: "{{ vars[stack].user.groups }}"
+    mode: '0755'
+  loop: "{{ folders }}"
+  when: folders is defined

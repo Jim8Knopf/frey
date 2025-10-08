@@ -34,7 +34,7 @@ This is a list of potential improvements and next steps to make the project more
 - [ ] **Refine Variable Scoping**
   - **Why?** To make roles more self-contained and reusable, and to clean up the global `group_vars/all.yml` file.
   - **How?** Move default variable definitions (like ports) from `group_vars/all.yml` to `roles/ROLENAME/defaults/main.yml` for each role.
-  - **AI Prompt:** "Refactor the Ansible variables for the `media_stack` role. Create a `roles/media_stack/defaults/main.yml` file and move all default port definitions (e.g., `jellyfin_port`, `sonarr_port`) from `group_vars/all.yml` into it. The values in `group_vars/all.yml` should only be present if they override the default."
+  - **AI Prompt:** "Refactor the Ansible variables for the `media` role. Create a `roles/media/defaults/main.yml` file and move all default port definitions (e.g., `jellyfin_port`, `sonarr_port`) from `group_vars/all.yml` into it. The values in `group_vars/all.yml` should only be present if they override the default."
 
 - [ ] **Implement System Notifications**
   - **Why?** To be proactively informed about system status, completed backups, or deployment issues.

@@ -1,0 +1,102 @@
+networks:
+  servarrnetwork:
+    name: servarrnetwork
+    ipam:
+      config:
+        - subnet: 172.39.0.0/24
+  proxy:
+    external: true
+
+services:
+  {% if media.vpn.enabled | default(false) -%}
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun # If running on an LXC see readme for more info.
+    networks:
+      servarrnetwork:
+        ipv4_address: 172.39.0.2
+    ports:
+      - "{{ media.vpn.port }}:{{ media.vpn.port }}" # airvpn forwarded port, pulled from .env
+      {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined -%}
+      - "{{ service_config.port }}:{{ service_config.port }}" # Port for {{ service_name }}
+      {% endfor -%}
+    volumes:
+      - ./gluetun:/gluetun
+    healthcheck:
+      test: ping -c 1 www.google.com || exit 1
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+  {% endif %}
+
+{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined %}
+  {{ service_name }}:
+    image: {{ service_config.image }}
+    container_name: {{ service_name }}
+    environment:
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.group.gid }}
+      - TZ={{ network.timezone }}
+{% if service_config.environment is defined %}
+{% for env_var in service_config.environment %}
+      - {{ env_var }}
+{% endfor %}
+{% endif %}
+    restart: unless-stopped
+    volumes:
+      {{ service_config.volumes | to_nice_yaml(indent=6) | indent(6) | trim }}
+{% if media.vpn.enabled | default(false) %}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+        restart: true
+    network_mode: service:gluetun
+{% else %}
+{% if service_config.ports is defined %}
+    ports:
+      {{ service_config.ports }}
+{% else %}
+    ports:
+      - "{{ service_config.port }}:{{ service_config.port }}"
+{% endif %}
+    labels:
+      - deunhealth.restart.on.unhealthy=true
+      - "traefik.enable=true"
+      - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
+      - "traefik.http.routers.{{service_name}}.entrypoints=web"
+      - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
+    networks:
+      servarrnetwork:
+        ipv4_address: 172.39.0.{{ 10 + loop.index0 }}
+      proxy: {}
+{% endif %}
+{% if service_name == 'qbittorrent' %}
+    healthcheck:
+      test: ping -c 1 www.google.com || exit 1
+      interval: 60s
+      retries: 3
+      start_period: 20s
+      timeout: 10s
+{% endif %}
+
+{% endfor -%}
+
+  # See the 'qBittorrent Stalls with VPN Timeout' section for more information.
+  deunhealth:
+    image: qmcgaw/deunhealth
+    container_name: deunhealth
+    network_mode: "none"
+    environment:
+      - LOG_LEVEL=info
+      - HEALTH_SERVER_ADDRESS=127.0.0.1:9999
+      - TZ={{ network.timezone }}
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+# End of file.

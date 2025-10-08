@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  author: "local"
+  description: "Minimal Docker installer for Debian-family systems. Use when you don't want the full geerlingguy.docker role in-tree."
+  license: MIT
+  min_ansible_version: 2.9

@@ -9,10 +9,11 @@ services:
       - "{{ (ports.infrastructure.dockge | default(5001)) }}:5001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - "{{ appdata_dir }}/dockge:/app/data"
-      - "{{ stacks_dir }}:/opt/stacks"
+      - "{{storage.appdata_dir }}/dockge:/app/data"
+      - "{{ docker.stacks }}:/opt/stacks"
     environment:
-      - DOCKGE_STACKS_DIR=/opt/stacks
+      - DOCKGE_docker.stacks=/opt/stacks
+      - DOCKGE_ENABLE_CONSOLE=true
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dockge.rule=Host(`dockge.{{ domain_name | default(network.domain_name | default('local')) }}`)"

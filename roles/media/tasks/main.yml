@@ -1,0 +1,98 @@
+---
+
+- name: Verify required variables are defined
+  ansible.builtin.assert:
+    that:
+      - media is defined
+      - storage.base_dir is defined
+      - media.user.name is defined
+    fail_msg: "One of the required variables (media, storage.base_dir, media.user.name) is not defined." 
+
+- name: Setup media stack user
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "media"  
+    folders: [movies, tv, music, audiobooks, podcasts]
+
+
+
+- name: Pre-pull all enabled media stack images
+  community.docker.docker_image:
+    name: "{{ item.image }}"
+    source: pull
+    state: present
+    timeout: 300
+  loop: "{{ media.services.values() | selectattr('enabled', 'equalto', true) | list }}"
+  loop_control:
+    label: "{{ item.image }}"
+  register: image_pull_results
+  retries: 2
+  delay: 10
+  failed_when: false
+
+- name: Set failed pulls fact
+  ansible.builtin.set_fact:
+    failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item.image') | list }}"
+
+- name: Report failed image pulls
+  ansible.builtin.debug:
+    msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
+  when: failed_pulls | length > 0
+
+- name: Deploy media stack compose file
+  ansible.builtin.template:
+    src: docker-compose-media.yml.j2
+    dest: "{{ docker.stacks }}/media/docker-compose.yml"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: '0644'
+    backup: yes
+  register: compose_template_result
+
+- name: Show rendered compose
+  ansible.builtin.shell: |
+    nl -ba /opt/frey/stacks/media/docker-compose.yml
+  register: compose_snippet
+  when: debug_enabled | default(false) | bool
+
+- debug:
+    var: compose_snippet.stdout_lines
+  when: debug_enabled | default(false) | bool
+
+- name: Validate Docker Compose file syntax
+  ansible.builtin.command:
+    cmd: docker compose -f "{{ docker.stacks }}/media/docker-compose.yml" config --quiet
+  register: compose_validation
+  failed_when: compose_validation.rc != 0
+  changed_when: false
+
+- name: Start media stack with graceful error handling
+  block:
+    - name: Start media stack containers using compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ docker.stacks }}/media"
+        state: present
+        remove_orphans: true
+        timeout: 300
+      register: compose_result
+      retries: 2
+      delay: 30
+
+  rescue:
+    - name: Handle compose failure - gather logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ docker.stacks }}/media/docker-compose.yml" logs --tail=50
+      register: compose_logs
+      failed_when: false
+
+    - name: Display compose error details
+      ansible.builtin.debug:
+        msg: |
+          Media stack deployment failed. Recent logs:
+          {{ compose_logs.stdout }}
+      when: compose_logs.stdout is defined
+
+    - name: Fail with helpful message
+      ansible.builtin.fail:
+        msg: "Media stack deployment failed. Check the logs above and ensure all required directories exist."
+

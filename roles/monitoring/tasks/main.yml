@@ -1,49 +1,84 @@
 ---
-- name: Create monitoring data directories
-  ansible.builtin.file:
-    path: "{{ appdata_dir }}/{{ item }}"
-    state: directory
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
-    mode: '0755'
-  loop:
-    - prometheus
-    - grafana
-    - loki
-    - promtail
-    - uptime-kuma
-    - speedtest
+- name: Setup media stack user
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "monitoring" 
+    folders: [logs, prometheus, grafana, loki, promtail, uptime-kuma, speedtest]
 
-- name: Create monitoring stack directory
+- name: Ensure logs directory exists for promtail
   ansible.builtin.file:
-    path: "{{ stacks_dir }}/monitoring"
+    path: "{{ monitoring.dir }}/logs"
     state: directory
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
-    mode: '0755'
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0777'
 
-- name: Deploy monitoring stack compose file
-  ansible.builtin.template:
-    src: docker-compose-monitoring.yml.j2
-    dest: "{{ stacks_dir }}/monitoring/docker-compose.yml"
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
-    mode: '0644'
+- name: Ensure Prometheus data directory exists
+  ansible.builtin.file:
+    path: "{{storage.appdata_dir }}/prometheus/data"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0777'
+
+- name: Ensure Grafana plugins directory exists
+  ansible.builtin.file:
+    path: "{{storage.appdata_dir }}/grafana/plugins"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0777'
+
+- name: Ensure Loki appdata directory exists
+  ansible.builtin.file:
+    path: "{{storage.appdata_dir }}/loki"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0777'
+
+- name: Ensure all monitoring appdata owned by monitoring.user.name
+  ansible.builtin.shell:
+    cmd: |
+      for d in "{{storage.appdata_dir }}/prometheus" "{{storage.appdata_dir }}/grafana" "{{storage.appdata_dir }}/loki" "{{storage.appdata_dir }}/promtail"; do
+        if [ -e "$d" ]; then
+          chown -R {{ monitoring.user.name }}:{{ monitoring.group.name }} "$d"
+        fi
+      done
+  become: true
+  args:
+    executable: /bin/bash
 
 - name: Create Prometheus configuration
   ansible.builtin.template:
     src: prometheus.yml.j2
-    dest: "{{ appdata_dir }}/prometheus/prometheus.yml"
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
+    dest: "{{storage.appdata_dir }}/prometheus/prometheus.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+
+- name: Deploy Loki local config
+  ansible.builtin.template:
+    src: loki-local-config.yml.j2
+    dest: "{{storage.appdata_dir }}/loki/local-config.yaml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+
+- name: Deploy Promtail config
+  ansible.builtin.template:
+    src: promtail-config.yml.j2
+    dest: "{{storage.appdata_dir }}/promtail/config.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
     mode: '0644'
 
 - name: Create Grafana provisioning directories
   ansible.builtin.file:
-    path: "{{ appdata_dir }}/grafana/provisioning/{{ item }}"
+    path: "{{storage.appdata_dir }}/grafana/provisioning/{{ item }}"
     state: directory
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
     mode: '0755'
   loop:
     - dashboards
@@ -52,12 +87,88 @@
 - name: Configure Grafana datasources
   ansible.builtin.template:
     src: grafana-datasources.yml.j2
-    dest: "{{ appdata_dir }}/grafana/provisioning/datasources/datasources.yml"
-    owner: "{{ media_user }}"
-    group: "{{ media_user }}"
+    dest: "{{storage.appdata_dir }}/grafana/provisioning/datasources/datasources.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+
+- name: Deploy monitoring stack compose file
+  ansible.builtin.template:
+    src: docker-compose-monitoring.yml.j2
+    dest: "{{ docker.stacks }}/monitoring/docker-compose.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+
+- name: Create Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{storage.appdata_dir }}/prometheus/prometheus.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+
+- name: Deploy Loki local config
+  ansible.builtin.template:
+    src: loki-local-config.yml.j2
+    dest: "{{storage.appdata_dir }}/loki/local-config.yaml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+
+- name: Deploy Promtail config
+  ansible.builtin.template:
+    src: promtail-config.yml.j2
+    dest: "{{storage.appdata_dir }}/promtail/config.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+
+- name: Create Grafana provisioning directories
+  ansible.builtin.file:
+    path: "{{storage.appdata_dir }}/grafana/provisioning/{{ item }}"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0755'
+  loop:
+    - dashboards
+    - datasources
+
+- name: Configure Grafana datasources
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: "{{storage.appdata_dir }}/grafana/provisioning/datasources/datasources.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
     mode: '0644'
 
 - name: Start monitoring stack using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ stacks_dir }}/monitoring"
+    project_src: "{{ docker.stacks }}/monitoring"
     state: present
+
+- name: Ensure monitoring appdata ownership matches container users (fix UID/GID mismatches)
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    BASE_DIR="{{storage.appdata_dir }}"
+    for svc in loki grafana prometheus promtail; do
+      # ask docker for the configured container user for the running container
+      user_spec=$(docker inspect -f "{{'{{'}}.Config.User{{'}}'}}" "${svc}" 2>/dev/null || true)
+      if [ -n "${user_spec}" ]; then
+        # user_spec may be 'UID' or 'UID:GID'
+        uid="${user_spec%%:*}"
+        gid="${user_spec#*:}"
+        if [ "${uid}" = "${user_spec}" ]; then
+          gid="${uid}"
+        fi
+        target_dir="${BASE_DIR}/${svc}"
+        if [ -d "${target_dir}" ]; then
+          echo "Setting ownership of ${target_dir} -> ${uid}:${gid}"
+          chown -R ${uid}:${gid} "${target_dir}" || true
+        fi
+      fi
+    done
+  args:
+    executable: /bin/bash

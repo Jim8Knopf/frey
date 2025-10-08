@@ -1,0 +1,9 @@
+---
+# homeassistant default variables
+deploy_homeassistant: false
+
+docker.stacks: ""
+appdata_dir: ""
+media_user: ""
+homeassistant_port: "8123"
+

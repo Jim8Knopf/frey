@@ -7,10 +7,30 @@
     - ../group_vars/all/main.yml
     - ../group_vars/all/secrets.yml
 
-  vars:
-    features: "{{ features | default({}) }}"
-
   pre_tasks:
+    - name: Find apt source files
+      find:
+        paths: /etc/apt/sources.list.d
+        patterns: '*.list'
+        file_type: file
+      register: apt_source_files
+      ignore_errors: true
+
+    - name: Check which apt source files reference download.docker.com
+      shell: "grep -l 'download.docker.com' {{ item.path }} || true"
+      loop: "{{ apt_source_files.files | default([]) }}"
+      register: docker_source_matches
+      changed_when: false
+      failed_when: false
+
+    - name: Remove Docker apt source files that reference download.docker.com
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ docker_source_matches.results | map(attribute='stdout') | reject('equalto','') | list }}"
+      when: docker_source_matches is defined and docker_source_matches.results | length > 0
+      become: true
+
     - name: Update package cache
       apt:
         update_cache: yes
@@ -23,162 +43,81 @@
           🚀 Starting Pi 5 Hub deployment
           Target: {{ ansible_host }}
           User: {{ ansible_user_id }}
-                Services: {% if features.media_stack %}Media, {% endif %}{% if features.ai_stack %}AI, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
-    - name: "Security"
-      ansible.builtin.debug:
-        msg: "Security pre-task: UFW or Fail2Ban enabled."
-      when: security.ufw.enable or security.fail2ban.enable
-    - name: "SSD Optimization"
-      ansible.builtin.debug:
-        msg: "SSD Optimization pre-task enabled."
-      when: optimization.ssd.enable
-    - name: "Base Directories"
-      ansible.builtin.debug:
-        msg: "Base Directories pre-task."
-      tags: [directories]
+          Services: {% if features.media %}Media, {% endif %}{% if features.ai_stack %}AI, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
 
-- name: "Setup Core Infrastructure"
-  hosts: frey
-  become: true
-  tasks:
-    - name: Include Docker role if infrastructure enabled
-      import_role:
-        name: geerlingguy.docker
-      when: features is defined and features.infrastructure
-
-- name: "Setup WiFi Access Point"
-  hosts: frey
-  become: true
-  roles:
-    - role: wifi_access_point
-      when: features is defined and features.wifi_access_point
-
-- name: "Deploy Services"
-  hosts: frey
-  become: true
-  roles:
-    - role: monitoring
-      when: features is defined and features.monitoring
-    - role: media_stack
-      when: features is defined and features.media_stack
-    - role: ai_stack
-      when: features is defined and features.ai_stack
-    - role: photo_management
-      when: features is defined and features.photo_management
-    - role: file_management
-      when: features is defined and features.file_management
-    - role: cookbook
-      when: features is defined and features.cookbook
-    - role: piper
-      when: features is defined and features.piper
-    - role: voice_assistant
-      when: features is defined and features.voice_assistant
-    - role: backup
-      when: features is defined and features.backup
-    - role: power_management
-      when: features is defined and features.power_monitoring
-
-- name: "Finalize Setup"
-  hosts: frey
-  become: true
-  tasks:
-    - name: Create Maintenance Scripts Readme
-      ansible.builtin.template:
-        src: README_MAINTENANCE.sh.j2
-        dest: "{{ storage.base_dir | default('/opt/frey') }}/README_MAINTENANCE.sh"
-        owner: root
-        group: root
+    - name: Create media subdirectories
+      ansible.builtin.file:
+        path: "{{ storage.base_dir | default('/opt/frey')}}"
+        state: directory
+        owner: "{{ user.uid }}"
+        group: "{{ user.gid }}"
         mode: '0755'
-      vars:
-        health_check_urls: >
-          {{ [
-            'http://traefik.' ~ (network.domain_name | default('local')),
-            'http://portainer.' ~ (network.domain_name | default('local')),
-            'http://dockge.' ~ (network.domain_name | default('local'))
-          ] + (network.dns_rewrites | default([])) | map('extract', attribute='name') | map('regex_replace', '^(.*)$', 'http://\\1.' ~ (network.domain_name | default('local'))) | list }}
 
-    - name: Display Maintenance Information
-      ansible.builtin.debug:
-        msg: |
-          =============================================================================
-          Frey Ansible Deployment Complete!
-          =============================================================================
-          - Traefik Dashboard: http://traefik.{{ network.domain_name | default('local') }}
-          - Portainer:         http://portainer.{{ network.domain_name | default('local') }}
-          - Dockge:            http://dockge.{{ network.domain_name | default('local') }}
-
-          For maintenance scripts, see the generated file:
-          echo "Health Check:    sudo {{ (storage.base_dir | default('/opt/frey')) }}/scripts/health_check.sh"
-          echo "Maintenance:     sudo {{ (storage.base_dir | default('/opt/frey')) }}/scripts/maintenance.sh"
-          echo "Optimization:    sudo {{ (storage.base_dir | default('/opt/frey')) }}/scripts/optimize.sh"
-
-  roles:    
+  roles:
+    # Core Infrastructure
     - role: security
       tags: [security]
-      when: (enable_ufw | default(false)) or (enable_fail2ban | default(false))
+      when: security.ufw.enable or security.fail2ban.enable
 
-    - role: ssd_optimization
-      tags: [ssd, optimization]
-      when: enable_ssd_optimization | default(false)
-    
-    - role: geerlingguy.docker
+    # - role: ssd_optimization
+    #   tags: [ssd, optimization]
+    #   when: optimization.ssd.enable
+
+    - role: docker_minimal
       tags: [docker, base]
 
-    - role: directories
-      tags: [directories, base]
-    
-    - role: infrastructure
-      tags: [infrastructure, management]
-      when: features is defined and features.infrastructure
-    
-    
-
+    # Network and Management
     - role: wifi_access_point
       tags: [wifi, networking]
-      when: features is defined and features.wifi_access_point
-    
+      when: features.wifi_access_point
+
+    - role: infrastructure
+      tags: [infrastructure, management]
+      when: features.infrastructure
+
     - role: dockge
       tags: [dockge, management]
-    
+
+    # Services
     - role: monitoring
       tags: [monitoring]
-      when: features is defined and features.monitoring
+      when: features.monitoring
 
-    - role: media_stack
+    - role: media
       tags: [media]
-      when: features is defined and features.media_stack
+      when: features.media
 
-    - role: ai_stack
-      tags: [ai]
-      when: features is defined and features.ai_stack
+    # - role: ai_stack
+    #   tags: [ai]
+    #   when: features.ai_stack
 
-    - role: photo_management
-      tags: [photos]
-      when: features is defined and features.photo_management
+    # - role: photo_management
+    #   tags: [photos]
+    #   when: features.photo_management
 
-    - role: file_management
-      tags: [files]
-      when: features is defined and features.file_management
-    
-    - role: cookbook
-      tags: [cookbook, services]
-      when: features is defined and features.cookbook
-    
-    - role: piper
-      tags: [piper, voice, ai]
-      when: features is defined and features.piper
+    # - role: file_management
+    #   tags: [files]
+    #   when: features.file_management
 
-    - role: voice_assistant
-      tags: [voice, ai]
-      when: features is defined and features.voice_assistant
+    # - role: cookbook
+    #   tags: [cookbook, services]
+    #   when: features.cookbook
 
-    - role: backup
-      tags: [backup]
-      when: features is defined and features.backup
-    
-    - role: power_management
-      tags: [power]
-      when: enable_power_monitoring | default(false)
+    # - role: piper
+    #   tags: [piper, voice, ai]
+    #   when: features.piper
+
+    # - role: voice_assistant
+    #   tags: [voice, ai]
+    #   when: features.voice_assistant
+
+    # - role: backup
+    #   tags: [backup]
+    #   when: features.backup
+
+    # - role: power_management
+    #   tags: [power]
+    #   when: features.power_monitoring
 
   post_tasks:
     - name: Copy maintenance scripts to target
@@ -188,37 +127,15 @@
         mode: '0755'
       tags: always
 
-    - name: Display service URLs
-      ansible.builtin.debug:
-        msg: |
-          
-          🎯 DEPLOYMENT COMPLETED! Your services are available at:
-          {% for service in (network.dns_rewrites | default([])) %}
-          - http://{{ service.name }}.{{ network.domain_name | default('local') }}
-          {% endfor %}
-          
-          🔑 DEFAULT CREDENTIALS (CHANGE IMMEDIATELY!):
-          qBittorrent:     admin / {{ (media.qbittorrent.default_password | default('changeme')) }}
-          Grafana:         admin / {{ (monitoring.grafana.default_password | default('changeme')) }}
-          Code Server:     Password: {{ (media.code_server.default_password | default('changeme')) }}
-          
-          ⚡ NEXT STEPS:
-          1. Change all default passwords!
-          2. Configure your media indexers in Prowlarr
-          3. Set up monitoring dashboards in Grafana
-          4. Access Dockge for easy container management
-          
-          📖 Happy self-hosting! 🏠✨
-      tags: always
-
     - name: Create maintenance reminder
-      ansible.builtin.copy:
-        content: |
-          #!/bin/bash
-          echo "🔧 Maintenance Scripts Available:"
-          echo "Health Check:    sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/health_check.sh"
-          echo "Maintenance:     sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/maintenance.sh"  
-          echo "Optimization:    sudo {{ storage.base_dir | default('/opt/frey') }}/scripts/optimize.sh"
-        dest: "{{ base_dir }}/README_MAINTENANCE.sh"
+      ansible.builtin.template:
+        src: README_MAINTENANCE.sh.j2
+        dest: "{{ storage.base_dir }}/README_MAINTENANCE.sh"
         mode: '0755'
-      tags: always
+      vars:
+        health_check_urls: >
+          {{ [
+            'http://traefik.' ~ (network.domain_name | default('local')),
+            'http://portainer.' ~ (network.domain_name | default('local')),
+            'http://dockge.' ~ (network.domain_name | default('local'))
+          ] + (network.dns_rewrites | default([])) | map(attribute='name') | map('regex_replace', '^(.*)$', 'http://\\1.' ~ (network.domain_name | default('local'))) | list }}

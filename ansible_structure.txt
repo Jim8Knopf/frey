@@ -22,7 +22,7 @@ pi5-hub-ansible/
 │   ├── directories/            # Verzeichnis-Setup
 │   ├── dockge/                # Docker Management UI
 │   ├── monitoring/             # Prometheus, Grafana, etc.
-│   ├── media_stack/           # Jellyfin, Sonarr, etc.
+│   ├── media/           # Jellyfin, Sonarr, etc.
 │   ├── ai_stack/              # Ollama, Open WebUI
 │   ├── photo_management/       # Immich
 │   ├── homeassistant/         # Home Assistant
