@@ -7,7 +7,7 @@ features:
   networking: true
   wifi_access_point: true
   media: true
-  monitoring: false
+  monitoring: true
   file_management: false
   ai_stack: false
   photo_management: false

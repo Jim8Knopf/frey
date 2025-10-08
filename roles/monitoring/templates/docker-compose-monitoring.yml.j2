@@ -88,7 +88,7 @@ services:
     container_name: promtail
     restart: unless-stopped
     volumes:
-      - "{{ monitoring.logs }}:/var/log:ro"
+      - "{{ monitoring.dir }}/logs:/var/log:ro"
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - "{{ storage.appdata_dir }}/promtail:/etc/promtail"
     command: -config.file=/etc/promtail/config.yml
