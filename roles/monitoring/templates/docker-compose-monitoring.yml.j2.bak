@@ -1,30 +1,4 @@
 services:
-  dockge:
-    image: louislam/dockge:1
-    container_name: dockge
-    restart: unless-stopped
-    ports:
-      - "{{ ports.infrastructure.dockge }}:5001"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - "{{ storage.appdata_dir }}/dockge:/app/data"
-      - "{{ docker.stacks }}:/opt/stacks"
-    environment:
-      - DOCKGE_STACKS_DIR=/opt/stacks
-      - DOCKGE_ENABLE_CONSOLE=true
-    networks:
-      proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=proxy"
-      - "traefik.http.routers.dockge.rule=Host(`dockge.{{ network.domain_name }}`)"
-      - "traefik.http.routers.dockge.entrypoints=web,websecure"
-      - "traefik.http.services.dockge.loadbalancer.server.port=5001"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.dockge.middlewares=local-ipwhitelist"
-
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -125,18 +99,14 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD={{ monitoring.grafana.default_password | default('admin123') }}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
-    networks:
-      proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=proxy"
       - "traefik.http.routers.grafana.rule=Host(`grafana.{{ network.domain_name | default('local') }}`)"
       - "traefik.http.routers.grafana.entrypoints=web"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.grafana.middlewares=local-ipwhitelist"
+    networks:
+      - default
+      - proxy
 
   loki:
     image: grafana/loki:latest
@@ -146,18 +116,7 @@ services:
       - "{{ ports.monitoring.loki }}:3100"
     volumes:
       - "{{ storage.appdata_dir }}/loki:/loki"
-    networks:
-      proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=proxy"
-      - "traefik.http.routers.loki.rule=Host(`loki.{{ network.domain_name }}`)"
-      - "traefik.http.routers.loki.entrypoints=web,websecure"
-      - "traefik.http.services.loki.loadbalancer.server.port=3100"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.loki.middlewares=local-ipwhitelist"
+    # Loki will read /etc/loki/local-config.yaml if present; we also mount storage at /loki for indexes
 
   promtail:
     image: grafana/promtail:latest
@@ -168,9 +127,6 @@ services:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - "{{ storage.appdata_dir }}/promtail:/etc/promtail"
     command: -config.file=/etc/promtail/config.yml
-    networks:
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
 
   uptime-kuma:
     image: louislam/uptime-kuma:1
@@ -181,6 +137,7 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/uptime-kuma:/app/data"
       - /var/run/docker.sock:/var/run/docker.sock:ro
+
     networks:
       proxy:              # For Traefik access
       localdns:          # For DNS resolution
@@ -188,11 +145,11 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
-      - "traefik.http.routers.uptime.rule=Host(`uptime.{{ network.domain_name }}`)"
-      - "traefik.http.routers.uptime.entrypoints=web,websecure"
-      - "traefik.http.services.uptime.loadbalancer.server.port=3001"
+      - "traefik.http.routers.speedtest.rule=Host(`speedtest.{{ network.domain_name }}`)"
+      - "traefik.http.routers.speedtest.entrypoints=web,websecure"
+      - "traefik.http.services.speedtest.loadbalancer.server.port=80"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.uptime.middlewares=local-ipwhitelist"
+      - "traefik.http.routers.speedtest.middlewares=local-ipwhitelist"
 
   watchtower:
     image: containrrr/watchtower:latest
@@ -205,9 +162,6 @@ services:
       - WATCHTOWER_POLL_INTERVAL={{ automation.watchtower_interval }}
       - WATCHTOWER_INCLUDE_RESTARTING=true
     command: --schedule "0 0 2 * * *"  # 2 AM daily
-    networks:
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
 
   speedtest-tracker:
     image: lscr.io/linuxserver/speedtest-tracker:latest
@@ -234,27 +188,3 @@ services:
       - "traefik.http.services.speedtest.loadbalancer.server.port=80"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.speedtest.middlewares=local-ipwhitelist"
-
-networks:
-  # Traefik routing - all web-accessible services join this
-  proxy:
-    external: true
-  
-  # DNS resolution between containers
-  localdns:
-    external: true
-  
-  # Service-specific network for monitoring
-  monitoring_network:
-    name: monitoring_network
-    driver: bridge
-    enable_ipv6: false
-    internal: false
-    attachable: true
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.20.5.0/24  # Monitoring services subnet
-    labels:
-      com.docker.compose.network: monitoring_network
-      com.docker.compose.project: monitoring

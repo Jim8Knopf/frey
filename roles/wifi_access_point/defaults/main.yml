@@ -2,18 +2,31 @@
 # defaults file for wifi_access_point
 
 wifi:
+  # Network interface to use for the access point
   interface: wlan1
+  # Country code for regulatory domain (affects available channels and power levels)
   country: DE
+  # WiFi channel (1-11 for 2.4GHz)
   channel: 6
-  ip: "10.20.30.1"
-  network: "10.20.30.0/24"
-  dhcp_range_start: "10.20.30.50"
-  dhcp_range_end: "10.20.30.150"
-  ssid: "Frey"
-  password: "ChangeMe123!"  # Make sure to change this
-  hw_mode: "g"
-  ieee80211n: 1
-  wmm_enabled: 1
-  macaddr_acl: 0
-  auth_algs: 1
-  ignore_broadcast_ssid: 0
+  
+  # Network configuration
+  ip: "10.20.0.1"              # IP address of the access point
+  network: "10.20.0.0/24"      # Network range for WiFi clients
+  dhcp_range_start: "10.20.0.50"  # Start of DHCP pool
+  dhcp_range_end: "10.20.0.150"   # End of DHCP pool
+  
+  # WiFi security settings
+  ssid: "Frey"                 # Network name
+  # Default password - IMPORTANT: Override this in your group_vars/host_vars
+  # This default is only for development/testing and will be rejected in production
+  password: "ChangeMe123!"     
+  
+  # WiFi protocol settings
+  hw_mode: "g"                 # g = 2.4GHz
+  ieee80211n: 1                # Enable 802.11n
+  wmm_enabled: 1               # Enable QoS
+  
+  # Access control settings
+  macaddr_acl: 0               # 0 = Accept unless in deny list, 1 = Deny unless in accept list
+  auth_algs: 1                 # 1 = WPA, 2 = WEP, 3 = Both
+  ignore_broadcast_ssid: 0     # 0 = Broadcast SSID, 1 = Hide SSID

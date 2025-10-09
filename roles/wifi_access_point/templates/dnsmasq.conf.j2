@@ -36,8 +36,10 @@ log-facility=/var/log/dnsmasq.log
 log-debug
 
 # DNS rewrites for local services
+# Point all .frey domains to the WiFi AP gateway IP so clients on the AP network
+# can access services. The Pi will route traffic appropriately.
 {% if network.dns_rewrites is defined %}
 {% for service in network.dns_rewrites %}
-address=/{{ service.name }}.{{ network.domain_name }}/{{ ansible_host }}
+address=/{{ service.name }}.{{ network.domain_name }}/{{ wifi.ip }}
 {% endfor %}
 {% endif %}

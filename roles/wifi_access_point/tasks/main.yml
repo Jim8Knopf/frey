@@ -1,5 +1,18 @@
 ---
-# tasks file for wifi_access_point
+# ==============================================================================
+# WiFi Access Point Role - Main Tasks
+# ==============================================================================
+# This role configures a Raspberry Pi as a WiFi Access Point while maintaining
+# its existing WiFi client connection (dual-interface setup).
+#
+# Architecture:
+# - wlan0: Client interface (connects to existing WiFi for internet)
+# - wlan1: Access Point interface (provides WiFi network to clients)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# VALIDATION & PREREQUISITES
+# ------------------------------------------------------------------------------
 
 - name: Assert required variables are defined
   ansible.builtin.assert:
@@ -25,15 +38,23 @@
     msg: "ERROR: Your wireless hardware does not report AP mode support. Cannot proceed."
   when: "'AP' not in iw_list_output.stdout"
 
+# ------------------------------------------------------------------------------
+# PACKAGE INSTALLATION
+# ------------------------------------------------------------------------------
+
 - name: Install required packages for WiFi AP
   ansible.builtin.apt:
     name:
-      - hostapd
-      - dnsmasq
-      - rfkill
-      - iw
-      - dhcpcd5
+      - hostapd      # Creates the WiFi access point
+      - dnsmasq      # Provides DHCP and DNS services
+      - rfkill       # Manages radio killswitches
+      - iw           # Wireless configuration tool
+      - dhcpcd5      # DHCP client daemon for static IP configuration
     state: present
+
+# ------------------------------------------------------------------------------
+# SYSTEM CONFIGURATION - CONFLICTS & INTERFERENCE
+# ------------------------------------------------------------------------------
 
 - name: Check for systemd-resolved service
   ansible.builtin.stat:
@@ -69,6 +90,10 @@
     cmd: "rfkill unblock wifi"
   changed_when: false
 
+# ------------------------------------------------------------------------------
+# INTERFACE PREPARATION
+# ------------------------------------------------------------------------------
+
 - name: Stop services before configuration
   ansible.builtin.service:
     name: "{{ item }}"
@@ -89,6 +114,10 @@
     cmd: ip addr flush dev {{ wifi.interface }}
   changed_when: false
   failed_when: false
+
+# ------------------------------------------------------------------------------
+# NETWORK CONFIGURATION FILES
+# ------------------------------------------------------------------------------
 
 - name: Configure static IP for AP interface via dhcpcd
   ansible.builtin.template:
@@ -139,6 +168,10 @@
     backup: yes
   notify: restart dnsmasq
 
+# ------------------------------------------------------------------------------
+# NETWORK FORWARDING & ROUTING
+# ------------------------------------------------------------------------------
+
 - name: Enable IP forwarding
   ansible.posix.sysctl:
     name: net.ipv4.ip_forward
@@ -146,6 +179,10 @@
     sysctl_set: yes
     state: present
     reload: yes
+
+# ------------------------------------------------------------------------------
+# INTERFACE ACTIVATION
+# ------------------------------------------------------------------------------
 
 - name: Bring up AP interface
   ansible.builtin.command:
@@ -168,7 +205,14 @@
   retries: 10
   delay: 2
 
-- name: Start and enable hostapd (must start before dnsmasq)
+# ------------------------------------------------------------------------------
+# SERVICE STARTUP (ORDER MATTERS!)
+# ------------------------------------------------------------------------------
+# hostapd must start first to activate the wireless radio and establish carrier.
+# Only then can dnsmasq bind to the interface successfully.
+# ------------------------------------------------------------------------------
+
+- name: Start and enable hostapd (activates the wireless radio)
   ansible.builtin.service:
     name: hostapd
     state: started
@@ -178,7 +222,7 @@
   ansible.builtin.pause:
     seconds: 3
 
-- name: Verify interface has carrier
+- name: Verify interface has carrier (not NO-CARRIER)
   ansible.builtin.command: ip addr show {{ wifi.interface }}
   register: interface_check
   failed_when: "'NO-CARRIER' in interface_check.stdout"
@@ -193,11 +237,18 @@
   ansible.builtin.pause:
     seconds: 2
 
-- name: Verify dnsmasq is listening
+- name: Verify dnsmasq is listening on port 53
   ansible.builtin.command: ss -ulnp
   register: dnsmasq_check
   failed_when: "':53' not in dnsmasq_check.stdout or 'dnsmasq' not in dnsmasq_check.stdout"
   changed_when: false
+
+# ------------------------------------------------------------------------------
+# NAT & MASQUERADING
+# ------------------------------------------------------------------------------
+# Configure NAT to allow WiFi AP clients to access the internet through the
+# client interface (wlan0). This makes the Pi act as a router.
+# ------------------------------------------------------------------------------
 
 - name: Ensure NAT rule is active for WiFi AP
   ansible.builtin.iptables:
@@ -208,11 +259,21 @@
     jump: MASQUERADE
     comment: "NAT for WiFi Access Point"
 
+- name: Create iptables directory if it doesn't exist
+  ansible.builtin.file:
+    path: /etc/iptables
+    state: directory
+    mode: '0755'
+
 - name: Save iptables rules
   ansible.builtin.shell:
     cmd: iptables-save > /etc/iptables/rules.v4
   changed_when: false
   failed_when: false
+
+# ------------------------------------------------------------------------------
+# POST-CONFIGURATION
+# ------------------------------------------------------------------------------
 
 - name: Gather service facts to check for Docker
   ansible.builtin.service_facts:

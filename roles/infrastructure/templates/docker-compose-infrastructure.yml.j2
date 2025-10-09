@@ -3,21 +3,28 @@ services:
     image: traefik:latest
     container_name: traefik
     restart: unless-stopped
+    # Publish ports as specified in architecture guide
     ports:
-      - "{{ (ports.infrastructure.traefik | default(80)) }}:80"
-      - "443:443" # For future HTTPS
+      - "80:80"       # HTTP - accessible from WiFi AP
+      - "443:443"     # HTTPS - accessible from WiFi AP
+      - "127.0.0.1:{{ ports.infrastructure.traefik_dashboard }}:8080" # Dashboard (localhost only)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - "{{storage.appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
       - "{{storage.appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
     networks:
-      infrastructure_network:
-      localdns:
+      proxy:              # Required for Traefik routing
+      localdns:          # Required for DNS resolution
+      infrastructure_network:  # Service-specific network
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy"  # Explicitly specify proxy network
       - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name | default(network.domain_name | default('local')) }}`)"
-      - "traefik.http.routers.traefik.entrypoints=web"
+      - "traefik.http.routers.traefik.entrypoints=web,websecure"  # Enable both HTTP and HTTPS
       - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+      # Add IP whitelist middleware as per guide
+      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
+      - "traefik.http.routers.traefik.middlewares=local-ipwhitelist"
 
   portainer:
     image: portainer/portainer-ce:latest
@@ -29,23 +36,26 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{storage.appdata_dir }}/portainer/data:/data"
     networks:
-      infrastructure_network:
-      localdns:
+      proxy:              # Required for Traefik routing
+      localdns:          # Required for DNS resolution
+      infrastructure_network:  # Service-specific network
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy"  # Explicitly specify proxy network
       - "traefik.http.routers.portainer.rule=Host(`portainer.{{ domain_name | default(network.domain_name | default('local')) }}`)"
-      - "traefik.http.routers.portainer.entrypoints=web"
+      - "traefik.http.routers.portainer.entrypoints=web,websecure"  # Enable both HTTP and HTTPS
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
-# Add network definitions at the end
+      # Add IP whitelist middleware as per guide
+      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
+      - "traefik.http.routers.portainer.middlewares=local-ipwhitelist"
+# Network definitions as per architecture guide
 networks:
-  infrastructure_network:
+  proxy:
+    external: true            # Main network for Traefik routing
+  localdns:
+    external: true           # For DNS resolution
+  infrastructure_network:    # Service-specific network
     name: infrastructure_network
     ipam:
       config:
-        - subnet: 10.20.3.0/24
-  localdns:
-    external: true
-
-networks:
-  proxy:
-    external: true
+        - subnet: 10.20.3.0/24  # As defined in group_vars

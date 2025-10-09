@@ -75,8 +75,8 @@
       tags: [infrastructure, management]
       when: features.infrastructure
 
-    - role: dockge
-      tags: [dockge, management]
+    # - role: dockge
+    #   tags: [dockge, management]
 
     # Services
     - role: monitoring

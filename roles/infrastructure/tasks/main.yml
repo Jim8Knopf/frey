@@ -1,5 +1,5 @@
 ---
-- name: Setup media stack user
+- name: Setup intfrasructure stack user
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "infrastructure" 
@@ -22,10 +22,14 @@
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
 
-- name: Create proxy network for Traefik
+- name: Create required Docker networks
   community.docker.docker_network:
-    name: proxy
+    name: "{{ item }}"
     state: present
+    driver: bridge
+  loop:
+    - proxy      # For Traefik routing
+    - localdns   # For DNS resolution
 
 - name: Start infrastructure containers using compose
   community.docker.docker_compose_v2:

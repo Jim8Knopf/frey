@@ -43,6 +43,18 @@ network:
   domain_name: frey
   timezone: Australia/Hobart
   dns_rewrites:
+    # Infrastructure services
+    - name: traefik
+    - name: portainer
+    - name: dockge
+    # Monitoring services
+    - name: grafana
+    - name: prometheus
+    - name: metrics     # node-exporter
+    - name: cadvisor
+    - name: speedtest
+    - name: uptime-kuma
+    # Media services
     - name: jellyfin
     - name: sonarr
     - name: radarr
@@ -50,68 +62,42 @@ network:
     - name: audiobookshelf
     - name: qbittorrent
     - name: prowlarr
-    - name: dockge
-    - name: portainer
-    - name: grafana
-    - name: uptime-kuma
-    - name: traefik
     - name: immich
     - name: cookbook
     - name: jellyseerr
     - name: lidarr
     - name: jellystat
-    - name: speedtest
 # ==============================================================================
 # ROLE: WIFI_ACCESS_POINT
 # ==============================================================================
 wifi:
-  ssid: "FreyHub"
-  password: "FreyHubConnect!"
-  channel: 7
-  country: "AU"
-  ip: "10.20.30.1"
-  dhcp_range_start: "10.20.30.50"
-  dhcp_range_end: "10.20.30.150"
-  interface: "wlan1"
-  client_interface: "wlan0"
-  network: "10.20.30.0/24"
-  hw_mode: g
-  macaddr_acl: 0
-  auth_algs: 1
-  ignore_broadcast_ssid: 0
-  ieee80211n: 1
-  wmm_enabled: 1
-
-# ==============================================================================
-# TODO SERVICE PORTS 
-# ==============================================================================
-ports:
-  photos_home:
-    immich: 2283
-    homeassistant: 8123
-  infrastructure:
-    traefik: 80
-    traefik_dashboard: 8081
-    portainer: 9000
-    dockge: 5001
-  monitoring:
-    grafana: 3001
-    prometheus: 9090
-    node_exporter: 9100
-    cadvisor: 8082
-    loki: 3100
-    promtail: 9080
-    uptime_kuma: 3002
-  file_management:
-    filebrowser: 8083
-    code_server: 8084
-  network_tools:
-    speedtest: 8085
-    adguardhome: 3053
-  cookbook:
-    cookbook: 8090
-  voice_assistant:
-    piper: 10200
+  # Network identification
+  ssid: "FreyHub"                 # Network name visible to clients
+  password: "{{ wifi_ap.password }}"  # Password from secrets.yml
+  
+  # Geographic settings (affects channels and power levels)
+  country: "AU"                   # Two-letter country code
+  
+  # Network configuration
+  ip: "10.20.0.1"                # AP's IP address
+  network: "10.20.0.0/24"        # Network subnet for WiFi clients
+  dhcp_range_start: "10.20.0.50" # Start of DHCP address pool
+  dhcp_range_end: "10.20.0.150"  # End of DHCP address pool
+  
+  # Interface configuration
+  interface: "wlan1"             # WiFi interface for AP mode
+  client_interface: "wlan0"      # Interface for internet connection
+  
+  # WiFi radio settings
+  channel: 7                     # WiFi channel (1-11 for 2.4GHz)
+  hw_mode: g                     # g = 2.4GHz band
+  ieee80211n: 1                  # Enable 802.11n features
+  wmm_enabled: 1                 # Enable WiFi multimedia (QoS)
+  
+  # Security settings
+  macaddr_acl: 0                 # MAC address filtering (0=disabled, 1=enabled)
+  auth_algs: 1                   # Authentication (1=WPA, 2=WEP, 3=both)
+  ignore_broadcast_ssid: 0       # Hide SSID (0=visible, 1=hidden)
 
 # ==============================================================================
 # SECURITY SETTINGS
@@ -286,23 +272,14 @@ media:
 
   network:
     name: "media_network"
-    subnet: "172.20.0.0/24"
-    gateway: "172.20.0.1"
+    subnet: "10.20.0.0/24"
+    gateway: "10.20.0.1"
 
   vpn:
     enabled: false
     port: 8888
 
   services:
-    jellyseerr:
-      enabled: true
-      image: "fallenbagel/jellyseerr:latest"
-      container_name: "jellyseerr"
-      port: 5055
-      internal_ip: "172.20.0.40"
-      volumes:
-        - "{{ storage.appdata_dir }}/jellyseerr:/app/config"
-
     audiobookshelf:
       enabled: true
       image: "ghcr.io/advplyr/audiobookshelf:latest"
@@ -310,7 +287,7 @@ media:
       port: 13378
       ports: 
         - 13378:80
-      internal_ip: "172.20.0.50"
+      internal_ip: "10.20.0.50"
       volumes:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
@@ -321,11 +298,20 @@ media:
       image: "lscr.io/linuxserver/jellyfin:latest"
       container_name: "jellyfin"
       port: 8096
-      internal_ip: "172.20.0.10"
+      internal_ip: "10.20.0.10"
       volumes:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
         - "{{ media.dir }}/movies:/data/movies"
+    
+    jellyseerr:
+      enabled: true
+      image: "fallenbagel/jellyseerr:latest"
+      container_name: "jellyseerr"
+      port: 5055
+      internal_ip: "10.20.0.40"
+      volumes:
+        - "{{ storage.appdata_dir }}/jellyseerr:/app/config"
     
     qbittorrent:
       enabled: true
@@ -336,7 +322,7 @@ media:
        - "{{ media.vpn.port }}:{{ media.vpn.port }}"
        - 8080:8080 # Web UI
        - 6881:6881 # Torrent Port
-      internal_ip: "172.20.0.30"
+      internal_ip: "10.20.0.30"
       volumes:
         - "{{ storage.appdata_dir }}/qbittorrent:/config"
         - "{{ media.downloads }}:/downloads"
@@ -351,7 +337,7 @@ media:
       image: "lscr.io/linuxserver/nzbget:latest"
       container_name: "nzbget"
       port: 6789
-      internal_ip: "172.20.0.31"
+      internal_ip: "10.20.0.31"
       volumes:
         - "{{ storage.appdata_dir }}/nzbget:/config"
         - "{{ media.downloads }}:/downloads"
@@ -364,7 +350,7 @@ media:
       image: "lscr.io/linuxserver/prowlarr:latest"
       container_name: "prowlarr"
       port: 9696
-      internal_ip: "172.20.0.22"
+      internal_ip: "10.20.0.22"
       volumes:
         - "{{ storage.appdata_dir }}/prowlarr:/config"
 
@@ -373,7 +359,7 @@ media:
       image: "ghcr.io/flaresolverr/flaresolverr:latest"
       container_name: "flaresolverr"
       port: 8191
-      internal_ip: "172.20.0.19"
+      internal_ip: "10.20.0.19"
       volumes:
         - "{{ storage.appdata_dir }}/prowlarr:/config"
       environment:
@@ -386,7 +372,7 @@ media:
       image: "lscr.io/linuxserver/sonarr:latest"
       container_name: "sonarr"
       port: 8989
-      internal_ip: "172.20.0.20"
+      internal_ip: "10.20.0.20"
       volumes:
         - "{{ storage.appdata_dir }}/sonarr:/config"
         - "{{ media.downloads }}:/downloads"
@@ -397,7 +383,7 @@ media:
       image: "lscr.io/linuxserver/radarr:latest"
       container_name: "radarr"
       port: 7878
-      internal_ip: "172.20.0.21"
+      internal_ip: "10.20.0.21"
       volumes:
         - "{{ storage.appdata_dir }}/radarr:/config"
         - "{{ media.downloads }}:/downloads"
@@ -408,7 +394,7 @@ media:
       image: "lscr.io/linuxserver/bazarr:latest"
       container_name: "bazarr"
       port: 6767
-      internal_ip: "172.20.0.23"
+      internal_ip: "10.20.0.23"
       volumes:
         - "{{ storage.appdata_dir }}/bazarr:/config"
         - "{{ media.dir }}/movies:/movies"
@@ -419,7 +405,7 @@ media:
       image: "lscr.io/linuxserver/lidarr:latest"
       container_name: "lidarr"
       port: 8686
-      internal_ip: "172.20.0.24"
+      internal_ip: "10.20.0.24"
       volumes:
         - "{{ storage.appdata_dir }}/lidarr:/config"
         - "{{ media.downloads }}:/downloads"
@@ -430,7 +416,7 @@ media:
       image: "markbeep/audiobookrequest:latest"
       container_name: "audiobookrequest"
       port: 5432
-      internal_ip: "172.20.0.32"
+      internal_ip: "10.20.0.32"
       volumes:
         - ./config:/config
       environment:
@@ -442,7 +428,7 @@ media:
       image: "cyfershep/jellystat:latest"
       container_name: "jellystat"
       port: 8086
-      internal_ip: "172.20.0.60"
+      internal_ip: "10.20.0.60"
       volumes:
         - "{{ storage.appdata_dir }}/jellystat/config.json:/app/config/config.json"
 
@@ -450,7 +436,7 @@ media:
       enabled: false # Jellystat dependency
       image: "postgres:15"
       container_name: "jellystat-db"
-      internal_ip: "172.20.0.61"
+      internal_ip: "10.20.0.61"
       volumes:
         - "{{ storage.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
       environment:
@@ -462,7 +448,7 @@ media:
       enabled: false
       image: "ghcr.io/jmbannon/ytdl-sub:latest"
       container_name: "ytdl-sub"
-      internal_ip: "172.20.0.70"
+      internal_ip: "10.20.0.70"
       volumes:
         - "{{ storage.appdata_dir }}/ytdl-sub:/config"
         - "{{ media.downloads }}:/downloads"
