@@ -53,5 +53,10 @@ networks:
     ipam:
       config:
         - subnet: 10.20.0.0/24
-  proxy:
+  automation_network:
+    name: automation_network
+    ipam:
+      config:
+        - subnet: 10.20.2.0/24
+  localdns:
     external: true

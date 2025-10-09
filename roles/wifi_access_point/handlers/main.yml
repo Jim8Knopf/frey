@@ -1,8 +1,9 @@
 ---
 # handlers file for wifi_access_point
-- name: restart dnsmasq
+
+- name: restart dhcpcd
   ansible.builtin.service:
-    name: dnsmasq
+    name: dhcpcd
     state: restarted
 
 - name: restart hostapd
@@ -10,32 +11,11 @@
     name: hostapd
     state: restarted
 
-- name: restart dhcpcd
+- name: restart dnsmasq
   ansible.builtin.service:
-    name: dhcpcd
+    name: dnsmasq
     state: restarted
 
-- name: reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: yes
-
-- name: restart networking
-  ansible.builtin.service:
-    name: networking
-    state: restarted
-
-- name: restart netfilter-persistent
-  ansible.builtin.service:
-    name: netfilter-persistent
-    state: restarted
-
-- name: save iptables rules
-  ansible.builtin.command:
-    cmd: netfilter-persistent save
-  changed_when: false
-
-- name: restart networkmanager
-  ansible.builtin.systemd:
-    name: NetworkManager
-    state: restarted
-  ignore_errors: yes
+- name: restart iptables
+  ansible.builtin.shell:
+    cmd: "iptables-restore < /etc/iptables.rules.v4"

@@ -10,7 +10,7 @@ driver=nl80211
 ssid={{ wifi.ssid }}
 country_code={{ wifi.country }}
 hw_mode={{ wifi.hw_mode }}
-channel={{ wifi.channel | default(6) }}
+channel={{ wifi.channel }}  # Using configured channel from variables
 
 # Security settings
 macaddr_acl={{ wifi.macaddr_acl }}
@@ -36,4 +36,4 @@ ieee80211h=1
 # Logging
 logger_syslog=-1
 logger_stdout=-1
-logger_stdout_level=2
+logger_stdout_level=0

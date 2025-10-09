@@ -1,6 +1,5 @@
 ---
-- name: restart fail2ban
-  ansible.builtin.systemd:
-    name: fail2ban
+- name: restart hostapd
+  ansible.builtin.service:
+    name: hostapd
     state: restarted
-    enabled: yes

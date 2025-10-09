@@ -6,20 +6,18 @@ services:
     ports:
       - "{{ (ports.infrastructure.traefik | default(80)) }}:80"
       - "443:443" # For future HTTPS
-  # Traefik dashboard is exposed internally on port 8080 and routed via Traefik rules.
-  # Avoid publishing the dashboard to the host to prevent port collisions on busy hosts.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - "{{storage.appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
       - "{{storage.appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
     networks:
-      - proxy
+      infrastructure_network:
+      localdns:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.traefik.entrypoints=web"
       - "traefik.http.services.traefik.loadbalancer.server.port=8080"
-
 
   portainer:
     image: portainer/portainer-ce:latest
@@ -31,12 +29,22 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{storage.appdata_dir }}/portainer/data:/data"
     networks:
-      - proxy
+      infrastructure_network:
+      localdns:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.portainer.rule=Host(`portainer.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.portainer.entrypoints=web"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+# Add network definitions at the end
+networks:
+  infrastructure_network:
+    name: infrastructure_network
+    ipam:
+      config:
+        - subnet: 10.20.3.0/24
+  localdns:
+    external: true
 
 networks:
   proxy:

@@ -55,6 +55,10 @@
 
   roles:
     # Core Infrastructure
+    - role: wifi_access_point
+      tags: [wifi, networking]
+      when: features.wifi_access_point
+
     - role: security
       tags: [security]
       when: security.ufw.enable or security.fail2ban.enable
@@ -67,10 +71,6 @@
       tags: [docker, base]
 
     # Network and Management
-    - role: wifi_access_point
-      tags: [wifi, networking]
-      when: features.wifi_access_point
-
     - role: infrastructure
       tags: [infrastructure, management]
       when: features.infrastructure

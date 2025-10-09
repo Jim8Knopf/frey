@@ -19,5 +19,13 @@ services:
       - "traefik.http.routers.dockge.rule=Host(`dockge.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.dockge.entrypoints=web"
       - "traefik.http.services.dockge.loadbalancer.server.port=5001"
+networks:
+  dockge_network:
+    name: dockge_network
+    ipam:
+      config:
+        - subnet: 10.20.4.0/24
+  localdns:
+    external: true
 
     

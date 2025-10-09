@@ -1,37 +1,38 @@
 networks:
-  servarrnetwork:
-    name: servarrnetwork
+  media_network:
+    name: media_network
     ipam:
       config:
-        - subnet: 172.39.0.0/24
-  proxy:
+        - subnet: 10.20.30.0/24
+  localdns:
     external: true
 
 services:
   {% if media.vpn.enabled | default(false) -%}
-  gluetun:
-    image: qmcgaw/gluetun
-    container_name: gluetun
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun # If running on an LXC see readme for more info.
-    networks:
-      servarrnetwork:
-        ipv4_address: 172.39.0.2
-    ports:
-      - "{{ media.vpn.port }}:{{ media.vpn.port }}" # airvpn forwarded port, pulled from .env
-      {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined -%}
-      - "{{ service_config.port }}:{{ service_config.port }}" # Port for {{ service_name }}
-      {% endfor -%}
-    volumes:
-      - ./gluetun:/gluetun
-    healthcheck:
-      test: ping -c 1 www.google.com || exit 1
-      interval: 20s
-      timeout: 10s
-      retries: 5
-    restart: unless-stopped
+    gluetun:
+      image: qmcgaw/gluetun
+      container_name: gluetun
+      cap_add:
+        - NET_ADMIN
+      devices:
+        - /dev/net/tun:/dev/net/tun # If running on an LXC see readme for more info.
+      networks:
+        media_network:
+          ipv4_address: 10.20.30.2
+        localdns: {}
+      ports:
+        - "{{ media.vpn.port }}:{{ media.vpn.port }}" # airvpn forwarded port, pulled from .env
+        {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined -%}
+        - "{{ service_config.port }}:{{ service_config.port }}" # Port for {{ service_name }}
+        {% endfor -%}
+      volumes:
+        - ./gluetun:/gluetun
+      healthcheck:
+        test: ping -c 1 www.google.com || exit 1
+        interval: 20s
+        timeout: 10s
+        retries: 5
+      restart: unless-stopped
   {% endif %}
 
 {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined %}
@@ -71,9 +72,9 @@ services:
       - "traefik.http.routers.{{service_name}}.entrypoints=web"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
     networks:
-      servarrnetwork:
-        ipv4_address: 172.39.0.20
-      proxy: {}
+      media_network:
+        ipv4_address: 10.20.30.{{ 20 + loop.index }}
+      localdns: {}
 {% endif %}
 {% if service_name == 'qbittorrent' %}
     healthcheck:

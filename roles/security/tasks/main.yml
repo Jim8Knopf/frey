@@ -31,19 +31,18 @@
     port: "53"
     proto: "{{ item }}"
   loop: [ 'tcp', 'udp' ]
-  when: enable_ufw and deploy_networking
+  when: features.networking
 
 - name: Configure UFW rules for WiFi Access Point
   community.general.ufw:
     rule: allow
     port: "{{ item.port }}"
     proto: "{{ item.proto }}"
-    from: "{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
   loop:
     - { port: '53', proto: 'udp' }  # DNS
     - { port: '53', proto: 'tcp' }  # DNS
     - { port: '67', proto: 'udp' }  # DHCP
-  when: enable_ufw and deploy_wifi_access_point
+  when: features.wifi_access_point
 
 # Allow access to services from WiFi AP network
 - name: Configure UFW rules for services from WiFi AP network
@@ -51,9 +50,28 @@
     rule: allow
     port: "{{ item }}"
     proto: tcp
-    from: "{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
+    from: "{{ wifi.ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
   loop: "{{ firewall_tcp_ports }}"
-  when: enable_ufw and deploy_wifi_access_point
+  when: features.wifi_access_point
+
+- name: Configure UFW for WiFi AP forwarding
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_FORWARD_POLICY='
+    line: 'DEFAULT_FORWARD_POLICY=ACCEPT'
+  when: features.wifi_access_point
+
+- name: Add NAT rule to UFW for WiFi AP
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    block: |
+      # NAT rules for WiFi Access Point
+      *nat
+      :POSTROUTING ACCEPT [0:0]
+      -A POSTROUTING -s {{ wifi.network }} -o {{ wifi.client_interface }} -j MASQUERADE
+      COMMIT
+    marker: "# {mark} ANSIBLE MANAGED BLOCK FOR WIFI AP"
+  when: features.wifi_access_point
 
 - name: Enable UFW
   community.general.ufw:
@@ -70,6 +88,6 @@
 - name: Enable automatic security updates
   ansible.builtin.lineinfile:
     path: /etc/apt/apt.conf.d/50unattended-upgrades
-    regexp: '^//.*"${distro_id}:${distro_codename}-security";'
-    line: '        "${distro_id}:${distro_codename}-security";'
+    regexp: '^//.*"{{ ansible_distribution }}:{{ ansible_distribution_release }}-security";'
+    line: '        "{{ ansible_distribution }}:{{ ansible_distribution_release }}-security";'
     state: present

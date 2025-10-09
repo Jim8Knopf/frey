@@ -18,6 +18,9 @@ services:
       - '--storage.tsdb.retention.time=200h'
       - '--web.enable-lifecycle'
       - '--web.enable-admin-api'
+    networks:
+      monitoring_network:
+      localdns:
 
   node-exporter:
     image: prom/node-exporter:latest
@@ -34,10 +37,25 @@ services:
       - '--path.rootfs=/rootfs'
       - '--path.sysfs=/host/sys'
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      monitoring_network:
+      localdns:
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
+    networks:
+      monitoring_network:
+      localdns:
+# Add network definitions at the end
+networks:
+  monitoring_network:
+    name: monitoring_network
+    ipam:
+      config:
+        - subnet: 10.20.5.0/24
+  localdns:
+    external: true
     restart: unless-stopped
     ports:
       - "{{ ports.monitoring.cadvisor }}:8080"
