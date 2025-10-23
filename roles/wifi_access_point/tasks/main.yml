@@ -17,13 +17,13 @@
 - name: Assert required variables are defined
   ansible.builtin.assert:
     that:
-      - wifi.interface is defined
-      - wifi.ssid is defined
-      - wifi.password is defined
-      - wifi.country is defined
-      - wifi.ip is defined
-      - wifi.network is defined
-      - wifi.client_interface is defined
+      - network.wifi.interface is defined
+      - network.wifi.ssid is defined
+      - network.wifi.password is defined
+      - network.wifi.country is defined
+      - network.wifi.ip is defined
+      - network.wifi.network is defined
+      - network.wifi.client_interface is defined
     msg: "One or more required wifi_access_point variables are not set. Please check your configuration."
 
 - name: Check wireless card capabilities for AP mode
@@ -73,7 +73,7 @@
     dest: /etc/NetworkManager/conf.d/99-ansible-ap-ignore.conf
     content: |
       [keyfile]
-      unmanaged-devices=interface-name:{{ wifi.interface }}
+      unmanaged-devices=interface-name:{{ network.wifi.interface }}
     mode: '0644'
   register: nm_config
 
@@ -105,13 +105,13 @@
 
 - name: Bring down AP interface before configuration
   ansible.builtin.command:
-    cmd: ip link set {{ wifi.interface }} down
+    cmd: ip link set {{ network.wifi.interface }} down
   changed_when: false
   failed_when: false
 
 - name: Flush any existing IP addresses on AP interface
   ansible.builtin.command:
-    cmd: ip addr flush dev {{ wifi.interface }}
+    cmd: ip addr flush dev {{ network.wifi.interface }}
   changed_when: false
   failed_when: false
 
@@ -186,12 +186,12 @@
 
 - name: Bring up AP interface
   ansible.builtin.command:
-    cmd: ip link set {{ wifi.interface }} up
+    cmd: ip link set {{ network.wifi.interface }} up
   changed_when: false
 
 - name: Assign IP address to AP interface
   ansible.builtin.command:
-    cmd: ip addr add {{ wifi.ip }}/24 dev {{ wifi.interface }}
+    cmd: ip addr add {{ network.wifi.ip }}/24 dev {{ network.wifi.interface }}
   changed_when: false
   failed_when: false
 
@@ -199,9 +199,9 @@
   meta: flush_handlers
 
 - name: Wait for dhcpcd to assign IP
-  ansible.builtin.command: ip addr show {{ wifi.interface }}
+  ansible.builtin.command: ip addr show {{ network.wifi.interface }}
   register: ip_addr_output
-  until: "wifi.ip in ip_addr_output.stdout"
+  until: "network.wifi.ip in ip_addr_output.stdout"
   retries: 10
   delay: 2
 
@@ -223,7 +223,7 @@
     seconds: 3
 
 - name: Verify interface has carrier (not NO-CARRIER)
-  ansible.builtin.command: ip addr show {{ wifi.interface }}
+  ansible.builtin.command: ip addr show {{ network.wifi.interface }}
   register: interface_check
   failed_when: "'NO-CARRIER' in interface_check.stdout"
 
@@ -254,8 +254,8 @@
   ansible.builtin.iptables:
     table: nat
     chain: POSTROUTING
-    source: "{{ wifi.network }}"
-    out_interface: "{{ wifi.client_interface }}"
+    source: "{{ network.wifi.network }}"
+    out_interface: "{{ network.wifi.client_interface }}"
     jump: MASQUERADE
     comment: "NAT for WiFi Access Point"
 

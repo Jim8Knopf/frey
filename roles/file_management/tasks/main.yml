@@ -1,7 +1,7 @@
 ---
 - name: Create file management stack directory
   ansible.builtin.file:
-    path: "{{ docker.stacks }}/filetools"
+    path: "{{ storage.stacks }}/filetools"
     state: directory
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
@@ -10,13 +10,13 @@
 - name: Deploy file management tools compose file
   ansible.builtin.template:
     src: docker-compose-filetools.yml.j2
-    dest: "{{ docker.stacks }}/filetools/docker-compose.yml"
+    dest: "{{ storage.stacks }}/filetools/docker-compose.yml"
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
     mode: '0644'
 
 - name: Start file management containers using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/filetools"
+    project_src: "{{ storage.stacks }}/filetools"
     state: present
 

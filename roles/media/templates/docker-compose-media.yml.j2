@@ -47,7 +47,7 @@ services:
 
 {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined %}
   {{ service_name }}:
-    image: {{ service_config.image }}
+    image: "{{ service_config.image }}:{{ service_config.version }}"
     container_name: {{ service_name }}
     environment:
       - PUID={{ media.user.uid }}

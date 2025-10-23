@@ -32,13 +32,12 @@ media:
   services:
     audiobookshelf:
       enabled: true
-      image: "ghcr.io/advplyr/audiobookshelf:latest"
+      verion: "latest"
+      image: "ghcr.io/advplyr/audiobookshelf"
       container_name: "audiobookshelf"
-      internal_ip: "10.20.2.50"
-      port: 13378    # Container's internal port for Traefik (matching API port)
-      ports:
-        - "80:80"      # Main interface
-        - "13378:13378"  # API port
+      port: 13378    # Container's internal port for Traefik 
+      ports: 
+        - 13378:80
       volumes:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
@@ -46,12 +45,10 @@ media:
 
     jellyfin:
       enabled: true
-      image: "lscr.io/linuxserver/jellyfin:latest"
+      verion: "latest"
+      image: "lscr.io/linuxserver/jellyfin"
       container_name: "jellyfin"
-      internal_ip: "10.20.2.10"
       port: 8096   # Container's internal port for Traefik
-      ports:
-        - "8096:8096"    # Main interface
       volumes:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
@@ -59,23 +56,21 @@ media:
 
     jellyseerr:
       enabled: true
-      image: "fallenbagel/jellyseerr:latest"
+      verion: "latest"
+      image: "fallenbagel/jellyseerr"
       container_name: "jellyseerr"
-      internal_ip: "10.20.2.40"
       port: 5055   # Container's internal port for Traefik
-      ports:
-        - "5055:5055"    # Web UI
       volumes:
         - "{{ storage.appdata_dir }}/jellyseerr:/app/config"
       environment:
         - JELLYFIN_TYPE=jellyfin
-        - JELLYFIN_URL=http://jellyfin:8096
+        - JELLYFIN_URL=http://jellyfin:{{ media.services.jellyfin.port }}
 
     qbittorrent:
       enabled: true
-      image: "lscr.io/linuxserver/qbittorrent:latest"
+      verion: "latest"
+      image: "lscr.io/linuxserver/qbittorrent"
       container_name: "qbittorrent"
-      internal_ip: "10.20.2.30"
       port: 8080   # Container's internal port for Traefik
       ports: 
         - "{{ media.vpn.port }}:{{ media.vpn.port }}"  # VPN port
@@ -88,26 +83,35 @@ media:
         - "WEBUI_PORT=8080"
         - "TORRENT_PORT=6881"
         - TORRENTING_PORT={{ media.vpn.port }}
+        
+    nzbget:
+      enabled: true
+      verion: "latest"
+      image: "lscr.io/linuxserver/nzbget"
+      container_name: "nzbget"
+      port: 6789   # Container's internal port for Traefik
+      volumes:
+        - "{{ storage.appdata_dir }}/nzbget:/config"
+        - "{{ media.downloads }}:/downloads"
+        - /data:/data
+        - /etc/localtime:/etc/localtime:ro
+        - ./nzbget:/config      #TODO
 
     prowlarr:
       enabled: true
-      image: "lscr.io/linuxserver/prowlarr:latest"
+      verion: "latest"
+      image: "lscr.io/linuxserver/prowlarr"
       container_name: "prowlarr"
-      internal_ip: "10.20.2.22"
       port: 9696   # Container's internal port for Traefik
-      ports:
-        - "9696:9696"    # Web UI
       volumes:
         - "{{ storage.appdata_dir }}/prowlarr:/config"
 
     flaresolverr:
       enabled: true
-      image: "ghcr.io/flaresolverr/flaresolverr:latest"
+      verion: "latest"
+      image: "ghcr.io/flaresolverr/flaresolverr"
       container_name: "flaresolverr"
-      internal_ip: "10.20.2.19"
       port: 8191   # Container's internal port for Traefik
-      ports:
-        - "8191:8191"    # Web UI
       volumes:
         - "{{ storage.appdata_dir }}/prowlarr:/config"
       environment:
@@ -117,12 +121,10 @@ media:
 
     sonarr:
       enabled: true
-      image: "lscr.io/linuxserver/sonarr:latest"
+      verion: "latest"
+      image: "lscr.io/linuxserver/sonarr"
       container_name: "sonarr"
-      internal_ip: "10.20.2.20"
       port: 8989   # Container's internal port for Traefik
-      ports:
-        - "8989:8989"    # Web UI
       volumes:
         - "{{ storage.appdata_dir }}/sonarr:/config"
         - "{{ media.downloads }}:/downloads"
@@ -130,12 +132,10 @@ media:
 
     radarr:
       enabled: true
-      image: "lscr.io/linuxserver/radarr:latest"
+      verion: "latest"
+      image: "lscr.io/linuxserver/radarr"
       container_name: "radarr"
-      internal_ip: "10.20.2.21"
       port: 7878   # Container's internal port for Traefik
-      ports:
-        - "7878:7878"    # Web UI
       volumes:
         - "{{ storage.appdata_dir }}/radarr:/config"
         - "{{ media.downloads }}:/downloads"
@@ -143,12 +143,10 @@ media:
 
     bazarr:
       enabled: true
-      image: "lscr.io/linuxserver/bazarr:latest"
+      verion: "latest"
+      image: "lscr.io/linuxserver/bazarr"
       container_name: "bazarr"
-      internal_ip: "10.20.2.23"
       port: 6767   # Container's internal port for Traefik
-      ports:
-        - "6767:6767"    # Web UI
       volumes:
         - "{{ storage.appdata_dir }}/bazarr:/config"
         - "{{ media.dir }}/movies:/movies"
@@ -156,58 +154,41 @@ media:
 
     lidarr:
       enabled: true
-      image: "lscr.io/linuxserver/lidarr:latest"
+      verion: "latest"
+      image: "lscr.io/linuxserver/lidarr"
       container_name: "lidarr"
-      internal_ip: "10.20.2.24"
       port: 8686   # Container's internal port for Traefik
-      ports:
-        - "8686:8686"    # Web UI
       volumes:
         - "{{ storage.appdata_dir }}/lidarr:/config"
         - "{{ media.downloads }}:/downloads"
         - "{{ media.dir }}/music:/music"
-        
-    nzbget:
-      enabled: true
-      image: "lscr.io/linuxserver/nzbget:latest"
-      container_name: "nzbget"
-      internal_ip: "10.20.2.31"
-      port: 6789   # Container's internal port for Traefik
-      ports:
-        - "6789:6789"    # Web UI
-      volumes:
-        - "{{ storage.appdata_dir }}/nzbget:/config"
-        - "{{ media.downloads }}:/downloads"
-        - /data:/data
-        - /etc/localtime:/etc/localtime:ro
-        - ./nzbget:/config
 
     audiobookrequest:
       enabled: true
-      image: "markbeep/audiobookrequest:latest"
+      verion: "latest"
+      image: "markbeep/audiobookrequest"
       container_name: "audiobookrequest"
       port: 5432
-      internal_ip: "10.20.2.32"
       volumes:
         - ./config:/config
       environment:
-        - "ABR_APP__PORT=5432"
+        - "ABR_APP__PORT={{ media.services.audiobookrequest.port }}"
         - "ABR_APP__OPENAPI_ENABLED=true"
 
     jellystat:
       enabled: false
-      image: "cyfershep/jellystat:latest"
+      verion: "latest"
+      image: "cyfershep/jellystat"
       container_name: "jellystat"
       port: 8086
-      internal_ip: "10.20.2.60"
       volumes:
         - "{{ storage.appdata_dir }}/jellystat/config.json:/app/config/config.json"
 
     jellystat_db:
-      enabled: false
-      image: "postgres:15"
+      enabled: "{{ media.services.jellystat.enabled }}" # Jellystat dependency
+      version: 15
+      image: "postgres"
       container_name: "jellystat-db"
-      internal_ip: "10.20.2.61"
       volumes:
         - "{{ storage.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
       environment:
@@ -217,9 +198,9 @@ media:
 
     ytdl-sub:
       enabled: false
-      image: "ghcr.io/jmbannon/ytdl-sub:latest"
+      verion: "latest"
+      image: "ghcr.io/jmbannon/ytdl-sub"
       container_name: "ytdl-sub"
-      internal_ip: "10.20.2.70"
       volumes:
         - "{{ storage.appdata_dir }}/ytdl-sub:/config"
         - "{{ media.downloads }}:/downloads"

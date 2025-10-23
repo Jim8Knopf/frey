@@ -1,8 +1,8 @@
 # Basic DHCP and DNS server configuration
 port=53
-interface={{ wifi.interface }}
+interface={{ network.wifi.interface }}
 bind-interfaces
-listen-address={{ wifi.ip }}
+listen-address={{ network.wifi.ip }}
 
 # Process settings
 user=root
@@ -10,12 +10,12 @@ group=root
 pid-file=/var/run/dnsmasq/dnsmasq.pid
 
 # DHCP configuration
-dhcp-range={{ wifi.dhcp_range_start }},{{ wifi.dhcp_range_end }},255.255.255.0,12h
+dhcp-range={{ network.wifi.dhcp_range_start }},{{ network.wifi.dhcp_range_end }},255.255.255.0,12h
 dhcp-authoritative
 dhcp-leasefile=/var/lib/misc/dnsmasq.leases
 dhcp-lease-max=40
-dhcp-option=3,{{ wifi.ip }}  # Set default gateway
-dhcp-option=6,{{ wifi.ip }}  # Set DNS server to be the AP itself
+dhcp-option=3,{{ network.wifi.ip }}  # Set default gateway
+dhcp-option=6,{{ network.wifi.ip }}  # Set DNS server to be the AP itself
 dhcp-broadcast
 
 # DNS settings
@@ -40,6 +40,6 @@ log-debug
 # can access services. The Pi will route traffic appropriately.
 {% if network.dns_rewrites is defined %}
 {% for service in network.dns_rewrites %}
-address=/{{ service.name }}.{{ network.domain_name }}/{{ wifi.ip }}
+address=/{{ service.name }}.{{ network.domain_name }}/{{ network.wifi.ip }}
 {% endfor %}
 {% endif %}

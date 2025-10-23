@@ -50,7 +50,7 @@
     rule: allow
     port: "{{ item }}"
     proto: tcp
-    from: "{{ wifi.ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
+    from: "{{ network.wifi.ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
   loop: "{{ firewall_tcp_ports }}"
   when: features.wifi_access_point
 
@@ -68,7 +68,7 @@
       # NAT rules for WiFi Access Point
       *nat
       :POSTROUTING ACCEPT [0:0]
-      -A POSTROUTING -s {{ wifi.network }} -o {{ wifi.client_interface }} -j MASQUERADE
+      -A POSTROUTING -s {{ network.wifi.network }} -o {{ network.wifi.client_interface }} -j MASQUERADE
       COMMIT
     marker: "# {mark} ANSIBLE MANAGED BLOCK FOR WIFI AP"
   when: features.wifi_access_point

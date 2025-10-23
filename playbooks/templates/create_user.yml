@@ -30,10 +30,10 @@
 
 - name: Create docker stacks directory
   ansible.builtin.file:
-    path: "{{ docker.stacks }}/{{ stack }}"
+    path: "{{ storage.stacks }}/{{ stack }}"
     state: directory
-    owner: "{{ docker.user.uid }}"
-    group: "{{ docker.group.name }}"
+    owner: "docker"
+    group: "docker"
     mode: '0755'
 
 - name: Create {{stack}} subdirectories

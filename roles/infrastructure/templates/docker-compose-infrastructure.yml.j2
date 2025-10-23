@@ -7,7 +7,7 @@ services:
     ports:
       - "80:80"       # HTTP - accessible from WiFi AP
       - "443:443"     # HTTPS - accessible from WiFi AP
-      - "127.0.0.1:{{ ports.infrastructure.traefik_dashboard }}:8080" # Dashboard (localhost only)
+      - "{{ infrastructure.services.traefik.ports.dashboard }}:8080" # Dashboard (localhost only)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - "{{storage.appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
@@ -31,7 +31,7 @@ services:
     container_name: portainer
     restart: unless-stopped
     ports:
-      - "{{ (ports.infrastructure.portainer | default(9000)) }}:9000"
+      - "{{ (infrastructure.services.portainer.port | default(9000)) }}:9000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{storage.appdata_dir }}/portainer/data:/data"

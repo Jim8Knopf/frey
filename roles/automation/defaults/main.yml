@@ -2,9 +2,5 @@
 deploy_automation: false
 
 automation:
-  ports:
-    ollama: 11434
-    open_webui: 3003
-    n8n: 5678
   ollama:
     gpu_enabled: false

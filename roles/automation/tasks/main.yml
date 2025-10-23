@@ -9,12 +9,12 @@
 - name: Deploy automation stack compose file
   ansible.builtin.template:
     src: docker-compose-automation.yml.j2
-    dest: "{{ docker.stacks }}/automation/docker-compose.yml"
+    dest: "{{ storage.stacks }}/automation/docker-compose.yml"
     owner: "{{ automation.user.name }}"
     group: "{{ automation.group.name }}"
     mode: '0644'
 
 - name: Start automation stack containers using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/automation"
+    project_src: "{{ storage.stacks }}/automation"
     state: present

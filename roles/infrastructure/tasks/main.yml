@@ -4,7 +4,7 @@
   vars:
     stack: "infrastructure" 
     folders: [traefik, portainer]
-    checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, docker.stacks]
+    checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, storage.stacks]
 
 - name: Create Traefik static configuration
   ansible.builtin.template:
@@ -17,7 +17,7 @@
 - name: Deploy infrastructure compose file
   ansible.builtin.template:
     src: docker-compose-infrastructure.yml.j2
-    dest: "{{ docker.stacks }}/infrastructure/docker-compose.yml"
+    dest: "{{ storage.stacks }}/infrastructure/docker-compose.yml"
     owner: "{{ infrastructure.user.name }}"
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
@@ -33,5 +33,5 @@
 
 - name: Start infrastructure containers using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/infrastructure"
+    project_src: "{{ storage.stacks }}/infrastructure"
     state: present

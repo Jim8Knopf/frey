@@ -42,7 +42,7 @@ This document explains how WiFi AP clients access Docker containers through Trae
 - [x] Traefik joins `proxy` and `localdns` networks
 - [x] All services join `proxy` network
 - [x] All services have Traefik labels with routing rules
-- [x] DNS points `*.frey` to `{{ wifi.ip }}`
+- [x] DNS points `*.frey` to `{{ network.wifi.ip }}`
 - [x] Firewall configured via security role────────────────────────────────────────────────────────┐
 │ WiFi AP Clients (10.20.0.x)                                │
 └────────────────────────┬────────────────────────────────────┘
@@ -196,7 +196,7 @@ services:
 # Point all .frey domains to the AP gateway (10.20.0.1)
 # Traefik listens on this IP and routes to containers
 {% for service in network.dns_rewrites %}
-address=/{{ service.name }}.{{ network.domain_name }}/{{ wifi.ip }}
+address=/{{ service.name }}.{{ network.domain_name }}/{{ network.wifi.ip }}
 {% endfor %}
 
 # Result:
@@ -223,7 +223,7 @@ address=/{{ service.name }}.{{ network.domain_name }}/{{ wifi.ip }}
 - [x] Traefik joins `proxy` and `localdns` networks
 - [x] All services join `proxy` network
 - [x] All services have Traefik labels with routing rules
-- [x] DNS points `*.frey` to `{{ wifi.ip }}`
+- [x] DNS points `*.frey` to `{{ network.wifi.ip }}`
 - [x] UFW allows ports 80/443 from WiFi AP network
 
 ## Alternative: Direct Port Access

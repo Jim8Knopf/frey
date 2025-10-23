@@ -2,7 +2,7 @@
 
 - name: restart media stack
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/media"
+    project_src: "{{ storage.stacks }}/media"
     state: present
     restarted: true
 

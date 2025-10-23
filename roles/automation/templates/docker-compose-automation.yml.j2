@@ -8,17 +8,6 @@ services:
       - /dev/dri
 {% endif %}
     restart: unless-stopped
-    healthcheck:
-      test: >
-        CMD-SHELL
-        if command -v curl; then
-          curl -f http://127.0.0.1:11434/version || exit 1;
-        else
-          (echo >/dev/tcp/127.0.0.1/11434) >/dev/null 2>&1 || exit 1;
-        fi
-      interval: 30s
-      timeout: 10s
-      retries: 3
     networks:
       - proxy
       - localdns
@@ -44,23 +33,12 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     restart: unless-stopped
-    healthcheck:
-      test: >
-        CMD-SHELL
-        if command -v wget; then
-          wget -q --spider http://127.0.0.1:8080 || exit 1;
-        else
-          (echo >/dev/tcp/127.0.0.1/8080) >/dev/null 2>&1 || exit 1;
-        fi
-      interval: 30s
-      timeout: 10s
-      retries: 3
     networks:
       - proxy
       - localdns
       - automation_network
     ports:
-      - "{{ automation.ports.open_webui }}:8080"
+      - "{{ automation.openwebui.port }}:8080"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -98,7 +76,7 @@ services:
       - localdns
       - automation_network
     ports:
-      - "{{ automation.ports.n8n }}:5678"
+      - "{{ automation.n8n.port }}:5678"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"

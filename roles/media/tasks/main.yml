@@ -33,7 +33,7 @@
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2
-    dest: "{{ docker.stacks }}/media/docker-compose.yml"
+    dest: "{{ storage.stacks }}/media/docker-compose.yml"
     owner: "{{ media.user.name }}"
     group: "{{ media.group.name }}"
     mode: '0644'
@@ -52,7 +52,7 @@
 
 - name: Validate Docker Compose file syntax
   ansible.builtin.command:
-    cmd: docker compose -f "{{ docker.stacks }}/media/docker-compose.yml" config --quiet
+    cmd: docker compose -f "{{ storage.stacks }}/media/docker-compose.yml" config --quiet
   register: compose_validation
   failed_when: compose_validation.rc != 0
   changed_when: false
@@ -61,7 +61,7 @@
   block:
     - name: Start media stack containers using compose
       community.docker.docker_compose_v2:
-        project_src: "{{ docker.stacks }}/media"
+        project_src: "{{ storage.stacks }}/media"
         state: present
         remove_orphans: true
         timeout: 300
@@ -72,7 +72,7 @@
   rescue:
     - name: Handle compose failure - gather logs
       ansible.builtin.command:
-        cmd: docker compose -f "{{ docker.stacks }}/media/docker-compose.yml" logs --tail=50
+        cmd: docker compose -f "{{ storage.stacks }}/media/docker-compose.yml" logs --tail=50
       register: compose_logs
       failed_when: false
 

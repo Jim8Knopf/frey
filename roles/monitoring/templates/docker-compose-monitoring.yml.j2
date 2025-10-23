@@ -1,14 +1,15 @@
 services:
+  {% if monitoring.dockge.enabled | default(false) -%}
   dockge:
-    image: louislam/dockge:1
+    image: "{{ monitoring.dockge.image }}:{{ monitoring.dockge.version }}"
     container_name: dockge
     restart: unless-stopped
     ports:
-      - "{{ ports.infrastructure.dockge }}:5001"
+      - "{{ monitoring.dockge.port }}:5001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{ storage.appdata_dir }}/dockge:/app/data"
-      - "{{ docker.stacks }}:/opt/stacks"
+      - "{{ storage.stacks }}:/opt/stacks"
     environment:
       - DOCKGE_STACKS_DIR=/opt/stacks
       - DOCKGE_ENABLE_CONSOLE=true
@@ -24,14 +25,16 @@ services:
       - "traefik.http.services.dockge.loadbalancer.server.port=5001"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.dockge.middlewares=local-ipwhitelist"
+  {% endif %}
 
+  {% if monitoring.prometheus.enabled | default(false) -%}
   prometheus:
-    image: prom/prometheus:latest
+    image: "{{ monitoring.prometheus.image }}:{{ monitoring.prometheus.version }}"
     container_name: prometheus
     restart: unless-stopped
     user: "0"
     ports:
-      - "{{ ports.monitoring.prometheus }}:9090"
+      - "{{ monitoring.prometheus.port }}:9090"
     volumes:
       - "{{ storage.appdata_dir }}/prometheus:/etc/prometheus"
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -56,13 +59,15 @@ services:
       - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.prometheus.middlewares=local-ipwhitelist"
+  {% endif %}
 
+  {% if monitoring['node-exporter'].enabled | default(false) -%}
   node-exporter:
-    image: prom/node-exporter:latest
+    image: "{{ monitoring['node-exporter'].image }}:{{ monitoring['node-exporter'].version }}"
     container_name: node-exporter
     restart: unless-stopped
     ports:
-      - "{{ ports.monitoring.node_exporter }}:9100"
+      - "{{ monitoring['node-exporter'].port }}:9100"
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
@@ -84,15 +89,17 @@ services:
       - "traefik.http.services.node-exporter.loadbalancer.server.port=9100"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.node-exporter.middlewares=local-ipwhitelist"
+  {% endif %}
 
+  {% if monitoring.cadvisor.enabled | default(false) -%}
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+    image: "{{ monitoring.cadvisor.image }}:{{ monitoring.cadvisor.version }}"
     container_name: cadvisor
     privileged: true
     devices:
       - /dev/kmsg:/dev/kmsg
     ports:
-      - "{{ ports.monitoring.cadvisor }}:8080"
+      - "{{ monitoring.cadvisor.port }}:8080"
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
@@ -111,13 +118,15 @@ services:
       - "traefik.http.services.cadvisor.loadbalancer.server.port=8080"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.cadvisor.middlewares=local-ipwhitelist"
+  {% endif %}
 
+  {% if monitoring.grafana.enabled | default(false) -%}
   grafana:
-    image: grafana/grafana:latest
+    image: "{{ monitoring.grafana.image }}:{{ monitoring.grafana.version }}"
     container_name: grafana
     restart: unless-stopped
     ports:
-      - "{{ ports.monitoring.grafana }}:3000"
+      - "{{ monitoring.grafana.port }}:3000"
     volumes:
       - "{{ storage.appdata_dir }}/grafana:/var/lib/grafana"
       - "{{ storage.appdata_dir }}/grafana/provisioning:/etc/grafana/provisioning"
@@ -137,13 +146,15 @@ services:
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.grafana.middlewares=local-ipwhitelist"
+  {% endif %}
 
+  {% if monitoring.loki.enabled | default(false) -%}
   loki:
-    image: grafana/loki:latest
+    image: "{{ monitoring.loki.image }}:{{ monitoring.loki.version }}"
     container_name: loki
     restart: unless-stopped
     ports:
-      - "{{ ports.monitoring.loki }}:3100"
+      - "{{ monitoring.loki.port }}:3100"
     volumes:
       - "{{ storage.appdata_dir }}/loki:/loki"
     networks:
@@ -158,9 +169,11 @@ services:
       - "traefik.http.services.loki.loadbalancer.server.port=3100"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.loki.middlewares=local-ipwhitelist"
+  {% endif %}
 
+  {% if monitoring.promtail.enabled | default(false) -%}
   promtail:
-    image: grafana/promtail:latest
+    image: "{{ monitoring.promtail.image }}:{{ monitoring.promtail.version }}"
     container_name: promtail
     restart: unless-stopped
     volumes:
@@ -171,13 +184,15 @@ services:
     networks:
       localdns:          # For DNS resolution
       monitoring_network: # Service-specific network
+  {% endif %}
 
+  {% if monitoring['uptime-kuma'].enabled | default(false) -%}
   uptime-kuma:
-    image: louislam/uptime-kuma:1
+    image: "{{ monitoring['uptime-kuma'].image }}:{{ monitoring['uptime-kuma'].version }}"
     container_name: uptime-kuma
     restart: unless-stopped
     ports:
-      - "{{ ports.monitoring.uptime_kuma }}:3001"
+      - "{{ monitoring['uptime-kuma'].port }}:3001"
     volumes:
       - "{{ storage.appdata_dir }}/uptime-kuma:/app/data"
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -193,9 +208,11 @@ services:
       - "traefik.http.services.uptime.loadbalancer.server.port=3001"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.uptime.middlewares=local-ipwhitelist"
+  {% endif %}
 
+  {% if monitoring.watchtower.enabled | default(false) -%}
   watchtower:
-    image: containrrr/watchtower:latest
+    image: "{{ monitoring.watchtower.image }}:{{ monitoring.watchtower.version }}"
     container_name: watchtower
     restart: unless-stopped
     volumes:
@@ -208,9 +225,11 @@ services:
     networks:
       localdns:          # For DNS resolution
       monitoring_network: # Service-specific network
+  {% endif %}
 
+  {% if monitoring['speedtest-tracker'].enabled | default(false) -%}
   speedtest-tracker:
-    image: lscr.io/linuxserver/speedtest-tracker:latest
+    image: "{{ monitoring['speedtest-tracker'].image }}:{{ monitoring['speedtest-tracker'].version }}"
     container_name: speedtest-tracker
     environment:
       - PUID={{ media.media_uid | default(user.uid | default(1000)) }}
@@ -220,7 +239,7 @@ services:
     volumes:
       - '{{ storage.appdata_dir }}/speedtest:/config'
     ports:
-      - '{{ ports.network_tools.speedtest }}:80'
+      - '{{ monitoring['speedtest-tracker'].port }}:80'
     restart: unless-stopped
     networks:
       proxy:              # For Traefik access
@@ -234,12 +253,12 @@ services:
       - "traefik.http.services.speedtest.loadbalancer.server.port=80"
       - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
       - "traefik.http.routers.speedtest.middlewares=local-ipwhitelist"
+  {% endif %}
 
 networks:
   # Traefik routing - all web-accessible services join this
   proxy:
     external: true
-  
   # DNS resolution between containers
   localdns:
     external: true
