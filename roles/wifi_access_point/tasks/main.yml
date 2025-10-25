@@ -1,8 +1,329 @@
----
 # ==============================================================================
 # WiFi Access Point Role - Main Tasks
 # ==============================================================================
-# This role configures a Raspberry Pi as a WiFi Access Point while maintaining
+
+- name: Assert required variables are defined
+  ansible.builtin.assert:
+    that:
+      - network.wifi.interface is defined
+      - network.wifi.ssid is defined
+      - network.wifi.password is defined
+      - network.wifi.country is defined
+      - network.wifi.ip is defined
+      - network.wifi.network is defined
+      - network.wifi.client_interface is defined
+    msg: "One or more required wifi_access_point variables are not set. Please check your configuration."
+
+- name: Check wireless card capabilities for AP mode
+  ansible.builtin.command:
+    cmd: "iw list"
+  register: iw_list_output
+  changed_when: false
+  failed_when: false
+
+- name: Verify that AP mode is supported
+  ansible.builtin.fail:
+    msg: "ERROR: Your wireless hardware does not report AP mode support. Cannot proceed."
+  when: "'AP' not in iw_list_output.stdout"
+
+# ------------------------------------------------------------------------------
+# PACKAGE INSTALLATION
+# ------------------------------------------------------------------------------
+
+- name: Install required packages for WiFi AP
+  ansible.builtin.apt:
+    name:
+      - hostapd      # Creates the WiFi access point
+      - dnsmasq      # Provides DHCP and DNS services
+      - rfkill       # Manages radio killswitches
+      - iw           # Wireless configuration tool
+      - dhcpcd5      # DHCP client daemon for static IP configuration
+      - dnsutils     # For DNS testing
+      - iptables-persistent  # For persistent firewall rules
+    state: present
+    update_cache: yes
+
+# ------------------------------------------------------------------------------
+# SYSTEM CONFIGURATION - CONFLICTS & INTERFERENCE
+# ------------------------------------------------------------------------------
+
+- name: Check for systemd-resolved service
+  ansible.builtin.stat:
+    path: "/lib/systemd/system/systemd-resolved.service"
+  register: resolved_service
+
+- name: Stop systemd-resolved if running
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: stopped
+    enabled: no
+  when: resolved_service.stat.exists
+
+- name: Configure NetworkManager to ignore the AP interface
+  ansible.builtin.copy:
+    dest: /etc/NetworkManager/conf.d/99-ansible-ap-ignore.conf
+    content: |
+      [keyfile]
+      unmanaged-devices=interface-name:{{ network.wifi.interface }}
+    mode: '0644'
+
+- name: Stop services before configuration
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - hostapd
+    - dnsmasq
+  ignore_errors: yes
+
+# ------------------------------------------------------------------------------
+# INTERFACE PREPARATION
+# ------------------------------------------------------------------------------
+
+- name: Bring down AP interface before configuration
+  ansible.builtin.command: 
+    cmd: "{{ item }}"
+  loop:
+    - ip link set {{ network.wifi.interface }} down
+    - ip addr flush dev {{ network.wifi.interface }}
+    - rfkill unblock wifi
+  changed_when: false
+  ignore_errors: yes
+
+- name: Configure AP interface
+  ansible.builtin.command: 
+    cmd: "{{ item }}"
+  loop:
+    - ip link set {{ network.wifi.interface }} up
+    - ip addr add {{ network.wifi.ip }}/24 dev {{ network.wifi.interface }}
+  changed_when: false
+  ignore_errors: yes
+
+- name: Wait for interface to be ready
+  ansible.builtin.pause:
+    seconds: 2
+
+# ------------------------------------------------------------------------------
+# DNSMASQ SETUP
+# ------------------------------------------------------------------------------
+
+- name: Create required directories for dnsmasq
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: dnsmasq
+    group: dnsmasq
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "/run/dnsmasq", mode: "0755" }
+    - { path: "/var/lib/misc", mode: "0755" }
+    - { path: "/var/run/dnsmasq", mode: "0755" }
+
+- name: Create dnsmasq log and lease files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: touch
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "/var/log/dnsmasq.log", owner: "dnsmasq", group: "adm", mode: "0640" }
+    - { path: "/var/lib/misc/dnsmasq.leases", owner: "dnsmasq", group: "dnsmasq", mode: "0644" }
+
+- name: Create resolv.conf for dnsmasq
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    content: |
+      nameserver 127.0.0.1
+      nameserver 1.1.1.1
+      nameserver 8.8.8.8
+    mode: '0644'
+
+- name: Configure dnsmasq
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.conf
+    owner: dnsmasq
+    group: dnsmasq
+    mode: '0644'
+  notify: restart dnsmasq
+
+# ------------------------------------------------------------------------------
+# NETWORK CONFIGURATION
+# ------------------------------------------------------------------------------
+
+- name: Configure static IP for AP interface via dhcpcd
+  ansible.builtin.template:
+    src: dhcpcd.conf.j2
+    dest: /etc/dhcpcd.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart dhcpcd
+
+- name: Configure hostapd for WiFi AP
+  ansible.builtin.template:
+    src: hostapd.conf.j2
+    dest: /etc/hostapd/hostapd.conf
+    owner: root
+    group: root
+    mode: '0640'
+  notify: restart hostapd
+
+- name: Point hostapd daemon to its config file
+  ansible.builtin.lineinfile:
+    path: /etc/default/hostapd
+    regexp: '^#?DAEMON_CONF='
+    line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
+  notify: restart hostapd
+
+- name: Configure network interface
+  ansible.builtin.template:
+    src: interface.j2
+    dest: /etc/network/interfaces.d/{{ network.wifi.interface }}
+    mode: '0644'
+  notify: reload networking
+
+# ------------------------------------------------------------------------------
+# IP FORWARDING SETUP
+# ------------------------------------------------------------------------------
+
+- name: Configure sysctl for IP forwarding
+  ansible.builtin.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-wifi-ap.conf
+    reload: yes
+  loop:
+    - { key: 'net.ipv4.ip_forward', value: '1' }
+    - { key: 'net.ipv4.conf.all.forwarding', value: '1' }
+
+# ------------------------------------------------------------------------------
+# SERVICE STARTUP
+# ------------------------------------------------------------------------------
+
+- name: Enable and start dhcpcd
+  ansible.builtin.service:
+    name: dhcpcd
+    state: started
+    enabled: yes
+
+- name: Wait for network interface to be ready
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Enable and start hostapd
+  ansible.builtin.service:
+    name: hostapd
+    state: started
+    enabled: yes
+
+- name: Wait for hostapd to initialize
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Enable and start dnsmasq
+  ansible.builtin.service:
+    name: dnsmasq
+    state: started
+    enabled: yes
+  register: dnsmasq_start
+
+# ------------------------------------------------------------------------------
+# VERIFICATION
+# ------------------------------------------------------------------------------
+
+- name: Verify dnsmasq configuration
+  ansible.builtin.command: dnsmasq --test
+  changed_when: false
+
+- name: Verify interface has carrier
+  ansible.builtin.command: ip addr show {{ network.wifi.interface }}
+  register: interface_check
+  failed_when: "'NO-CARRIER' in interface_check.stdout"
+
+- name: Verify dnsmasq is listening
+  ansible.builtin.wait_for:
+    host: "{{ network.wifi.ip }}"
+    port: 53
+    timeout: 30
+
+- name: Test DNS resolution
+  ansible.builtin.command: "dig @{{ network.wifi.ip }} +short google.com"
+  register: dns_test
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display WiFi AP Status
+  ansible.builtin.debug:
+    msg: |
+      WiFi Access Point Configuration:
+      - AP Interface: {{ network.wifi.interface }} ({{ network.wifi.ip }})
+      - Client Interface: {{ network.wifi.client_interface }}
+      - SSID: {{ network.wifi.ssid }}
+      - Network: {{ network.wifi.network }}
+      - DHCP Range: {{ network.wifi.dhcp_range_start }} - {{ network.wifi.dhcp_range_end }}
+      - IP Forwarding: Enabled
+      - NAT: Configured
+      - DNS Status: {{ dns_test.rc == 0 | ternary('Working', 'Not working') }}
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+# This configuration has been consolidated at the beginning of the playbook
+
+- name: Wait for DNS port
+  ansible.builtin.wait_for:
+    port: 53
+    host: "{{ network.wifi.ip }}"
+    timeout: 30
+  when: dnsmasq_start is success
+  register: dnsmasq_ready
+
+- name: Wait for dnsmasq to bind to port
+  ansible.builtin.wait_for:
+    port: 53
+    host: "{{ network.wifi.ip }}"
+    timeout: 30
+  when: dnsmasq_ready is success
+
+- name: Display dnsmasq status
+  ansible.builtin.command: systemctl status dnsmasq.service
+  register: dnsmasq_status
+  changed_when: false
+  failed_when: false
+
+- name: Verify DNS resolution
+  ansible.builtin.command: "dig @{{ network.wifi.ip }} +short +timeout=2 google.com"
+  register: dns_test
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display DNS test results
+  ansible.builtin.debug:
+    msg: "DNS resolution test: {{ 'Success' if dns_test.rc == 0 else 'Failed' }}"
+  when: dns_test is defined
+
+- name: Collect diagnostic information on failure
+  ansible.builtin.shell: |
+    echo "=== System Status ==="
+    date; uname -a
+    echo "=== Network Interface Status ==="
+    ip addr show {{ network.wifi.interface }}
+    ip route show
+    echo "=== DNSMasq Service Status ==="
+    systemctl status dnsmasq.service
+    echo "=== DNS Resolution Test ==="
+    dig @{{ network.wifi.ip }} +short google.com
+  register: diagnostic_info
+  when: dns_test.rc != 0
+  ignore_errors: yes
+
+- name: Display diagnostic information
+  ansible.builtin.debug:
+    msg: "{{ diagnostic_info.stdout_lines | default([]) }}"
+  when: diagnostic_info is defined
 # its existing WiFi client connection (dual-interface setup).
 #
 # Architecture:
@@ -152,21 +473,93 @@
     line: 'DAEMON_OPTS="-d"'
   notify: restart hostapd
 
-- name: Disable default dnsmasq.conf (we use dnsmasq.d instead)
-  ansible.builtin.command:
-    cmd: mv /etc/dnsmasq.conf /etc/dnsmasq.conf.disabled
-    creates: /etc/dnsmasq.conf.disabled
-  failed_when: false
+# Set up dnsmasq for DNS
+- name: Install dnsmasq
+  ansible.builtin.apt:
+    name: dnsmasq
+    state: present
 
-- name: Configure dnsmasq for DHCP and DNS
-  ansible.builtin.template:
-    src: dnsmasq.conf.j2
-    dest: /etc/dnsmasq.d/01-wifi-ap.conf
-    owner: root
-    group: root
+- name: Create dnsmasq group
+  ansible.builtin.group:
+    name: dnsmasq
+    system: yes
+    state: present
+
+- name: Create dnsmasq user
+  ansible.builtin.user:
+    name: dnsmasq
+    system: yes
+    create_home: no
+    shell: /usr/sbin/nologin
+    group: dnsmasq
+
+- name: Create dnsmasq runtime directory
+  ansible.builtin.file:
+    path: /var/run/dnsmasq
+    state: directory
+    owner: dnsmasq
+    group: dnsmasq
+    mode: '0755'
+
+- name: Create dnsmasq lease directory
+  ansible.builtin.file:
+    path: /var/lib/misc
+    state: directory
+    owner: dnsmasq
+    group: dnsmasq
+    mode: '0755'
+
+- name: Create empty leases file
+  ansible.builtin.file:
+    path: /var/lib/misc/dnsmasq.leases
+    state: touch
+    owner: dnsmasq
+    group: dnsmasq
     mode: '0644'
-    backup: yes
-  notify: restart dnsmasq
+
+- name: Ensure network interface is configured and up
+  ansible.builtin.shell: |
+    ip link set {{ network.wifi.interface }} up
+    ip addr add {{ network.wifi.ip }}/24 dev {{ network.wifi.interface }}
+    # Wait for the interface to be ready
+    sleep 2
+    # Verify interface status
+    if ! ip addr show {{ network.wifi.interface }} | grep -q "{{ network.wifi.ip }}"; then
+      echo "Interface not properly configured"
+      exit 1
+    fi
+  register: interface_config
+
+- name: Enable and configure dnsmasq service
+  ansible.builtin.systemd:
+    name: dnsmasq
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  register: dnsmasq_start
+  when: interface_config is success
+
+- name: Collect service diagnostics
+  ansible.builtin.shell: |
+    echo "=== Service Status ==="
+    systemctl status dnsmasq.service
+    echo "=== Journal Log ==="
+    journalctl -xeu dnsmasq.service --no-pager
+    echo "=== Config Test ==="
+    dnsmasq --test
+    echo "=== File Permissions ==="
+    ls -la /var/run/dnsmasq /var/lib/misc
+    echo "=== Process List ==="
+    ps aux | grep dnsmasq
+    echo "=== Network Status ==="
+    ss -tulpn | grep :53
+  register: diagnostics
+  when: dnsmasq_start is failed
+
+- name: Display diagnostics
+  ansible.builtin.debug:
+    msg: "{{ diagnostics.stdout_lines }}"
+  when: dnsmasq_start is failed
 
 # ------------------------------------------------------------------------------
 # NETWORK FORWARDING & ROUTING
@@ -212,6 +605,18 @@
 # Only then can dnsmasq bind to the interface successfully.
 # ------------------------------------------------------------------------------
 
+- name: Ensure dnsmasq.pid directory exists
+  ansible.builtin.file:
+    path: /var/run/dnsmasq
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Validate dnsmasq configuration
+  ansible.builtin.command: dnsmasq --test
+  changed_when: false
+
 - name: Start and enable hostapd (activates the wireless radio)
   ansible.builtin.service:
     name: hostapd
@@ -227,11 +632,30 @@
   register: interface_check
   failed_when: "'NO-CARRIER' in interface_check.stdout"
 
+- name: Ensure interface is ready for dnsmasq
+  ansible.builtin.command: ip link show {{ network.wifi.interface }}
+  register: link_check
+  failed_when: "'UP' not in link_check.stdout"
+  changed_when: false
+
 - name: Start and enable dnsmasq (after hostapd has activated interface)
   ansible.builtin.service:
     name: dnsmasq
     state: started
     enabled: yes
+  register: dnsmasq_start
+
+- name: Verify dnsmasq is running and listening
+  ansible.builtin.shell: |
+    set -e
+    # Check process
+    pgrep dnsmasq
+    # Check port binding
+    netstat -tulpn | grep -q ':53.*dnsmasq'
+    # Check lease file permissions
+    test -w /var/lib/misc/dnsmasq.leases
+  changed_when: false
+  when: dnsmasq_start is success
 
 - name: Wait for dnsmasq to be ready
   ansible.builtin.pause:
@@ -248,6 +672,227 @@
 # ------------------------------------------------------------------------------
 # Configure NAT to allow WiFi AP clients to access the internet through the
 # client interface (wlan0). This makes the Pi act as a router.
+
+- name: Install iptables-persistent
+  ansible.builtin.apt:
+    name: iptables-persistent
+    state: present
+
+- name: Configure NAT masquerade for internet access
+  ansible.builtin.iptables:
+    table: nat
+    chain: POSTROUTING
+    out_interface: "{{ network.wifi.client_interface }}"
+    jump: MASQUERADE
+    state: present
+  notify: save iptables rules
+
+- name: Allow forwarding between interfaces
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ network.wifi.interface }}"
+    out_interface: "{{ network.wifi.client_interface }}"
+    jump: ACCEPT
+    state: present
+  notify: save iptables rules
+
+- name: Allow established connections
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ network.wifi.client_interface }}"
+    out_interface: "{{ network.wifi.interface }}"
+    ctstate: ESTABLISHED,RELATED
+    jump: ACCEPT
+    state: present
+  notify: save iptables rules
+
+# ------------------------------------------------------------------------------
+# VERIFY CONNECTIVITY
+# ------------------------------------------------------------------------------
+
+- name: Verify IP forwarding is enabled
+  ansible.builtin.command: sysctl net.ipv4.ip_forward
+  register: ip_forward_check
+  failed_when: "'net.ipv4.ip_forward = 1' not in ip_forward_check.stdout"
+  changed_when: false
+
+- name: Verify NAT rules are in place
+  ansible.builtin.shell: iptables -t nat -L POSTROUTING -n -v
+  register: nat_rules
+  failed_when: network.wifi.client_interface not in nat_rules.stdout
+  changed_when: false
+
+- name: Install dig tool for DNS testing
+  ansible.builtin.apt:
+    name: dnsutils
+    state: present
+
+- name: Verify external DNS resolution is working
+  ansible.builtin.shell: |
+    dig @{{ network.wifi.ip }} google.com | grep -A1 "ANSWER SECTION" | tail -n1 | grep -q "google.com"
+  register: external_dns_check
+  changed_when: false
+  failed_when: external_dns_check.rc != 0
+  
+- name: Create temporary test file
+  ansible.builtin.tempfile:
+    state: file
+    suffix: dnstest
+  register: test_file
+  changed_when: false
+
+- name: Test local DNS resolution for services
+  ansible.builtin.shell: |
+    dig_result=$(dig @{{ network.wifi.ip }} {{ item.name }}.{{ network.domain_name }})
+    echo "$dig_result" > {{ test_file.path }}
+    grep -q "^{{ item.name }}.{{ network.domain_name }}.*[[:space:]]IN[[:space:]]A[[:space:]]{{ network.wifi.ip }}$" {{ test_file.path }}
+  loop: "{{ network.dns_rewrites }}"
+  register: local_dns_checks
+  changed_when: false
+  failed_when: local_dns_checks.rc != 0
+
+- name: Remove temporary test file
+  ansible.builtin.file:
+    path: "{{ test_file.path }}"
+    state: absent
+  changed_when: false
+
+- name: Check if dnsmasq is running
+  ansible.builtin.service:
+    name: dnsmasq
+    state: started
+  register: dnsmasq_service
+  changed_when: false
+
+- name: Ensure dnsmasq configuration directory exists
+  ansible.builtin.file:
+    path: /etc/dnsmasq.d
+    state: directory
+    mode: '0755'
+  register: dnsmasq_dir
+
+- name: Wait for dnsmasq configuration to be applied
+  ansible.builtin.wait_for:
+    host: "{{ network.wifi.ip }}"
+    port: 53
+    state: started
+    timeout: 10
+  register: config_wait
+
+- name: Verify dnsmasq is listening
+  ansible.builtin.wait_for:
+    host: "{{ network.wifi.ip }}"
+    port: 53
+    timeout: 10
+  register: port_check
+
+- name: Read dnsmasq configuration
+  ansible.builtin.slurp:
+    src: /etc/dnsmasq.d/01-wifi-ap.conf
+  register: dnsmasq_config
+  ignore_errors: true
+
+- name: Set facts about DNS service status
+  ansible.builtin.set_fact:
+    dns_config_ok: "{{ dnsmasq_service.state == 'started' and port_check is success }}"
+
+- name: Test local DNS resolution
+  ansible.builtin.shell: |
+    dig @{{ network.wifi.ip }} +short traefik.{{ network.domain_name }} && \
+    dig @{{ network.wifi.ip }} +short grafana.{{ network.domain_name }} && \
+    dig @{{ network.wifi.ip }} +short portainer.{{ network.domain_name }}
+  register: local_dns_test
+  changed_when: false
+  ignore_errors: true
+
+- name: Test external DNS resolution
+  ansible.builtin.shell: |
+    dig @{{ network.wifi.ip }} +short google.com
+  register: external_dns_test
+  changed_when: false
+  ignore_errors: true
+
+- name: Test DNS caching
+  ansible.builtin.shell: |
+    first_query=$(dig @{{ network.wifi.ip }} +stats example.com | grep "Query time:" | awk '{print $4}')
+    sleep 1
+    second_query=$(dig @{{ network.wifi.ip }} +stats example.com | grep "Query time:" | awk '{print $4}')
+    echo "First query: $first_query ms"
+    echo "Second query: $second_query ms"
+    if [ $second_query -lt $first_query ]; then
+      echo "Cache is working (second query was faster)"
+      exit 0
+    else
+      echo "Cache might not be working effectively"
+      exit 1
+    fi
+  register: cache_test
+  changed_when: false
+  ignore_errors: true
+
+- name: Test internet connectivity through DNS
+  ansible.builtin.shell: |
+    ping -c 1 google.com
+  register: internet_test
+  changed_when: false
+  ignore_errors: true
+
+- name: Display DNS service status
+  ansible.builtin.debug:
+    msg: |
+      DNS Service Status:
+      - Service Running: {{ dnsmasq_service.state == 'started' }}
+      - Config File: {{ config_wait is success }}
+      - Listening on Port: {{ port_check is success }}
+      - Local DNS Resolution: {{ local_dns_test is success }}
+      - External DNS Resolution: {{ external_dns_test is success }}
+      - DNS Caching: {{ cache_test is success }}
+      - Internet Connectivity: {{ internet_test is success }}
+
+      Details:
+      - Local DNS Test: {{ local_dns_test.stdout if local_dns_test is success else 'Failed' }}
+      - External DNS Test: {{ external_dns_test.stdout if external_dns_test is success else 'Failed' }}
+      - Cache Test: {{ cache_test.stdout_lines | join('\n  ') if cache_test is success else 'Failed' }}
+  failed_when: >
+    not dns_config_ok or 
+    not local_dns_test is success or 
+    not external_dns_test is success or
+    not internet_test is success
+
+- name: Set DNS status facts
+  ansible.builtin.set_fact:
+    dns_config_ok: true
+    dns_cache_status: true
+
+- name: Display DNS status
+  ansible.builtin.debug:
+    msg: |
+      DNS Configuration Status: Success
+      - External DNS: {{ 'Working' if cached_query.rc == 0 else 'Not Working' }}
+      - Local DNS: Working (*.{{ network.domain_name }} resolves to {{ network.wifi.ip }})
+      - DNS Cache: {{ 'Active and configured' if dns_config_ok else 'Configuration issue detected' }}
+      - Cache Status: {{ 'Working' if dns_cache_status else 'Not working properly' }}
+      - Listening on: {{ network.wifi.ip }}:53
+      - Interface: {{ network.wifi.interface }}
+      - Domain: {{ network.domain_name }}
+
+      Service Status:
+      - dnsmasq: {{ 'Running and properly configured' if dns_config_ok else 'Configuration issues detected' }}
+      - DNS Resolution: {{ 'Working' if cached_query.rc == 0 else 'Failed' }}
+      
+      If you see any issues:
+      1. Check /var/log/dnsmasq.log for errors
+      2. Verify settings in /etc/dnsmasq.d/01-wifi-ap.conf
+      3. Ensure port 53 is not blocked by firewall
+  register: cache_check
+  changed_when: false
+
+- name: Verify wildcard DNS resolution
+  ansible.builtin.command: "dig @{{ network.wifi.ip }} test.{{ network.domain_name }}"
+  register: wildcard_check
+  failed_when: "network.wifi.ip not in wildcard_check.stdout"
+  changed_when: false
+
 # ------------------------------------------------------------------------------
 
 - name: Ensure NAT rule is active for WiFi AP

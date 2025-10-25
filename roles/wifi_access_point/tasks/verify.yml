@@ -1,0 +1,65 @@
+---
+# Verification tasks for WiFi Access Point
+- name: Verify network interface status
+  ansible.builtin.command: ip addr show {{ network.wifi.interface }}
+  register: interface_status
+  changed_when: false
+  failed_when: interface_status.rc != 0
+
+- name: Verify interface is UP and has correct IP
+  ansible.builtin.assert:
+    that:
+      - "'UP' in interface_status.stdout"
+      - "network.wifi.ip in interface_status.stdout"
+    fail_msg: "Interface {{ network.wifi.interface }} is not properly configured"
+
+- name: Verify IP forwarding is enabled
+  ansible.builtin.command: sysctl net.ipv4.ip_forward
+  register: ip_forward
+  changed_when: false
+  failed_when: "'net.ipv4.ip_forward = 1' not in ip_forward.stdout"
+
+- name: Check dnsmasq service status
+  ansible.builtin.service_facts:
+  register: services_state
+
+- name: Verify dnsmasq is running
+  ansible.builtin.assert:
+    that:
+      - "'dnsmasq.service' in services_state.ansible_facts.services"
+      - "services_state.ansible_facts.services['dnsmasq.service'].state == 'running'"
+    fail_msg: "DNSMasq service is not running properly"
+
+- name: Test local DNS resolution
+  ansible.builtin.command: "dig @{{ network.wifi.ip }} {{ network.domain_name }} +short"
+  register: dns_test
+  changed_when: false
+  failed_when: network.wifi.ip not in dns_test.stdout
+
+- name: Test external DNS resolution
+  ansible.builtin.command: "dig @{{ network.wifi.ip }} google.com +short"
+  register: external_dns
+  changed_when: false
+  failed_when: external_dns.rc != 0 or external_dns.stdout == ""
+
+- name: Verify UFW rules
+  ansible.builtin.command: ufw status
+  register: ufw_status
+  changed_when: false
+  failed_when: false
+
+- name: Check DHCP lease file
+  ansible.builtin.stat:
+    path: /var/lib/misc/dnsmasq.leases
+  register: dhcp_leases
+
+- name: Show verification results
+  ansible.builtin.debug:
+    msg: |
+      Verification Results:
+      - Interface Status: {{ 'OK' if 'UP' in interface_status.stdout else 'FAIL' }}
+      - IP Forwarding: {{ 'OK' if 'net.ipv4.ip_forward = 1' in ip_forward.stdout else 'FAIL' }}
+      - DNSMasq Service: {{ 'OK' if services_state.ansible_facts.services['dnsmasq.service'].state == 'running' else 'FAIL' }}
+      - Local DNS: {{ 'OK' if network.wifi.ip in dns_test.stdout else 'FAIL' }}
+      - External DNS: {{ 'OK' if external_dns.rc == 0 and external_dns.stdout != '' else 'FAIL' }}
+      - DHCP Leases File: {{ 'OK' if dhcp_leases.stat.exists else 'FAIL' }}

@@ -17,6 +17,27 @@
     - { direction: 'outgoing', policy: 'allow' }
   when: enable_ufw
 
+- name: Configure UFW forwarding
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_FORWARD_POLICY='
+    line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+  when: enable_ufw
+
+- name: Configure UFW rules for WiFi AP
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ item.interface }}"
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { interface: '{{ network.wifi.interface }}', port: '53', proto: 'tcp' }  # DNS TCP
+    - { interface: '{{ network.wifi.interface }}', port: '53', proto: 'udp' }  # DNS UDP
+    - { interface: '{{ network.wifi.interface }}', port: '67', proto: 'udp' }  # DHCP Server
+    - { interface: '{{ network.wifi.interface }}', port: '68', proto: 'udp' }  # DHCP Client
+  when: enable_ufw and wifi_ap_enabled | default(false)
+
 - name: Configure UFW rules for enabled services (TCP)
   community.general.ufw:
     rule: allow
@@ -44,13 +65,88 @@
     - { port: '67', proto: 'udp' }  # DHCP
   when: features.wifi_access_point
 
-# Allow access to services from WiFi AP network
-- name: Configure UFW rules for services from WiFi AP network
+# Network configuration for WiFi AP
+- name: Install network packages
+  ansible.builtin.apt:
+    name:
+      - iptables-persistent
+      - netfilter-persistent
+    state: present
+  when: features.wifi_access_point
+
+- name: Configure sysctl for IP forwarding
+  ansible.builtin.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-wifi-ap.conf
+    reload: yes
+  loop:
+    - { key: 'net.ipv4.ip_forward', value: '1' }
+    - { key: 'net.ipv4.conf.all.forwarding', value: '1' }
+  when: features.wifi_access_point
+
+- name: Configure UFW for forwarding
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: "^DEFAULT_FORWARD_POLICY="
+    line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+  when: features.wifi_access_point
+
+- name: Configure UFW rules for WiFi network
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ network.wifi.network }}"
+    to_ip: any
+  when: features.wifi_access_point
+
+- name: Configure UFW rules for DNS services
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: '53', proto: 'udp' }  # DNS queries
+    - { port: '53', proto: 'tcp' }  # DNS TCP (for large responses)
+    - { port: '67', proto: 'udp' }  # DHCP
+  when: features.wifi_access_point
+
+- name: Configure NAT in UFW
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    insertbefore: "^\\*filter"
+    block: |
+      # NAT for WiFi AP
+      *nat
+      :POSTROUTING ACCEPT [0:0]
+      -A POSTROUTING -s {{ network.wifi.network }} -o {{ network.wifi.client_interface }} -j MASQUERADE
+      COMMIT
+    marker: "# {mark} ANSIBLE MANAGED NAT RULES"
+  notify: reload ufw
+  when: features.wifi_access_point
+
+- name: Configure NAT with iptables
+  ansible.builtin.iptables:
+    table: nat
+    chain: POSTROUTING
+    source: "{{ network.wifi.network }}"
+    out_interface: "{{ network.wifi.client_interface }}"
+    jump: MASQUERADE
+  when: features.wifi_access_point
+
+- name: Save iptables rules
+  ansible.builtin.shell: |
+    iptables-save > /etc/iptables/rules.v4
+    ip6tables-save > /etc/iptables/rules.v6
+  args:
+    creates: /etc/iptables/rules.v4
+  when: features.wifi_access_point
+
+- name: Configure UFW rules for internal services access
   community.general.ufw:
     rule: allow
     port: "{{ item }}"
     proto: tcp
-    from: "{{ network.wifi.ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
+    from_ip: "{{ network.wifi.network }}"
   loop: "{{ firewall_tcp_ports }}"
   when: features.wifi_access_point
 

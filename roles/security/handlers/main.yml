@@ -3,3 +3,8 @@
   ansible.builtin.service:
     name: hostapd
     state: restarted
+
+- name: reload ufw
+  ansible.builtin.service:
+    name: ufw
+    state: reloaded

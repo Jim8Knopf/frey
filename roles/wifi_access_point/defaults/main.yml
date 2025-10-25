@@ -4,6 +4,8 @@
 wifi:
   # Network interface to use for the access point
   interface: wlan1
+  # Interface that provides internet connectivity
+  client_interface: eth0
   # Country code for regulatory domain (affects available channels and power levels)
   country: DE
   # WiFi channel (1-11 for 2.4GHz)
@@ -30,3 +32,6 @@ wifi:
   macaddr_acl: 0               # 0 = Accept unless in deny list, 1 = Deny unless in accept list
   auth_algs: 1                 # 1 = WPA, 2 = WEP, 3 = Both
   ignore_broadcast_ssid: 0     # 0 = Broadcast SSID, 1 = Hide SSID
+  
+  # DNS settings
+  domain: "frey"              # Local domain name for DNS

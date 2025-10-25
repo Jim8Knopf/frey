@@ -47,6 +47,35 @@ storage:
 network:
   domain_name: frey
   timezone: Australia/Hobart
+  wifi:
+    # Network identification
+    ssid: "FreyHub"                 # Network name visible to clients
+    password: "{{ wifi_ap.password }}"  # Password from secrets.yml
+    
+    # Geographic settings (affects channels and power levels)
+    country: "AU"                   # Two-letter country code
+    
+    # Network configuration
+    ip: "10.20.0.1"                # AP's IP address
+    network: "10.20.0.0/24"        # Network subnet for WiFi clients
+    dhcp_range_start: "10.20.0.50" # Start of DHCP address pool
+    dhcp_range_end: "10.20.0.150"  # End of DHCP address pool
+    
+    # Interface configuration
+    interface: "wlan1"             # WiFi interface for AP mode
+    client_interface: "eth0"       # Interface for internet connection
+    client_interface_ip: "192.168.0.251" # Client interface IP
+    
+    # WiFi radio settings
+    channel: 7                     # WiFi channel (1-11 for 2.4GHz)
+    hw_mode: g                     # g = 2.4GHz band
+    ieee80211n: 1                  # Enable 802.11n features
+    wmm_enabled: 1                 # Enable WiFi multimedia (QoS)
+    
+    # Security settings
+    macaddr_acl: 0                 # MAC address filtering
+    auth_algs: 1                   # WPA authentication
+    ignore_broadcast_ssid: 0       # Broadcast SSID
   dns_rewrites:
     # Infrastructure services
     - name: traefik
@@ -72,37 +101,7 @@ network:
     - name: jellyseerr
     - name: lidarr
     - name: jellystat
-  # =================================================================
-  # ROLE: WIFI_ACCESS_POINT
-  # =================================================================
-  wifi:
-    # Network identification
-    ssid: "FreyHub"                 # Network name visible to clients
-    password: "{{ wifi_ap.password }}"  # Password from secrets.yml
-    
-    # Geographic settings (affects channels and power levels)
-    country: "AU"                   # Two-letter country code
-    
-    # Network configuration
-    ip: "10.20.0.1"                # AP's IP address
-    network: "10.20.0.0/24"        # Network subnet for WiFi clients
-    dhcp_range_start: "10.20.0.50" # Start of DHCP address pool
-    dhcp_range_end: "10.20.0.150"  # End of DHCP address pool
-    
-    # Interface configuration
-    interface: "wlan1"             # WiFi interface for AP mode
-    client_interface: "wlan0"      # Interface for internet connection
-    
-    # WiFi radio settings
-    channel: 7                     # WiFi channel (1-11 for 2.4GHz)
-    hw_mode: g                     # g = 2.4GHz band
-    ieee80211n: 1                  # Enable 802.11n features
-    wmm_enabled: 1                 # Enable WiFi multimedia (QoS)
-    
-    # Security settings
-    macaddr_acl: 0                 # MAC address filtering (0=disabled, 1=enabled)
-    auth_algs: 1                   # Authentication (1=WPA, 2=WEP, 3=both)
-    ignore_broadcast_ssid: 0       # Hide SSID (0=visible, 1=hidden)
+
 
 # ==============================================================================
 # SECURITY SETTINGS
