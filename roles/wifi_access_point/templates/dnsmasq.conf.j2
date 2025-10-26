@@ -1,64 +1,43 @@
-# Basic DHCP and DNS server configuration
+# Minimal dnsmasq config for AP (DHCP + local DNS)
 port=53
-interface={{ network.wifi.interface }}
 bind-interfaces
-listen-address=127.0.0.1,{{ network.wifi.ip }}
+listen-address={{ network.wifi.ip }}
 
-# Process settings
-user=dnsmasq
-group=dnsmasq
 pid-file=/var/run/dnsmasq/dnsmasq.pid
 
-# Create pid directory
+interface={{ network.wifi.interface }}
 except-interface=lo
 
-# DHCP configuration
+# DHCP
 dhcp-range={{ network.wifi.dhcp_range_start }},{{ network.wifi.dhcp_range_end }},255.255.255.0,12h
 dhcp-authoritative
 dhcp-leasefile=/var/lib/misc/dnsmasq.leases
-dhcp-lease-max=100
-dhcp-option=3,{{ network.wifi.ip }}  # Set default gateway
-dhcp-option=6,{{ network.wifi.ip }}  # Set DNS server to be the AP itself
-dhcp-option=1,255.255.255.0          # Subnet Mask
 
-# DNS settings
+# DHCP options: gateway and DNS point to the AP
+dhcp-option=3,{{ network.wifi.ip }}
+dhcp-option=6,{{ network.wifi.ip }}
+
+# Local domain and host records
 domain={{ network.domain_name }}
-local=/{{ network.domain_name }}/
 expand-hosts
-domain-needed
-bogus-priv
+local=/{{ network.domain_name }}/
 
-# DNS server and caching configuration
-no-resolv
-no-poll
-
-# Cache settings
-cache-size=4096              # Larger cache for better performance
-min-cache-ttl=60            # Minimum cache time (in seconds)
-max-cache-ttl=300           # Maximum cache time (in seconds)
-neg-ttl=60                  # Time to cache negative responses
-local-ttl=300              # TTL for local records
-dns-forward-max=500        # Maximum concurrent DNS queries
-
-# Query settings
-all-servers                # Query all servers
-clear-on-reload
-
-# Upstream DNS servers (Cloudflare and Google)
-server=1.1.1.1
-server=1.0.0.1
-server=8.8.8.8            # Fallback to Google DNS
-
-# Logging
-log-queries
-log-dhcp
-log-facility=/var/log/dnsmasq.log
-log-async=50
-
-# Wildcard record for all subdomains
-address=/.{{ network.domain_name }}/{{ network.wifi.ip }}
-
-# Explicit records for each service for better reliability
+{% if network.dns_rewrites is defined %}
 {% for service in network.dns_rewrites %}
 host-record={{ service.name }}.{{ network.domain_name }},{{ network.wifi.ip }}
 {% endfor %}
+{% endif %}
+
+# Wildcard fallback: resolve all *.domain to AP gateway
+address=/.{{ network.domain_name }}/{{ network.wifi.ip }}
+
+# Upstream DNS servers
+server=1.1.1.1
+server=8.8.8.8
+
+# Don't read /etc/resolv.conf directly to control upstream servers
+no-resolv
+
+# Keep logging minimal by default
+#log-queries
+#log-dhcp

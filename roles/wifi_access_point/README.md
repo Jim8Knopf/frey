@@ -1,3 +1,110 @@
+ # wifi_access_point — minimal role for AP, local DNS and optional NAT
+
+This file documents the downsized `wifi_access_point` role. It explains what the role now contains, the variables it uses, safe deployment steps (so you don't disconnect a live ssh session), how it integrates with the rest of the Frey project (Traefik/docker in `roles/infrastructure`), and how to verify behavior.
+
+Keep in mind: Traefik and Docker are important to the overall Frey architecture and live in `roles/infrastructure`; this role has been intentionally focused on only AP/DNS/NAT functions. I did not remove `roles/infrastructure` or its templates — only trimmed non-essential content from this role's templates and tasks.
+
+What was kept in the role
+- Templates: `hostapd.conf.j2`, `dnsmasq.conf.j2`, `dhcpcd.conf.j2` (network persistence)
+- Tasks: `tasks/main.yml` — installs packages, deploys templates, starts services, and now includes safety checks to avoid reconfiguring the control interface
+- Handlers: `handlers/main.yml` — graceful reloads (hostapd_cli reconfigure, systemctl reload dnsmasq) and restart fallbacks
+- Defaults: `defaults/main.yml` — minimal variables under `network.wifi.*` (AP interface, client/uplink interface, IPs, DHCP range, NAT flag)
+- Tests: `tests/verify.yml` — explicit verification play
+
+What was removed or simplified
+- Docker/Traefik-specific configuration and verbose examples were removed from the templates in this role (they belong under `roles/infrastructure`).
+- Verbose dnsmasq logging and Docker internal DNS references were removed from the role's dnsmasq template to keep the AP role minimal and stable.
+
+Top-level variables (defaults)
+The role relies on a small set of variables. Put these in your playbook `vars` or inventory/group_vars when needed.
+
+- `network.wifi.interface` (string) — AP interface, recommended a secondary adapter like `wlan1` (default: `wlan1`)
+- `network.wifi.client_interface` (string) — uplink interface with internet access, e.g. `wlan0` or `eth0` (default: `wlan0`)
+- `network.wifi.ip` (string) — AP gateway IP (default `10.20.0.1`)
+- `network.wifi.network` (string) — AP subnet (default `10.20.0.0/24`)
+- `network.wifi.dhcp_range_start` / `network.wifi.dhcp_range_end` — DHCP pool
+- `network.wifi.ssid` / `network.wifi.password` — AP SSID and PSK
+- `network.domain_name` — short domain used in dnsmasq (default `frey`)
+- `network.dns_rewrites` — list of `{ name: <short-name> }` records that will be served by dnsmasq pointing to the AP IP
+- `network.wifi.enable_nat` (bool) — when `true` the role will expect NAT rules to be present (default `false`). NAT policy is normally managed by the `security` role; enabling this causes verification to check for a MASQUERADE rule.
+
+Safety and deployment rules (important — read before running)
+
+1. Do not change the interface you use for SSH/web management.
+   - The play now checks `ansible_default_ipv4.interface` against `network.wifi.interface` and will fail unless `force_apply: true` is set.
+   - If you only have a single WiFi adapter, do this work from physical console or wired network.
+
+2. Prefer a separate adapter for AP (recommended: `wlan1`).
+
+3. The role applies configuration changes non-disruptively when possible:
+   - `hostapd` changes use `hostapd_cli -i <iface> reconfigure` when possible (no client disconnect).
+   - `dnsmasq` uses `systemctl reload dnsmasq` with a restart fallback.
+   - `dhcpcd` is updated persistently via `templates/dhcpcd.conf.j2` and the service is restarted only when necessary.
+
+4. NAT and firewall
+   - The role includes an optional `enable_nat` flag but does not force complex firewall changes.
+   - If you want the AP clients to reach the internet via `network.wifi.client_interface`, create an iptables/nftables MASQUERADE rule for the AP subnet to the uplink interface. We recommend managing persistent firewall rules in `roles/security` or in `roles/infrastructure` if you prefer.
+
+Sample NAT (run manually or via security role)
+```bash
+sudo iptables -t nat -A POSTROUTING -s 10.20.0.0/24 -o wlan0 -j MASQUERADE
+sudo sh -c 'iptables-save > /etc/iptables/rules.v4'
+```
+
+Integration with `roles/infrastructure` (Traefik / Docker)
+- Traefik and Docker are central to the Frey project but are outside the scope of this role.
+- For service discovery and reverse proxying, your containers and Traefik should be configured in `roles/infrastructure`. This role provides DNS for `.frey` names so clients on the AP can resolve service names to the AP gateway (Traefik listens on the Pi and routes to containers as needed).
+- If you use Traefik locally and want `*.frey` to resolve to the Pi, add the services to `network.dns_rewrites` or manage the DNS entries centrally via `roles/infrastructure`.
+
+How to use (quick)
+
+1. Ensure you have a separate WiFi adapter for AP (recommended).
+2. Add any overrides in `group_vars/all/main.yml` or in your playbook:
+
+```yaml
+network:
+  wifi:
+    interface: wlan1
+    client_interface: wlan0
+    ip: 10.20.0.1
+    ssid: MyAP
+    password: VerySecurePass
+  domain_name: frey
+  dns_rewrites:
+    - name: jellyfin
+    - name: portainer
+```
+
+3. Run the role (from a management host that is not on `wlan1`):
+
+```bash
+ansible-playbook -i inventory site.yml --tags wifi_access_point
+```
+
+4. Verify with the tests playbook:
+
+```bash
+ansible-playbook -i inventory roles/wifi_access_point/tests/verify.yml
+```
+
+Verification checklist (what the tests do)
+- Interface exists and has the configured AP IP
+- `hostapd` is active
+- `dnsmasq` is active and answers queries for configured names and wildcard `*.{{ network.domain_name }}`
+- `net.ipv4.ip_forward` is `1` (if NAT expected)
+- Optional: NAT MASQUERADE rule present when `network.wifi.enable_nat: true`
+
+Notes & edge cases
+- NetworkManager and other network services can interact with `dhcpcd` and `hostapd` — this role expects `dhcpcd` on Debian-like systems. If you use NetworkManager, you may need to adapt the role or disable NM for the AP interface.
+- If `hostapd_cli reconfigure` is unsupported on your platform, the handler falls back to a restart.
+- For nftables, replace iptables steps with nft atomic replace logic in the `security` role.
+
+If you want, I can:
+- (A) add an idempotent NAT task to this role (creates/persists MASQUERADE when `enable_nat: true`), or
+- (B) add an interactive preview task that prints planned changes and requires a confirmation variable before applying, or
+- (C) leave NAT to the `security` role and add clear cross-role docs (I recommend this for separation of concerns).
+
+— End of wifi_access_point README —
 # WiFi Access Point Role
 
 This Ansible role configures a Raspberry Pi to act as a WiFi Access Point while maintaining its existing WiFi client connection. This dual-interface setup allows the Pi to both connect to an existing WiFi network and provide its own WiFi network.

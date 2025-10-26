@@ -1,42 +1,6 @@
-# Configuration for WiFi Access Point Interface
-auto {{ network.wifi.interface }}
-allow-hotplug {{ network.wifi.interface }}
-
-# Static IP configuration for AP interface
-iface {{ network.wifi.interface }} inet static
-    address {{ network.wifi.ip }}
-    netmask 255.255.255.0
-    network {{ network.wifi.network }}
-    broadcast {{ network.wifi.ip | regex_replace('\.[0-9]+$', '.255') }}
-    gateway {{ network.wifi.client_interface_ip }}
-
-    # Interface setup
-    pre-up rfkill unblock wifi || true
-    pre-up ip link set {{ network.wifi.interface }} up
-    wireless-mode master
-    wireless-power off
-    
-    # Enable forwarding between interfaces
-    post-up sysctl -w net.ipv4.ip_forward=1
-    post-up sysctl -w net.ipv4.conf.{{ network.wifi.interface }}.forwarding=1
-    post-up sysctl -w net.ipv4.conf.{{ network.wifi.client_interface }}.forwarding=1
-
-    # Routing setup
-    post-up ip route add {{ network.wifi.network }} dev {{ network.wifi.interface }} src {{ network.wifi.ip }} table main || true
-    post-up ip route add default via {{ network.wifi.client_interface_ip }} dev {{ network.wifi.client_interface }} || true
-    post-up ip route flush cache
-
-    # Flush old NAT rules
-    post-up iptables -t nat -F
-    post-up iptables -F FORWARD
-
-    # NAT and forwarding rules for WiFi
-    post-up iptables -t nat -A POSTROUTING -s {{ network.wifi.network }} -o {{ network.wifi.client_interface }} -j MASQUERADE || true
-    post-up iptables -A FORWARD -i {{ network.wifi.client_interface }} -o {{ network.wifi.interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT || true
-    post-up iptables -A FORWARD -i {{ network.wifi.interface }} -o {{ network.wifi.client_interface }} -j ACCEPT || true
-    
-    # Default policy
-    post-up iptables -P FORWARD ACCEPT || true
+{# Deprecated: interface.j2 removed from active use. See templates/archived/interface.j2 for original content. #}
+{# This repository now uses dhcpcd (dhcpcd.conf.j2) as the single network configuration method. #}
+{# Keeping this file in place as a pointer; it should not be used by any task. #}
 
     # Cleanup on shutdown
     pre-down iptables -t nat -D POSTROUTING -s {{ network.wifi.network }} -o {{ network.wifi.client_interface }} -j MASQUERADE || true

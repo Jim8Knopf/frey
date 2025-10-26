@@ -6,6 +6,16 @@ api:
   dashboard: true
   insecure: false  # Secure dashboard access
 
+# Middleware configurations
+http:
+  middlewares:
+    local-ipwhitelist:
+      ipWhiteList:
+        sourceRange:
+          - "10.20.0.0/24"  # WiFi network
+          - "10.20.2.0/24"  # Media network
+          - "172.30.4.0/24" # Library network
+
 entryPoints:
   web:
     address: ":80"

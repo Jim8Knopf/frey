@@ -1,0 +1,79 @@
+---
+---
+# Minimal verification play for the wifi_access_point role
+# Run explicitly: ansible-playbook -i inventory <this file> -e @vars.yml
+
+- name: Verify WiFi AP basics
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+
+    - name: Show targeted interface and IP
+      ansible.builtin.debug:
+        msg: "Checking interface {{ network.wifi.interface }} should have {{ network.wifi.ip }}"
+
+    - name: Verify network interface exists and has AP IP
+      ansible.builtin.command: ip addr show {{ network.wifi.interface }}
+      register: interface_status
+      changed_when: false
+      failed_when: interface_status.rc != 0
+
+    - name: Assert interface UP and IP present
+      ansible.builtin.assert:
+        that:
+          - "'UP' in interface_status.stdout"
+          - "network.wifi.ip in interface_status.stdout"
+        fail_msg: "Interface {{ network.wifi.interface }} is not configured as expected"
+
+    - name: Verify hostapd is running (or report state)
+      ansible.builtin.shell: "systemctl is-active hostapd || true"
+      register: hostapd_state
+      changed_when: false
+
+    - name: Fail if hostapd is not active
+      ansible.builtin.assert:
+        that:
+          - "hostapd_state.stdout == 'active'"
+        fail_msg: "hostapd is not active; check /var/log/syslog or journalctl -u hostapd"
+
+    - name: Verify dnsmasq is running
+      ansible.builtin.shell: "systemctl is-active dnsmasq || true"
+      register: dnsmasq_state
+      changed_when: false
+
+    - name: Fail if dnsmasq not active
+      ansible.builtin.assert:
+        that:
+          - "dnsmasq_state.stdout == 'active'"
+        fail_msg: "dnsmasq is not active; check dnsmasq configuration"
+
+    - name: Test local DNS resolution for configured domain
+      ansible.builtin.command: "dig @{{ network.wifi.ip }} {{ (network.dns_rewrites | default([]) | first).name if (network.dns_rewrites | default([])) else network.domain_name }} +short"
+      register: dns_test
+      changed_when: false
+      failed_when: dns_test.rc != 0
+
+    - name: Verify ip_forward is enabled
+      ansible.builtin.command: sysctl net.ipv4.ip_forward
+      register: ip_forward
+      changed_when: false
+      failed_when: "'net.ipv4.ip_forward = 1' not in ip_forward.stdout"
+
+    - name: Check optional NAT rule when enabled
+      ansible.builtin.shell: |
+        iptables -t nat -C POSTROUTING -s {{ network.wifi.network | default('10.20.0.0/24') }} -o {{ network.wifi.client_interface }} -j MASQUERADE >/dev/null 2>&1 && echo OK || echo MISSING
+      register: nat_check
+      changed_when: false
+      when: network.wifi.enable_nat | default(false) | bool
+
+    - name: Show verification summary
+      ansible.builtin.debug:
+        msg: |
+          Verification summary:
+          - Interface: {{ network.wifi.interface }} -> {{ 'OK' if 'UP' in interface_status.stdout and network.wifi.ip in interface_status.stdout else 'FAIL' }}
+          - hostapd: {{ hostapd_state.stdout }}
+          - dnsmasq: {{ dnsmasq_state.stdout }}
+          - local DNS sample: {{ dns_test.stdout | default('no-result') }}
+          - ip_forward: {{ ip_forward.stdout }}
+          - NAT rule present: {{ nat_check.stdout if (network.wifi.enable_nat | default(false) | bool) else 'N/A' }}

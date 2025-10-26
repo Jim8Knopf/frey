@@ -1,5 +1,6 @@
 ---
-# handlers file for wifi_access_point
+# Minimal handlers for wifi_access_point role
+
 - name: restart networking
   ansible.builtin.service:
     name: networking
@@ -8,23 +9,56 @@
 - name: reload sysctl
   ansible.builtin.command: sysctl --system
 
-- name: restart hostapd
-  ansible.builtin.service:
-    name: hostapd
-    state: restarted
+- name: reconfigure hostapd
+  block:
+    - name: Try hostapd_cli reconfigure
+      ansible.builtin.command:
+        cmd: hostapd_cli -i {{ network.wifi.interface }} reconfigure
+      register: hostapd_cli_reconf
+      failed_when: false
 
-- name: save iptables
-  ansible.builtin.command: netfilter-persistent save
+    - name: Restart hostapd if reconfigure failed
+      ansible.builtin.service:
+        name: hostapd
+        state: restarted
+      when: hostapd_cli_reconf.rc != 0
+
+  rescue:
+    - name: Ensure hostapd restarted (rescue)
+      ansible.builtin.service:
+        name: hostapd
+        state: restarted
+
+# iptables handlers moved to security role
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
 
 - name: restart dhcpcd
   ansible.builtin.service:
     name: dhcpcd
     state: restarted
 
-- name: restart dnsmasq
-  ansible.builtin.service:
-    name: dnsmasq
-    state: restarted
+- name: reload dnsmasq (graceful)
+  block:
+    - name: Try to reload dnsmasq
+      ansible.builtin.command:
+        cmd: systemctl reload dnsmasq
+      register: dnsmasq_reload
+      failed_when: false
+
+    - name: Restart dnsmasq if reload failed
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
+      when: dnsmasq_reload.rc != 0
+
+  rescue:
+    - name: Restart dnsmasq (rescue)
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
 
 - name: create dnsmasq pid directory
   listen: restart dnsmasq
@@ -74,7 +108,7 @@
     echo "=== Network Interfaces ==="
     ip addr show {{ network.wifi.interface }}
     echo "=== Port Check ==="
-    ss -tulpn | grep dnsmasq
+    ss -tulpn | grep dnsmasq || true
   register: dnsmasq_debug
   when: dnsmasq_restart is failed
   ignore_errors: yes
@@ -99,10 +133,4 @@
   failed_when: dnsmasq_check.rc != 0
   changed_when: false
 
-- name: restart iptables
-  ansible.builtin.shell:
-    cmd: "iptables-restore < /etc/iptables.rules.v4"
-
-- name: save iptables rules
-  ansible.builtin.shell:
-    cmd: "iptables-save > /etc/iptables.rules.v4"
+# End of handlers

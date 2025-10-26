@@ -1,10 +1,33 @@
 ---
 # security default variables
-enable_ufw: false
-enable_fail2ban: false
+enable_ufw: true
+enable_fail2ban: true
 
-# default firewall ports
-firewall_tcp_ports:
-  - 22
-  - 80
-  - 443
+# Network Security Configuration
+network_security:
+  # Protected container ports (block direct access)
+  protected_ports:
+    - { port: 8096, service: "jellyfin" }
+    - { port: 8989, service: "sonarr" }
+    - { port: 9091, service: "transmission" }
+  
+  # Trusted networks that can access management ports
+  trusted_networks:
+    - "10.20.0.0/24"    # WiFi AP network
+    - "10.20.30.0/24"   # Other trusted subnet
+    - "192.168.0.0/24"  # Local network
+
+  # Allowed public ports (accessible from anywhere)
+  public_ports:
+    - { port: 80, proto: "tcp", service: "http" }
+    - { port: 443, proto: "tcp", service: "https" }
+
+  # Admin ports (restricted to trusted networks)
+  admin_ports:
+    - { port: 22, proto: "tcp", service: "ssh" }
+
+  # Local network services (restricted to WiFi subnet)
+  local_services:
+    - { port: 53, proto: "tcp", service: "dns-tcp" }
+    - { port: 53, proto: "udp", service: "dns-udp" }
+    - { port: 67, proto: "udp", service: "dhcp" }

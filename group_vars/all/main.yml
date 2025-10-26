@@ -76,6 +76,8 @@ network:
     macaddr_acl: 0                 # MAC address filtering
     auth_algs: 1                   # WPA authentication
     ignore_broadcast_ssid: 0       # Broadcast SSID
+
+  # DNS Service Resolution
   dns_rewrites:
     # Infrastructure services
     - name: traefik

@@ -22,8 +22,8 @@ services:
       - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.traefik.entrypoints=web,websecure"  # Enable both HTTP and HTTPS
       - "traefik.http.services.traefik.loadbalancer.server.port=8080"
-      # Add IP whitelist middleware as per guide
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
+      # Add IP whitelist middleware for WiFi, Media, and Library networks
+      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.2.0/24,172.30.4.0/24"
       - "traefik.http.routers.traefik.middlewares=local-ipwhitelist"
 
   portainer:
@@ -46,7 +46,7 @@ services:
       - "traefik.http.routers.portainer.entrypoints=web,websecure"  # Enable both HTTP and HTTPS
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
       # Add IP whitelist middleware as per guide
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
+      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.2.0/24,172.30.4.0/24"  # WiFi, Media, and Library networks
       - "traefik.http.routers.portainer.middlewares=local-ipwhitelist"
 # Network definitions as per architecture guide
 networks:

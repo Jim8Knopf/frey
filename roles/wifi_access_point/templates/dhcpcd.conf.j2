@@ -19,20 +19,8 @@ metric 100
 interface {{ network.wifi.interface }}
 static ip_address={{ network.wifi.ip }}/24
 nohook wpa_supplicant
+noipv6
+nolink
+nohook wpa_supplicant
 noipv4ll
-noipv6
 metric 200
-
-# Prevent dhcpcd from managing DNS on AP interface
-nogateway
-nodns
-noipv6
-
-# Keep DHCP client active on the internet-facing interface
-interface {{ network.wifi.client_interface }}
-metric 100
-ipv4only
-request dhcp_server_identifier
-require dhcp_server_identifier
-slaac private
-
