@@ -4,6 +4,11 @@
     name: hostapd
     state: restarted
 
+- name: restart fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted
+
 - name: reload ufw
   ansible.builtin.service:
     name: ufw

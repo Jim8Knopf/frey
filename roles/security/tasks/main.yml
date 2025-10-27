@@ -8,15 +8,13 @@
     update_cache: yes
     cache_valid_time: 3600
 
-- name: Install security packages
+- name: Install security packages (UFW only, no iptables-persistent conflict)
   ansible.builtin.apt:
     name:
       - fail2ban
       - ufw
       - unattended-upgrades
       - logwatch
-      - iptables-persistent
-      - netfilter-persistent
     state: present
   register: package_install
 
@@ -35,23 +33,7 @@
     seconds: 5
   when: package_install.changed
 
-- name: Check UFW binary
-  ansible.builtin.stat:
-    path: /usr/sbin/ufw
-  register: ufw_check
-
-- name: Install UFW if missing
-  ansible.builtin.apt:
-    name: ufw
-    state: present
-    update_cache: yes
-  when: not ufw_check.stat.exists
-
-- name: Final UFW verification
-  ansible.builtin.command: which ufw
-  changed_when: false
-  register: ufw_final_check
-  failed_when: ufw_final_check.rc != 0
+# UFW tasks removed - using iptables-persistent instead
 
 # ------------------------------------------------------------------------------
 # NETWORK AND FIREWALL CONFIGURATION
@@ -282,13 +264,19 @@
     - firewall
     - wifi_ap
 
+- name: Create iptables rules directory
+  ansible.builtin.file:
+    path: /etc/iptables
+    state: directory
+    mode: '0755'
+  when: network.wifi is defined
+
 - name: Save iptables rules
   ansible.builtin.shell: |
     iptables-save > /etc/iptables/rules.v4
     ip6tables-save > /etc/iptables/rules.v6
-  args:
-    creates: /etc/iptables/rules.v4
   when: network.wifi is defined
+  changed_when: true
   tags:
     - firewall
     - wifi_ap

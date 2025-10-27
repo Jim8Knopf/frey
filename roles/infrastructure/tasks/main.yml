@@ -28,8 +28,9 @@
     state: present
     driver: bridge
   loop:
-    - proxy      # For Traefik routing
-    - localdns   # For DNS resolution
+    - proxy                     # For Traefik routing
+    - localdns                  # For DNS resolution
+    - infrastructure_network    # Service-specific network
 
 - name: Start infrastructure containers using compose
   community.docker.docker_compose_v2:

@@ -55,7 +55,4 @@ networks:
   localdns:
     external: true           # For DNS resolution
   infrastructure_network:    # Service-specific network
-    name: infrastructure_network
-    ipam:
-      config:
-        - subnet: 10.20.3.0/24  # As defined in group_vars
+    external: true           # For DNS resolution

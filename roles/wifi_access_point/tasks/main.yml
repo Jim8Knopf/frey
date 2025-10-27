@@ -65,6 +65,11 @@
     regexp: '^#?DAEMON_CONF='
     line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
 
+- name: Unmask hostapd service (required on fresh Raspberry Pi OS)
+  ansible.builtin.systemd:
+    name: hostapd
+    masked: no
+
 - name: Start hostapd
   block:
     - name: Try to reconfigure hostapd (if already running)
@@ -122,6 +127,11 @@
 - name: Reload systemd daemon
   ansible.builtin.systemd:
     daemon_reload: yes
+
+- name: Unmask dnsmasq service (required on fresh Raspberry Pi OS)
+  ansible.builtin.systemd:
+    name: dnsmasq
+    masked: no
 
 - name: Test dnsmasq configuration
   ansible.builtin.command: dnsmasq --test
