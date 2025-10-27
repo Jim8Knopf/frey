@@ -155,6 +155,26 @@
 # 6. WiFi AP restrictions (block direct container access)
 # 7. Rate limiting (prevent brute force and DDoS)
 
+- name: Ensure UFW is installed before configuring
+  ansible.builtin.command: which ufw
+  register: ufw_check
+  changed_when: false
+  failed_when: false
+  tags:
+    - firewall
+    - ufw
+
+- name: Wait for UFW to be available after package installation
+  ansible.builtin.wait_for:
+    path: /usr/sbin/ufw
+    timeout: 30
+  when:
+    - enable_ufw | default(true)
+    - ufw_check.rc != 0
+  tags:
+    - firewall
+    - ufw
+
 - name: Reset UFW to default state
   ansible.builtin.command: ufw --force reset
   changed_when: true
