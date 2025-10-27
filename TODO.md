@@ -1,77 +1,156 @@
-# Project Improvements & TODOs
+# Frey - Raspberry Pi 5 Hub Ansible Project
 
-This is a list of potential improvements and next steps to make the project more robust and professional.
+This is the structured and prioritized TODO checklist for the Frey project.
 
-## 🚀 High-Priority Tasks
+---
 
-- [ ] **Encrypt All Secrets with Ansible Vault**
-  - **Why?** To securely store all sensitive data (passwords, API keys) and safely manage the project in a public Git repository. This is the most critical security improvement.
-  - **How?**
-    1. Create an encrypted file: `ansible-vault create group_vars/secrets.yml`.
-    2. Move all secrets from `group_vars/all.yml` to the new `secrets.yml`.
-    3. Update playbooks to reference the vaulted variables.
-    4. Run playbooks with `--ask-vault-pass`.
-  - **AI Prompt:** "Encrypt all sensitive data in `group_vars/all.yml` using Ansible Vault. Create a new `group_vars/secrets.yml` file, move all passwords and API keys there, and update all roles and templates to use the new variables from the vault file."
+## 🔴 Critical Security & Stability (Do Now!)
 
-- [ ] **Complete Traefik Integration & Enable Internal HTTPS**
-  - **Why?** To make all services accessible via easy-to-remember domains and to encrypt all internal traffic, even without a public domain.
-  - **How?** Add Traefik labels to all remaining services. Configure Traefik to use self-signed certificates for all internal services.
-  - **AI Prompt:** "Add Traefik labels to all services in the `docker-compose-*.yml.j2` files that do not have them yet. Then, modify the Traefik static configuration (`traefik.yml.j2`) to enable a self-signed certificate provider and apply it to all routers by default."
+| Task                                      | Why?                                                                                     | Status |
+|-------------------------------------------|------------------------------------------------------------------------------------------|--------|
+|- [ ] Encrypt all secrets with Ansible Vault | Hardcoded passwords and API keys are a security risk.                                    | ⬜️     |
+|- [ ] Fix Deprecation Warnings              | Outdated modules may cause future errors.                                                | ⬜️     |
+|- [ ] Remove hardcoded passwords            | Security vulnerability.                                                                  | ⬜️     |
+|- [ ] **Create a separate `db` role**       | To manage PostgreSQL independently from services (start/stop/backup/update).          | ⬜️     |
 
-- [ ] **Adapt Project Structure to Best Practices (Refactoring)**
-  - **Why?** To make the project more maintainable, clearer, and scalable in the long term by separating automation logic from project management files.
-  - **How?**
-    1. Create a new directory `ansible/`.
-    2. Move `roles/`, `group_vars/`, `inventory/`, `playbooks/`, `ansible.cfg`, and `requirements.yml` into it.
-    3. Adapt the `deploy.sh` script to use the new paths.
-  - **AI Prompt:** "Refactor the project structure. Create a new `ansible/` directory and move the `roles`, `group_vars`, `inventory`, `playbooks`, `ansible.cfg`, and `requirements.yml` directories/files into it. Then, update the `deploy.sh` script to correctly call `ansible-playbook` with the new paths."
+---
 
-  - [ ] **one ore multiple DBs**
-  - [ ] media user everywhere?
+## 🟡 High-Priority Refactoring (Do Next)
 
-## 📈 Next Level Enhancements
+| Task                                      | Why?                                                                                     | Status |
+|-------------------------------------------|------------------------------------------------------------------------------------------|--------|
+|- [ ] Refactor project structure            | Improve maintainability and clarity.                                                     | ⬜️     |
+|- [ ] Complete Traefik integration          | Ensure all services are accessible via Traefik with HTTPS.                               | ⬜️     |
+|- [ ] Move variables to roles               | Make roles self-contained and reduce global variable clutter.                            | ⬜️     |
+|- [ ] Add post-deployment health checks     | Prevent silent failures after deployment.                                                | ⬜️     |
+|- [ ] Clarify DB strategy                   | Use a **single PostgreSQL instance** with separate schemas for each service.            | ⬜️     |
+|- [ ] **Implement `db` role tasks**         | Create tasks for starting/stopping PostgreSQL, creating schemas, and managing backups.  | ⬜️     |
+|- [ ] **Add `db_backup.yml` playbook**      | Automate PostgreSQL backups with rotation and remote storage.                          | ⬜️     |
+|- [ ] **Implement shared `media` user/group** | Create a single `media` user/group (UID/GID 1000) for all media services.               | ⬜️     |
+|- [ ] **Set permissions for media directory** | Ensure all services can read/write media files using the shared `media` user/group.   | ⬜️     |
 
-- [ ] **Refine Variable Scoping**
-  - **Why?** To make roles more self-contained and reusable, and to clean up the global `group_vars/all.yml` file.
-  - **How?** Move default variable definitions (like ports) from `group_vars/all.yml` to `roles/ROLENAME/defaults/main.yml` for each role.
-  - **AI Prompt:** "Refactor the Ansible variables for the `media` role. Create a `roles/media/defaults/main.yml` file and move all default port definitions (e.g., `jellyfin_port`, `sonarr_port`) from `group_vars/all.yml` into it. The values in `group_vars/all.yml` should only be present if they override the default."
+---
 
-- [ ] **Implement System Notifications**
-  - **Why?** To be proactively informed about system status, completed backups, or deployment issues.
-  - **How?** Add a service like `ntfy` and adapt the `deploy.sh` and `backup.sh` scripts to send notifications on success or failure.
-  - **AI Prompt:** "Integrate `ntfy` into the project. Add a new role to deploy `ntfy` as a Docker container. Modify the `deploy.sh` and `backup.sh` scripts to send notifications via a POST request to a configured `ntfy` topic on success and failure."
+## 🟢 Feature Enhancements (Plan for Next Iteration)
 
-- [ ] **Add Post-Deployment Health Checks**
-  - **Why?** To automatically verify that all services are running correctly after a deployment, preventing silent failures.
-  - **How?** Add a new task block at the end of `playbooks/site.yml` that uses the `ansible.builtin.uri` module to check the HTTP status of each service's web endpoint.
-  - **AI Prompt:** "Add a new task block to the end of `playbooks/site.yml` named 'Verify Service Health'. Use the `ansible.builtin.uri` module to send a GET request to the main page of each deployed service (e.g., `http://jellyfin.{{ domain_name }}`) and assert that the response status is 200."
+| Task                                      | Why?                                                                                     | Status |
+|-------------------------------------------|------------------------------------------------------------------------------------------|--------|
+|- [ ] Integrate Cockpit                     | Web-based management for the Raspberry Pi.                                               | ⬜️     |
+|- [ ] Implement system notifications (ntfy) | Proactively monitor deployments and backups.                                             | ⬜️     |
+|- [ ] Optimize media library with Tdarr     | Save storage space and standardize media formats.                                        | ⬜️     |
+|- [ ] Archive YouTube channels (Tube-Archivist)| Local backup of important YouTube content.                                            | ⬜️     |
+|- [ ] Test backup/restore strategy          | Ensure backups are functional and usable.                                                | ⬜️     |
 
+---
 
-## 💡 Possible Enhancements (Maybe)
+## 🔐 Single Sign-On (SSO) and User Management
 
-- [ ] **Optimize Media Library with Tdarr**
-  - **Why?** To save storage space and standardize the media library by automatically converting videos to more efficient codecs (e.g., H.265/HEVC). Tdarr can also check file health.
-  - **How?** Add Tdarr and a Tdarr-Node as Docker containers to the media stack and configure the libraries for processing.
+| Task                                      | Why?                                                                                     | Status |
+|-------------------------------------------|------------------------------------------------------------------------------------------|--------|
+|- [ ] **Implement SSO user management**     | Create a single admin user with access to all services via Traefik/SSO.                | ⬜️     |
+|- [ ] **Configure Traefik ForwardAuth for SSO** | Use Traefik ForwardAuth to integrate with an SSO provider (e.g., Authelia, OAuth2 Proxy). | ⬜️     |
+|- [ ] **Create admin user with global access** | Define a single admin user in Traefik/SSO with access to all services.                | ⬜️     |
+|- [ ] **Set up Authelia or OAuth2 Proxy**    | Deploy an SSO provider to manage user authentication and authorization.              | ⬜️     |
+|- [ ] **Configure Traefik middleware**     | Add authentication middleware to all Traefik routes for SSO enforcement.                | ⬜️     |
 
-- [ ] **Archive YouTube Channels with Tube-Archivist**
-  - **Why?** To locally back up important videos from YouTube channels and make them accessible via Jellyfin, independent of online availability and ad-free.
-  - **How?** Add Tube-Archivist as a Docker container and configure it with the desired channels or playlists.
+---
 
-- [ ] **Implement and Test Backup & Restore Strategy**
-  - **Why?** To ensure that backups are not just created, but are also valid and usable for a full recovery. A backup that hasn't been tested is not a backup.
-  - **How?** Create a new Ansible playbook or role to automate the restoration of a key service (e.g., Jellyfin) from a backup onto a clean state. Document the process.
-  - **AI Prompt:** "Create a new Ansible role named `restore`. This role should contain tasks to stop a service, wipe its configuration volume, and restore the data from the latest backup created by the `backup` role. Start with Jellyfin as the first service to support and make the role tag-based."
+## 📌 Technical Debt & Cleanup
 
-- [ ] fix this:
-```bash
-[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
-[DEPRECATION WARNING]: community.general.yaml has been deprecated. The plugin has been superseded by the the option `result_format=yaml` in callback plugin ansible.builtin.default from ansible-core 2.13 onwards. This feature will be removed from collection 'community.general' version 12.0.0.
-```
-- [ ] add cockpit
-- [ ] umlautarr
+| Task                                      | Why?                                                                                     | Status |
+|-------------------------------------------|------------------------------------------------------------------------------------------|--------|
+|- [ ] Update README.md                      | Reflect the current state of the project.                                                | ⬜️     |
+|- [ ] Add input validation                  | Prevent misconfigurations and errors.                                                    | ⬜️     |
+|- [ ] Improve error handling                | Make the project more robust.                                                            | ⬜️     |
+|- [ ] Simplify network architecture         | Reduce complexity and improve performance.                                               | ⬜️     |
 
+---
 
-❌ Security vulnerabilities (hardcoded passwords)
-❌ Missing input validation
-❌ Incomplete error handling
-❌ Network architecture could be simplified
+## 💡 Long-Term Ideas (Maybe/Someday)
+
+| Task                                      | Why?                                                                                     | Status |
+|-------------------------------------------|------------------------------------------------------------------------------------------|--------|
+|- [ ] Add Umlautarr                         | Improve media library management.                                                        | ⬜️     |
+|- [ ] Add automated testing                 | Ensure reliability and catch issues early.                                               | ⬜️     |
+|- [ ] Add monitoring for services           | Proactively detect and resolve issues.                                                   | ⬜️     |
+
+---
+
+## 📝 Database Implementation Details
+
+### **Single PostgreSQL Instance with Separate Schemas**
+- **Why?** Saves resources on Raspberry Pi 5 while allowing independent management of services.
+- **How?**
+  1. Create a **dedicated `db` role** in `roles/db/` with tasks for:
+     - Starting/stopping PostgreSQL container.
+     - Creating schemas and users for each service (Jellyfin, Sonarr, Radarr, etc.).
+     - Managing backups and restores.
+  2. Add a **separate playbook `db.yml`** for DB-specific operations (backup, update, etc.).
+  3. Add a **separate playbook `db_backup.yml`** for automated backups with rotation.
+
+---
+
+## 🔐 Single Sign-On (SSO) and User Management
+
+### **Goal: Single Admin User with Global Access**
+- **Why?** Avoid creating separate users for each service. Use a single admin user with access to all services via Traefik/SSO.
+- **How?**
+  1. **Set up Traefik ForwardAuth** to integrate with an SSO provider (e.g., Authelia, OAuth2 Proxy).
+  2. **Define a single admin user** in the SSO provider with access to all services.
+  3. **Configure Traefik middleware** to enforce authentication for all services.
+
+### **Implementation Steps**
+1. **Choose an SSO Provider** (e.g., Authelia, Keycloak, or OAuth2 Proxy).
+2. **Configure Traefik ForwardAuth** in `traefik.yml`:
+   ```yaml
+   entryPoints:
+     web:
+       address: ":80"
+       forwardAuth:
+         address: "http://authelia:9091/api/verify"
+         trustForwardHeader: true
+   ```
+3. **Add authentication middleware** to all Traefik routes:
+   ```yaml
+   http:
+     middlewares:
+       auth:
+         forwardAuth:
+           address: "http://authelia:9091/api/verify"
+   ```
+4. **Define the admin user** in your SSO provider (e.g., Authelia’s `users_database.yml`).
+5. **Test access** to ensure the admin user can reach all services.
+
+---
+
+## 📁 Media User and Permissions
+
+### **Shared `media` User/Group for All Services**
+- **Why?** Simplify file permissions across Jellyfin, Sonarr, Radarr, etc.
+- **How?**
+  1. **Create a `media` user/group** on the host:
+     ```bash
+     sudo groupadd -g 1000 media
+     sudo useradd -u 1000 -g media -d /opt/media -s /bin/false media
+     ```
+  2. **Configure Docker containers** to use the `media` user:
+     ```yaml
+     services:
+       sonarr:
+         user: "1000:1000"  # UID:GID of the media user/group
+         volumes:
+           - /path/to/media:/media
+     ```
+  3. **Set permissions** for the media directory:
+     ```bash
+     sudo chown -R media:media /path/to/media
+     sudo chmod -R 775 /path/to/media
+     ```
+
+---
+
+## ❓ Open Questions
+
+- Should we use a single database for all services or multiple databases? **→ Single PostgreSQL with schemas.**
+- How should the media user be handled across services? **→ Shared `media` user/group (UID/GID 1000).**
+- Are there any other services or features we should prioritize?
