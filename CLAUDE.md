@@ -323,3 +323,4 @@ dig +short *.frey @10.20.0.1
 - YouTube archival with Tube-Archivist
 - Implement and test backup/restore strategy
 - Add Cockpit for system management
+- the ap needs internet passthrough and als need to work without external internet and it shouldnt disupt the conetet wifi becaus i might be connected over it to adjust stuf

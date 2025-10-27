@@ -89,6 +89,7 @@
   loop:
     - ufw default deny incoming
     - ufw default allow outgoing
+    - ufw default allow routed
     - ufw --force enable
   changed_when: true
   when: enable_ufw | default(true)
