@@ -34,11 +34,10 @@
 - name: Install security packages
   ansible.builtin.apt:
     name:
-      - ufw                         # Uncomplicated Firewall (front-end to iptables)
+      - ufw                         # Uncomplicated Firewall (front-end to iptables, manages persistence)
       - fail2ban                    # Intrusion prevention (bans IPs after failed attempts)
       - unattended-upgrades         # Automatic security updates
       - logwatch                    # Log analysis and reporting
-      - iptables-persistent         # Save/restore iptables rules across reboots
     state: present
   register: package_install
   tags: packages
@@ -421,11 +420,29 @@
         jump: ACCEPT
         comment: "NAT: Allow forwarding from WiFi AP to internet"
 
-    - name: Save iptables rules persistently
-      ansible.builtin.shell: |
-        iptables-save > /etc/iptables/rules.v4
-        ip6tables-save > /etc/iptables/rules.v6
-      changed_when: true
+    - name: Create directory for UFW NAT rules
+      ansible.builtin.file:
+        path: /etc/ufw
+        state: directory
+        mode: '0755'
+
+    - name: Configure UFW to load NAT rules on startup
+      ansible.builtin.blockinfile:
+        path: /etc/ufw/before.rules
+        marker: "# {mark} ANSIBLE MANAGED NAT RULES"
+        insertbefore: "\\*filter"
+        block: |
+          # NAT table rules for WiFi AP internet passthrough
+          *nat
+          :POSTROUTING ACCEPT [0:0]
+
+          # MASQUERADE traffic from WiFi AP clients ({{ network.wifi.network }})
+          -A POSTROUTING -s {{ network.wifi.network }} -o {{ upstream_interface_result.stdout | trim }} -j MASQUERADE
+
+          # End NAT table
+          COMMIT
+        create: no
+      notify: reload ufw
 
 # ------------------------------------------------------------------------------
 # 6. FAIL2BAN CONFIGURATION
