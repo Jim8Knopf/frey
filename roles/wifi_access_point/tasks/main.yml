@@ -25,14 +25,25 @@
     state: present
     update_cache: yes
 
-- name: Stop services that may conflict (best-effort)
+- name: Check which conflicting services exist
   ansible.builtin.systemd:
     name: "{{ item }}"
-    state: stopped
   loop:
     - systemd-resolved
     - NetworkManager
     - wpa_supplicant
+  register: service_check
+  failed_when: false
+  changed_when: false
+
+- name: Stop and disable conflicting services (best-effort)
+  ansible.builtin.systemd:
+    name: "{{ item.item }}"
+    state: stopped
+    enabled: no
+    masked: yes
+  loop: "{{ service_check.results }}"
+  when: item.status is defined and item.status.LoadState == "loaded"
   ignore_errors: yes
 
 - name: Deploy dhcpcd configuration for the AP
@@ -97,6 +108,19 @@
   ansible.builtin.pause:
     seconds: 3
 
+- name: Backup and disable main dnsmasq.conf to prevent conflicts
+  ansible.builtin.copy:
+    content: |
+      # Main dnsmasq.conf disabled by Ansible wifi_access_point role
+      # All configuration is in /etc/dnsmasq.d/01-wifi-ap.conf
+      # This prevents conflicts with the WiFi AP DHCP/DNS configuration
+
+      # Read configuration from /etc/dnsmasq.d/ directory
+      conf-dir=/etc/dnsmasq.d/,.dpkg-dist,.dpkg-old,.dpkg-new
+    dest: /etc/dnsmasq.conf
+    backup: yes
+    mode: '0644'
+
 - name: Ensure dnsmasq directories exist
   ansible.builtin.file:
     path: "{{ item }}"
@@ -139,33 +163,35 @@
   changed_when: false
   failed_when: dnsmasq_test.rc != 0
 
-- name: Reload dnsmasq gracefully, fallback to restart
-  block:
-    - name: Try to reload dnsmasq
-      ansible.builtin.command:
-        cmd: systemctl reload dnsmasq
-      register: dnsmasq_reload
-      failed_when: false
+- name: Force restart dnsmasq to apply new configuration
+  ansible.builtin.service:
+    name: dnsmasq
+    state: restarted
+    enabled: yes
+  when: dnsmasq_test.rc == 0
 
-    - name: Restart dnsmasq if reload failed
-      ansible.builtin.service:
-        name: dnsmasq
-        state: restarted
-        enabled: yes
-      when: dnsmasq_reload.rc != 0
-
-  rescue:
-    - name: Restart dnsmasq (rescue)
-      ansible.builtin.service:
-        name: dnsmasq
-        state: restarted
-        enabled: yes
-
-- name: Wait for dnsmasq to bind on port 53
+- name: Wait for dnsmasq to bind on port 53 (DNS)
   ansible.builtin.wait_for:
     host: "{{ network.wifi.ip }}"
     port: 53
     timeout: 30
+
+- name: Verify dnsmasq is listening on DHCP port 67
+  ansible.builtin.shell: ss -ulnp | grep ':67' || echo "DHCP_NOT_LISTENING"
+  register: dhcp_check
+  changed_when: false
+  failed_when: "'DHCP_NOT_LISTENING' in dhcp_check.stdout"
+
+- name: Display dnsmasq listening ports
+  ansible.builtin.shell: ss -ulnp | grep dnsmasq
+  register: dnsmasq_ports
+  changed_when: false
+
+- name: Show dnsmasq listening status
+  ansible.builtin.debug:
+    msg: |
+      dnsmasq is listening on:
+      {{ dnsmasq_ports.stdout_lines | join('\n') }}
 
 - name: Read DHCP leases (best-effort)
   ansible.builtin.command: cat /var/lib/misc/dnsmasq.leases
