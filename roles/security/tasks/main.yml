@@ -23,6 +23,14 @@
     cache_valid_time: 3600
   tags: packages
 
+- name: Purge any partial UFW installation
+  ansible.builtin.apt:
+    name: ufw
+    state: absent
+    purge: yes
+  when: enable_ufw | default(true)
+  tags: packages
+
 - name: Install security packages
   ansible.builtin.apt:
     name:
@@ -220,17 +228,6 @@
 # 5. Trusted network access (home network, auto-detected networks)
 # 6. WiFi AP restrictions (block direct container access)
 # 7. Rate limiting (prevent brute force and DDoS)
-
-- name: Wait for UFW binary after package installation
-  ansible.builtin.wait_for:
-    path: /usr/sbin/ufw
-    timeout: 60
-  when:
-    - enable_ufw | default(true)
-    - package_install.changed
-  tags:
-    - firewall
-    - ufw
 
 - name: Reset UFW to default state
   ansible.builtin.command: ufw --force reset
