@@ -1,41 +1,136 @@
 ---
-# handlers file for wifi_access_point
-- name: restart dnsmasq
-  ansible.builtin.service:
-    name: dnsmasq
-    state: restarted
-
-- name: restart hostapd
-  ansible.builtin.service:
-    name: hostapd
-    state: restarted
-
-- name: restart dhcpcd
-  ansible.builtin.service:
-    name: dhcpcd
-    state: restarted
-
-- name: reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: yes
+# Minimal handlers for wifi_access_point role
 
 - name: restart networking
   ansible.builtin.service:
     name: networking
     state: restarted
 
-- name: restart netfilter-persistent
+- name: reload sysctl
+  ansible.builtin.command: sysctl --system
+
+- name: reconfigure hostapd
+  block:
+    - name: Try hostapd_cli reconfigure
+      ansible.builtin.command:
+        cmd: hostapd_cli -i {{ network.wifi.interface }} reconfigure
+      register: hostapd_cli_reconf
+      failed_when: false
+
+    - name: Restart hostapd if reconfigure failed
+      ansible.builtin.service:
+        name: hostapd
+        state: restarted
+      when: hostapd_cli_reconf.rc != 0
+
+  rescue:
+    - name: Ensure hostapd restarted (rescue)
+      ansible.builtin.service:
+        name: hostapd
+        state: restarted
+
+# iptables handlers moved to security role
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: restart dhcpcd
   ansible.builtin.service:
-    name: netfilter-persistent
+    name: dhcpcd
     state: restarted
 
-- name: save iptables rules
-  ansible.builtin.command:
-    cmd: netfilter-persistent save
+- name: reload dnsmasq (graceful)
+  block:
+    - name: Try to reload dnsmasq
+      ansible.builtin.command:
+        cmd: systemctl reload dnsmasq
+      register: dnsmasq_reload
+      failed_when: false
+
+    - name: Restart dnsmasq if reload failed
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
+      when: dnsmasq_reload.rc != 0
+
+  rescue:
+    - name: Restart dnsmasq (rescue)
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
+
+- name: create dnsmasq pid directory
+  listen: restart dnsmasq
+  ansible.builtin.file:
+    path: /var/run/dnsmasq
+    state: directory
+    mode: '0755'
+    owner: dnsmasq
+    group: dnsmasq
+
+- name: create dnsmasq leases directory
+  listen: restart dnsmasq
+  ansible.builtin.file:
+    path: /var/lib/misc
+    state: directory
+    mode: '0755'
+    owner: dnsmasq
+    group: dnsmasq
+
+- name: validate dnsmasq config
+  listen: restart dnsmasq
+  ansible.builtin.command: dnsmasq --test
+  changed_when: false
+  register: dnsmasq_test
+
+- name: show dnsmasq config errors
+  ansible.builtin.debug:
+    msg: "{{ dnsmasq_test.stderr_lines }}"
+  when: dnsmasq_test is failed
+
+- name: restart dnsmasq
+  listen: restart dnsmasq
+  ansible.builtin.service:
+    name: dnsmasq
+    state: restarted
+  register: dnsmasq_restart
+
+- name: collect dnsmasq diagnostics
+  listen: restart dnsmasq
+  ansible.builtin.shell: |
+    echo "=== DNSMasq Status ==="
+    systemctl status dnsmasq.service
+    echo "=== Journal Log ==="
+    journalctl -xeu dnsmasq.service --no-pager
+    echo "=== Config Test ==="
+    dnsmasq --test
+    echo "=== Network Interfaces ==="
+    ip addr show {{ network.wifi.interface }}
+    echo "=== Port Check ==="
+    ss -tulpn | grep dnsmasq || true
+  register: dnsmasq_debug
+  when: dnsmasq_restart is failed
+  ignore_errors: yes
+
+- name: display dnsmasq diagnostics
+  ansible.builtin.debug:
+    msg: "{{ dnsmasq_debug.stdout_lines | default([]) }}"
+  when: dnsmasq_restart is failed
+
+- name: wait for dnsmasq
+  listen: restart dnsmasq
+  ansible.builtin.wait_for:
+    port: 53
+    timeout: 10
+    host: "{{ network.wifi.ip }}"
+  when: dnsmasq_restart is success
+
+- name: verify dnsmasq
+  listen: restart dnsmasq
+  ansible.builtin.command: pgrep dnsmasq
+  register: dnsmasq_check
+  failed_when: dnsmasq_check.rc != 0
   changed_when: false
 
-- name: restart networkmanager
-  ansible.builtin.systemd:
-    name: NetworkManager
-    state: restarted
-  ignore_errors: yes
+# End of handlers

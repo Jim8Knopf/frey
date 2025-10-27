@@ -1,0 +1,262 @@
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: community.general.yaml has been deprecated. The plugin has been superseded by the the option `result_format=yaml` in callback plugin ansible.builtin.default from ansible-core 2.13 onwards. This feature will be removed from collection 'community.general' version 12.0.0.
+
+PLAY [Deploy Enhanced Raspberry Pi 5 Off-Grid Media & AI Hub] ******************
+
+TASK [Gathering Facts] *********************************************************
+ok: [frey]
+
+TASK [Find apt source files] ***************************************************
+ok: [frey]
+
+TASK [Check which apt source files reference download.docker.com] **************
+skipping: [frey]
+
+TASK [Remove Docker apt source files that reference download.docker.com] *******
+skipping: [frey]
+
+TASK [Update package cache] ****************************************************
+ok: [frey]
+
+TASK [wifi_access_point : Assert required wifi variables are defined] **********
+ok: [frey] => changed=false 
+  msg: All assertions passed
+
+TASK [wifi_access_point : Fail if attempting to configure the control interface (avoid disconnecting admin)] ***
+skipping: [frey]
+
+TASK [wifi_access_point : Install packages required for AP] ********************
+ok: [frey]
+
+TASK [wifi_access_point : Stop services that may conflict (best-effort)] *******
+[ERROR]: Task failed: Module failed: Could not find the requested service systemd-resolved: host
+Origin: /home/jim/Projects/frey/roles/wifi_access_point/tasks/main.yml:28:3
+
+26     update_cache: yes
+27
+28 - name: Stop services that may conflict (best-effort)
+     ^ column 3
+
+failed: [frey] (item=systemd-resolved) => changed=false 
+  ansible_loop_var: item
+  item: systemd-resolved
+  msg: 'Could not find the requested service systemd-resolved: host'
+ok: [frey] => (item=NetworkManager)
+ok: [frey] => (item=wpa_supplicant)
+...ignoring
+
+TASK [wifi_access_point : Deploy dhcpcd configuration for the AP] **************
+ok: [frey]
+
+TASK [wifi_access_point : Restart dhcpcd] **************************************
+changed: [frey]
+
+TASK [wifi_access_point : Wait for AP IP to be present on the host] ************
+ok: [frey]
+
+TASK [wifi_access_point : Deploy hostapd configuration] ************************
+ok: [frey]
+
+TASK [wifi_access_point : Ensure hostapd points at the service config] *********
+ok: [frey]
+
+TASK [wifi_access_point : Unmask hostapd service (required on fresh Raspberry Pi OS)] ***
+ok: [frey]
+
+TASK [wifi_access_point : Try to reconfigure hostapd (if already running)] *****
+changed: [frey]
+
+TASK [wifi_access_point : Start hostapd if it was not running or reconfigure failed] ***
+skipping: [frey]
+
+TASK [wifi_access_point : Pause briefly to let hostapd initialize] *************
+Pausing for 3 seconds
+ok: [frey]
+
+TASK [wifi_access_point : Ensure dnsmasq directories exist] ********************
+ok: [frey] => (item=/var/run/dnsmasq)
+ok: [frey] => (item=/var/lib/misc)
+ok: [frey] => (item=/etc/dnsmasq.d)
+
+TASK [wifi_access_point : Ensure dnsmasq leases file exists] *******************
+changed: [frey]
+
+TASK [wifi_access_point : Deploy dnsmasq config snippet for AP] ****************
+ok: [frey]
+
+TASK [wifi_access_point : Remove dnsmasq systemd overrides (use packaged service)] ***
+ok: [frey]
+
+TASK [wifi_access_point : Reload systemd daemon] *******************************
+ok: [frey]
+
+TASK [wifi_access_point : Unmask dnsmasq service (required on fresh Raspberry Pi OS)] ***
+ok: [frey]
+
+TASK [wifi_access_point : Test dnsmasq configuration] **************************
+ok: [frey]
+
+TASK [wifi_access_point : Try to reload dnsmasq] *******************************
+changed: [frey]
+
+TASK [wifi_access_point : Restart dnsmasq if reload failed] ********************
+skipping: [frey]
+
+TASK [wifi_access_point : Wait for dnsmasq to bind on port 53] *****************
+ok: [frey]
+
+TASK [wifi_access_point : Read DHCP leases (best-effort)] **********************
+ok: [frey]
+
+TASK [wifi_access_point : Display concise AP status] ***************************
+ok: [frey] => 
+  msg: |-
+    WiFi AP Summary:
+    Interface: wlan1 (10.20.0.1)
+    SSID: FreyHub
+    Hostapd: unknown
+    dnsmasq: unknown
+    DHCP leases entries: 0
+
+TASK [security : Update apt cache] *********************************************
+ok: [frey]
+
+TASK [security : Install security packages (UFW only, no iptables-persistent conflict)] ***
+ok: [frey]
+
+TASK [security : Wait for dpkg lock] *******************************************
+skipping: [frey]
+
+TASK [security : Wait for apt lock] ********************************************
+skipping: [frey]
+
+TASK [security : Wait for package installation to complete] ********************
+skipping: [frey]
+
+TASK [security : Enable IP forwarding] *****************************************
+skipping: [frey]
+
+TASK [security : Set up NAT for WiFi clients] **********************************
+skipping: [frey]
+
+TASK [security : Allow forwarding for established connections] *****************
+skipping: [frey]
+
+TASK [security : Allow forwarding from internal network] ***********************
+skipping: [frey]
+
+TASK [security : Reset UFW to default state] ***********************************
+changed: [frey]
+
+TASK [security : Enable UFW and set default policies] **************************
+changed: [frey] => (item=ufw default deny incoming)
+changed: [frey] => (item=ufw default allow outgoing)
+changed: [frey] => (item=ufw --force enable)
+
+TASK [security : Configure essential UFW rules] ********************************
+changed: [frey] => (item={'port': 80, 'proto': 'tcp', 'service': 'http'})
+changed: [frey] => (item={'port': 443, 'proto': 'tcp', 'service': 'https'})
+
+TASK [security : Allow established connections] ********************************
+ok: [frey]
+
+TASK [security : Allow loopback traffic] ***************************************
+ok: [frey]
+
+TASK [security : Allow SSH access in iptables] *********************************
+ok: [frey]
+
+TASK [security : Set default iptables policies] ********************************
+ok: [frey] => (item=INPUT)
+ok: [frey] => (item=FORWARD)
+
+TASK [security : Allow outgoing traffic in iptables] ***************************
+ok: [frey]
+
+TASK [security : Configure essential services] *********************************
+ok: [frey] => (item={'port': 80, 'proto': 'tcp', 'service': 'http'})
+ok: [frey] => (item={'port': 443, 'proto': 'tcp', 'service': 'https'})
+
+TASK [security : Configure admin access from trusted networks] *****************
+ok: [frey] => (item=[{'port': 22, 'proto': 'tcp', 'service': 'ssh'}, '10.20.0.0/24'])
+ok: [frey] => (item=[{'port': 22, 'proto': 'tcp', 'service': 'ssh'}, '10.20.30.0/24'])
+ok: [frey] => (item=[{'port': 22, 'proto': 'tcp', 'service': 'ssh'}, '192.168.0.0/24'])
+
+TASK [security : Configure sysctl for IP forwarding] ***************************
+ok: [frey] => (item={'key': 'net.ipv4.ip_forward', 'value': '1'})
+ok: [frey] => (item={'key': 'net.ipv4.conf.all.forwarding', 'value': '1'})
+
+TASK [security : Configure local services for WiFi AP] *************************
+ok: [frey] => (item={'port': 53, 'proto': 'tcp', 'service': 'dns-tcp'})
+ok: [frey] => (item={'port': 53, 'proto': 'udp', 'service': 'dns-udp'})
+ok: [frey] => (item={'port': 67, 'proto': 'udp', 'service': 'dhcp'})
+ok: [frey] => (item={'port': 80, 'proto': 'tcp', 'service': 'http'})
+ok: [frey] => (item={'port': 443, 'proto': 'tcp', 'service': 'https'})
+
+TASK [security : Block direct container access from WiFi network] **************
+ok: [frey] => (item={'port': 8096, 'service': 'jellyfin'})
+ok: [frey] => (item={'port': 8989, 'service': 'sonarr'})
+ok: [frey] => (item={'port': 9091, 'service': 'transmission'})
+
+TASK [security : Configure NAT for WiFi network] *******************************
+ok: [frey]
+
+TASK [security : Allow DNS from WiFi network] **********************************
+ok: [frey] => (item=tcp)
+ok: [frey] => (item=udp)
+
+TASK [security : Allow DHCP from WiFi network] *********************************
+ok: [frey]
+
+TASK [security : Allow web traffic from WiFi network] **************************
+ok: [frey] => (item=80)
+ok: [frey] => (item=443)
+
+TASK [security : Create iptables rules directory] ******************************
+ok: [frey]
+
+TASK [security : Save iptables rules] ******************************************
+changed: [frey]
+
+TASK [security : Configure fail2ban] *******************************************
+ok: [frey]
+
+TASK [security : Enable UFW] ***************************************************
+ok: [frey]
+
+TASK [security : Enable automatic security updates] ****************************
+changed: [frey]
+
+TASK [docker_minimal : Install prerequisites] **********************************
+ok: [frey]
+
+TASK [docker_minimal : Ensure /etc/apt/keyrings exists] ************************
+ok: [frey]
+
+TASK [docker_minimal : Check for existing docker key file (docker.asc)] ********
+ok: [frey]
+
+TASK [docker_minimal : Set docker key path variable] ***************************
+ok: [frey]
+
+TASK [docker_minimal : Download Docker GPG key] ********************************
+changed: [frey]
+
+TASK [docker_minimal : Add Docker apt repository] ******************************
+changed: [frey]
+
+TASK [docker_minimal : Install Docker packages] ********************************
+[ERROR]: Task failed: Module failed: No package matching 'docker-ce' is available
+Origin: /home/jim/Projects/frey/roles/docker_minimal/tasks/main.yml:44:3
+
+42   when: ansible_os_family == 'Debian'
+43
+44 - name: Install Docker packages
+     ^ column 3
+
+fatal: [frey]: FAILED! => changed=false 
+  msg: No package matching 'docker-ce' is available
+
+PLAY RECAP *********************************************************************
+frey                       : ok=55   changed=11   unreachable=0    failed=1    skipped=12   rescued=0    ignored=1   
+

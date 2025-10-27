@@ -1,40 +1,43 @@
-# DHCP server configuration for WiFi AP
-# Basic settings
-bind-dynamic
-listen-address={{ wifi.ip }}
-interface={{ wifi.interface }}
-except-interface=lo
+# Minimal dnsmasq config for AP (DHCP + local DNS)
+port=53
+bind-interfaces
+listen-address={{ network.wifi.ip }}
 
-# Process settings
-user=root
-group=root
 pid-file=/var/run/dnsmasq/dnsmasq.pid
 
-# DNS settings
-port=53
-no-resolv
-server=8.8.8.8
-server=8.8.4.4
+interface={{ network.wifi.interface }}
+except-interface=lo
 
-# DNS options
-domain-needed
-bogus-priv
-local-ttl=120
-
-# DHCP range and lease time
-dhcp-range={{ wifi.dhcp_range_start }},{{ wifi.dhcp_range_end }},255.255.255.0,24h
-dhcp-option=option:router,{{ wifi.ip }}
-dhcp-option=option:dns-server,{{ wifi.ip }}
+# DHCP
+dhcp-range={{ network.wifi.dhcp_range_start }},{{ network.wifi.dhcp_range_end }},255.255.255.0,12h
 dhcp-authoritative
+dhcp-leasefile=/var/lib/misc/dnsmasq.leases
 
-# Logging
-log-queries
-log-dhcp
+# DHCP options: gateway and DNS point to the AP
+dhcp-option=3,{{ network.wifi.ip }}
+dhcp-option=6,{{ network.wifi.ip }}
 
-# Local DNS
-local=/frey/
-domain=frey
+# Local domain and host records
+domain={{ network.domain_name }}
 expand-hosts
+local=/{{ network.domain_name }}/
+
+{% if network.dns_rewrites is defined %}
 {% for service in network.dns_rewrites %}
-address=/{{ service.name }}.{{ network.domain_name }}/{{ ansible_host }}
+host-record={{ service.name }}.{{ network.domain_name }},{{ network.wifi.ip }}
 {% endfor %}
+{% endif %}
+
+# Wildcard fallback: resolve all *.domain to AP gateway
+address=/.{{ network.domain_name }}/{{ network.wifi.ip }}
+
+# Upstream DNS servers
+server=1.1.1.1
+server=8.8.8.8
+
+# Don't read /etc/resolv.conf directly to control upstream servers
+no-resolv
+
+# Keep logging minimal by default
+#log-queries
+#log-dhcp

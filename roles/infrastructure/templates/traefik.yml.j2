@@ -1,15 +1,54 @@
+global:
+  checkNewVersion: true
+  sendAnonymousUsage: false
+
 api:
   dashboard: true
-  insecure: true # Allows access to the dashboard over HTTP. Set to false in production.
+  insecure: false  # Secure dashboard access
+
+# Middleware configurations
+http:
+  middlewares:
+    local-ipwhitelist:
+      ipWhiteList:
+        sourceRange:
+          - "10.20.0.0/24"  # WiFi network
+          - "10.20.2.0/24"  # Media network
+          - "172.30.4.0/24" # Library network
 
 entryPoints:
   web:
     address: ":80"
+    # Optionally redirect to HTTPS
+    # http:
+    #   redirections:
+    #     entryPoint:
+    #       to: websecure
+    #       scheme: https
   websecure:
     address: ":443"
+    # Configure TLS
+    # http:
+    #   tls:
+    #     certResolver: letsencrypt
+
+# Configure certificate resolver for Let's Encrypt
+# certificatesResolvers:
+#   letsencrypt:
+#     acme:
+#       email: your-email@example.com
+#       storage: acme.json
+#       httpChallenge:
+#         entryPoint: web
 
 providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"
-    exposedByDefault: false # Recommended for security
-    network: proxy
+    exposedByDefault: false  # Security: opt-in for container exposure
+    network: proxy          # Use proxy network for routing
+    watch: true
+    
+log:
+  level: INFO  # Change to DEBUG for troubleshooting
+
+accessLog: {}  # Enable access logs

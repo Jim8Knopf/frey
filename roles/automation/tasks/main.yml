@@ -1,0 +1,20 @@
+---
+- name: Setup automation stack user
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "automation"
+    folders: [ollama, n8n, open-webui]
+    checkVar: [storage.base_dir, automation.user.name]
+
+- name: Deploy automation stack compose file
+  ansible.builtin.template:
+    src: docker-compose-automation.yml.j2
+    dest: "{{ storage.stacks }}/automation/docker-compose.yml"
+    owner: "{{ automation.user.name }}"
+    group: "{{ automation.group.name }}"
+    mode: '0644'
+
+- name: Start automation stack containers using compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks }}/automation"
+    state: present

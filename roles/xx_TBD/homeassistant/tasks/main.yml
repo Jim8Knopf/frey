@@ -2,7 +2,7 @@
 # homeassistant tasks
 - name: Create Home Assistant stack directory
   ansible.builtin.file:
-    path: "{{ docker.stacks }}/homeassistant"
+    path: "{{ storage.stacks }}/homeassistant"
     state: directory
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
@@ -11,13 +11,13 @@
 - name: Deploy Home Assistant compose file
   ansible.builtin.template:
     src: docker-compose-homeassistant.yml.j2
-    dest: "{{ docker.stacks }}/homeassistant/docker-compose.yml"
+    dest: "{{ storage.stacks }}/homeassistant/docker-compose.yml"
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
     mode: '0644'
 
 - name: Start Home Assistant container using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/homeassistant"
+    project_src: "{{ storage.stacks }}/homeassistant"
     state: present
 

@@ -37,24 +37,28 @@
         cache_valid_time: 3600
       tags: always
 
-    - name: Display deployment info
-      ansible.builtin.debug:
-        msg: |
-          🚀 Starting Pi 5 Hub deployment
-          Target: {{ ansible_host }}
-          User: {{ ansible_user_id }}
-          Services: {% if features.media %}Media, {% endif %}{% if features.ai_stack %}AI, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
+    # - name: Display deployment info
+    #   ansible.builtin.debug:
+    #     msg: |
+    #       🚀 Starting Pi 5 Hub deployment
+    #       Target: {{ ansible_host }}
+    #       User: {{ ansible_user_id }}
+    #       Services: {% if features.media %}Media, {% endif %}{% if features.automation %}Automation, {% endif %}{% if features.ai, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
 
-    - name: Create media subdirectories
-      ansible.builtin.file:
-        path: "{{ storage.base_dir | default('/opt/frey')}}"
-        state: directory
-        owner: "{{ user.uid }}"
-        group: "{{ user.gid }}"
-        mode: '0755'
+    # - name: Create media subdirectories
+    #   ansible.builtin.file:
+    #     path: "{{ storage.base_dir | default('/opt/frey')}}"
+    #     state: directory
+    #     owner: "{{ user.uid }}"
+    #     group: "{{ user.gid }}"
+    #     mode: '0755'
 
   roles:
     # Core Infrastructure
+    - role: wifi_access_point
+      tags: [wifi, networking]
+      when: features.wifi_access_point
+
     - role: security
       tags: [security]
       when: security.ufw.enable or security.fail2ban.enable
@@ -67,16 +71,12 @@
       tags: [docker, base]
 
     # Network and Management
-    - role: wifi_access_point
-      tags: [wifi, networking]
-      when: features.wifi_access_point
-
     - role: infrastructure
       tags: [infrastructure, management]
       when: features.infrastructure
 
-    - role: dockge
-      tags: [dockge, management]
+    # - role: dockge
+    #   tags: [dockge, management]
 
     # Services
     - role: monitoring
@@ -87,9 +87,9 @@
       tags: [media]
       when: features.media
 
-    # - role: ai_stack
-    #   tags: [ai]
-    #   when: features.ai_stack
+    - role: automation
+      tags: [automation, services, ai]
+      when: features.automation
 
     # - role: photo_management
     #   tags: [photos]

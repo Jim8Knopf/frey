@@ -1,198 +1,210 @@
 ---
-# tasks file for wifi_access_point
+# roles/wifi_access_point/tasks/main.yml
+# Final clean single-document tasks for AP bring-up.
 
-- name: Assert required variables are defined
+- name: Assert required wifi variables are defined
   ansible.builtin.assert:
     that:
-      - wifi.interface is defined
-      - wifi.ssid is defined
-      - wifi.password is defined
-      - wifi.country is defined
-      - wifi.ip is defined
-      - wifi.network is defined
-      - wifi.client_interface is defined
-    msg: "One or more required wifi_access_point variables are not set. Please check your configuration."
+      - network.wifi.interface is defined
+      - network.wifi.ssid is defined
+      - network.wifi.password is defined
+      - network.wifi.ip is defined
+      - network.wifi.dhcp_range_start is defined
+      - network.wifi.dhcp_range_end is defined
+    msg: "Required wifi_access_point variables missing. See roles/wifi_access_point/README.md"
 
-- name: Check wireless card capabilities for AP mode
-  ansible.builtin.command:
-    cmd: "iw list"
-  register: iw_list_output
-  changed_when: false
-  failed_when: false # We do a custom check below
-
-- name: Verify that AP mode is supported
+- name: Fail if attempting to configure the control interface (avoid disconnecting admin)
   ansible.builtin.fail:
-    msg: "ERROR: Your wireless hardware does not report AP mode support. Cannot proceed."
-  when: "'AP' not in iw_list_output.stdout"
-- name: Install required packages for WiFi AP
+    msg: "Refusing to modify {{ network.wifi.interface }} because it matches the control interface {{ ansible_default_ipv4.interface }}. Set network.wifi.interface to a secondary adapter (e.g. wlan1) or set force_apply=true to override."
+  when:
+    - (network.wifi.interface == ansible_default_ipv4.interface) and (force_apply | default(false) | bool) == false
+
+- name: Install packages required for AP
   ansible.builtin.apt:
-    name:
-      - hostapd
-      - dnsmasq
-      - rfkill
-      - iw
-      - dhcpcd5
+    name: "{{ wifi_ap_packages | default(['hostapd','dnsmasq','rfkill','iw','dhcpcd5']) }}"
     state: present
+    update_cache: yes
 
-- name: Check for systemd-resolved service
-  ansible.builtin.stat:
-    path: "/lib/systemd/system/systemd-resolved.service"
-  register: resolved_service
-
-- name: Disable systemd-resolved to prevent conflict with dnsmasq
+- name: Check which conflicting services exist
   ansible.builtin.systemd:
-    name: systemd-resolved
+    name: "{{ item }}"
+  loop:
+    - systemd-resolved
+    - NetworkManager
+    - wpa_supplicant
+  register: service_check
+  failed_when: false
+  changed_when: false
+
+- name: Stop and disable conflicting services (best-effort)
+  ansible.builtin.systemd:
+    name: "{{ item.item }}"
     state: stopped
     enabled: no
-  when: resolved_service.stat.exists
+    masked: yes
+  loop: "{{ service_check.results }}"
+  when: item.status is defined and item.status.LoadState == "loaded"
+  ignore_errors: yes
 
-- name: Configure NetworkManager to ignore the AP interface
-  ansible.builtin.copy:
-    dest: /etc/NetworkManager/conf.d/99-ansible-ap-ignore.conf
-    content: |
-      [keyfile]
-      unmanaged-devices=interface-name:{{ wifi.interface }}
-    mode: '0644'
-  notify: restart networkmanager
-
-- name: Configure static IP for AP interface via dhcpcd
+- name: Deploy dhcpcd configuration for the AP
   ansible.builtin.template:
     src: dhcpcd.conf.j2
     dest: /etc/dhcpcd.conf
-    owner: root
-    group: root
     mode: '0644'
     backup: yes
-  notify: restart dhcpcd
 
-- name: Configure hostapd for WiFi AP
+- name: Restart dhcpcd
+  ansible.builtin.service:
+    name: dhcpcd
+    state: restarted
+    enabled: yes
+
+- name: Wait for AP IP to be present on the host
+  ansible.builtin.wait_for:
+    host: "{{ network.wifi.ip }}"
+    timeout: 20
+
+- name: Deploy hostapd configuration
   ansible.builtin.template:
     src: hostapd.conf.j2
     dest: /etc/hostapd/hostapd.conf
-    owner: root
-    group: root
     mode: '0644'
-  notify: restart hostapd
 
-- name: Point hostapd daemon to its config file
+- name: Ensure hostapd points at the service config
   ansible.builtin.lineinfile:
     path: /etc/default/hostapd
     regexp: '^#?DAEMON_CONF='
     line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
-  notify: restart hostapd
 
-- name: Configure dnsmasq for DHCP and DNS
-  ansible.builtin.template:
-    src: dnsmasq.conf.j2
-    dest: /etc/dnsmasq.conf
-    owner: root
-    group: root
-    mode: '0644'
-    backup: yes
-  notify: restart dnsmasq
-
-- name: Enable IP forwarding
-  ansible.posix.sysctl:
-    name: net.ipv4.ip_forward
-    value: '1'
-    sysctl_set: yes
-    state: present
-    reload: yes
-
-- name: Set up NAT for internet routing
-  ansible.builtin.iptables:
-    table: nat
-    chain: POSTROUTING
-    source: "{{ wifi.network }}"
-    out_interface: "{{ wifi.client_interface }}"
-    jump: MASQUERADE
-    state: present
-
-- name: Allow forwarding for established connections
-  ansible.builtin.iptables:
-    chain: FORWARD
-    in_interface: "{{ wifi.client_interface }}"
-    out_interface: "{{ wifi.interface }}"
-    match: state
-    ctstate: RELATED,ESTABLISHED
-    jump: ACCEPT
-    state: present
-
-- name: Allow forwarding from AP to client interface
-  ansible.builtin.iptables:
-    chain: FORWARD
-    in_interface: "{{ wifi.interface }}"
-    out_interface: "{{ wifi.client_interface }}"
-    jump: ACCEPT
-    state: present
-
-- name: Allow DNS traffic on AP interface
-  ansible.builtin.iptables:
-    chain: INPUT
-    in_interface: "{{ wifi.interface }}"
-    protocol: "{{ item }}"
-    destination_port: "53"
-    jump: ACCEPT
-  loop:
-    - udp
-    - tcp
-  when: not features.networking
-
-- name: Allow DHCP traffic on AP interface
-  ansible.builtin.iptables:
-    chain: INPUT
-    in_interface: "{{ wifi.interface }}"
-    protocol: udp
-    destination_port: "67"
-    jump: ACCEPT
-
-- name: Unblock WiFi with rfkill
-  ansible.builtin.command:
-    cmd: "rfkill unblock wifi"
-  changed_when: false
-
-- name: Unmask and enable hostapd service
+- name: Unmask hostapd service (required on fresh Raspberry Pi OS)
   ansible.builtin.systemd:
     name: hostapd
     masked: no
-    enabled: yes
 
-- name: Ensure hostapd is running
-  ansible.builtin.service:
-    name: hostapd
-    state: started
-    enabled: yes
+- name: Start hostapd
+  block:
+    - name: Try to reconfigure hostapd (if already running)
+      ansible.builtin.command:
+        cmd: hostapd_cli -i {{ network.wifi.interface }} reconfigure
+      register: hostapd_reconf
+      changed_when: hostapd_reconf.rc == 0
+      failed_when: false
 
-- name: Create dnsmasq run directory
+    - name: Start hostapd if it was not running or reconfigure failed
+      ansible.builtin.service:
+        name: hostapd
+        state: started
+        enabled: yes
+      when: hostapd_reconf is not defined or hostapd_reconf.rc != 0
+
+  rescue:
+    - name: Ensure hostapd service is started (rescue)
+      ansible.builtin.service:
+        name: hostapd
+        state: started
+        enabled: yes
+
+- name: Pause briefly to let hostapd initialize
+  ansible.builtin.pause:
+    seconds: 3
+
+- name: Backup and disable main dnsmasq.conf to prevent conflicts
+  ansible.builtin.copy:
+    content: |
+      # Main dnsmasq.conf disabled by Ansible wifi_access_point role
+      # All configuration is in /etc/dnsmasq.d/01-wifi-ap.conf
+      # This prevents conflicts with the WiFi AP DHCP/DNS configuration
+
+      # Read configuration from /etc/dnsmasq.d/ directory
+      conf-dir=/etc/dnsmasq.d/,.dpkg-dist,.dpkg-old,.dpkg-new
+    dest: /etc/dnsmasq.conf
+    backup: yes
+    mode: '0644'
+
+- name: Ensure dnsmasq directories exist
   ansible.builtin.file:
-    path: /var/run/dnsmasq
+    path: "{{ item }}"
     state: directory
-    owner: root
-    group: root
     mode: '0755'
+  loop:
+    - /var/run/dnsmasq
+    - /var/lib/misc
+    - /etc/dnsmasq.d
 
-- name: Flush handlers to apply network changes
-  meta: flush_handlers
+- name: Ensure dnsmasq leases file exists
+  ansible.builtin.file:
+    path: /var/lib/misc/dnsmasq.leases
+    state: touch
+    mode: '0644'
 
-- name: Wait for the AP interface to have an IP address
-  ansible.builtin.command: ip addr show {{ wifi.interface }}
-  register: ip_addr_output
-  until: "wifi.ip in ip_addr_output.stdout"
-  retries: 5
-  delay: 2
+- name: Deploy dnsmasq config snippet for AP
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.d/01-wifi-ap.conf
+    mode: '0644'
 
-- name: Manage dnsmasq service
+- name: Remove dnsmasq systemd overrides (use packaged service)
+  ansible.builtin.file:
+    path: /etc/systemd/system/dnsmasq.service.d
+    state: absent
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: Unmask dnsmasq service (required on fresh Raspberry Pi OS)
+  ansible.builtin.systemd:
+    name: dnsmasq
+    masked: no
+
+- name: Test dnsmasq configuration
+  ansible.builtin.command: dnsmasq --test
+  register: dnsmasq_test
+  changed_when: false
+  failed_when: dnsmasq_test.rc != 0
+
+- name: Force restart dnsmasq to apply new configuration
   ansible.builtin.service:
     name: dnsmasq
-    state: started
-    enabled: yes
-  when: not features.networking
-
-- name: Gather service facts to check for Docker
-  ansible.builtin.service_facts:
-
-- name: Restart Docker to restore its network rules after iptables changes
-  ansible.builtin.service:
-    name: docker
     state: restarted
-  when: "'docker.service' in ansible_facts.services"
+    enabled: yes
+  when: dnsmasq_test.rc == 0
+
+- name: Wait for dnsmasq to bind on port 53 (DNS)
+  ansible.builtin.wait_for:
+    host: "{{ network.wifi.ip }}"
+    port: 53
+    timeout: 30
+
+- name: Verify dnsmasq is listening on DHCP port 67
+  ansible.builtin.shell: ss -ulnp | grep ':67' || echo "DHCP_NOT_LISTENING"
+  register: dhcp_check
+  changed_when: false
+  failed_when: "'DHCP_NOT_LISTENING' in dhcp_check.stdout"
+
+- name: Display dnsmasq listening ports
+  ansible.builtin.shell: ss -ulnp | grep dnsmasq
+  register: dnsmasq_ports
+  changed_when: false
+
+- name: Show dnsmasq listening status
+  ansible.builtin.debug:
+    msg: |
+      dnsmasq is listening on:
+      {{ dnsmasq_ports.stdout_lines | join('\n') }}
+
+- name: Read DHCP leases (best-effort)
+  ansible.builtin.command: cat /var/lib/misc/dnsmasq.leases
+  register: dhcp_leases
+  changed_when: false
+  failed_when: false
+
+- name: Display concise AP status
+  ansible.builtin.debug:
+    msg: |
+      WiFi AP Summary:
+      Interface: {{ network.wifi.interface }} ({{ network.wifi.ip }})
+      SSID: {{ network.wifi.ssid }}
+      Hostapd: {{ 'running' if (ansible_facts.services is defined and ansible_facts.services['hostapd.service'] is defined and ansible_facts.services['hostapd.service'].state == 'running') else 'unknown' }}
+      dnsmasq: {{ 'running' if (ansible_facts.services is defined and ansible_facts.services['dnsmasq.service'] is defined and ansible_facts.services['dnsmasq.service'].state == 'running') else 'unknown' }}
+      DHCP leases entries: {{ dhcp_leases.stdout_lines | length }}

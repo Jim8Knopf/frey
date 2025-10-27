@@ -95,7 +95,7 @@
 - name: Deploy monitoring stack compose file
   ansible.builtin.template:
     src: docker-compose-monitoring.yml.j2
-    dest: "{{ docker.stacks }}/monitoring/docker-compose.yml"
+    dest: "{{ storage.stacks }}/monitoring/docker-compose.yml"
     owner: "{{ monitoring.user.name }}"
     group: "{{ monitoring.group.name }}"
     mode: '0644'
@@ -145,7 +145,7 @@
 
 - name: Start monitoring stack using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/monitoring"
+    project_src: "{{ storage.stacks }}/monitoring"
     state: present
 
 - name: Ensure monitoring appdata ownership matches container users (fix UID/GID mismatches)

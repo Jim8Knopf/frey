@@ -8,20 +8,20 @@
     group: "{{ media_user }}"
     mode: '0755'
   loop:
-    - "{{ docker.stacks }}/immich"
+    - "{{ storage.stacks }}/immich"
     - "{{storage.appdata_dir }}/immich-db" # For PostgreSQL data
 
 - name: Deploy Immich compose file
   ansible.builtin.template:
     src: docker-compose-immich.yml.j2
-    dest: "{{ docker.stacks }}/immich/docker-compose.yml"
+    dest: "{{ storage.stacks }}/immich/docker-compose.yml"
     owner: "{{ media_user }}"
     group: "{{ media_user }}"
     mode: '0644'
 
 - name: Start Immich stack containers using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/immich"
+    project_src: "{{ storage.stacks }}/immich"
     state: present
   register: immich_stack_result
   failed_when: immich_stack_result.failed

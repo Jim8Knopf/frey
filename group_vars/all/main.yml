@@ -8,8 +8,8 @@ features:
   wifi_access_point: true
   media: true
   monitoring: true
+  automation: true
   file_management: false
-  ai_stack: false
   photo_management: false
   homeassistant: false
   backup: false
@@ -18,15 +18,19 @@ features:
   power_monitoring: false
   voice_assistant: false
 
-# (No deploy_* compatibility mappings here — use `features.*` toggles)
-
 # ================================
 # CONFIGURATION
 # ================================
-user:
-  name: else
-  uid: 1000
-  gid: 1000
+users:
+  default: 
+    name: else
+    uid: 1000
+    gid: 1000
+  docker:
+    name: docker
+    uid: 362537
+    groups: docker
+
 
 
 # ================================
@@ -35,6 +39,7 @@ user:
 storage:
   base_dir: /opt/frey
   appdata_dir: "{{ storage.base_dir }}/appdata"
+  stacks: "{{ storage.base_dir }}/stacks"
 
 # ==============================================================================
 # ROLE: INFRASTRUCTURE & NETWORKING
@@ -42,7 +47,50 @@ storage:
 network:
   domain_name: frey
   timezone: Australia/Hobart
+  wifi:
+    # Network identification
+    ssid: "FreyHub"                 # Network name visible to clients
+    password: "{{ wifi_ap.password }}"  # Password from secrets.yml
+    
+    # Geographic settings (affects channels and power levels)
+    country: "AU"                   # Two-letter country code
+    
+    # Network configuration
+    ip: "10.20.0.1"                # AP's IP address
+    network: "10.20.0.0/24"        # Network subnet for WiFi clients
+    dhcp_range_start: "10.20.0.50" # Start of DHCP address pool
+    dhcp_range_end: "10.20.0.150"  # End of DHCP address pool
+    
+    # Interface configuration
+    interface: "wlan1"             # WiFi interface for AP mode
+    client_interface: "eth0"       # Interface for internet connection
+    client_interface_ip: "192.168.0.251" # Client interface IP
+    
+    # WiFi radio settings
+    channel: 7                     # WiFi channel (1-11 for 2.4GHz)
+    hw_mode: g                     # g = 2.4GHz band
+    ieee80211n: 1                  # Enable 802.11n features
+    wmm_enabled: 1                 # Enable WiFi multimedia (QoS)
+    
+    # Security settings
+    macaddr_acl: 0                 # MAC address filtering
+    auth_algs: 1                   # WPA authentication
+    ignore_broadcast_ssid: 0       # Broadcast SSID
+
+  # DNS Service Resolution
   dns_rewrites:
+    # Infrastructure services
+    - name: traefik
+    - name: portainer
+    - name: dockge
+    # Monitoring services
+    - name: grafana
+    - name: prometheus
+    - name: metrics     # node-exporter
+    - name: cadvisor
+    - name: speedtest
+    - name: uptime-kuma
+    # Media services
     - name: jellyfin
     - name: sonarr
     - name: radarr
@@ -50,78 +98,12 @@ network:
     - name: audiobookshelf
     - name: qbittorrent
     - name: prowlarr
-    - name: dockge
-    - name: portainer
-    - name: grafana
-    - name: uptime-kuma
-    - name: traefik
     - name: immich
     - name: cookbook
     - name: jellyseerr
     - name: lidarr
     - name: jellystat
-  macvlan:
-    enable: false
-    physical_interface: "wlan0"
-    network_name: "macvlan_net"
-    subnet: "192.168.1.0/24"
-    gateway: "192.168.1.1"
-    ip_range: "192.168.1.200/28"
 
-# ==============================================================================
-# ROLE: WIFI_ACCESS_POINT
-# ==============================================================================
-wifi:
-  ssid: "FreyHub"
-  password: "YourSecurePassword"
-  channel: 7
-  country: "AU"
-  ip: "192.168.4.1"
-  dhcp_range_start: "192.168.4.10"
-  dhcp_range_end: "192.168.4.50"
-  interface: "wlan1"
-  client_interface: "wlan0"
-  network: "192.168.4.0/24"
-  hw_mode: g
-  macaddr_acl: 0
-  auth_algs: 1
-  ignore_broadcast_ssid: 0
-  ieee80211n: 1
-  wmm_enabled: 1
-
-# ==============================================================================
-# TODO SERVICE PORTS 
-# ==============================================================================
-ports:
-  ai_stack:
-    ollama: 11434
-    openwebui: 3000
-  photos_home:
-    immich: 2283
-    homeassistant: 8123
-  infrastructure:
-    traefik: 80
-    traefik_dashboard: 8081
-    portainer: 9000
-    dockge: 5001
-  monitoring:
-    grafana: 3001
-    prometheus: 9090
-    node_exporter: 9100
-    cadvisor: 8082
-    loki: 3100
-    promtail: 9080
-    uptime_kuma: 3002
-  file_management:
-    filebrowser: 8083
-    code_server: 8084
-  network_tools:
-    speedtest: 8085
-    adguardhome: 3053
-  cookbook:
-    cookbook: 8090
-  voice_assistant:
-    piper: 10200
 
 # ==============================================================================
 # SECURITY SETTINGS
@@ -151,9 +133,10 @@ security:
       media.services.lidarr.port,
       media.services.jellystat.port
     ], [])) +
-    (features.ai_stack | ternary([
-      ports.ai_stack.ollama, 
-      ports.ai_stack.openwebui
+    (features.automation | ternary([
+      automation.ollama.port,
+      automation.openwebui.port,
+      automation.n8n.port
     ], [])) +
     (features.photo_management | ternary([
       ports.photos_home.immich
@@ -205,8 +188,23 @@ power:
 # AUTOMATION SETTINGS
 # ================================
 automation:
-  watchtower_interval: 86400
-  backup_retention_days: 7
+  watchtower_interval: 86400 #?
+  backup_retention_days: 7  #?
+  group:
+    name: automation
+    gid: 2886
+  user:
+    name: automation_manager
+    uid: 463288672
+    groups: "{{ automation.group.name }}"
+  dir: "{{ storage.base_dir }}/automation"
+
+  ollama:
+    port: 11434
+  openwebui:
+    port: 3002
+  n8n:
+    port: 5678
 
 # ================================
 # VOICE ASSISTANT
@@ -232,28 +230,59 @@ monitoring:
     uid: 12341
     groups: "{{ monitoring.group.name }}"
   dir: "{{ storage.base_dir }}/monitoring"
+  dockge:
+    enabled: true
+    port: 5001
+    image: "louislam/dockge"
+    version: 1
+  prometheus:
+    enabled: true
+    port: 9090
+    image: "prom/prometheus"
+    version: "latest"
+  node-exporter:
+    enabled: true
+    port: 9100
+    image: "prom/node-exporter"
+    version: "latest"
+  cadvisor:
+    enabled: true
+    port: 8081
+    image: "gcr.io/cadvisor/cadvisor"
+    version: "latest"
+  grafana:
+    enabled: true
+    port: 3000
+    image: "grafana/grafana"
+    version: "latest"
+  loki:
+    enabled: true
+    port: 3100
+    image: "grafana/loki"
+    version: "latest"
+  promtail:
+    enabled: true
+    image: "grafana/promtail"
+    version: "latest"
+  uptime-kuma:
+    enabled: true
+    port: 3001
+    image: "louislam/uptime-kuma"
+    version: 1
+  watchtower:
+    enabled: true
+    image: "containrrr/watchtower"
+    version: "latest"
+  speedtest-tracker:
+    enabled: true
+    port: 8181
+    image: "lscr.io/linuxserver/speedtest-tracker"
+    version: "latest"
 
 
-
-# ================================
-# DOCKER CONFIGURATION
-# ================================
-docker:
-  group:
-    name: docker
-    gid: 362537  
-  user:
-    name: docker
-    uid: 362537
-    groups: "{{ docker.group.name }}"
-  dir: "{{ storage.base_dir }}/dockge"
-  stacks: "{{docker.dir }}/stacks"
-  logs: "{{monitoring.dir }}/logs"
-
-
-# ==============================================================================
+# ===================================================================
 # INFRASTRUCTURE - REFACTORED FOR DYNAMIC COMPOSE GENERATION
-# ==============================================================================
+# ===================================================================
 infrastructure:
   group:
     name: infrastructure
@@ -263,10 +292,28 @@ infrastructure:
     uid: 46372
     groups: "{{ infrastructure.group.name }}"
   dir: "{{ storage.base_dir }}/infrastructure"
+  services:
+    traefik:
+      enabled: true
+      version: "latest"
+      ports:
+        http: 80
+        https: 443
+        dashboard: 8082
+    portainer:
+      enabled: true
+      version: "latest"
+      ports:
+        http: 9000
+    dockge:
+      enabled: true
+      version: "1"
+      ports:
+        http: 5001
 
-# ==============================================================================
+# ===================================================================
 # MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
-# ==============================================================================
+# ===================================================================
 media:
   group:
     name: media
@@ -280,173 +327,89 @@ media:
 
   network:
     name: "media_network"
-    subnet: "172.20.0.0/24"
-    gateway: "172.20.0.1"
+    subnet: "10.20.0.0/24" # TODO probably unnessecarry 
+    gateway: "10.20.0.1"
 
   vpn:
     enabled: false
     port: 8888
 
   services:
-    jellyseerr:
-      enabled: true
-      image: "fallenbagel/jellyseerr:latest"
-      container_name: "jellyseerr"
-      port: 5055
-      internal_ip: "172.20.0.40"
-      volumes:
-        - "{{ storage.appdata_dir }}/jellyseerr:/app/config"
-
     audiobookshelf:
       enabled: true
-      image: "ghcr.io/advplyr/audiobookshelf:latest"
-      container_name: "audiobookshelf"
+      version: "latest"
       port: 13378
       ports: 
         - 13378:80
-      internal_ip: "172.20.0.50"
-      volumes:
-        - "{{ storage.appdata_dir }}/audiobookshelf:/config"
-        - "{{ media.dir }}/audiobooks:/audiobooks"
-        - "{{ media.dir }}/podcasts:/podcasts"
 
     jellyfin:
       enabled: true
-      image: "lscr.io/linuxserver/jellyfin:latest"
-      container_name: "jellyfin"
+      version: "latest"
       port: 8096
-      internal_ip: "172.20.0.10"
-      volumes:
-        - "{{ storage.appdata_dir }}/jellyfin:/config"
-        - "{{ media.dir }}/tv:/data/tvshows"
-        - "{{ media.dir }}/movies:/data/movies"
+    
+    jellyseerr:
+      enabled: true
+      version: "latest"
+      port: 5055
     
     qbittorrent:
       enabled: true
-      image: "lscr.io/linuxserver/qbittorrent:latest"
-      container_name: "qbittorrent"
+      version: "latest"
       port: 8080
       ports: 
        - "{{ media.vpn.port }}:{{ media.vpn.port }}"
        - 8080:8080 # Web UI
        - 6881:6881 # Torrent Port
-      internal_ip: "172.20.0.30"
-      volumes:
-        - "{{ storage.appdata_dir }}/qbittorrent:/config"
-        - "{{ media.downloads }}:/downloads"
-      environment:
-        - "WEBUI_PORT=8080"
-        - "TORRENT_PORT=6881"
-        - TORRENTING_PORT={{ media.vpn.port }} # airvpn forwarded port, pulled from .env
-
 
     nzbget:
       enabled: true
-      image: "lscr.io/linuxserver/nzbget:latest"
-      container_name: "nzbget"
+      version: "latest"
       port: 6789
-      internal_ip: "172.20.0.31"
-      volumes:
-        - "{{ storage.appdata_dir }}/nzbget:/config"
-        - "{{ media.downloads }}:/downloads"
-        - /data:/data
-        - /etc/localtime:/etc/localtime:ro
-        - ./nzbget:/config                        # TODO
 
     prowlarr:
       enabled: true
-      image: "lscr.io/linuxserver/prowlarr:latest"
-      container_name: "prowlarr"
+      version: "latest"
       port: 9696
-      internal_ip: "172.20.0.22"
-      volumes:
-        - "{{ storage.appdata_dir }}/prowlarr:/config"
 
     flaresolverr:
       enabled: true
-      image: "ghcr.io/flaresolverr/flaresolverr:latest"
-      container_name: "flaresolverr"
+      version: "latest"
       port: 8191
-      internal_ip: "172.20.0.19"
-      volumes:
-        - "{{ storage.appdata_dir }}/prowlarr:/config"
-      environment:
-        - LOG_LEVEL=${LOG_LEVEL:-info}
-        - LOG_HTML=${LOG_HTML:-false}
-        - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
 
     sonarr:
       enabled: true
-      image: "lscr.io/linuxserver/sonarr:latest"
-      container_name: "sonarr"
+      version: "latest"
       port: 8989
-      internal_ip: "172.20.0.20"
-      volumes:
-        - "{{ storage.appdata_dir }}/sonarr:/config"
-        - "{{ media.downloads }}:/downloads"
-        - "{{ media.dir }}/tv:/tv"
 
     radarr:
       enabled: true
-      image: "lscr.io/linuxserver/radarr:latest"
-      container_name: "radarr"
+      version: "latest"
       port: 7878
-      internal_ip: "172.20.0.21"
-      volumes:
-        - "{{ storage.appdata_dir }}/radarr:/config"
-        - "{{ media.downloads }}:/downloads"
-        - "{{ media.dir }}/movies:/movies"
 
     bazarr:
       enabled: true
-      image: "lscr.io/linuxserver/bazarr:latest"
-      container_name: "bazarr"
+      version: "latest"
       port: 6767
-      internal_ip: "172.20.0.23"
-      volumes:
-        - "{{ storage.appdata_dir }}/bazarr:/config"
-        - "{{ media.dir }}/movies:/movies"
-        - "{{ media.dir }}/tv:/tv"
 
     lidarr:
       enabled: true
-      image: "lscr.io/linuxserver/lidarr:latest"
-      container_name: "lidarr"
+      version: "latest"
       port: 8686
-      internal_ip: "172.20.0.24"
-      volumes:
-        - "{{ storage.appdata_dir }}/lidarr:/config"
-        - "{{ media.downloads }}:/downloads"
-        - "{{ media.dir }}/music:/music"
         
     audiobookrequest:
       enabled: true
-      image: "markbeep/audiobookrequest:latest"
-      container_name: "audiobookrequest"
+      version: "latest"
       port: 5432
-      internal_ip: "172.20.0.32"
-      volumes:
-        - ./config:/config
-      environment:
-        - "ABR_APP__PORT=5432"
-        - "ABR_APP__OPENAPI_ENABLED=true"
 
     jellystat:
       enabled: false
-      image: "cyfershep/jellystat:latest"
-      container_name: "jellystat"
+      version: "latest"
       port: 8086
-      internal_ip: "172.20.0.60"
-      volumes:
-        - "{{ storage.appdata_dir }}/jellystat/config.json:/app/config/config.json"
 
     jellystat_db:
-      enabled: false # Jellystat dependency
-      image: "postgres:15"
-      container_name: "jellystat-db"
-      internal_ip: "172.20.0.61"
-      volumes:
-        - "{{ storage.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
+      enabled: "{{ media.services.jellystat.enabled }}" # Jellystat dependency
+      version: 15
+      image: "postgres"
       environment:
         - "POSTGRES_DB=jellystat"
         - "POSTGRES_USER=jellystat"
@@ -454,10 +417,5 @@ media:
 
     ytdl-sub:
       enabled: false
-      image: "ghcr.io/jmbannon/ytdl-sub:latest"
-      container_name: "ytdl-sub"
-      internal_ip: "172.20.0.70"
-      volumes:
-        - "{{ storage.appdata_dir }}/ytdl-sub:/config"
-        - "{{ media.downloads }}:/downloads"
+      version: "latest"
 

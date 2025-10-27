@@ -1,19 +1,46 @@
 ---
-# defaults file for wifi_access_point
+# Minimal defaults for wifi_access_point role
+# These are the essential variables used by templates and tasks.
+network:
+  wifi:
+    # AP interface (recommend a secondary adapter, e.g. wlan1)
+    interface: "wlan1"
 
-wifi:
-  interface: wlan0
-  country: GB
-  channel: 6
-  ip: "192.168.4.1"
-  network: "192.168.4.0/24"
-  dhcp_range_start: "192.168.4.50"
-  dhcp_range_end: "192.168.4.150"
-  ssid: "FreyNetwork"
-  password: "ChangeMe123!"
-  hw_mode: "g"
-  ieee80211n: 1
-  wmm_enabled: 1
-  macaddr_acl: 0
-  auth_algs: 1
-  ignore_broadcast_ssid: 0
+    # Client/Uplink interface (the interface with internet access)
+    client_interface: "wlan0"
+
+    # AP (gateway) IP and network
+    ip: "10.20.0.1"
+    network: "10.20.0.0/24"
+
+    # DHCP pool
+    dhcp_range_start: "10.20.0.50"
+    dhcp_range_end: "10.20.0.150"
+
+    # SSID / password
+    ssid: "FreyHub"
+    password: "ChangeMe123"
+
+    # Country and radio settings (minimal)
+    country: "US"
+    hw_mode: g
+    channel: 7
+  # Enable NAT from AP network to client/uplink interface (optional)
+  enable_nat: false
+  # Method to persist NAT rules: 'iptables-persistent' or 'iptables-save'
+  nat_persist_method: 'iptables-persistent'
+
+  # DNS domain for local rewrites (top-level under network)
+  domain_name: "frey"
+  dns_rewrites: []
+
+# Packages to install (kept minimal)
+wifi_ap_packages:
+  - hostapd
+  - dnsmasq
+  - dhcpcd5
+  - iw
+  - rfkill
+
+# Safety guard: set to true to force apply even if the AP interface equals the control interface
+force_apply: false

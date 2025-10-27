@@ -1,0 +1,109 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+{% if automation.ollama.gpu_enabled %}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+{% endif %}
+    restart: unless-stopped
+    networks:
+      - proxy
+      - localdns
+      - automation_network
+    ports:
+      - "{{ automation.ollama.port }}:11434"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.ollama.rule=Host(`ollama.frey`)"
+      - "traefik.http.routers.ollama.entrypoints=web,websecure"
+      - "traefik.http.services.ollama.loadbalancer.server.port=11434"
+      # Enable HTTPS redirect
+      - "traefik.http.routers.ollama.tls=true"
+      - "traefik.http.routers.ollama-http.rule=Host(`ollama.frey`)"
+      - "traefik.http.routers.ollama-http.entrypoints=web"
+      - "traefik.http.routers.ollama-http.middlewares=https-redirect"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+    volumes:
+      - "{{ storage.appdata_dir }}/ollama:/root/.ollama"
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: unless-stopped
+    networks:
+      - proxy
+      - localdns
+      - automation_network
+    ports:
+      - "{{ automation.openwebui.port }}:8080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.open-webui.rule=Host(`ai.frey`)"
+      - "traefik.http.routers.open-webui.entrypoints=web,websecure"
+      - "traefik.http.services.open-webui.loadbalancer.server.port=8080"
+      # Enable HTTPS redirect
+      - "traefik.http.routers.open-webui.tls=true"
+      - "traefik.http.routers.open-webui-http.rule=Host(`ai.frey`)"
+      - "traefik.http.routers.open-webui-http.entrypoints=web"
+      - "traefik.http.routers.open-webui-http.middlewares=https-redirect"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+    environment:
+      - OLLAMA_API_BASE_URL=http://ollama:11434
+      - BACKEND_URL=http://open-webui:8080
+      - OPENWEBUI_APP_URL=https://ai.frey
+      - TZ=Europe/Berlin
+    volumes:
+      - "{{ storage.appdata_dir }}/open-webui:/app/backend/data"
+    depends_on:
+      - ollama
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    user: "{{ automation.user.uid }}:{{ automation.group.gid }}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://n8n:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - proxy
+      - localdns
+      - automation_network
+    ports:
+      - "{{ automation.n8n.port }}:5678"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.n8n.rule=Host(`n8n.frey`)"
+      - "traefik.http.routers.n8n.entrypoints=web,websecure"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+      # Enable HTTPS redirect
+      - "traefik.http.routers.n8n.tls=true"
+      - "traefik.http.routers.n8n-http.rule=Host(`n8n.frey`)"
+      - "traefik.http.routers.n8n-http.entrypoints=web"
+      - "traefik.http.routers.n8n-http.middlewares=https-redirect"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+    environment:
+      - N8N_USER_FOLDER=/home/node/.n8n
+      - GENERIC_TIMEZONE={{ network.timezone }}
+      - NODE_ENV=production
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      - "{{ storage.appdata_dir }}/n8n:/home/node/.n8n"
+
+networks:
+  proxy:
+    external: true
+  localdns:
+    external: true
+  automation_network:
+    name: automation_network
+    ipam:
+      config:
+        - subnet: 10.20.2.0/24

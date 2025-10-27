@@ -1,5 +1,4 @@
 ---
-
 - name: Create the {{stack}} group
   ansible.builtin.group:
     name: "{{ vars[stack].group.name }}"
@@ -16,18 +15,28 @@
 
 - name: Create docker stacks directory
   ansible.builtin.file:
-    path: "{{ docker.stacks }}/{{ stack }}"
+    path: "{{ storage.stacks }}/{{ stack }}"
     state: directory
-    owner: "{{ docker.user.uid }}"
-    group: "{{ docker.group.name }}"
+    owner: "{{ vars[stack].user.name }}"
+    group: "{{ vars[stack].group.name }}"
     mode: '0755'
 
-- name: Create media subdirectories
+- name: Create {{stack}} subdirectories in base dir
   ansible.builtin.file:
     path: "{{ vars[stack].dir }}/{{ item }}"
     state: directory
     owner: "{{ vars[stack].user.uid }}"
     group: "{{ vars[stack].user.groups }}"
+    mode: '0755'
+  loop: "{{ folders }}"
+  when: folders is defined
+
+- name: Create {{stack}} subdirectories in appdata
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ vars[stack].user.name }}"
+    group: "{{ vars[stack].group.name }}"
     mode: '0755'
   loop: "{{ folders }}"
   when: folders is defined

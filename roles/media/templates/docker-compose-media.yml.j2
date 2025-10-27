@@ -1,42 +1,51 @@
 networks:
-  servarrnetwork:
-    name: servarrnetwork
+  # Required networks according to architecture guide
+  proxy:
+    external: true  # For Traefik routing
+  localdns:
+    external: true  # For DNS resolution
+  media_network:
+    name: media_network
     ipam:
       config:
-        - subnet: 172.39.0.0/24
-  proxy:
-    external: true
+        - subnet: 10.20.7.0/24  # Media services subnet
 
 services:
   {% if media.vpn.enabled | default(false) -%}
-  gluetun:
-    image: qmcgaw/gluetun
-    container_name: gluetun
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun # If running on an LXC see readme for more info.
-    networks:
-      servarrnetwork:
-        ipv4_address: 172.39.0.2
-    ports:
-      - "{{ media.vpn.port }}:{{ media.vpn.port }}" # airvpn forwarded port, pulled from .env
-      {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined -%}
-      - "{{ service_config.port }}:{{ service_config.port }}" # Port for {{ service_name }}
-      {% endfor -%}
-    volumes:
-      - ./gluetun:/gluetun
-    healthcheck:
-      test: ping -c 1 www.google.com || exit 1
-      interval: 20s
-      timeout: 10s
-      retries: 5
-    restart: unless-stopped
+    gluetun:
+      image: qmcgaw/gluetun
+      container_name: gluetun
+      cap_add:
+        - NET_ADMIN
+      devices:
+        - /dev/net/tun:/dev/net/tun # If running on an LXC see readme for more info.
+      networks:
+        proxy: {}        # Required for Traefik routing
+        localdns: {}     # Required for DNS resolution
+        media_network: {} # Service-specific network
+      # Only expose VPN port, other services should go through Traefik
+      ports:
+        - "{{ media.vpn.port }}:{{ media.vpn.port }}" # VPN forwarded port
+      volumes:
+        - {{ storage.appdata_dir }}/gluetun:/gluetun
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=proxy"
+        - "traefik.http.routers.gluetun.rule=Host(`vpn.{{ network.domain_name }}`)"
+        - "traefik.http.routers.gluetun.entrypoints=web"
+        - "traefik.http.services.gluetun.loadbalancer.server.port={{ media.vpn.port }}"
+      healthcheck:
+        test: ["CMD-SHELL", "curl -f http://localhost:{{ media.vpn.port }} || exit 1"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+        start_period: 20s
+      restart: unless-stopped
   {% endif %}
 
 {% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined %}
   {{ service_name }}:
-    image: {{ service_config.image }}
+    image: "{{ service_config.image }}:{{ service_config.version }}"
     container_name: {{ service_name }}
     environment:
       - PUID={{ media.user.uid }}
@@ -50,39 +59,23 @@ services:
     restart: unless-stopped
     volumes:
       {{ service_config.volumes | to_nice_yaml(indent=6) | indent(6) | trim }}
-{% if media.vpn.enabled | default(false) %}
-    depends_on:
-      gluetun:
-        condition: service_healthy
-        restart: true
-    network_mode: service:gluetun
-{% else %}
+    networks:
+      proxy: {}        # Required for Traefik routing
+      localdns: {}     # Required for DNS resolution
+      media_network: {} # Service-specific network
+    ports:
 {% if service_config.ports is defined %}
-    ports:
-      {{ service_config.ports }}
+      {{ service_config.ports | to_nice_yaml(indent=6) | indent(6) | trim }}
 {% else %}
-    ports:
-      - "{{ service_config.port }}:{{ service_config.port }}"
+      - "{{ service_config.port }}:{{ service_config.port }}"  # Direct access for library network
 {% endif %}
     labels:
       - deunhealth.restart.on.unhealthy=true
       - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
       - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
       - "traefik.http.routers.{{service_name}}.entrypoints=web"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
-    networks:
-      servarrnetwork:
-        ipv4_address: 172.39.0.{{ 10 + loop.index0 }}
-      proxy: {}
-{% endif %}
-{% if service_name == 'qbittorrent' %}
-    healthcheck:
-      test: ping -c 1 www.google.com || exit 1
-      interval: 60s
-      retries: 3
-      start_period: 20s
-      timeout: 10s
-{% endif %}
 
 {% endfor -%}
 

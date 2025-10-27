@@ -1,0 +1,8 @@
+{# Deprecated: interface.j2 removed from active use. See templates/archived/interface.j2 for original content. #}
+{# This repository now uses dhcpcd (dhcpcd.conf.j2) as the single network configuration method. #}
+{# Keeping this file in place as a pointer; it should not be used by any task. #}
+
+    # Cleanup on shutdown
+    pre-down iptables -t nat -D POSTROUTING -s {{ network.wifi.network }} -o {{ network.wifi.client_interface }} -j MASQUERADE || true
+    pre-down iptables -D FORWARD -i {{ network.wifi.client_interface }} -o {{ network.wifi.interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT || true
+    pre-down iptables -D FORWARD -i {{ network.wifi.interface }} -o {{ network.wifi.client_interface }} -j ACCEPT || true

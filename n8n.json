@@ -1,0 +1,201 @@
+{
+  "name": "ARR Stack Auto-Configuration",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute",
+              "value": 5
+            }
+          ]
+        },
+        "triggerOn": "activate"
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Set your ARR service details here\\nconst arrConfig = {\\n  radarr: {\\n    baseUrl: 'http://localhost:7878',\\n    apiKey: '{{ $env.RADARR_API_KEY }}',\\n    name: 'Radarr'\\n  },\\n  sonarr: {\\n    baseUrl: 'http://localhost:8989',\\n    apiKey: '{{ $env.SONARR_API_KEY }}',\\n    name: 'Sonarr'\\n  },\\n  prowlarr: {\\n    baseUrl: 'http://localhost:9696',\\n    apiKey: '{{ $env.PROWLARR_API_KEY }}',\\n    name: 'Prowlarr'\\n  },\\n  bazarr: {\\n    baseUrl: 'http://localhost:6767',\\n    apiKey: '{{ $env.BAZARR_API_KEY }}',\\n    name: 'Bazarr'\\n  },\\n  readarr: {\\n    baseUrl: 'http://localhost:8787',\\n    apiKey: '{{ $env.READARR_API_KEY }}',\\n    name: 'Readarr'\\n  }\\n};\\n\\n// Return configuration for all services\\nreturn Object.keys(arrConfig).map(service => ({\\n  json: {\\n    service: service,\\n    ...arrConfig[service]\\n  }\\n}));"
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789002",
+      "name": "ARR Configuration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Configure service connections between ARR apps\\nconst services = $input.all();\\n\\n// Define inter-service configurations\\nconst serviceConnections = [\\n  {\\n    from: 'prowlarr',\\n    to: 'radarr',\\n    endpoint: '/api/v3/indexer',\\n    method: 'POST',\\n    body: {\\n      enable: true,\\n      appProfileId: 1,\\n      priority: 25,\\n      name: 'Prowlarr - Radarr',\\n      fields: []\\n    }\\n  },\\n  {\\n    from: 'prowlarr',\\n    to: 'sonarr',\\n    endpoint: '/api/v3/indexer',\\n    method: 'POST',\\n    body: {\\n      enable: true,\\n      appProfileId: 1,\\n      priority: 25,\\n      name: 'Prowlarr - Sonarr',\\n      fields: []\\n    }\\n  },\\n  {\\n    from: 'radarr',\\n    to: 'bazarr',\\n    endpoint: '/api/radarr',\\n    method: 'POST',\\n    body: {\\n      ip: '127.0.0.1',\\n      port: 7878,\\n      base_url: '/radarr',\\n      use_ssl: false,\\n      apikey: '' // Will be filled dynamically\\n    }\\n  }\\n];\\n\\n// Create connection configurations\\nconst connections = [];\\n\\nfor (const connection of serviceConnections) {\\n  const fromService = services.find(s => s.json.service === connection.from);\\n  const toService = services.find(s => s.json.service === connection.to);\\n  \\n  if (fromService && toService) {\\n    connections.push({\\n      json: {\\n        fromService: connection.from,\\n        toService: connection.to,\\n        fromUrl: fromService.json.baseUrl,\\n        toUrl: toService.json.baseUrl,\\n        fromApiKey: fromService.json.apiKey,\\n        toApiKey: toService.json.apiKey,\\n        endpoint: connection.endpoint,\\n        method: connection.method,\\n        body: {\\n          ...connection.body,\\n          // Dynamically set API keys where needed\\n          ...(connection.body.apikey === '' && { apikey: fromService.json.apiKey })\\n        }\\n      }\\n    });\\n  }\\n}\\n\\nreturn connections;"
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789003",
+      "name": "Service Connections",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "={{ $json.fromApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyContentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "body",
+              "value": "={{ $json.body }}"
+            }
+          ]
+        },
+        "url": "={{ $json.toUrl }}{{ $json.endpoint }}",
+        "method": "={{ $json.method }}",
+        "options": {}
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789004",
+      "name": "HTTP Request - Configure Service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process configuration results\\nconst results = $input.all();\\n\\nconst summary = {\\n  totalConnections: results.length,\\n  successful: 0,\\n  failed: 0,\\n  details: []\\n};\\n\\nfor (const result of results) {\\n  const connection = result.json;\\n  const success = result.status === 200 || result.status === 201;\\n  \\n  if (success) {\\n    summary.successful++;\\n  } else {\\n    summary.failed++;\\n  }\\n  \\n  summary.details.push({\\n    from: connection.fromService,\\n    to: connection.toService,\\n    status: result.status,\\n    success: success,\\n    response: result.body\\n  });\\n}\\n\\nreturn [{ json: summary }];"
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789005",
+      "name": "Process Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "a7e76e83-7b5c-4c1a-9c8a-123456789006",
+              "leftValue": "={{ $json.failed }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789007",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "message": "✅ ARR Stack Configuration Completed Successfully!\\n\\nAll {{ $json.totalConnections }} service connections were configured successfully.\\n\\nConnected Services:\\n• Prowlarr → Radarr\\n• Prowlarr → Sonarr\\n• Radarr → Bazarr\\n\\nYour ARR stack is now ready for automated media management!"
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789008",
+      "name": "Success Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "message": "❌ ARR Stack Configuration Had Issues\\n\\nCompleted: {{ $json.successful }}/{{ $json.totalConnections }} connections\\nFailed: {{ $json.failed }} connections\\n\\nPlease check the n8n workflow execution for details on which connections failed."
+      },
+      "id": "a7e76e83-7b5c-4c1a-9c8a-123456789009",
+      "name": "Failure Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1560, 500]
+    }
+  ],
+  "connections": {
+    "ARR Configuration": {
+      "main": [
+        [
+          {
+            "node": "Service Connections",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Service Connections": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Configure Service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Configure Service": {
+      "main": [
+        [
+          {
+            "node": "Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Results": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Success Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {}
+}

@@ -7,7 +7,7 @@ set -euo pipefail
 
 # --- Configuration (from Ansible) ---
 BACKUP_SRC_DIR1="{{storage.appdata_dir }}"
-BACKUP_SRC_DIR2="{{ docker.stacks }}"
+BACKUP_SRC_DIR2="{{ storage.stacks }}"
 BACKUP_DST_DIR="{{ backups_dir }}"
 RETENTION_DAYS={{ automation.backup_retention_days | default(7) }}
 BASE_DIR="{{ base_dir }}"

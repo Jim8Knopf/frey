@@ -1,39 +1,29 @@
-# WiFi Access Point Configuration
+# Minimal hostapd configuration (AP)
 ctrl_interface=/var/run/hostapd
 ctrl_interface_group=0
 
-# Interface configuration
-interface={{ wifi.interface }}
+interface={{ network.wifi.interface }}
 driver=nl80211
 
-# Basic WiFi settings
-ssid={{ wifi.ssid }}
-country_code={{ wifi.country }}
-hw_mode={{ wifi.hw_mode }}
-channel={{ wifi.channel | default(6) }}
+# Basic
+ssid={{ network.wifi.ssid }}
+country_code={{ network.wifi.country | default('US') }}
+hw_mode={{ network.wifi.hw_mode | default('g') }}
+channel={{ network.wifi.channel | default(7) }}
 
-# Security settings
-macaddr_acl={{ wifi.macaddr_acl }}
-auth_algs={{ wifi.auth_algs }}
-ignore_broadcast_ssid={{ wifi.ignore_broadcast_ssid }}
+# Security (WPA2-PSK)
 wpa=2
-wpa_passphrase={{ wifi.password }}
 wpa_key_mgmt=WPA-PSK
 wpa_pairwise=CCMP
 rsn_pairwise=CCMP
+wpa_passphrase={{ network.wifi.password }}
 
-# Performance features
-ieee80211n={{ wifi.ieee80211n }}
-wmm_enabled={{ wifi.wmm_enabled }}
+# Performance
+ieee80211n=1
+wmm_enabled=1
 
-# No AP isolation
+# AP behavior
 ap_isolate=0
 
-# Regulatory settings
-ieee80211d=1
-ieee80211h=1
-
-# Logging
+# Keep logging minimal
 logger_syslog=-1
-logger_stdout=-1
-logger_stdout_level=2

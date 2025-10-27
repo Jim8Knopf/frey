@@ -1,5 +1,14 @@
 ---
-- name: Install security packages
+# ------------------------------------------------------------------------------
+# PACKAGE INSTALLATION
+# ------------------------------------------------------------------------------
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install security packages (UFW only, no iptables-persistent conflict)
   ansible.builtin.apt:
     name:
       - fail2ban
@@ -7,69 +16,315 @@
       - unattended-upgrades
       - logwatch
     state: present
+  register: package_install
 
-- name: Configure UFW default policies
-  community.general.ufw:
-    direction: "{{ item.direction }}"
-    policy: "{{ item.policy }}"
+- name: Wait for dpkg lock
+  ansible.builtin.shell: while fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 1; done
+  when: package_install.changed
+  changed_when: false
+
+- name: Wait for apt lock
+  ansible.builtin.shell: while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 1; done
+  when: package_install.changed
+  changed_when: false
+
+- name: Wait for package installation to complete
+  ansible.builtin.pause:
+    seconds: 5
+  when: package_install.changed
+
+# UFW tasks removed - using iptables-persistent instead
+
+# ------------------------------------------------------------------------------
+# NETWORK AND FIREWALL CONFIGURATION
+# ------------------------------------------------------------------------------
+
+# Only configure NAT after WiFi AP is confirmed working
+- name: Configure NAT for WiFi AP
+  when:
+    - network.wifi is defined
+    - ansible_facts['services']['hostapd.service'] is defined
+    - ansible_facts['services']['hostapd.service']['state'] == 'running'
+  block:
+    - name: Enable IP forwarding
+      ansible.builtin.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: yes
+
+    - name: Set up NAT for WiFi clients
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        out_interface: "{{ network.wifi.client_interface }}"
+        source: "{{ network.wifi.network }}"
+        jump: MASQUERADE
+      notify: save iptables
+
+    - name: Allow forwarding for established connections
+      ansible.builtin.iptables:
+        chain: FORWARD
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+
+    - name: Allow forwarding from internal network
+      ansible.builtin.iptables:
+        chain: FORWARD
+        in_interface: "{{ network.wifi.interface }}"
+        jump: ACCEPT
+      notify: save iptables
+
+# ------------------------------------------------------------------------------
+# UFW CONFIGURATION
+# ------------------------------------------------------------------------------
+
+- name: Reset UFW to default state
+  ansible.builtin.command: ufw --force reset
+  changed_when: true
+  when: enable_ufw | default(true)
+
+- name: Enable UFW and set default policies
+  ansible.builtin.command: "{{ item }}"
   loop:
-    - { direction: 'incoming', policy: 'deny' }
-    - { direction: 'outgoing', policy: 'allow' }
-  when: enable_ufw
+    - ufw default deny incoming
+    - ufw default allow outgoing
+    - ufw default allow routed
+    - ufw --force enable
+  changed_when: true
+  when: enable_ufw | default(true)
 
-- name: Configure UFW rules for enabled services (TCP)
-  community.general.ufw:
-    rule: allow
-    port: "{{ item }}"
-    proto: tcp
-  loop: "{{ firewall_tcp_ports }}"
-  when: enable_ufw
-
-- name: Configure UFW rules for AdGuard DNS
-  community.general.ufw:
-    rule: allow
-    port: "53"
-    proto: "{{ item }}"
-  loop: [ 'tcp', 'udp' ]
-  when: enable_ufw and deploy_networking
-
-- name: Configure UFW rules for WiFi Access Point
+- name: Configure essential UFW rules
   community.general.ufw:
     rule: allow
     port: "{{ item.port }}"
     proto: "{{ item.proto }}"
-    from: "{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
-  loop:
-    - { port: '53', proto: 'udp' }  # DNS
-    - { port: '53', proto: 'tcp' }  # DNS
-    - { port: '67', proto: 'udp' }  # DHCP
-  when: enable_ufw and deploy_wifi_access_point
+  loop: "{{ network_security.public_ports }}"
+  when: enable_ufw
+  tags:
+    - firewall
 
-# Allow access to services from WiFi AP network
-- name: Configure UFW rules for services from WiFi AP network
+- name: Allow DHCP server (port 67) for WiFi AP
   community.general.ufw:
     rule: allow
-    port: "{{ item }}"
-    proto: tcp
-    from: "{{ wifi_ap_ip | regex_replace('\\.[0-9]+$', '.0/24') }}"
-  loop: "{{ firewall_tcp_ports }}"
-  when: enable_ufw and deploy_wifi_access_point
+    port: '67'
+    proto: udp
+  when:
+    - enable_ufw
+    - network.wifi is defined
+  tags:
+    - firewall
+    - wifi_ap
+
+- name: Allow DNS (port 53) for WiFi AP
+  community.general.ufw:
+    rule: allow
+    port: '53'
+    proto: "{{ item }}"
+  loop:
+    - tcp
+    - udp
+  when:
+    - enable_ufw
+    - network.wifi is defined
+  tags:
+    - firewall
+    - wifi_ap
+
+# Base rules for connection tracking and defaults
+- name: Allow established connections
+  ansible.builtin.iptables:
+    chain: INPUT
+    ctstate: ESTABLISHED,RELATED
+    jump: ACCEPT
+    comment: "Allow established/related connections"
+
+- name: Allow loopback traffic
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: lo
+    jump: ACCEPT
+    comment: "Allow loopback traffic"
+
+# Service-specific rules - these complement UFW rules
+- name: Allow SSH access in iptables
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "22"
+    jump: ACCEPT
+    comment: "Allow SSH"
+
+# Default policies align with UFW
+- name: Set default iptables policies
+  ansible.builtin.iptables:
+    chain: "{{ item }}"
+    policy: DROP
+  with_items: 
+    - INPUT
+    - FORWARD
+
+- name: Allow outgoing traffic in iptables
+  ansible.builtin.iptables:
+    chain: OUTPUT
+    policy: ACCEPT
+  tags:
+    - firewall
+
+# Configure public services
+- name: Configure essential services
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: "{{ item.proto }}"
+    destination_port: "{{ item.port }}"
+    jump: ACCEPT
+    comment: "Allow {{ item.proto }}/{{ item.port }}"
+  loop: "{{ network_security.public_ports }}"
+  tags:
+    - firewall
+
+# Admin access from trusted networks
+- name: Configure admin access from trusted networks
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: "{{ item.0.proto }}"
+    destination_port: "{{ item.0.port }}"
+    source: "{{ item.1 }}"
+    jump: ACCEPT
+    comment: "Allow admin access from {{ item.1 }}"
+  loop: "{{ network_security.admin_ports | product(network_security.trusted_networks) | list }}"
+  tags:
+    - firewall
+    - ssh
+
+# WiFi AP specific configuration
+- name: Configure sysctl for IP forwarding
+  ansible.builtin.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-wifi-ap.conf
+    reload: yes
+  loop:
+    - { key: 'net.ipv4.ip_forward', value: '1' }
+    - { key: 'net.ipv4.conf.all.forwarding', value: '1' }
+  when: network.wifi is defined
+  tags:
+    - firewall
+    - wifi_ap
+
+# Local services for WiFi
+- name: Configure local services for WiFi AP
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: "{{ item.proto }}"
+    destination_port: "{{ item.port }}"
+    source: "{{ item.from_ip | default(omit) }}"
+    jump: "{{ item.rule | default('ACCEPT') }}"
+    comment: "WiFi local service: {{ item.proto }}/{{ item.port }}"
+  loop: "{{ network_security.local_services + network_security.public_ports }}"
+  when: network.wifi is defined
+  tags: 
+    - firewall
+    - wifi_ap
+
+# Block container access
+- name: Block direct container access from WiFi network
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "{{ item.port }}"
+    source: "{{ network.wifi.network }}"
+    jump: DROP
+    comment: "Block container access from WiFi"
+  loop: "{{ network_security.protected_ports }}"
+  when: network.wifi is defined
+  tags: 
+    - firewall
+    - wifi_ap
+
+# NAT and routing for WiFi AP
+- name: Configure NAT for WiFi AP
+  block:
+    - name: Configure NAT for WiFi network
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "{{ network.wifi.network }}"
+        out_interface: "{{ network.wifi.client_interface }}"
+        jump: MASQUERADE
+        comment: "NAT for WiFi network"
+
+    - name: Allow DNS from WiFi network
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: "{{ item }}"
+        destination_port: "53"
+        source: "{{ network.wifi.network }}"
+        jump: ACCEPT
+        comment: "Allow DNS from WiFi"
+      loop:
+        - tcp
+        - udp
+
+    - name: Allow DHCP from WiFi network
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: udp
+        destination_port: "67"
+        source: "{{ network.wifi.network }}"
+        jump: ACCEPT
+        comment: "Allow DHCP from WiFi"
+
+    - name: Allow web traffic from WiFi network
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "{{ item }}"
+        source: "{{ network.wifi.network }}"
+        jump: ACCEPT
+        comment: "Allow web traffic from WiFi"
+      loop:
+        - "80"
+        - "443"
+
+  when: network.wifi is defined
+  tags:
+    - firewall
+    - wifi_ap
+
+- name: Create iptables rules directory
+  ansible.builtin.file:
+    path: /etc/iptables
+    state: directory
+    mode: '0755'
+  when: network.wifi is defined
+
+- name: Save iptables rules
+  ansible.builtin.shell: |
+    iptables-save > /etc/iptables/rules.v4
+    ip6tables-save > /etc/iptables/rules.v6
+  when: network.wifi is defined
+  changed_when: true
+  tags:
+    - firewall
+    - wifi_ap
+
+- name: Configure fail2ban
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    mode: '0644'
+  when: enable_fail2ban
+  notify: restart fail2ban
 
 - name: Enable UFW
   community.general.ufw:
     state: enabled
   when: enable_ufw
 
-- name: Configure Fail2Ban jail
-  ansible.builtin.template:
-    src: jail.local.j2
-    dest: /etc/fail2ban/jail.local
-  notify: restart fail2ban
-  when: enable_fail2ban
-
 - name: Enable automatic security updates
   ansible.builtin.lineinfile:
     path: /etc/apt/apt.conf.d/50unattended-upgrades
-    regexp: '^//.*"${distro_id}:${distro_codename}-security";'
-    line: '        "${distro_id}:${distro_codename}-security";'
+    regexp: '^//.*"{{ ansible_distribution }}:{{ ansible_distribution_release }}-security";'
+    line: '        "{{ ansible_distribution }}:{{ ansible_distribution_release }}-security";'
     state: present

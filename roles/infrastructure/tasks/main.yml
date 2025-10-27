@@ -1,9 +1,10 @@
 ---
-- name: Setup media stack user
+- name: Setup intfrasructure stack user
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "infrastructure" 
     folders: [traefik, portainer]
+    checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, storage.stacks]
 
 - name: Create Traefik static configuration
   ansible.builtin.template:
@@ -16,17 +17,22 @@
 - name: Deploy infrastructure compose file
   ansible.builtin.template:
     src: docker-compose-infrastructure.yml.j2
-    dest: "{{ docker.stacks }}/infrastructure/docker-compose.yml"
+    dest: "{{ storage.stacks }}/infrastructure/docker-compose.yml"
     owner: "{{ infrastructure.user.name }}"
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
 
-- name: Create proxy network for Traefik
+- name: Create required Docker networks
   community.docker.docker_network:
-    name: proxy
+    name: "{{ item }}"
     state: present
+    driver: bridge
+  loop:
+    - proxy                     # For Traefik routing
+    - localdns                  # For DNS resolution
+    - infrastructure_network    # Service-specific network
 
 - name: Start infrastructure containers using compose
   community.docker.docker_compose_v2:
-    project_src: "{{ docker.stacks }}/infrastructure"
+    project_src: "{{ storage.stacks }}/infrastructure"
     state: present
