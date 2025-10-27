@@ -1,29 +1,215 @@
-# Minimal hostapd configuration (AP)
+# ==============================================================================
+# HOSTAPD CONFIGURATION - WiFi Access Point
+# ==============================================================================
+# Configures the Raspberry Pi 5 as a WiFi Access Point (software AP).
+#
+# KEY FEATURES:
+# - WiFi 5 (802.11ac) support for 2-3x faster speeds (300+ Mbps vs 150 Mbps)
+# - WPA2-PSK security (secure password authentication)
+# - 5GHz band support (less congestion than 2.4GHz)
+# - Optimized for Raspberry Pi 5's Broadcom WiFi chip
+#
+# PERFORMANCE: Can achieve 300+ Mbps with WiFi 5 on compatible devices
+# SECURITY: WPA2-PSK with CCMP (AES) encryption - very secure
+# COMPATIBILITY: Falls back to 802.11n (WiFi 4) for older devices
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# CONTROL INTERFACE
+# ------------------------------------------------------------------------------
+# Enables runtime control of hostapd via hostapd_cli command
+
+# Control socket path for management commands
 ctrl_interface=/var/run/hostapd
+
+# Control interface group (0 = root only for security)
 ctrl_interface_group=0
 
+# ------------------------------------------------------------------------------
+# BASIC WIRELESS CONFIGURATION
+# ------------------------------------------------------------------------------
+
+# WiFi interface to use for AP
+# This is dynamically detected (wlan0 or wlan1 depending on which is available)
 interface={{ network.wifi.interface }}
+
+# WiFi driver (nl80211 is the modern Linux wireless driver)
 driver=nl80211
 
-# Basic
+# ------------------------------------------------------------------------------
+# SSID AND COUNTRY SETTINGS
+# ------------------------------------------------------------------------------
+
+# Network name (SSID) - This is what users see when scanning for WiFi
 ssid={{ network.wifi.ssid }}
+
+# Country code for regulatory compliance (affects allowed channels and power)
+# US = United States, DE = Germany, GB = United Kingdom, etc.
+# IMPORTANT: Set to your actual country for legal compliance
 country_code={{ network.wifi.country | default('US') }}
+
+# ------------------------------------------------------------------------------
+# FREQUENCY BAND AND CHANNEL
+# ------------------------------------------------------------------------------
+
+# Hardware mode:
+# - g = 2.4GHz (802.11g/n) - better range, more congestion
+# - a = 5GHz (802.11a/n/ac) - faster speeds, less congestion, shorter range
+# Default: g (2.4GHz) for maximum compatibility
 hw_mode={{ network.wifi.hw_mode | default('g') }}
+
+# Channel selection:
+# 2.4GHz (hw_mode=g): channels 1, 6, 11 (non-overlapping in US)
+# 5GHz (hw_mode=a): channels 36, 40, 44, 48, 149, 153, 157, 161
+# Channel 7 is default (middle of 2.4GHz band)
 channel={{ network.wifi.channel | default(7) }}
 
-# Security (WPA2-PSK)
+# ------------------------------------------------------------------------------
+# SECURITY CONFIGURATION (WPA2-PSK)
+# ------------------------------------------------------------------------------
+# Uses WPA2 with pre-shared key (password) for authentication
+
+# WPA version: 2 = WPA2 (most secure, widely supported)
+# Don't use WPA1 (wpa=1) - it's deprecated and insecure
 wpa=2
+
+# Key management: WPA-PSK (pre-shared key / password authentication)
+# Alternative: WPA-EAP (enterprise with RADIUS server - not needed for home use)
 wpa_key_mgmt=WPA-PSK
+
+# Pairwise ciphers: CCMP (AES-based encryption)
+# CCMP is required for WPA2, much more secure than TKIP
 wpa_pairwise=CCMP
+
+# Robust Security Network (RSN) pairwise cipher: CCMP
+# This is the WPA2-specific setting (rsn = robust security network)
 rsn_pairwise=CCMP
+
+# WiFi password (8-63 characters)
+# SECURITY: Use a strong password (at least 12 characters, mix of letters/numbers/symbols)
 wpa_passphrase={{ network.wifi.password }}
 
-# Performance
+# ------------------------------------------------------------------------------
+# WIFI 4 (802.11n) CONFIGURATION - 150 Mbps
+# ------------------------------------------------------------------------------
+# 802.11n provides ~150 Mbps theoretical max, ~100 Mbps real-world
+
+# Enable 802.11n (WiFi 4) support
 ieee80211n=1
+
+# High Throughput (HT) capabilities for 802.11n
+# [HT40+] = Use 40MHz channel width (2x faster than 20MHz)
+# [HT40-] = Use 40MHz below current channel (alternative if HT40+ unavailable)
+# [SHORT-GI-20] = Short guard interval for 20MHz (reduces overhead, +10% speed)
+# [SHORT-GI-40] = Short guard interval for 40MHz (reduces overhead, +10% speed)
+# [DSSS_CCK-40] = Allow legacy DSSS/CCK with 40MHz channels
+ht_capab=[HT40+][HT40-][SHORT-GI-20][SHORT-GI-40][DSSS_CCK-40]
+
+# ------------------------------------------------------------------------------
+# WIFI 5 (802.11ac) CONFIGURATION - 300+ Mbps
+# ------------------------------------------------------------------------------
+# 802.11ac provides ~300-867 Mbps theoretical max, ~200-500 Mbps real-world
+# REQUIRES: 5GHz band (hw_mode=a), compatible WiFi chip (Pi 5 supports this)
+
+# Enable 802.11ac (WiFi 5) support
+# PERFORMANCE BOOST: 2-3x faster than 802.11n on compatible devices
+# COMPATIBILITY: Older devices fall back to 802.11n automatically
+ieee80211ac=1
+
+# Very High Throughput (VHT) channel width
+# 0 = 20 or 40 MHz (same as 802.11n)
+# 1 = 80 MHz (2x wider than 40MHz = 2x faster)
+# 2 = 160 MHz (not supported by Pi 5 WiFi chip)
+vht_oper_chwidth=1
+
+# VHT center frequency for 80MHz channel
+# This depends on your channel selection:
+# - Channel 36: use vht_oper_centr_freq_seg0_idx=42 (covers channels 36-48)
+# - Channel 149: use vht_oper_centr_freq_seg0_idx=155 (covers channels 149-161)
+# For 2.4GHz (hw_mode=g), this is ignored
+vht_oper_centr_freq_seg0_idx=42
+
+# VHT capabilities for maximum performance
+# [MAX-MPDU-11454] = Support larger packets (less overhead)
+# [RXLDPC] = Receive Low-Density Parity Check (better error correction)
+# [SHORT-GI-80] = Short guard interval for 80MHz (+10% speed)
+# [TX-STBC-2BY1] = Space-Time Block Coding for transmission (better signal)
+# [RX-STBC-1] = STBC for reception (better signal quality)
+# [MAX-A-MPDU-LEN-EXP7] = Maximum aggregation length (more efficiency)
+vht_capab=[MAX-MPDU-11454][RXLDPC][SHORT-GI-80][TX-STBC-2BY1][RX-STBC-1][MAX-A-MPDU-LEN-EXP7]
+
+# ------------------------------------------------------------------------------
+# PERFORMANCE TUNING
+# ------------------------------------------------------------------------------
+
+# Enable WiFi Multimedia (WMM) QoS
+# BENEFIT: Prioritizes time-sensitive traffic (video calls, gaming) over bulk data
+# REQUIRED: For 802.11n and 802.11ac to work at full speed
 wmm_enabled=1
 
-# AP behavior
+# Beacon interval (milliseconds)
+# How often AP announces its presence (100ms = 10 times per second)
+# DEFAULT: 100ms is standard, lowering doesn't help and wastes airtime
+beacon_int=100
+
+# DTIM period (delivery traffic indication message)
+# How often AP wakes sleeping clients to deliver buffered data
+# TRADE-OFF: Lower = more responsive, higher = better battery life for clients
+# 2 = good balance between responsiveness and power saving
+dtim_period=2
+
+# RTS threshold (Request To Send)
+# Packets larger than this use RTS/CTS handshake to avoid collisions
+# 2347 = disabled (only use for very congested environments)
+rts_threshold=2347
+
+# Fragmentation threshold
+# Split packets larger than this into fragments
+# 2346 = disabled (fragmentation hurts performance, only use if needed)
+fragm_threshold=2346
+
+# ------------------------------------------------------------------------------
+# ACCESS POINT BEHAVIOR
+# ------------------------------------------------------------------------------
+
+# Client isolation: Prevent WiFi clients from communicating with each other
+# 0 = disabled (clients CAN talk to each other - needed for Chromecast, AirPlay, etc.)
+# 1 = enabled (clients isolated - more secure for public AP)
+# DEFAULT: 0 (disabled) to allow device discovery and local services
 ap_isolate=0
 
-# Keep logging minimal
+# ------------------------------------------------------------------------------
+# LOGGING CONFIGURATION
+# ------------------------------------------------------------------------------
+# Minimal logging for performance, increase for troubleshooting
+
+# Syslog level (-1 = minimal, 0 = errors, 1 = warnings, 2 = info, 3 = debug)
+# -1 = very quiet, only critical errors (best performance)
+# Use logger_syslog=2 for troubleshooting connection issues
 logger_syslog=-1
+
+# Console/stdout logging level (same scale as syslog)
+# -1 = disabled (don't spam console)
+logger_stdout=-1
+
+# ------------------------------------------------------------------------------
+# ADDITIONAL NOTES
+# ------------------------------------------------------------------------------
+#
+# SWITCHING TO 5GHz:
+# To enable 5GHz + 802.11ac for maximum speed:
+# 1. Set hw_mode=a
+# 2. Set channel=36 (or 40, 44, 48, 149, 153, 157, 161)
+# 3. Update vht_oper_centr_freq_seg0_idx to match channel
+# 4. Restart hostapd
+#
+# TRADE-OFFS:
+# - 5GHz = Faster but shorter range (blocked by walls more easily)
+# - 2.4GHz = Slower but better range and penetration
+#
+# SECURITY BEST PRACTICES:
+# - Use WPA2 (wpa=2), never WPA1 or WEP
+# - Use strong password (12+ characters)
+# - Regularly update firmware/software
+# - Consider hiding SSID for extra security (add: ignore_broadcast_ssid=1)
+# ==============================================================================

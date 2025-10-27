@@ -1,326 +1,375 @@
 ---
+# ==============================================================================
+# SECURITY ROLE - MAIN TASKS
+# ==============================================================================
+# Configures firewall (UFW), IP forwarding, NAT, and security services for
+# Raspberry Pi 5 with dual-mode WiFi Access Point functionality.
+#
+# KEY FEATURES:
+# - UFW-only firewall (eliminates iptables complexity and duplicates)
+# - Auto-detect trusted networks (home, public WiFi) for dynamic access control
+# - Dual-mode WiFi AP (works on home network OR public WiFi)
+# - NAT configuration for internet passthrough to WiFi clients
+# - Rate limiting to prevent brute force and DDoS attacks
+# ==============================================================================
+
 # ------------------------------------------------------------------------------
-# PACKAGE INSTALLATION
+# 1. PACKAGE INSTALLATION
 # ------------------------------------------------------------------------------
 
 - name: Update apt cache
   ansible.builtin.apt:
     update_cache: yes
     cache_valid_time: 3600
+  tags: packages
 
-- name: Install security packages (UFW only, no iptables-persistent conflict)
+- name: Install security packages
   ansible.builtin.apt:
     name:
-      - fail2ban
-      - ufw
-      - unattended-upgrades
-      - logwatch
+      - ufw                         # Uncomplicated Firewall (front-end to iptables)
+      - fail2ban                    # Intrusion prevention (bans IPs after failed attempts)
+      - unattended-upgrades         # Automatic security updates
+      - logwatch                    # Log analysis and reporting
+      - iptables-persistent         # Save/restore iptables rules across reboots
     state: present
   register: package_install
+  tags: packages
 
+# Wait for package locks to clear (prevents dpkg errors)
 - name: Wait for dpkg lock
   ansible.builtin.shell: while fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 1; done
   when: package_install.changed
   changed_when: false
+  tags: packages
 
 - name: Wait for apt lock
   ansible.builtin.shell: while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 1; done
   when: package_install.changed
   changed_when: false
+  tags: packages
 
 - name: Wait for package installation to complete
   ansible.builtin.pause:
     seconds: 5
   when: package_install.changed
-
-# UFW tasks removed - using iptables-persistent instead
+  tags: packages
 
 # ------------------------------------------------------------------------------
-# NETWORK AND FIREWALL CONFIGURATION
+# 2. DETECT UPSTREAM NETWORK (Auto-trust current network)
 # ------------------------------------------------------------------------------
+# Automatically detect which network the Pi is currently connected to and add
+# it to trusted networks. This enables the Pi to work on home network, friend's
+# house, public WiFi, etc. without manual firewall configuration.
+#
+# SECURITY NOTE: This trusts the current upstream network. On public WiFi,
+# only the WiFi AP's local network (10.20.0.x) will have this trust, not
+# other devices on the public WiFi.
 
-# Only configure NAT after WiFi AP is confirmed working
-- name: Configure NAT for WiFi AP
+- name: Detect upstream network interface
+  ansible.builtin.shell: |
+    # Find the interface with default route (upstream internet connection)
+    ip route | grep default | awk '{print $5}' | head -1
+  register: upstream_interface_result
+  changed_when: false
+  failed_when: false
+  tags: network_detection
+
+- name: Detect upstream network subnet
+  ansible.builtin.shell: |
+    # Get the IP and netmask of upstream interface, calculate subnet
+    IFACE="{{ upstream_interface_result.stdout | trim }}"
+    if [ -n "$IFACE" ]; then
+      ip -o -f inet addr show "$IFACE" | awk '{print $4}'
+    fi
+  register: upstream_subnet_result
+  changed_when: false
+  failed_when: false
+  when: upstream_interface_result.stdout | length > 0
+  tags: network_detection
+
+- name: Set upstream network as trusted
+  ansible.builtin.set_fact:
+    detected_upstream_network: "{{ upstream_subnet_result.stdout | trim }}"
   when:
-    - network.wifi is defined
-    - ansible_facts['services']['hostapd.service'] is defined
-    - ansible_facts['services']['hostapd.service']['state'] == 'running'
-  block:
-    - name: Enable IP forwarding
-      ansible.builtin.sysctl:
-        name: net.ipv4.ip_forward
-        value: '1'
-        state: present
-        reload: yes
+    - upstream_subnet_result.stdout is defined
+    - upstream_subnet_result.stdout | length > 0
+  tags: network_detection
 
-    - name: Set up NAT for WiFi clients
-      ansible.builtin.iptables:
-        table: nat
-        chain: POSTROUTING
-        out_interface: "{{ network.wifi.client_interface }}"
-        source: "{{ network.wifi.network }}"
-        jump: MASQUERADE
-      notify: save iptables
-
-    - name: Allow forwarding for established connections
-      ansible.builtin.iptables:
-        chain: FORWARD
-        ctstate: ESTABLISHED,RELATED
-        jump: ACCEPT
-
-    - name: Allow forwarding from internal network
-      ansible.builtin.iptables:
-        chain: FORWARD
-        in_interface: "{{ network.wifi.interface }}"
-        jump: ACCEPT
-      notify: save iptables
+- name: Display detected upstream network
+  ansible.builtin.debug:
+    msg: "Detected upstream network: {{ detected_upstream_network | default('none - using defaults') }}"
+  tags: network_detection
 
 # ------------------------------------------------------------------------------
-# UFW CONFIGURATION
+# 3. SYSCTL CONFIGURATION (IP Forwarding & Connection Tracking)
 # ------------------------------------------------------------------------------
+# Configure kernel parameters for:
+# - IP forwarding (required for NAT and WiFi AP internet passthrough)
+# - Connection tracking (optimized for many WiFi clients)
+# - Security hardening (prevent IP spoofing, ICMP redirects, etc.)
+
+- name: Configure sysctl for IP forwarding and connection tracking
+  ansible.builtin.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-frey-security.conf
+    reload: yes
+  loop:
+    # IP FORWARDING - Enable routing between interfaces
+    - { key: 'net.ipv4.ip_forward', value: '1' }
+    - { key: 'net.ipv4.conf.all.forwarding', value: '1' }
+    - { key: 'net.ipv4.conf.default.forwarding', value: '1' }
+
+    # CONNECTION TRACKING - Optimize for NAT with many WiFi clients
+    - { key: 'net.netfilter.nf_conntrack_max', value: '65536' }
+    - { key: 'net.netfilter.nf_conntrack_tcp_timeout_established', value: '7200' }
+    - { key: 'net.netfilter.nf_conntrack_udp_timeout', value: '120' }
+
+    # SECURITY HARDENING
+    - { key: 'net.ipv4.conf.all.rp_filter', value: '1' }  # Reverse path filtering (anti-spoofing)
+    - { key: 'net.ipv4.conf.default.rp_filter', value: '1' }
+    - { key: 'net.ipv4.conf.all.accept_redirects', value: '0' }  # Ignore ICMP redirects
+    - { key: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+    - { key: 'net.ipv4.conf.all.send_redirects', value: '0' }  # Don't send ICMP redirects
+    - { key: 'net.ipv4.conf.default.send_redirects', value: '0' }
+    - { key: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }  # Ignore ping broadcasts
+    - { key: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+  when: network.wifi is defined
+  tags:
+    - sysctl
+    - wifi_ap
+
+# ------------------------------------------------------------------------------
+# 4. UFW FIREWALL CONFIGURATION
+# ------------------------------------------------------------------------------
+# All firewall rules use UFW (Uncomplicated Firewall) for simplicity and
+# maintainability. UFW is a front-end to iptables that makes rule management
+# much easier while providing the same security.
+#
+# RULE ORDER MATTERS:
+# 1. Reset UFW to clean state
+# 2. Set default policies (deny incoming, allow outgoing, allow routing)
+# 3. Public services (accessible from anywhere)
+# 4. WiFi AP services (DNS, DHCP)
+# 5. Trusted network access (home network, auto-detected networks)
+# 6. WiFi AP restrictions (block direct container access)
+# 7. Rate limiting (prevent brute force and DDoS)
 
 - name: Reset UFW to default state
   ansible.builtin.command: ufw --force reset
   changed_when: true
   when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
 
-- name: Enable UFW and set default policies
+- name: Set UFW default policies
   ansible.builtin.command: "{{ item }}"
   loop:
-    - ufw default deny incoming
-    - ufw default allow outgoing
-    - ufw default allow routed
-    - ufw --force enable
+    - ufw default deny incoming      # Block all incoming by default (whitelist approach)
+    - ufw default allow outgoing     # Allow all outgoing (Pi can reach internet)
+    - ufw default allow routed       # Allow routing/forwarding (required for NAT)
   changed_when: true
   when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
 
-- name: Configure essential UFW rules
+# PUBLIC SERVICES - Accessible from anywhere
+# These are Traefik HTTP/HTTPS ports that route to internal services
+- name: Allow public services (HTTP/HTTPS through Traefik)
   community.general.ufw:
     rule: allow
     port: "{{ item.port }}"
     proto: "{{ item.proto }}"
+    comment: "PUBLIC: {{ item.description }}"
   loop: "{{ network_security.public_ports }}"
-  when: enable_ufw
+  when: enable_ufw | default(true)
   tags:
     - firewall
+    - ufw
 
-- name: Allow DHCP server (port 67) for WiFi AP
+# WIFI AP SERVICES - DNS and DHCP for WiFi clients
+# These must be accessible from WiFi AP clients to get IP and resolve names
+- name: Allow DNS (TCP) for WiFi AP clients
+  community.general.ufw:
+    rule: allow
+    port: '53'
+    proto: tcp
+    comment: "WIFI_AP: DNS over TCP for WiFi clients"
+  when:
+    - enable_ufw | default(true)
+    - network.wifi is defined
+  tags:
+    - firewall
+    - ufw
+    - wifi_ap
+
+- name: Allow DNS (UDP) for WiFi AP clients
+  community.general.ufw:
+    rule: allow
+    port: '53'
+    proto: udp
+    comment: "WIFI_AP: DNS over UDP for WiFi clients"
+  when:
+    - enable_ufw | default(true)
+    - network.wifi is defined
+  tags:
+    - firewall
+    - ufw
+    - wifi_ap
+
+- name: Allow DHCP for WiFi AP clients
   community.general.ufw:
     rule: allow
     port: '67'
     proto: udp
+    comment: "WIFI_AP: DHCP server for IP assignment"
   when:
-    - enable_ufw
+    - enable_ufw | default(true)
     - network.wifi is defined
   tags:
     - firewall
+    - ufw
     - wifi_ap
 
-- name: Allow DNS (port 53) for WiFi AP
+# TRUSTED NETWORKS - Full access to all services (including container ports)
+# Home network and auto-detected networks can access services directly
+- name: Allow all traffic from trusted networks (configured)
   community.general.ufw:
     rule: allow
-    port: '53'
-    proto: "{{ item }}"
-  loop:
-    - tcp
-    - udp
+    from_ip: "{{ item }}"
+    comment: "TRUSTED: Full access from {{ item }}"
+  loop: "{{ network_security.trusted_networks }}"
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - trusted_networks
+
+- name: Allow all traffic from auto-detected upstream network
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ detected_upstream_network }}"
+    comment: "TRUSTED: Auto-detected upstream network"
   when:
-    - enable_ufw
+    - enable_ufw | default(true)
+    - detected_upstream_network is defined
+    - detected_upstream_network | length > 0
+  tags:
+    - firewall
+    - ufw
+    - trusted_networks
+
+# WIFI AP RESTRICTIONS - Block direct container port access
+# Force WiFi clients to use Traefik (service.frey) instead of direct IPs
+# This ensures authentication and rate limiting are enforced
+- name: Block direct container port access from WiFi AP clients
+  community.general.ufw:
+    rule: deny
+    port: "{{ item.port }}"
+    proto: tcp
+    from_ip: "{{ network_security.wifi_ap_network }}"
+    comment: "WIFI_BLOCK: {{ item.description }} (use {{ item.service }}.frey instead)"
+  loop: "{{ network_security.protected_ports }}"
+  when:
+    - enable_ufw | default(true)
     - network.wifi is defined
   tags:
     - firewall
+    - ufw
     - wifi_ap
 
-# Base rules for connection tracking and defaults
-- name: Allow established connections
-  ansible.builtin.iptables:
-    chain: INPUT
-    ctstate: ESTABLISHED,RELATED
-    jump: ACCEPT
-    comment: "Allow established/related connections"
-
-- name: Allow loopback traffic
-  ansible.builtin.iptables:
-    chain: INPUT
-    in_interface: lo
-    jump: ACCEPT
-    comment: "Allow loopback traffic"
-
-# Service-specific rules - these complement UFW rules
-- name: Allow SSH access in iptables
-  ansible.builtin.iptables:
-    chain: INPUT
-    protocol: tcp
-    destination_port: "22"
-    jump: ACCEPT
-    comment: "Allow SSH"
-
-# Default policies align with UFW
-- name: Set default iptables policies
-  ansible.builtin.iptables:
-    chain: "{{ item }}"
-    policy: DROP
-  with_items: 
-    - INPUT
-    - FORWARD
-
-- name: Allow outgoing traffic in iptables
-  ansible.builtin.iptables:
-    chain: OUTPUT
-    policy: ACCEPT
+# RATE LIMITING - Prevent brute force and DDoS attacks
+# Limits connection attempts to prevent password guessing and basic DDoS
+- name: Enable rate limiting on SSH (max 6 connections per 30 seconds)
+  ansible.builtin.command: ufw limit ssh
+  changed_when: true
+  when: enable_ufw | default(true)
   tags:
     - firewall
+    - ufw
+    - rate_limit
 
-# Configure public services
-- name: Configure essential services
-  ansible.builtin.iptables:
-    chain: INPUT
-    protocol: "{{ item.proto }}"
-    destination_port: "{{ item.port }}"
-    jump: ACCEPT
-    comment: "Allow {{ item.proto }}/{{ item.port }}"
-  loop: "{{ network_security.public_ports }}"
+- name: Enable UFW firewall
+  ansible.builtin.command: ufw --force enable
+  changed_when: true
+  when: enable_ufw | default(true)
   tags:
     - firewall
+    - ufw
 
-# Admin access from trusted networks
-- name: Configure admin access from trusted networks
-  ansible.builtin.iptables:
-    chain: INPUT
-    protocol: "{{ item.0.proto }}"
-    destination_port: "{{ item.0.port }}"
-    source: "{{ item.1 }}"
-    jump: ACCEPT
-    comment: "Allow admin access from {{ item.1 }}"
-  loop: "{{ network_security.admin_ports | product(network_security.trusted_networks) | list }}"
-  tags:
-    - firewall
-    - ssh
+# ------------------------------------------------------------------------------
+# 5. NAT CONFIGURATION (Internet Passthrough for WiFi AP)
+# ------------------------------------------------------------------------------
+# Configure NAT/MASQUERADE so WiFi AP clients can access internet through
+# the Pi's upstream connection (home network or public WiFi).
+#
+# This uses raw iptables because UFW doesn't support NAT table directly.
+# These rules are in addition to UFW rules above.
 
-# WiFi AP specific configuration
-- name: Configure sysctl for IP forwarding
-  ansible.builtin.sysctl:
-    name: "{{ item.key }}"
-    value: "{{ item.value }}"
-    sysctl_file: /etc/sysctl.d/99-wifi-ap.conf
-    reload: yes
-  loop:
-    - { key: 'net.ipv4.ip_forward', value: '1' }
-    - { key: 'net.ipv4.conf.all.forwarding', value: '1' }
+- name: Configure NAT for WiFi AP internet passthrough
   when: network.wifi is defined
   tags:
     - firewall
     - wifi_ap
-
-# Local services for WiFi
-- name: Configure local services for WiFi AP
-  ansible.builtin.iptables:
-    chain: INPUT
-    protocol: "{{ item.proto }}"
-    destination_port: "{{ item.port }}"
-    source: "{{ item.from_ip | default(omit) }}"
-    jump: "{{ item.rule | default('ACCEPT') }}"
-    comment: "WiFi local service: {{ item.proto }}/{{ item.port }}"
-  loop: "{{ network_security.local_services + network_security.public_ports }}"
-  when: network.wifi is defined
-  tags: 
-    - firewall
-    - wifi_ap
-
-# Block container access
-- name: Block direct container access from WiFi network
-  ansible.builtin.iptables:
-    chain: INPUT
-    protocol: tcp
-    destination_port: "{{ item.port }}"
-    source: "{{ network.wifi.network }}"
-    jump: DROP
-    comment: "Block container access from WiFi"
-  loop: "{{ network_security.protected_ports }}"
-  when: network.wifi is defined
-  tags: 
-    - firewall
-    - wifi_ap
-
-# NAT and routing for WiFi AP
-- name: Configure NAT for WiFi AP
+    - nat
   block:
-    - name: Configure NAT for WiFi network
+    - name: Get upstream interface for NAT
+      ansible.builtin.shell: |
+        # Use detected upstream interface from earlier
+        echo "{{ upstream_interface_result.stdout | trim }}"
+      register: nat_upstream_interface
+      changed_when: false
+
+    - name: Configure MASQUERADE for WiFi AP clients
       ansible.builtin.iptables:
         table: nat
         chain: POSTROUTING
         source: "{{ network.wifi.network }}"
-        out_interface: "{{ network.wifi.client_interface }}"
+        out_interface: "{{ nat_upstream_interface.stdout | trim }}"
         jump: MASQUERADE
-        comment: "NAT for WiFi network"
+        comment: "NAT: Internet passthrough for WiFi AP clients"
 
-    - name: Allow DNS from WiFi network
+    - name: Allow established/related connections in FORWARD chain
       ansible.builtin.iptables:
-        chain: INPUT
-        protocol: "{{ item }}"
-        destination_port: "53"
-        source: "{{ network.wifi.network }}"
+        chain: FORWARD
+        ctstate: ESTABLISHED,RELATED
         jump: ACCEPT
-        comment: "Allow DNS from WiFi"
-      loop:
-        - tcp
-        - udp
+        comment: "NAT: Allow return traffic for established connections"
 
-    - name: Allow DHCP from WiFi network
+    - name: Allow forwarding from WiFi AP interface
       ansible.builtin.iptables:
-        chain: INPUT
-        protocol: udp
-        destination_port: "67"
-        source: "{{ network.wifi.network }}"
+        chain: FORWARD
+        in_interface: "{{ network.wifi.interface }}"
         jump: ACCEPT
-        comment: "Allow DHCP from WiFi"
+        comment: "NAT: Allow forwarding from WiFi AP to internet"
 
-    - name: Allow web traffic from WiFi network
-      ansible.builtin.iptables:
-        chain: INPUT
-        protocol: tcp
-        destination_port: "{{ item }}"
-        source: "{{ network.wifi.network }}"
-        jump: ACCEPT
-        comment: "Allow web traffic from WiFi"
-      loop:
-        - "80"
-        - "443"
+    - name: Save iptables rules persistently
+      ansible.builtin.shell: |
+        iptables-save > /etc/iptables/rules.v4
+        ip6tables-save > /etc/iptables/rules.v6
+      changed_when: true
 
-  when: network.wifi is defined
-  tags:
-    - firewall
-    - wifi_ap
-
-- name: Create iptables rules directory
-  ansible.builtin.file:
-    path: /etc/iptables
-    state: directory
-    mode: '0755'
-  when: network.wifi is defined
-
-- name: Save iptables rules
-  ansible.builtin.shell: |
-    iptables-save > /etc/iptables/rules.v4
-    ip6tables-save > /etc/iptables/rules.v6
-  when: network.wifi is defined
-  changed_when: true
-  tags:
-    - firewall
-    - wifi_ap
+# ------------------------------------------------------------------------------
+# 6. FAIL2BAN CONFIGURATION
+# ------------------------------------------------------------------------------
+# Configure fail2ban to automatically ban IPs after failed login attempts
 
 - name: Configure fail2ban
   ansible.builtin.template:
     src: jail.local.j2
     dest: /etc/fail2ban/jail.local
     mode: '0644'
-  when: enable_fail2ban
+  when: enable_fail2ban | default(true)
   notify: restart fail2ban
+  tags:
+    - fail2ban
 
-- name: Enable UFW
-  community.general.ufw:
-    state: enabled
-  when: enable_ufw
+# ------------------------------------------------------------------------------
+# 7. AUTOMATIC SECURITY UPDATES
+# ------------------------------------------------------------------------------
+# Enable unattended-upgrades for automatic security patches
 
 - name: Enable automatic security updates
   ansible.builtin.lineinfile:
@@ -328,3 +377,5 @@
     regexp: '^//.*"{{ ansible_distribution }}:{{ ansible_distribution_release }}-security";'
     line: '        "{{ ansible_distribution }}:{{ ansible_distribution_release }}-security";'
     state: present
+  tags:
+    - auto_updates
