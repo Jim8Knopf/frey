@@ -338,9 +338,9 @@ media:
     audiobookshelf:
       enabled: true
       version: "latest"
-      port: 13378
-      ports: 
-        - 13378:80
+      port: 80  # Internal container port for Traefik routing
+      ports:
+        - 13378:80  # External:Internal port mapping
 
     jellyfin:
       enabled: true

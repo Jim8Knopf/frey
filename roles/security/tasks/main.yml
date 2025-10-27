@@ -101,7 +101,73 @@
   tags: network_detection
 
 # ------------------------------------------------------------------------------
-# 3. SYSCTL CONFIGURATION (IP Forwarding & Connection Tracking)
+# 3. AUTO-DISCOVER DOCKER SERVICES (Dynamic Firewall Configuration)
+# ------------------------------------------------------------------------------
+# Query Docker for running containers with Traefik labels to automatically
+# build firewall rules. This eliminates manual configuration when adding services.
+#
+# BENEFITS:
+# - New services automatically get firewall protection
+# - No manual updates to protected_ports list needed
+# - Reduces human error and forgotten configurations
+# - Adapts to actual running services, not hardcoded assumptions
+
+- name: Discover Traefik-enabled Docker containers
+  ansible.builtin.shell: |
+    docker ps --filter "label=traefik.enable=true" --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null || true
+  register: docker_traefik_containers
+  changed_when: false
+  failed_when: false
+  tags:
+    - firewall
+    - service_discovery
+
+- name: Extract service ports from Docker container labels
+  ansible.builtin.shell: |
+    CONTAINER="{{ item }}"
+    # Get the Traefik loadbalancer port label
+    PORT=$(docker inspect "$CONTAINER" --format '{{ '{{' }}index .Config.Labels "traefik.http.services.'$CONTAINER'.loadbalancer.server.port"{{ '}}' }}' 2>/dev/null || echo "")
+    if [ -n "$PORT" ]; then
+      echo "$CONTAINER:$PORT"
+    fi
+  loop: "{{ docker_traefik_containers.stdout_lines }}"
+  register: docker_service_ports
+  changed_when: false
+  failed_when: false
+  when: docker_traefik_containers.stdout_lines | length > 0
+  tags:
+    - firewall
+    - service_discovery
+
+- name: Build discovered services list
+  ansible.builtin.set_fact:
+    discovered_services: "{{ discovered_services | default([]) + [{'port': item.stdout.split(':')[1] | int, 'service': item.stdout.split(':')[0], 'description': item.stdout.split(':')[0] + ' (auto-discovered)'}] }}"
+  loop: "{{ docker_service_ports.results }}"
+  when:
+    - docker_service_ports.results is defined
+    - item.stdout is defined
+    - item.stdout | length > 0
+    - "':' in item.stdout"
+  tags:
+    - firewall
+    - service_discovery
+
+- name: Merge static and discovered protected ports
+  ansible.builtin.set_fact:
+    all_protected_ports: "{{ (network_security.protected_ports | default([])) + (discovered_services | default([])) }}"
+  tags:
+    - firewall
+    - service_discovery
+
+- name: Display discovered services
+  ansible.builtin.debug:
+    msg: "Auto-discovered {{ discovered_services | default([]) | length }} services from Docker: {{ discovered_services | default([]) | map(attribute='service') | list | join(', ') }}"
+  tags:
+    - firewall
+    - service_discovery
+
+# ------------------------------------------------------------------------------
+# 4. SYSCTL CONFIGURATION (IP Forwarding & Connection Tracking)
 # ------------------------------------------------------------------------------
 # Configure kernel parameters for:
 # - IP forwarding (required for NAT and WiFi AP internet passthrough)
@@ -284,6 +350,7 @@
 # WIFI AP RESTRICTIONS - Block direct container port access
 # Force WiFi clients to use Traefik (service.frey) instead of direct IPs
 # This ensures authentication and rate limiting are enforced
+# Uses combined static + auto-discovered services list
 - name: Block direct container port access from WiFi AP clients
   community.general.ufw:
     rule: deny
@@ -291,10 +358,11 @@
     proto: tcp
     from_ip: "{{ network_security.wifi_ap_network }}"
     comment: "WIFI_BLOCK: {{ item.description }} (use {{ item.service }}.frey instead)"
-  loop: "{{ network_security.protected_ports }}"
+  loop: "{{ all_protected_ports | default(network_security.protected_ports) }}"
   when:
     - enable_ufw | default(true)
     - network.wifi is defined
+    - all_protected_ports is defined or network_security.protected_ports is defined
   tags:
     - firewall
     - ufw
