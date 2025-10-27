@@ -103,6 +103,33 @@
   tags:
     - firewall
 
+- name: Allow DHCP server (port 67) for WiFi AP
+  community.general.ufw:
+    rule: allow
+    port: '67'
+    proto: udp
+  when:
+    - enable_ufw
+    - network.wifi is defined
+  tags:
+    - firewall
+    - wifi_ap
+
+- name: Allow DNS (port 53) for WiFi AP
+  community.general.ufw:
+    rule: allow
+    port: '53'
+    proto: "{{ item }}"
+  loop:
+    - tcp
+    - udp
+  when:
+    - enable_ufw
+    - network.wifi is defined
+  tags:
+    - firewall
+    - wifi_ap
+
 # Base rules for connection tracking and defaults
 - name: Allow established connections
   ansible.builtin.iptables:
