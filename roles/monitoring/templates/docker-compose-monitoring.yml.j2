@@ -21,10 +21,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.dockge.rule=Host(`dockge.{{ network.domain_name }}`)"
-      - "traefik.http.routers.dockge.entrypoints=web,websecure"
+      - "traefik.http.routers.dockge.entrypoints=web"
       - "traefik.http.services.dockge.loadbalancer.server.port=5001"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.dockge.middlewares=local-ipwhitelist"
   {% endif %}
 
   {% if monitoring.prometheus.enabled | default(false) -%}
@@ -55,10 +53,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.prometheus.rule=Host(`prometheus.{{ network.domain_name }}`)"
-      - "traefik.http.routers.prometheus.entrypoints=web,websecure"
+      - "traefik.http.routers.prometheus.entrypoints=web"
       - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.prometheus.middlewares=local-ipwhitelist"
   {% endif %}
 
   {% if monitoring['node-exporter'].enabled | default(false) -%}
@@ -85,10 +81,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.node-exporter.rule=Host(`metrics.{{ network.domain_name }}`)"
-      - "traefik.http.routers.node-exporter.entrypoints=web,websecure"
+      - "traefik.http.routers.node-exporter.entrypoints=web"
       - "traefik.http.services.node-exporter.loadbalancer.server.port=9100"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.node-exporter.middlewares=local-ipwhitelist"
   {% endif %}
 
   {% if monitoring.cadvisor.enabled | default(false) -%}
@@ -114,10 +108,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.cadvisor.rule=Host(`cadvisor.{{ network.domain_name }}`)"
-      - "traefik.http.routers.cadvisor.entrypoints=web,websecure"
+      - "traefik.http.routers.cadvisor.entrypoints=web"
       - "traefik.http.services.cadvisor.loadbalancer.server.port=8080"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.cadvisor.middlewares=local-ipwhitelist"
   {% endif %}
 
   {% if monitoring.grafana.enabled | default(false) -%}
@@ -144,8 +136,6 @@ services:
       - "traefik.http.routers.grafana.rule=Host(`grafana.{{ network.domain_name | default('local') }}`)"
       - "traefik.http.routers.grafana.entrypoints=web"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.grafana.middlewares=local-ipwhitelist"
   {% endif %}
 
   {% if monitoring.loki.enabled | default(false) -%}
@@ -165,10 +155,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.loki.rule=Host(`loki.{{ network.domain_name }}`)"
-      - "traefik.http.routers.loki.entrypoints=web,websecure"
+      - "traefik.http.routers.loki.entrypoints=web"
       - "traefik.http.services.loki.loadbalancer.server.port=3100"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.loki.middlewares=local-ipwhitelist"
   {% endif %}
 
   {% if monitoring.promtail.enabled | default(false) -%}
@@ -204,10 +192,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.uptime.rule=Host(`uptime.{{ network.domain_name }}`)"
-      - "traefik.http.routers.uptime.entrypoints=web,websecure"
+      - "traefik.http.routers.uptime.entrypoints=web"
       - "traefik.http.services.uptime.loadbalancer.server.port=3001"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.uptime.middlewares=local-ipwhitelist"
   {% endif %}
 
   {% if monitoring.watchtower.enabled | default(false) -%}
@@ -249,10 +235,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.speedtest.rule=Host(`speedtest.{{ network.domain_name }}`)"
-      - "traefik.http.routers.speedtest.entrypoints=web,websecure"
+      - "traefik.http.routers.speedtest.entrypoints=web"
       - "traefik.http.services.speedtest.loadbalancer.server.port=80"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.0.0/24"
-      - "traefik.http.routers.speedtest.middlewares=local-ipwhitelist"
   {% endif %}
 
 networks:

@@ -32,10 +32,8 @@ services:
         - "traefik.enable=true"
         - "traefik.docker.network=proxy"
         - "traefik.http.routers.gluetun.rule=Host(`vpn.{{ network.domain_name }}`)"
-        - "traefik.http.routers.gluetun.entrypoints=web,websecure"  # Enable both HTTP and HTTPS
+        - "traefik.http.routers.gluetun.entrypoints=web"
         - "traefik.http.services.gluetun.loadbalancer.server.port={{ media.vpn.port }}"
-        - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.2.0/24,172.30.4.0/24"  # WiFi, Media, and Library networks
-        - "traefik.http.routers.gluetun.middlewares=local-ipwhitelist"
       healthcheck:
         test: ["CMD-SHELL", "curl -f http://localhost:{{ media.vpn.port }} || exit 1"]
         interval: 30s
@@ -76,15 +74,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
-      - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"  # Enable both HTTP and HTTPS as per guide
+      - "traefik.http.routers.{{service_name}}.entrypoints=web"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
-      - "traefik.http.middlewares.local-ipwhitelist.ipwhitelist.sourcerange=10.20.0.0/24,10.20.2.0/24,172.30.4.0/24"  # WiFi, Media, and Library networks
-      - "traefik.http.routers.{{service_name}}.middlewares=local-ipwhitelist"
-      # SSL configuration as shown in guide
-      - "traefik.http.routers.{{service_name}}-secure.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
-      - "traefik.http.routers.{{service_name}}-secure.entrypoints=websecure"
-      - "traefik.http.routers.{{service_name}}-secure.tls=true"
-      - "traefik.http.routers.{{service_name}}-secure.middlewares=local-ipwhitelist"
 
 {% endfor -%}
 
