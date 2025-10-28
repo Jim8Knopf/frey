@@ -10,7 +10,7 @@ features:
   monitoring: true
   automation: true
   file_management: false
-  photo_management: false
+  immich: true
   homeassistant: false
   backup: false
   piper: false
@@ -138,7 +138,7 @@ security:
       automation.openwebui.port,
       automation.n8n.port
     ], [])) +
-    (features.photo_management | ternary([
+    (features.immich | ternary([
       ports.photos_home.immich
     ], [])) +
     (features.homeassistant | ternary([
@@ -418,4 +418,29 @@ media:
     ytdl-sub:
       enabled: false
       version: "latest"
+
+# ===================================================================
+# PHOTO MANAGEMENT - IMMICH STACK
+# ===================================================================
+immich:
+  group:
+    name: photos
+    gid: 74686
+  user:
+    name: photos_manager
+    uid: 74686
+    groups: "{{ immich.group.name }}"
+  dir: "{{ storage.base_dir }}/photos"
+
+  services:
+    immich:
+      enabled: true
+      version: "release"
+      port: 2283
+      # Hardware acceleration for Pi 5
+      hw_accel: "rkmpp"  # RK3588 hardware acceleration
+      # Storage paths
+      upload_location: "{{ storage.base_dir }}/photos/library"
+      db_data_location: "{{ storage.appdata_dir }}/immich-db"
+      ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
 

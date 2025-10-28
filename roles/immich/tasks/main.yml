@@ -1,0 +1,182 @@
+---
+# ==============================================================================
+# PHOTO MANAGEMENT ROLE - IMMICH STACK
+# ==============================================================================
+# Deploys Immich photo backup server with AI-powered features
+#
+# SERVICES:
+# - immich-server: Main API & web interface
+# - immich-machine-learning: AI processing (face recognition, search)
+# - valkey: In-memory cache
+# - postgres: Database with VectorChord extension
+#
+# FEATURES:
+# - Automatic photo/video backup from mobile apps
+# - AI face recognition and smart search
+# - Multi-user support with album sharing
+# - Hardware acceleration on Pi 5
+# ==============================================================================
+
+- name: Setup photo management stack user and directories
+  include_tasks: "../playbooks/templates/create_user.yml"
+  vars:
+    stack: "immich"
+    folders: [library, backups]
+
+- name: Create additional Immich directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ immich.user.name }}"
+    group: "{{ immich.group.name }}"
+    mode: '0755'
+  loop:
+    - "{{ immich.services.immich.upload_location }}"
+    - "{{ immich.services.immich.db_data_location }}"
+    - "{{ immich.services.immich.ml_cache_location }}"
+  tags:
+    - directories
+
+- name: Pre-pull Immich images
+  community.docker.docker_image:
+    name: "{{ item }}"
+    source: pull
+    state: present
+    timeout: 300
+  loop:
+    - "ghcr.io/immich-app/immich-server:release"
+    - "ghcr.io/immich-app/immich-machine-learning:release"
+    - "docker.io/valkey/valkey:8"
+    - "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0"
+  register: image_pull_results
+  retries: 2
+  delay: 10
+  failed_when: false
+  tags:
+    - images
+
+- name: Set failed pulls fact
+  ansible.builtin.set_fact:
+    failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item') | list }}"
+
+- name: Report failed image pulls
+  ansible.builtin.debug:
+    msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
+  when: failed_pulls | length > 0
+
+- name: Deploy .env file for Immich
+  ansible.builtin.template:
+    src: .env.j2
+    dest: "{{ storage.stacks }}/immich/.env"
+    owner: "{{ immich.user.name }}"
+    group: "{{ immich.group.name }}"
+    mode: '0600'  # Secure permissions for secrets
+  tags:
+    - config
+
+- name: Deploy Immich docker-compose file
+  ansible.builtin.template:
+    src: docker-compose-immich.yml.j2
+    dest: "{{ storage.stacks }}/immich/docker-compose.yml"
+    owner: "{{ immich.user.name }}"
+    group: "{{ immich.group.name }}"
+    mode: '0644'
+    backup: yes
+  register: compose_template_result
+  tags:
+    - config
+
+- name: Validate Docker Compose file syntax
+  ansible.builtin.command:
+    cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" config --quiet
+  register: compose_validation
+  failed_when: compose_validation.rc != 0
+  changed_when: false
+  tags:
+    - config
+
+- name: Start Immich stack with graceful error handling
+  block:
+    - name: Start Immich stack containers using compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/immich"
+        state: present
+        remove_orphans: true
+        timeout: 300
+      register: compose_result
+      retries: 2
+      delay: 30
+
+  rescue:
+    - name: Handle compose failure - gather logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" logs --tail=50
+      register: compose_logs
+      failed_when: false
+
+    - name: Display compose error details
+      ansible.builtin.debug:
+        msg: |
+          Immich stack deployment failed. Recent logs:
+          {{ compose_logs.stdout_lines[-20:] | join('\n') }}
+
+    - name: Fail deployment with helpful message
+      ansible.builtin.fail:
+        msg: |
+          Immich stack deployment failed. Check the logs above for details.
+          Common issues:
+          - Database initialization (wait 2-3 minutes on first start)
+          - Port {{ immich.services.immich.port }} already in use
+          - Insufficient disk space or memory
+          - Image pull failures (check internet connection)
+
+- name: Wait for Immich server to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:{{ immich.services.immich.port }}/api/server/ping"
+    status_code: 200
+    timeout: 10
+  register: immich_health
+  until: immich_health.status == 200
+  retries: 30
+  delay: 10
+  failed_when: false
+  tags:
+    - health_check
+
+- name: Display Immich stack deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ✅ Immich Photo Backup Server Deployed Successfully
+
+      📱 WEB ACCESS:
+         - Via Traefik: http://immich.{{ network.domain_name }}
+         - Direct: http://{{ network.wifi.ip }}:{{ immich.services.immich.port }}
+
+      📱 MOBILE APP SETUP:
+         1. Download Immich app (iOS/Android)
+         2. Server URL: http://{{ network.wifi.ip }}:{{ immich.services.immich.port }}
+         3. Create admin account on first access
+         4. Enable auto-backup in app settings
+
+      🗂️ STORAGE:
+         - Photos: {{ immich.services.immich.upload_location }}
+         - Database: {{ immich.services.immich.db_data_location }}
+         - ML Cache: {{ immich.services.immich.ml_cache_location }}
+
+      🤖 AI FEATURES:
+         - Face recognition: Enabled
+         - Smart search: Enabled
+         - Auto-tagging: Enabled
+
+      📊 SERVICES:
+         - immich-server: Main API & web interface
+         - immich-machine-learning: AI processing
+         - valkey: Cache (Redis alternative)
+         - postgres: Database with VectorChord
+
+      🔧 MANAGEMENT:
+         - Logs: docker compose -C {{ storage.stacks }}/immich logs -f
+         - Restart: docker compose -C {{ storage.stacks }}/immich restart
+         - Update: docker compose -C {{ storage.stacks }}/immich pull && docker compose -C {{ storage.stacks }}/immich up -d
+  when: immich_health.status == 200
+
