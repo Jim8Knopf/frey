@@ -21,7 +21,7 @@
 
 - name: Install packages required for AP
   ansible.builtin.apt:
-    name: "{{ wifi_ap_packages | default(['hostapd','dnsmasq','rfkill','iw','dhcpcd5']) }}"
+    name: "{{ wifi_ap_packages | default(['hostapd','dnsmasq','rfkill','iw','dhcpcd5','wpasupplicant','dialog']) }}"
     state: present
     update_cache: yes
 
@@ -32,6 +32,7 @@
     - systemd-resolved
     - NetworkManager
     - wpa_supplicant
+    - dialog
   register: service_check
   failed_when: false
   changed_when: false
@@ -236,6 +237,76 @@
   changed_when: false
   failed_when: false
 
+- name: Deploy WiFi connection helper script
+  ansible.builtin.template:
+    src: frey-connect-wifi.sh.j2
+    dest: /usr/local/bin/frey-connect-wifi
+    mode: '0755'
+
+- name: Deploy WiFi disconnection helper script
+  ansible.builtin.template:
+    src: frey-disconnect-wifi.sh.j2
+    dest: /usr/local/bin/frey-disconnect-wifi
+    mode: '0755'
+
+- name: Deploy WiFi TUI script
+  ansible.builtin.template:
+    src: frey-wifi-tui.sh.j2
+    dest: /usr/local/bin/frey-wifi-tui
+    mode: '0755'
+
+- name: Deploy WiFi connection guide
+  ansible.builtin.copy:
+    src: CONNECT-TO-WIFI.md
+    dest: "{{ storage.base_dir | default('/opt/frey') }}/CONNECT-TO-WIFI.md"
+    mode: '0644'
+
+# ==============================================================================
+# BLOCK DNS-over-HTTPS (DoH) - Force clients to use local DNS
+# ==============================================================================
+# Modern browsers and OS use DoH by default, bypassing local DNS servers.
+# This breaks .frey domain resolution even though clients are configured to use 10.20.0.1 DNS.
+# Solution: Block HTTPS (port 443) connections to known DoH providers, forcing clients to use standard DNS.
+
+- name: Block Google DoH servers (8.8.8.8, 8.8.4.4) to force local DNS usage
+  community.general.ufw:
+    rule: reject
+    proto: tcp
+    to_ip: "{{ item }}"
+    to_port: '443'
+    from_ip: "{{ network.wifi.network | default('10.20.0.0/24') }}"
+    comment: "WIFI_AP: Block DoH to force local DNS"
+  loop:
+    - 8.8.8.8
+    - 8.8.4.4
+  ignore_errors: yes
+
+- name: Block Cloudflare DoH servers (1.1.1.1, 1.0.0.1) to force local DNS usage
+  community.general.ufw:
+    rule: reject
+    proto: tcp
+    to_ip: "{{ item }}"
+    to_port: '443'
+    from_ip: "{{ network.wifi.network | default('10.20.0.0/24') }}"
+    comment: "WIFI_AP: Block DoH to force local DNS"
+  loop:
+    - 1.1.1.1
+    - 1.0.0.1
+  ignore_errors: yes
+
+- name: Block Quad9 DoH servers (9.9.9.9, 149.112.112.112) to force local DNS usage
+  community.general.ufw:
+    rule: reject
+    proto: tcp
+    to_ip: "{{ item }}"
+    to_port: '443'
+    from_ip: "{{ network.wifi.network | default('10.20.0.0/24') }}"
+    comment: "WIFI_AP: Block DoH to force local DNS"
+  loop:
+    - 9.9.9.9
+    - 149.112.112.112
+  ignore_errors: yes
+
 - name: Display concise AP status
   ansible.builtin.debug:
     msg: |
@@ -245,3 +316,9 @@
       Hostapd: {{ 'running' if (ansible_facts.services is defined and ansible_facts.services['hostapd.service'] is defined and ansible_facts.services['hostapd.service'].state == 'running') else 'unknown' }}
       dnsmasq: {{ 'running' if (ansible_facts.services is defined and ansible_facts.services['dnsmasq.service'] is defined and ansible_facts.services['dnsmasq.service'].state == 'running') else 'unknown' }}
       DHCP leases entries: {{ dhcp_leases.stdout_lines | length }}
+
+      WiFi Connection Tools:
+      - TUI Manager (easiest): sudo frey-wifi-tui
+      - CLI Connect: sudo frey-connect-wifi "WiFiName" "password"
+      - CLI Disconnect: sudo frey-disconnect-wifi
+      - Documentation: {{ storage.base_dir | default('/opt/frey') }}/CONNECT-TO-WIFI.md

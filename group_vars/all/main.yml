@@ -10,11 +10,11 @@ features:
   monitoring: true
   automation: true
   file_management: false
-  photo_management: false
+  immich: true
   homeassistant: false
   backup: false
   piper: false
-  cookbook: false
+  cookbook: true
   power_monitoring: false
   voice_assistant: false
 
@@ -138,7 +138,7 @@ security:
       automation.openwebui.port,
       automation.n8n.port
     ], [])) +
-    (features.photo_management | ternary([
+    (features.immich | ternary([
       ports.photos_home.immich
     ], [])) +
     (features.homeassistant | ternary([
@@ -418,4 +418,68 @@ media:
     ytdl-sub:
       enabled: false
       version: "latest"
+
+# ===================================================================
+# PHOTO MANAGEMENT - IMMICH STACK
+# ===================================================================
+immich:
+  group:
+    name: photos
+    gid: 74686
+  user:
+    name: photos_manager
+    uid: 74686
+    groups: "{{ immich.group.name }}"
+  dir: "{{ storage.base_dir }}/photos"
+
+  services:
+    immich:
+      enabled: true
+      version: "release"
+      port: 2283
+      # Hardware acceleration for Pi 5
+      hw_accel: "rkmpp"  # RK3588 hardware acceleration
+      # Storage paths
+      upload_location: "{{ storage.base_dir }}/photos/library"
+      db_data_location: "{{ storage.appdata_dir }}/immich-db"
+      ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
+
+# ===================================================================
+# COOKBOOK - MEALIE RECIPE MANAGER
+# ===================================================================
+cookbook:
+  group:
+    name: cookbook
+    gid: 74690
+  user:
+    name: cookbook_manager
+    uid: 74690
+    groups: "{{ cookbook.group.name }}"
+  dir: "{{ storage.base_dir }}/cookbook"
+
+  # Database credentials
+  db_user: mealie
+  db_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  db_name: mealie
+
+  services:
+    mealie:
+      enabled: true
+      version: "latest"
+      port: 9925
+      # Database
+      db_type: "postgres"
+      # Storage paths
+      data_dir: "{{ storage.appdata_dir }}/mealie"
+      db_data_location: "{{ storage.appdata_dir }}/mealie-db"
+      # API settings
+      api_docs: true
+      base_url: "http://cookbook.{{ network.domain_name }}"
+      # Security
+      allow_signup: false
+      # SSO (disabled by default, ready for future)
+      oidc_enabled: false
+      # Features
+      enable_meal_planner: true
+      recipe_scraping: true
 

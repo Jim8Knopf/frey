@@ -1,11 +1,11 @@
 # Erstelle die komplette Rollen-Struktur
-mkdir -p roles/{common,security,ssd_optimization,docker,directories,dockge,monitoring,media,ai_stack,photo_management,homeassistant,infrastructure,networking,file_management,backup,power_management}/{tasks,handlers,templates,defaults,vars,files}
+mkdir -p roles/{common,security,ssd_optimization,docker,directories,dockge,monitoring,media,ai_stack,immich,homeassistant,infrastructure,networking,file_management,backup,power_management}/{tasks,handlers,templates,defaults,vars,files}
 
 # Erstelle auch die Script-Verzeichnisse
 mkdir -p scripts templates
 
 # Erstelle Standard-Dateien für jede Rolle
-for role in common security ssd_optimization docker directories dockge monitoring media ai_stack photo_management homeassistant infrastructure networking file_management backup power_management; do
+for role in common security ssd_optimization docker directories dockge monitoring media ai_stack immich homeassistant infrastructure networking file_management backup power_management; do
     # Erstelle main.yml in tasks/
     echo "---" > "roles/$role/tasks/main.yml"
     echo "# $role tasks" >> "roles/$role/tasks/main.yml"

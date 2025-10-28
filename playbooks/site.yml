@@ -43,7 +43,7 @@
     #       🚀 Starting Pi 5 Hub deployment
     #       Target: {{ ansible_host }}
     #       User: {{ ansible_user_id }}
-    #       Services: {% if features.media %}Media, {% endif %}{% if features.automation %}Automation, {% endif %}{% if features.ai, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.photo_management %}Photos{% endif %}
+    #       Services: {% if features.media %}Media, {% endif %}{% if features.automation %}Automation, {% endif %}{% if features.ai, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.immich %}Photos{% endif %}
 
     # - name: Create media subdirectories
     #   ansible.builtin.file:
@@ -91,17 +91,17 @@
       tags: [automation, services, ai]
       when: features.automation
 
-    # - role: photo_management
-    #   tags: [photos]
-    #   when: features.photo_management
+    - role: immich
+      tags: [photos, immich]
+      when: features.immich
 
     # - role: file_management
     #   tags: [files]
     #   when: features.file_management
 
-    # - role: cookbook
-    #   tags: [cookbook, services]
-    #   when: features.cookbook
+    - role: cookbook
+      tags: [cookbook, services]
+      when: features.cookbook
 
     # - role: piper
     #   tags: [piper, voice, ai]
