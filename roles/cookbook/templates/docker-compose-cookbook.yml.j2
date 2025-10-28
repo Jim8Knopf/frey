@@ -1,0 +1,77 @@
+# ==============================================================================
+# MEALIE COOKBOOK - Docker Compose Configuration
+# ==============================================================================
+# Recipe manager with API access, meal planning, and SSO support
+#
+# FEATURES:
+# - Recipe management with scraping from URLs
+# - Meal planning (weekly calendar)
+# - Shopping list generation
+# - Full REST API with OpenAPI docs
+# - n8n integration ready
+# - SSO support (OIDC/LDAP)
+#
+# ACCESS:
+# - Web UI: http://cookbook.{{ network.domain_name }}
+# - API Docs: http://cookbook.{{ network.domain_name }}/docs
+# - Direct: http://{{ network.wifi.ip }}:{{ cookbook.services.mealie.port }}
+# ==============================================================================
+
+name: cookbook
+
+services:
+  # ==============================================================================
+  # MEALIE - Recipe Manager & Meal Planner
+  # ==============================================================================
+  mealie:
+    container_name: mealie
+    image: ghcr.io/mealie-recipes/mealie:{{ cookbook.services.mealie.version | default('latest') }}
+    restart: unless-stopped
+    ports:
+      - "{{ cookbook.services.mealie.port }}:9000"
+    env_file:
+      - .env
+    volumes:
+      - "{{ cookbook.services.mealie.data_dir }}:/app/data"
+    depends_on:
+      - mealie-postgres
+    networks:
+      - cookbook
+      - proxy
+    labels:
+      # Traefik routing configuration
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.cookbook.rule=Host(`cookbook.{{ network.domain_name }}`)"
+      - "traefik.http.routers.cookbook.entrypoints=web"
+      - "traefik.http.services.cookbook.loadbalancer.server.port=9000"
+    # Healthcheck disabled - curl not available in container
+    # Container health can be monitored via logs and direct API access
+
+  # ==============================================================================
+  # POSTGRESQL DATABASE - Mealie Data
+  # ==============================================================================
+  mealie-postgres:
+    container_name: mealie_postgres
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - "{{ cookbook.services.mealie.db_data_location }}:/var/lib/postgresql/data"
+    networks:
+      - cookbook
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  cookbook:
+    name: cookbook_network
+    driver: bridge
+  proxy:
+    external: true

@@ -99,9 +99,9 @@
     #   tags: [files]
     #   when: features.file_management
 
-    # - role: cookbook
-    #   tags: [cookbook, services]
-    #   when: features.cookbook
+    - role: cookbook
+      tags: [cookbook, services]
+      when: features.cookbook
 
     # - role: piper
     #   tags: [piper, voice, ai]

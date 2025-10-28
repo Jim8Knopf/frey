@@ -1,0 +1,147 @@
+---
+# ==============================================================================
+# COOKBOOK ROLE - MEALIE RECIPE MANAGER
+# ==============================================================================
+# Deploys Mealie recipe manager with API access, meal planning, and SSO support
+#
+# SERVICES:
+# - mealie: Recipe manager web interface and API
+# - mealie-postgres: PostgreSQL database
+#
+# FEATURES:
+# - Recipe management with URL scraping
+# - Meal planning and shopping lists
+# - Full REST API with OpenAPI docs
+# - n8n/LLM integration ready
+# - SSO support (OIDC/LDAP)
+# ==============================================================================
+
+- name: Setup cookbook stack user and directories
+  include_tasks: "../playbooks/templates/create_user.yml"
+  vars:
+    stack: "cookbook"
+    folders: []
+
+- name: Create Mealie data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ cookbook.user.name }}"
+    group: "{{ cookbook.group.name }}"
+    mode: '0755'
+  loop:
+    - "{{ cookbook.services.mealie.data_dir }}"
+    - "{{ cookbook.services.mealie.db_data_location }}"
+  tags:
+    - directories
+
+- name: Pre-pull Mealie images
+  community.docker.docker_image:
+    name: "{{ item }}"
+    source: pull
+    state: present
+    timeout: 300
+  loop:
+    - "ghcr.io/mealie-recipes/mealie:{{ cookbook.services.mealie.version }}"
+    - "postgres:15-alpine"
+  register: image_pull
+  failed_when: false
+  tags:
+    - images
+
+- name: Set failed pulls fact
+  ansible.builtin.set_fact:
+    failed_pulls: "{{ image_pull.results | selectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
+
+- name: Report failed image pulls
+  ansible.builtin.debug:
+    msg: "WARNING: Failed to pull images: {{ failed_pulls | join(', ') }}"
+  when: failed_pulls | length > 0
+
+- name: Deploy .env file for Mealie
+  ansible.builtin.template:
+    src: .env.j2
+    dest: "{{ storage.stacks }}/cookbook/.env"
+    owner: "{{ cookbook.user.name }}"
+    group: "{{ cookbook.group.name }}"
+    mode: '0600'
+
+- name: Deploy Mealie docker-compose file
+  ansible.builtin.template:
+    src: docker-compose-cookbook.yml.j2
+    dest: "{{ storage.stacks }}/cookbook/docker-compose.yml"
+    owner: "{{ cookbook.user.name }}"
+    group: "{{ cookbook.group.name }}"
+    mode: '0644'
+
+- name: Validate Docker Compose file syntax
+  ansible.builtin.command:
+    cmd: docker compose -f {{ storage.stacks }}/cookbook/docker-compose.yml config
+  register: compose_config
+  changed_when: false
+  failed_when: compose_config.rc != 0
+
+- name: Start Mealie stack containers using compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks }}/cookbook"
+    state: present
+  register: compose_result
+
+- name: Wait for Mealie to be ready
+  ansible.builtin.uri:
+    url: "http://{{ network.wifi.ip }}:{{ cookbook.services.mealie.port }}/api/app/about"
+    status_code: 200
+  register: mealie_health
+  until: mealie_health.status == 200
+  retries: 5
+  delay: 10
+  failed_when: false
+
+- name: Display Mealie deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ✅ Mealie Cookbook Deployed Successfully
+
+      📱 WEB ACCESS:
+         - Via Traefik: http://cookbook.{{ network.domain_name }}
+         - Direct: http://{{ network.wifi.ip }}:{{ cookbook.services.mealie.port }}
+
+      📚 API ACCESS:
+         - API Docs: http://cookbook.{{ network.domain_name }}/docs
+         - Base URL: http://cookbook.{{ network.domain_name }}/api
+
+      🔑 FIRST-TIME SETUP:
+         1. Access http://cookbook.{{ network.domain_name }}
+         2. Create admin account (first user becomes admin)
+         3. Go to Settings → Profile → API Tokens
+         4. Generate token for n8n/LLM integration
+         5. Use: Authorization: Bearer <token>
+
+      🍽️ FEATURES:
+         - Recipe management with URL scraping
+         - Meal planning (weekly calendar)
+         - Shopping list auto-generation
+         - Recipe organization (tags, categories)
+         - Multi-user support
+
+      🔗 N8N INTEGRATION:
+         - GET  /api/recipes - List all recipes
+         - POST /api/recipes - Create recipe
+         - GET  /api/recipes/{id} - Get recipe
+         - POST /api/recipes/create-url - Scrape from URL
+         - GET  /api/meal-plans - Get meal plans
+         - POST /api/meal-plans - Create meal plan
+
+      🔐 SSO (OIDC):
+         - Currently disabled
+         - Ready for Authentik/Authelia integration
+         - Enable via cookbook.services.mealie.oidc_enabled: true
+
+      📦 STORAGE:
+         - Data: {{ cookbook.services.mealie.data_dir }}
+         - Database: {{ cookbook.services.mealie.db_data_location }}
+
+      🔧 MANAGEMENT:
+         - Logs: docker compose -C {{ storage.stacks }}/cookbook logs -f
+         - Restart: docker compose -C {{ storage.stacks }}/cookbook restart
+         - Update: docker compose -C {{ storage.stacks }}/cookbook pull && up -d

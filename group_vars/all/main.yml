@@ -14,7 +14,7 @@ features:
   homeassistant: false
   backup: false
   piper: false
-  cookbook: false
+  cookbook: true
   power_monitoring: false
   voice_assistant: false
 
@@ -443,4 +443,43 @@ immich:
       upload_location: "{{ storage.base_dir }}/photos/library"
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
+
+# ===================================================================
+# COOKBOOK - MEALIE RECIPE MANAGER
+# ===================================================================
+cookbook:
+  group:
+    name: cookbook
+    gid: 74690
+  user:
+    name: cookbook_manager
+    uid: 74690
+    groups: "{{ cookbook.group.name }}"
+  dir: "{{ storage.base_dir }}/cookbook"
+
+  # Database credentials
+  db_user: mealie
+  db_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  db_name: mealie
+
+  services:
+    mealie:
+      enabled: true
+      version: "latest"
+      port: 9925
+      # Database
+      db_type: "postgres"
+      # Storage paths
+      data_dir: "{{ storage.appdata_dir }}/mealie"
+      db_data_location: "{{ storage.appdata_dir }}/mealie-db"
+      # API settings
+      api_docs: true
+      base_url: "http://cookbook.{{ network.domain_name }}"
+      # Security
+      allow_signup: false
+      # SSO (disabled by default, ready for future)
+      oidc_enabled: false
+      # Features
+      enable_meal_planner: true
+      recipe_scraping: true
 
