@@ -64,6 +64,18 @@
     host: "{{ network.wifi.ip }}"
     timeout: 20
 
+- name: Unblock all WiFi devices via rfkill (Critical for AP startup)
+  ansible.builtin.command:
+    cmd: rfkill unblock wifi
+  changed_when: true
+  failed_when: false
+
+- name: Bring up WiFi AP interface unconditionally
+  ansible.builtin.command:
+    cmd: ip link set {{ network.wifi.interface }} up
+  changed_when: true
+  failed_when: false
+
 - name: Deploy hostapd configuration
   ansible.builtin.template:
     src: hostapd.conf.j2

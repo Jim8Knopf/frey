@@ -106,37 +106,31 @@ ieee80211n=1
 ht_capab=[HT40+][HT40-][SHORT-GI-20][SHORT-GI-40][DSSS_CCK-40]
 
 # ------------------------------------------------------------------------------
-# WIFI 5 (802.11ac) CONFIGURATION - 300+ Mbps
+# WIFI 5 (802.11ac) CONFIGURATION - DISABLED (Hardware Incompatibility)
 # ------------------------------------------------------------------------------
-# 802.11ac provides ~300-867 Mbps theoretical max, ~200-500 Mbps real-world
-# REQUIRES: 5GHz band (hw_mode=a), compatible WiFi chip (Pi 5 supports this)
+# DISABLED REASON: wlan1 hardware doesn't support VHT capabilities
+# Error: "Configured VHT capability exceeds max value supported by driver (2 > 0)"
+# The wlan1 interface (phy#1) doesn't support the MAX-MPDU-11454 setting
+#
+# FALLBACK: Using WiFi 4 (802.11n) only
+# - Still provides 150+ Mbps (good performance for Pi)
+# - Better compatibility with all devices
+# - More stable operation
+#
+# NOTE: If your Pi 5 has a different WiFi chip that supports 802.11ac, you can
+# uncomment these settings. Check with: iw list | grep -A 10 "VHT Capabilities"
 
-# Enable 802.11ac (WiFi 5) support
-# PERFORMANCE BOOST: 2-3x faster than 802.11n on compatible devices
-# COMPATIBILITY: Older devices fall back to 802.11n automatically
-ieee80211ac=1
+# Enable 802.11ac (WiFi 5) support - DISABLED
+#ieee80211ac=1
 
-# Very High Throughput (VHT) channel width
-# 0 = 20 or 40 MHz (same as 802.11n)
-# 1 = 80 MHz (2x wider than 40MHz = 2x faster)
-# 2 = 160 MHz (not supported by Pi 5 WiFi chip)
-vht_oper_chwidth=1
+# Very High Throughput (VHT) channel width - DISABLED
+#vht_oper_chwidth=1
 
-# VHT center frequency for 80MHz channel
-# This depends on your channel selection:
-# - Channel 36: use vht_oper_centr_freq_seg0_idx=42 (covers channels 36-48)
-# - Channel 149: use vht_oper_centr_freq_seg0_idx=155 (covers channels 149-161)
-# For 2.4GHz (hw_mode=g), this is ignored
-vht_oper_centr_freq_seg0_idx=42
+# VHT center frequency for 80MHz channel - DISABLED
+#vht_oper_centr_freq_seg0_idx=42
 
-# VHT capabilities for maximum performance
-# [MAX-MPDU-11454] = Support larger packets (less overhead)
-# [RXLDPC] = Receive Low-Density Parity Check (better error correction)
-# [SHORT-GI-80] = Short guard interval for 80MHz (+10% speed)
-# [TX-STBC-2BY1] = Space-Time Block Coding for transmission (better signal)
-# [RX-STBC-1] = STBC for reception (better signal quality)
-# [MAX-A-MPDU-LEN-EXP7] = Maximum aggregation length (more efficiency)
-vht_capab=[MAX-MPDU-11454][RXLDPC][SHORT-GI-80][TX-STBC-2BY1][RX-STBC-1][MAX-A-MPDU-LEN-EXP7]
+# VHT capabilities - DISABLED (driver doesn't support)
+#vht_capab=[RXLDPC][SHORT-GI-80][TX-STBC-2BY1][RX-STBC-1][MAX-A-MPDU-LEN-EXP7]
 
 # ------------------------------------------------------------------------------
 # PERFORMANCE TUNING
