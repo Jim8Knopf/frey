@@ -72,6 +72,11 @@ interface {{ network.wifi.interface }}
 # This is the gateway for WiFi clients and the DNS/DHCP server address
 static ip_address={{ network.wifi.ip }}/24
 
+# NO GATEWAY FOR AP INTERFACE
+# This interface is the gateway itself, not a client
+# Prevents dhcpcd from trying to set a default route via this interface
+nogateway
+
 # DISABLE WPA SUPPLICANT
 # Don't try to connect to other WiFi networks on this interface
 # This interface is for BROADCASTING, not connecting
@@ -81,15 +86,6 @@ nohook wpa_supplicant
 # Simplifies configuration, most home setups don't need IPv6
 # Re-enable if you need IPv6: remove this line and configure static IPv6
 noipv6
-
-# DISABLE LINK-LOCAL
-# Don't bring interface up without IP (wait for static configuration)
-# Prevents confusion during boot sequence
-nolink
-
-# DUPLICATE nohook wpa_supplicant (original config had it twice)
-# Keeping for compatibility, but one declaration is sufficient
-nohook wpa_supplicant
 
 # DISABLE IPv4 LINK-LOCAL (169.254.x.x)
 # Don't fall back to self-assigned IP if static config fails
