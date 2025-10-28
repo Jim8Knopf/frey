@@ -92,7 +92,7 @@
       when: features.automation
 
     - role: immich
-      tags: [photos]
+      tags: [photos, immich]
       when: features.immich
 
     # - role: file_management

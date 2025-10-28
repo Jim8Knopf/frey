@@ -1,0 +1,65 @@
+#!/bin/bash
+# ==============================================================================
+# FREY WIFI DISCONNECTOR - Disconnect from Public WiFi
+# ==============================================================================
+# Disconnects wlan0 from public WiFi and stops wpa_supplicant
+#
+# USAGE:
+#   sudo frey-disconnect-wifi
+#
+# NOTES:
+# - Only disconnects wlan0 (doesn't touch wlan1 AP)
+# - NAT Manager will automatically disable internet passthrough
+# - FreyHub AP continues working (local network only)
+# ==============================================================================
+
+set -e
+
+# Configuration
+INTERFACE="wlan0"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log() {
+    echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root: sudo $0"
+    exit 1
+fi
+
+log "Disconnecting from WiFi..."
+
+# Stop dhcpcd on wlan0
+if pgrep -f "dhcpcd.*$INTERFACE" >/dev/null; then
+    log "Releasing DHCP lease..."
+    dhcpcd -k "$INTERFACE" 2>/dev/null || true
+fi
+
+# Disconnect wpa_supplicant
+if pgrep -f "wpa_supplicant.*$INTERFACE" >/dev/null; then
+    log "Disconnecting wpa_supplicant..."
+    wpa_cli -i "$INTERFACE" disconnect >/dev/null 2>&1 || true
+    sleep 1
+
+    log "Stopping wpa_supplicant..."
+    pkill -f "wpa_supplicant.*$INTERFACE" || true
+fi
+
+# Bring interface down
+log "Bringing $INTERFACE down..."
+ip link set "$INTERFACE" down 2>/dev/null || true
+
+log "Disconnected from WiFi"
+warn "NAT Manager will detect disconnect and disable internet passthrough"
+echo ""
+log "FreyHub AP is still running (local network only)"

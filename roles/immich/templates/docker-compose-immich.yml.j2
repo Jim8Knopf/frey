@@ -61,7 +61,7 @@ services:
       - "traefik.http.routers.immich.entrypoints=web"
       - "traefik.http.services.immich.loadbalancer.server.port=2283"
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:2283/api/server/ping || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:2283/api/server/ping || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -97,7 +97,7 @@ services:
   # NOTE: 2025 uses Valkey 8 instead of Redis 6.2
   redis:
     container_name: immich_redis
-    image: docker.io/valkey/valkey:8@sha256:c36ad1d2c12ad4d3c53faecda39db95fe20eef29937db734fb1f1b8cbd58d5de
+    image: docker.io/valkey/valkey:8-alpine
     restart: unless-stopped
     networks:
       - photos
@@ -132,7 +132,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    command: ["postgres", "-c", "shared_preload_libraries=vectors.so", "-c", 'search_path="$$user", public, vectors', "-c", "logging_collector=on", "-c", "max_wal_size=2GB", "-c", "shared_buffers=512MB", "-c", "wal_compression=on"]
+    command: ["postgres", "-c", "shared_preload_libraries=vchord.so", "-c", 'search_path="$$user", public, vectors', "-c", "logging_collector=on", "-c", "max_wal_size=2GB", "-c", "shared_buffers=512MB", "-c", "wal_compression=on"]
 
 # ==============================================================================
 # NETWORKS

@@ -1,0 +1,210 @@
+#!/bin/bash
+# ==============================================================================
+# FREY WIFI CONNECTOR - Easy Public WiFi Connection
+# ==============================================================================
+# Connects wlan0 to public WiFi networks without interfering with FreyHub AP
+#
+# USAGE:
+#   sudo frey-connect-wifi "WiFiName" "password"
+#   sudo frey-connect-wifi "OpenWiFi"  (for open networks)
+#
+# FEATURES:
+# - Connects wlan0 to WiFi (doesn't touch wlan1 AP)
+# - Works with WPA2/WPA3 and open networks
+# - Automatically gets IP via DHCP
+# - NAT Manager auto-enables internet passthrough
+# ==============================================================================
+
+set -e
+
+# Configuration
+INTERFACE="wlan0"
+WPA_CONF="/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"
+WPA_CTRL="/var/run/wpa_supplicant"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Logging function
+log() {
+    echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+    error "Please run as root: sudo $0"
+    exit 1
+fi
+
+# Check arguments
+if [ $# -lt 1 ]; then
+    error "Usage: $0 <SSID> [password]"
+    echo ""
+    echo "Examples:"
+    echo "  $0 \"CafeWiFi\" \"password123\"    # WPA2/WPA3 network"
+    echo "  $0 \"FreeWiFi\"                   # Open network (no password)"
+    exit 1
+fi
+
+SSID="$1"
+PASSWORD="${2:-}"
+
+log "FreyHub WiFi Connector"
+echo "========================================"
+info "Target network: $SSID"
+info "Interface: $INTERFACE"
+echo ""
+
+# Check if wlan0 exists
+if ! ip link show "$INTERFACE" &>/dev/null; then
+    error "Interface $INTERFACE not found!"
+    info "Available interfaces:"
+    ip link show | grep -E '^[0-9]+: ' | awk '{print "  " $2}'
+    exit 1
+fi
+
+# Bring interface up
+log "Bringing $INTERFACE up..."
+ip link set "$INTERFACE" up
+
+# Kill existing wpa_supplicant on this interface
+if pgrep -f "wpa_supplicant.*$INTERFACE" >/dev/null; then
+    warn "Stopping existing wpa_supplicant on $INTERFACE..."
+    pkill -f "wpa_supplicant.*$INTERFACE" || true
+    sleep 1
+fi
+
+# Create wpa_supplicant config if it doesn't exist
+if [ ! -f "$WPA_CONF" ]; then
+    log "Creating wpa_supplicant configuration..."
+    mkdir -p "$(dirname "$WPA_CONF")"
+    cat > "$WPA_CONF" << EOF
+ctrl_interface=$WPA_CTRL
+update_config=1
+country={{ network.wifi.country | default('US') }}
+EOF
+    chmod 600 "$WPA_CONF"
+fi
+
+# Start wpa_supplicant
+log "Starting wpa_supplicant on $INTERFACE..."
+wpa_supplicant -B -i "$INTERFACE" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid
+
+# Wait for wpa_supplicant to be ready
+sleep 2
+
+# Add network using wpa_cli
+log "Configuring network..."
+
+# Add new network
+NETWORK_ID=$(wpa_cli -i "$INTERFACE" add_network | tail -1)
+
+if [ -z "$NETWORK_ID" ] || ! [[ "$NETWORK_ID" =~ ^[0-9]+$ ]]; then
+    error "Failed to add network"
+    exit 1
+fi
+
+info "Network ID: $NETWORK_ID"
+
+# Set SSID
+wpa_cli -i "$INTERFACE" set_network "$NETWORK_ID" ssid "\"$SSID\"" >/dev/null
+
+# Set password or open network
+if [ -n "$PASSWORD" ]; then
+    info "Security: WPA2/WPA3 (password protected)"
+    wpa_cli -i "$INTERFACE" set_network "$NETWORK_ID" psk "\"$PASSWORD\"" >/dev/null
+else
+    info "Security: Open network (no password)"
+    wpa_cli -i "$INTERFACE" set_network "$NETWORK_ID" key_mgmt NONE >/dev/null
+fi
+
+# Enable and save
+log "Connecting to $SSID..."
+wpa_cli -i "$INTERFACE" enable_network "$NETWORK_ID" >/dev/null
+wpa_cli -i "$INTERFACE" save_config >/dev/null
+
+# Wait for connection
+echo -n "Waiting for connection"
+for i in {1..30}; do
+    if wpa_cli -i "$INTERFACE" status | grep -q "wpa_state=COMPLETED"; then
+        echo ""
+        log "Connected to WiFi!"
+        break
+    fi
+    echo -n "."
+    sleep 1
+    if [ $i -eq 30 ]; then
+        echo ""
+        error "Connection timeout. Check SSID and password."
+        wpa_cli -i "$INTERFACE" remove_network "$NETWORK_ID" >/dev/null
+        exit 1
+    fi
+done
+
+# Get IP address via DHCP
+log "Requesting IP address..."
+dhcpcd "$INTERFACE" >/dev/null 2>&1 || true
+
+# Wait for IP
+echo -n "Waiting for IP address"
+for i in {1..20}; do
+    if ip addr show "$INTERFACE" | grep -q "inet "; then
+        echo ""
+        break
+    fi
+    echo -n "."
+    sleep 1
+done
+echo ""
+
+# Display connection info
+IP_ADDR=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | cut -d/ -f1)
+GATEWAY=$(ip route | grep "default.*$INTERFACE" | awk '{print $3}')
+
+if [ -n "$IP_ADDR" ]; then
+    log "Connection successful!"
+    echo ""
+    echo "========================================"
+    info "Interface: $INTERFACE"
+    info "SSID: $SSID"
+    info "IP Address: $IP_ADDR"
+    info "Gateway: ${GATEWAY:-N/A}"
+    echo "========================================"
+    echo ""
+
+    # Test internet connectivity
+    log "Testing internet connectivity..."
+    if ping -c 2 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        log "Internet access: ${GREEN}✓ Working${NC}"
+        info "NAT Manager will automatically enable passthrough for FreyHub clients"
+        echo ""
+        info "Check NAT status: sudo journalctl -u frey-nat-manager -n 10"
+    else
+        warn "Internet access: ${YELLOW}✗ Not working${NC}"
+        warn "Connected to WiFi but no internet access"
+        warn "This might be a captive portal - open browser to sign in"
+    fi
+else
+    error "Failed to get IP address"
+    warn "Connected to WiFi but DHCP failed"
+    exit 1
+fi
+
+echo ""
+log "To disconnect: sudo frey-disconnect-wifi"
