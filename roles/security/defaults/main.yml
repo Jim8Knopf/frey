@@ -1,33 +1,95 @@
 ---
-# security default variables
-enable_ufw: true
-enable_fail2ban: true
+# ==============================================================================
+# SECURITY ROLE - DEFAULT VARIABLES
+# ==============================================================================
+# This file defines firewall rules, trusted networks, and security settings
+# for the Raspberry Pi 5 media hub with WiFi Access Point functionality.
+#
+# ARCHITECTURE:
+# - Public WiFi/Internet → wlan0/wlan1 (dynamic) → Pi → wlan1/wlan0 (AP) → WiFi clients
+# - Home Network (192.168.0.x) → Full access to all services
+# - WiFi AP clients (10.20.0.x) → Traefik-only access (no direct container ports)
+# ==============================================================================
 
-# Network Security Configuration
+# ------------------------------------------------------------------------------
+# FIREWALL CONFIGURATION
+# ------------------------------------------------------------------------------
+enable_ufw: true                 # Use UFW (Uncomplicated Firewall) for all rules
+enable_fail2ban: true           # Enable fail2ban for brute-force protection
+
+# ------------------------------------------------------------------------------
+# NETWORK SECURITY CONFIGURATION
+# ------------------------------------------------------------------------------
 network_security:
-  # Protected container ports (block direct access)
-  protected_ports:
-    - { port: 8096, service: "jellyfin" }
-    - { port: 8989, service: "sonarr" }
-    - { port: 9091, service: "transmission" }
-  
-  # Trusted networks that can access management ports
+
+  # TRUSTED NETWORKS - Full Access to All Services
+  # ------------------------------------------------------------------------------
+  # These networks can directly access container ports without going through Traefik.
+  # Includes home network, auto-detected upstream networks, and management subnets.
+  #
+  # SECURITY: Only add networks you fully trust (home, office, etc.)
+  # PERFORMANCE: Direct container access is faster than going through Traefik
   trusted_networks:
-    - "10.20.0.0/24"    # WiFi AP network
-    - "10.20.30.0/24"   # Other trusted subnet
-    - "192.168.0.0/24"  # Local network
+    - "192.168.0.0/24"          # Home network - full access to all services
+    - "10.20.30.0/24"           # Secondary management network (if needed)
+    # Note: Current upstream network will be auto-detected and added at runtime
 
-  # Allowed public ports (accessible from anywhere)
+  # WIFI AP NETWORK - Restricted Access
+  # ------------------------------------------------------------------------------
+  # WiFi AP clients are restricted to Traefik-only access for security.
+  # Direct container port access is blocked to prevent bypass of authentication.
+  wifi_ap_network: "10.20.0.0/24"  # WiFi Access Point client subnet
+
+  # PROTECTED CONTAINER PORTS - Block Direct Access from WiFi AP
+  # ------------------------------------------------------------------------------
+  # These ports are blocked for WiFi AP clients (10.20.0.x) to force traffic
+  # through Traefik reverse proxy where authentication and rate limiting occur.
+  #
+  # WHY BLOCK: Prevents WiFi clients from bypassing Traefik's security controls
+  # ACCESS METHOD: Use http://service.frey instead of http://10.20.0.1:PORT
+  protected_ports:
+    - { port: 8096, service: "jellyfin", description: "Jellyfin media server" }
+    - { port: 8989, service: "sonarr", description: "Sonarr TV series manager" }
+    - { port: 7878, service: "radarr", description: "Radarr movie manager" }
+    - { port: 9696, service: "prowlarr", description: "Prowlarr indexer manager" }
+    - { port: 6767, service: "bazarr", description: "Bazarr subtitle manager" }
+    - { port: 8686, service: "lidarr", description: "Lidarr music manager" }
+    - { port: 8080, service: "qbittorrent", description: "qBittorrent web UI" }
+    - { port: 9091, service: "transmission", description: "Transmission web UI" }
+    - { port: 5055, service: "jellyseerr", description: "Jellyseerr request manager" }
+    - { port: 13378, service: "audiobookshelf", description: "Audiobookshelf server" }
+    - { port: 3000, service: "grafana", description: "Grafana monitoring" }
+    - { port: 9090, service: "prometheus", description: "Prometheus metrics" }
+    - { port: 5001, service: "dockge", description: "Dockge container manager" }
+    - { port: 9000, service: "portainer", description: "Portainer container manager" }
+
+  # PUBLIC PORTS - Accessible from Anywhere
+  # ------------------------------------------------------------------------------
+  # These ports are accessible from any network (WiFi AP, home, public WiFi).
+  # Traffic goes through Traefik reverse proxy for security and routing.
+  #
+  # SECURITY: Traefik handles authentication, rate limiting, and SSL
+  # PERFORMANCE: Traefik can cache and load balance if needed
   public_ports:
-    - { port: 80, proto: "tcp", service: "http" }
-    - { port: 443, proto: "tcp", service: "https" }
+    - { port: 80, proto: "tcp", service: "http", description: "HTTP traffic to Traefik" }
+    - { port: 443, proto: "tcp", service: "https", description: "HTTPS traffic to Traefik (future use)" }
 
-  # Admin ports (restricted to trusted networks)
+  # ADMIN PORTS - Restricted to Trusted Networks Only
+  # ------------------------------------------------------------------------------
+  # These ports are only accessible from trusted networks for security.
+  # SSH access is critical and must be protected from internet exposure.
+  #
+  # SECURITY: Rate limited to prevent brute force attacks
   admin_ports:
-    - { port: 22, proto: "tcp", service: "ssh" }
+    - { port: 22, proto: "tcp", service: "ssh", description: "SSH remote access" }
 
-  # Local network services (restricted to WiFi subnet)
+  # WIFI AP LOCAL SERVICES - DNS and DHCP
+  # ------------------------------------------------------------------------------
+  # These services must be accessible from WiFi AP clients for basic connectivity.
+  #
+  # WHY: WiFi clients need DNS resolution and DHCP to get IP addresses
+  # SECURITY: Only accessible from WiFi AP subnet (10.20.0.x)
   local_services:
-    - { port: 53, proto: "tcp", service: "dns-tcp" }
-    - { port: 53, proto: "udp", service: "dns-udp" }
-    - { port: 67, proto: "udp", service: "dhcp" }
+    - { port: 53, proto: "tcp", service: "dns-tcp", description: "DNS over TCP" }
+    - { port: 53, proto: "udp", service: "dns-udp", description: "DNS over UDP" }
+    - { port: 67, proto: "udp", service: "dhcp", description: "DHCP server for IP assignment" }

@@ -12,7 +12,7 @@
 - name: reload ufw
   ansible.builtin.service:
     name: ufw
-    state: reloaded
+    state: restarted
 
 - name: save iptables rules
   ansible.builtin.shell: |

@@ -1,0 +1,135 @@
+#!/bin/bash
+# ==============================================================================
+# FREY NAT MANAGER - Dynamic Internet Passthrough
+# ==============================================================================
+# Automatically configures NAT/MASQUERADE for WiFi AP clients when upstream
+# internet connection becomes available (LAN or public WiFi).
+#
+# FEATURES:
+# - Detects upstream connectivity automatically
+# - Enables NAT when LAN plugged in or connected to public WiFi
+# - Disables NAT when offline (graceful degradation)
+# - Logs all changes for troubleshooting
+# - Runs continuously, checking every 10 seconds
+#
+# USE CASES:
+# - Boot offline: FreyHub works, no internet passthrough
+# - Plug LAN cable: Auto-enables internet for WiFi clients
+# - Connect to cafe WiFi: Auto-switches to WiFi passthrough
+# - Disconnect: Returns to offline mode gracefully
+# ==============================================================================
+
+# Configuration
+WIFI_AP_INTERFACE="{{ network.wifi.interface }}"
+WIFI_AP_NETWORK="{{ network.wifi.network }}"
+CHECK_INTERVAL=10
+LOG_FILE="/var/log/frey-nat-manager.log"
+
+# Logging function
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Check if NAT rule exists for specific interface
+nat_rule_exists() {
+    local interface=$1
+    iptables -t nat -C POSTROUTING -s "$WIFI_AP_NETWORK" -o "$interface" -j MASQUERADE 2>/dev/null
+    return $?
+}
+
+# Enable NAT for upstream interface
+enable_nat() {
+    local upstream=$1
+
+    # Enable IP forwarding
+    if [ "$(sysctl -n net.ipv4.ip_forward)" != "1" ]; then
+        sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+        log "Enabled IP forwarding"
+    fi
+
+    # Check if rule already exists
+    if nat_rule_exists "$upstream"; then
+        return 0  # Already configured
+    fi
+
+    # Clean any old rules first
+    iptables -t nat -D POSTROUTING -s "$WIFI_AP_NETWORK" -j MASQUERADE 2>/dev/null || true
+
+    # Add MASQUERADE rule for new upstream
+    if iptables -t nat -A POSTROUTING -s "$WIFI_AP_NETWORK" -o "$upstream" -j MASQUERADE; then
+        log "✓ NAT enabled: WiFi clients ({{ network.wifi.network }}) → Internet via $upstream"
+
+        # Add FORWARD chain rules
+        iptables -A FORWARD -i "$WIFI_AP_INTERFACE" -o "$upstream" -j ACCEPT 2>/dev/null || true
+        iptables -A FORWARD -i "$upstream" -o "$WIFI_AP_INTERFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+
+        return 0
+    else
+        log "✗ Failed to enable NAT for $upstream"
+        return 1
+    fi
+}
+
+# Disable NAT
+disable_nat() {
+    # Remove MASQUERADE rule
+    if iptables -t nat -D POSTROUTING -s "$WIFI_AP_NETWORK" -j MASQUERADE 2>/dev/null; then
+        log "✓ NAT disabled: Offline mode (no internet passthrough)"
+    fi
+
+    # Clean FORWARD rules
+    iptables -D FORWARD -i "$WIFI_AP_INTERFACE" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -o "$WIFI_AP_INTERFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+}
+
+# Get current upstream interface (interface with default route)
+get_upstream_interface() {
+    # Find interface with default route, exclude wlan1 (our AP)
+    local upstream=$(ip route | grep '^default' | awk '{print $5}' | grep -v "^$WIFI_AP_INTERFACE$" | head -1)
+    echo "$upstream"
+}
+
+# Check if interface has internet connectivity
+has_internet() {
+    local interface=$1
+    # Check if interface is UP and has an IP
+    if ip addr show "$interface" 2>/dev/null | grep -q "inet "; then
+        return 0
+    fi
+    return 1
+}
+
+# Main monitoring loop
+log "========================================="
+log "Frey NAT Manager started"
+log "WiFi AP: $WIFI_AP_INTERFACE ($WIFI_AP_NETWORK)"
+log "========================================="
+
+LAST_UPSTREAM=""
+
+while true; do
+    # Get current upstream interface
+    CURRENT_UPSTREAM=$(get_upstream_interface)
+
+    # Check if upstream changed
+    if [ "$CURRENT_UPSTREAM" != "$LAST_UPSTREAM" ]; then
+        if [ -n "$CURRENT_UPSTREAM" ]; then
+            # New upstream available
+            if has_internet "$CURRENT_UPSTREAM"; then
+                log "Detected upstream: $CURRENT_UPSTREAM"
+                enable_nat "$CURRENT_UPSTREAM"
+                LAST_UPSTREAM="$CURRENT_UPSTREAM"
+            fi
+        else
+            # No upstream available
+            if [ -n "$LAST_UPSTREAM" ]; then
+                log "Lost upstream: $LAST_UPSTREAM"
+                disable_nat
+                LAST_UPSTREAM=""
+            fi
+        fi
+    fi
+
+    # Sleep before next check
+    sleep "$CHECK_INTERVAL"
+done
