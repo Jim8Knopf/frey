@@ -1,0 +1,28 @@
+# ==============================================================================
+# DNSMASQ SYSTEMD OVERRIDE - Fix Race Condition
+# ==============================================================================
+# This override ensures dnsmasq starts AFTER dhcpcd assigns the static IP
+# to wlan1 (10.20.0.1), preventing the "Cannot assign requested address" error.
+#
+# PROBLEM: dnsmasq tries to bind to 10.20.0.1 before dhcpcd assigns the IP
+# SOLUTION: Wait for dhcpcd to finish, don't require network-online.target
+# ==============================================================================
+
+[Unit]
+# Wait for dhcpcd to assign IP addresses (including wlan1's static 10.20.0.1)
+After=dhcpcd.service
+
+# Don't require network-online.target (may never be satisfied offline)
+# We only need wlan1's static IP, not internet connectivity
+Requires=
+
+# Ensure hostapd is running (wlan1 must be in AP mode)
+After=hostapd.service
+
+[Service]
+# Restart on failure (handles temporary issues during boot)
+Restart=on-failure
+RestartSec=5s
+
+# Give more time for wlan1 IP to be assigned
+ExecStartPre=/bin/sleep 2

@@ -1,0 +1,36 @@
+# ==============================================================================
+# FREY NAT MANAGER SERVICE - Dynamic Internet Passthrough
+# ==============================================================================
+# Automatically enables NAT when upstream internet connection appears
+# (LAN cable or public WiFi), and disables it when offline.
+#
+# USE CASES:
+# - Boot offline: FreyHub works, no internet passthrough
+# - Plug LAN cable: Auto-enables internet for WiFi clients
+# - Connect to cafe WiFi: Auto-switches to WiFi passthrough
+# - Disconnect: Returns to offline mode gracefully
+# ==============================================================================
+
+[Unit]
+Description=Frey NAT Manager - Dynamic Internet Passthrough for WiFi AP
+Documentation=https://github.com/jim/frey
+After=network.target hostapd.service dhcpcd.service
+Wants=hostapd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/frey-nat-manager.sh
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=false
+PrivateTmp=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=frey-nat-manager
+
+[Install]
+WantedBy=multi-user.target
