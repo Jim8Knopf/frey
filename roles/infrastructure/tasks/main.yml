@@ -2,8 +2,8 @@
 - name: Setup intfrasructure stack user
   include_tasks: "templates/create_user.yml"
   vars:
-    stack: "infrastructure" 
-    folders: [traefik, portainer]
+    stack: "infrastructure"
+    folders: [traefik, portainer, authentik, authentik/database, authentik/redis, authentik/media, authentik/certs, authentik/custom-templates, authentik/blueprints]
     checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, storage.stacks]
 
 - name: Create Traefik static configuration
@@ -13,6 +13,31 @@
     owner: "{{ infrastructure.user.name }}"
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
+
+- name: Template Authentik blueprint files
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "{{ storage.appdata_dir }}/authentik/blueprints/{{ item | basename | regex_replace('\\.j2$', '') }}"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0644'
+  loop:
+    - authentik-blueprints/00-groups.yaml.j2
+    - authentik-blueprints/01-service-accounts.yaml.j2
+    - authentik-blueprints/10-oidc-immich.yaml.j2
+    - authentik-blueprints/11-oidc-audiobookshelf.yaml.j2
+    - authentik-blueprints/12-oidc-grafana.yaml.j2
+    - authentik-blueprints/20-ldap-jellyfin.yaml.j2
+  when: infrastructure.services.authentik.enabled | default(false)
+
+- name: Fix Redis data directory ownership (UID 999 required by Redis container)
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/authentik/redis"
+    owner: 999
+    group: 999
+    mode: '0755'
+    state: directory
+  when: infrastructure.services.authentik.enabled | default(false)
 
 - name: Deploy infrastructure compose file
   ansible.builtin.template:

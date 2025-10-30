@@ -9,6 +9,7 @@ features:
   media: true
   monitoring: true
   automation: true
+  authentication: false  # Authentik SSO - enable after initial setup
   file_management: false
   immich: true
   homeassistant: false
@@ -47,6 +48,11 @@ storage:
 network:
   domain_name: frey
   timezone: Australia/Hobart
+  # Authentik public URL for OAuth authorization (browser redirects)
+  # Uses DNS via Traefik for clean OAuth flow (primary access method)
+  # OAuth: grafana.frey → auth.frey → grafana.frey
+  # Works offline via AdGuard local DNS resolution
+  authentik_public_url: "http://auth.{{ network.domain_name }}"
   wifi:
     # Network identification
     ssid: "FreyHub"                 # Network name visible to clients
@@ -64,7 +70,7 @@ network:
     # Interface configuration
     interface: "wlan1"             # WiFi interface for AP mode
     client_interface: "eth0"       # Interface for internet connection
-    client_interface_ip: "192.168.0.251" # Client interface IP
+    client_interface_ip: "192.168.0.252" #TODO Client interface IP
     
     # WiFi radio settings
     channel: 7                     # WiFi channel (1-11 for 2.4GHz)
@@ -83,6 +89,7 @@ network:
     - name: traefik
     - name: portainer
     - name: dockge
+    - name: auth  # Authentik SSO
     # Monitoring services
     - name: grafana
     - name: prometheus
@@ -255,6 +262,17 @@ monitoring:
     port: 3000
     image: "grafana/grafana"
     version: "latest"
+    # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+    # All OAuth URLs use clean DNS names without ports (http://auth.frey)
+    # Browser: auth.frey → AdGuard DNS → Traefik → Authentik
+    # Backend: auth.frey → Traefik network alias → Traefik → Authentik
+    # Works offline via AdGuard local DNS and Docker network aliases through Traefik
+    oidc_client_id: "grafana"
+    oidc_scopes: "openid profile email"
+    oidc_auth_url: "{{ network.authentik_public_url }}/application/o/authorize/"
+    oidc_token_url: "{{ network.authentik_public_url }}/application/o/token/"
+    oidc_api_url: "{{ network.authentik_public_url }}/application/o/userinfo/"
+    oidc_role_attribute_path: "contains(groups, 'grafana_admins') && 'Admin' || contains(groups, 'grafana_editors') && 'Editor' || 'Viewer'"
   loki:
     enabled: true
     port: 3100
@@ -310,6 +328,13 @@ infrastructure:
       version: "1"
       ports:
         http: 5001
+    authentik:
+      enabled: true  # Enable after initial infrastructure setup
+      version: "latest"
+      port: 9300  # Changed from 9000 to avoid conflict with Portainer
+      port_https: 9443
+      postgres_version: "16-alpine"
+      redis_version: "alpine"
 
 # ===================================================================
 # MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
@@ -338,14 +363,44 @@ media:
     audiobookshelf:
       enabled: true
       version: "latest"
+      image: "ghcr.io/advplyr/audiobookshelf"
       port: 80  # Internal container port for Traefik routing
       ports:
         - 13378:80  # External:Internal port mapping
+      volumes:
+        - "{{ storage.appdata_dir }}/audiobookshelf:/config"
+        - "{{ media.dir }}/audiobooks:/audiobooks"
+        - "{{ media.dir }}/podcasts:/podcasts"
+      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # NOTE: Audiobookshelf OIDC CANNOT be configured via environment variables
+      # Must be configured manually via web UI: Settings → Authentication → OpenID Connect
+      # Use these values when configuring in UI:
+      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/audiobookshelf/"
+      oidc_client_id: "audiobookshelf"
+      # Client secret is in secrets.yml: audiobookshelf_oidc_client_secret
+      oidc_button_text: "Login with Authentik"
+      oidc_auto_register: true
+      oidc_auto_launch: false
 
     jellyfin:
       enabled: true
       version: "latest"
+      image: "lscr.io/linuxserver/jellyfin"
       port: 8096
+      volumes:
+        - "{{ storage.appdata_dir }}/jellyfin:/config"
+        - "{{ media.dir }}/tv:/data/tvshows"
+        - "{{ media.dir }}/movies:/data/movies"
+      # LDAP Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
+      # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
+      # Uses internal Docker service name for reliable communication across networks
+      ldap_server: "authentik-ldap-outpost"
+      ldap_port: 389
+      ldap_base_dn: "dc=ldap,dc=goauthentik,dc=io"
+      ldap_bind_user: "cn=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
+      ldap_search_filter: "(memberOf=cn=jellyfin_users,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
+      ldap_admin_filter: "(memberOf=cn=jellyfin_admins,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
     
     jellyseerr:
       enabled: true
@@ -443,6 +498,17 @@ immich:
       upload_location: "{{ storage.base_dir }}/photos/library"
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
+      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # Issuer URL uses public IP (browser needs to access discovery endpoint)
+      # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
+      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/immich/"
+      oidc_client_id: "immich"
+      oidc_scope: "openid profile email"
+      oidc_button_text: "Login with Authentik"
+      oidc_auto_register: true
+      oidc_auto_launch: false
+      oidc_mobile_redirect_uri: "app.immich:/"
+      oidc_signing_algorithm: "RS256"
 
 # ===================================================================
 # COOKBOOK - MEALIE RECIPE MANAGER
@@ -459,7 +525,7 @@ cookbook:
 
   # Database credentials
   db_user: mealie
-  db_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  db_password: "{{ mealie_db_password }}"
   db_name: mealie
 
   services:

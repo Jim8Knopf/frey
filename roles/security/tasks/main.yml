@@ -228,7 +228,7 @@
 # 6. WiFi AP restrictions (block direct container access)
 # 7. Rate limiting (prevent brute force and DDoS)
 
-- name: Reset UFW to default state
+- name: Reset UFW to default state #? is this really necessary
   ansible.builtin.command: ufw --force reset
   changed_when: true
   when: enable_ufw | default(true)
