@@ -1,9 +1,0 @@
----
-# homeassistant default variables
-deploy_homeassistant: false
-
-storage.stacks: ""
-appdata_dir: ""
-media_user: ""
-homeassistant_port: "8123"
-

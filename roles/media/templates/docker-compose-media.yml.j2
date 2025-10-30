@@ -43,7 +43,7 @@ services:
       restart: unless-stopped
   {% endif %}
 
-{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined %}
+{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined and service_name not in ['mopidy', 'audiobook_bridge'] %}
   {{ service_name }}:
     image: "{{ service_config.image }}:{{ service_config.version }}"
     container_name: {{ service_name }}
@@ -92,6 +92,62 @@ services:
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
 
 {% endfor -%}
+
+  {% if media.services.mopidy.enabled | default(false) -%}
+  # Mopidy - Music Player Daemon with Jellyfin integration for tag-based playback
+  mopidy:
+    image: "{{ media.services.mopidy.image | default('wernight/mopidy') }}:{{ media.services.mopidy.version | default('latest') }}"
+    container_name: mopidy
+    restart: unless-stopped
+    ports:
+      - "{{ media.services.mopidy.mpd_port | default(6600) }}:6600"  # MPD protocol
+      - "{{ media.services.mopidy.http_port | default(6680) }}:6680"  # HTTP/Mopidy-Web
+    volumes:
+      - "{{ storage.appdata_dir }}/mopidy:/var/lib/mopidy"
+      - "{{ media.dir }}:/media:ro"
+    environment:
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      - MOPIDY_JELLYFIN_HOSTNAME=jellyfin.{{ network.domain_name }}
+      - MOPIDY_JELLYFIN_TOKEN={{ jellyfin_api_token }}
+    devices:
+      - /dev/snd:/dev/snd  # Audio output for local playback
+    networks:
+      proxy: {}
+      localdns: {}
+      media_network: {}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.mopidy.rule=Host(`mopidy.{{ network.domain_name }}`)"
+      - "traefik.http.routers.mopidy.entrypoints=web"
+      - "traefik.http.services.mopidy.loadbalancer.server.port=6680"
+  {% endif %}
+
+  {% if media.services.audiobook_bridge.enabled | default(false) -%}
+  # Audiobook Bridge - Local audiobook playback with progress sync to Audiobookshelf
+  # Usage: docker exec audiobook-bridge python3 /app/play_book.py --book-id <ID>
+  audiobook-bridge:
+    image: "{{ media.services.audiobook_bridge.image }}:{{ media.services.audiobook_bridge.version }}"
+    container_name: audiobook-bridge
+    restart: unless-stopped
+    volumes:
+      - "{{ storage.appdata_dir }}/audiobook-bridge:/app"
+      - "{{ media.dir }}/audiobooks:/audiobooks:ro"
+    environment:
+      - AUDIOBOOKSHELF_URL=http://audiobookshelf:{{ media.services.audiobookshelf.port | default(13378) }}
+      - AUDIOBOOKSHELF_TOKEN={{ audiobookshelf_api_token }}
+      - SYNC_INTERVAL={{ media.services.audiobook_bridge.sync_interval | default(5) }}
+    devices:
+      - /dev/snd:/dev/snd  # Audio output for local playback
+    command: >
+      sh -c "apt-get update && apt-get install -y mpv &&
+             pip install requests &&
+             tail -f /dev/null"
+    networks:
+      media_network: {}
+    labels:
+      - "traefik.enable=false"  # Internal service only
+  {% endif %}
 
   # See the 'qBittorrent Stalls with VPN Timeout' section for more information.
   deunhealth:

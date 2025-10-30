@@ -1,0 +1,5 @@
+---
+# Default variables for backup role
+
+backup_default_enabled: false
+backup_default_retention_days: 7

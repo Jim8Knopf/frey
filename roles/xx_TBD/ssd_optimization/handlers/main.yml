@@ -1,4 +1,0 @@
----
-- name: remount root
-  ansible.builtin.command:
-    cmd: mount -o remount /

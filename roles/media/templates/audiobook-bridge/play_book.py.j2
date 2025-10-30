@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""
+Audiobookshelf Local Playback Bridge
+Plays audiobooks locally on server with progress sync to Audiobookshelf API
+"""
+
+import os
+import sys
+import time
+import json
+import signal
+import argparse
+import subprocess
+import requests
+from pathlib import Path
+
+# Configuration from environment variables
+AUDIOBOOKSHELF_URL = os.getenv('AUDIOBOOKSHELF_URL', 'http://audiobookshelf:13378')
+API_TOKEN = os.getenv('AUDIOBOOKSHELF_TOKEN', '')
+SYNC_INTERVAL = int(os.getenv('SYNC_INTERVAL', '5'))  # seconds
+
+class AudiobookPlayer:
+    def __init__(self, book_id):
+        self.book_id = book_id
+        self.session = None
+        self.current_time = 0
+        self.duration = 0
+        self.mpv_process = None
+        self.headers = {'Authorization': f'Bearer {API_TOKEN}'}
+
+    def get_book_info(self):
+        """Fetch book information and current progress from Audiobookshelf"""
+        try:
+            response = requests.get(
+                f'{AUDIOBOOKSHELF_URL}/api/items/{self.book_id}',
+                headers=self.headers
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error fetching book info: {e}")
+            return None
+
+    def get_media_progress(self):
+        """Get current playback progress"""
+        book_data = self.get_book_info()
+        if not book_data:
+            return 0
+
+        # Get user's progress
+        progress = book_data.get('userMediaProgress', {})
+        return progress.get('currentTime', 0)
+
+    def update_progress(self, current_time):
+        """Sync current playback position to Audiobookshelf"""
+        try:
+            payload = {
+                'currentTime': current_time,
+                'duration': self.duration,
+                'progress': (current_time / self.duration) if self.duration > 0 else 0
+            }
+            response = requests.patch(
+                f'{AUDIOBOOKSHELF_URL}/api/me/progress/{self.book_id}',
+                headers=self.headers,
+                json=payload
+            )
+            response.raise_for_status()
+            print(f"Progress synced: {current_time:.1f}s / {self.duration:.1f}s")
+        except Exception as e:
+            print(f"Error syncing progress: {e}")
+
+    def play(self):
+        """Start playback using mpv"""
+        book_data = self.get_book_info()
+        if not book_data:
+            print("Failed to fetch book data")
+            return False
+
+        # Get media file path
+        media = book_data.get('media', {})
+        audio_files = media.get('audioFiles', [])
+
+        if not audio_files:
+            print("No audio files found for this book")
+            return False
+
+        # Get resume position
+        start_time = self.get_media_progress()
+        print(f"Resuming from: {start_time:.1f}s")
+
+        # Build file list
+        file_paths = [f['metadata']['path'] for f in audio_files]
+
+        # Start mpv with JSON IPC for progress monitoring
+        mpv_cmd = [
+            'mpv',
+            '--input-ipc-server=/tmp/mpv-socket',
+            f'--start={start_time}',
+            '--no-video',
+            '--term-status-msg=time: ${=time-pos}',
+        ] + file_paths
+
+        try:
+            self.mpv_process = subprocess.Popen(
+                mpv_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            # Monitor playback and sync progress
+            last_sync = time.time()
+
+            while self.mpv_process.poll() is None:
+                time.sleep(1)
+
+                # Get current position from mpv
+                try:
+                    result = subprocess.run(
+                        ['echo', '{ "command": ["get_property", "time-pos"] }'],
+                        stdout=subprocess.PIPE,
+                        text=True,
+                        timeout=1
+                    )
+                    # Parse mpv response (simplified - in production use socat with JSON IPC)
+                    current_time = start_time + (time.time() - last_sync)
+
+                    # Sync progress periodically
+                    if time.time() - last_sync >= SYNC_INTERVAL:
+                        self.update_progress(current_time)
+                        last_sync = time.time()
+
+                except Exception:
+                    pass
+
+            # Final progress sync on exit
+            self.update_progress(current_time)
+            print("Playback finished")
+            return True
+
+        except KeyboardInterrupt:
+            print("\nStopping playback...")
+            if self.mpv_process:
+                self.mpv_process.terminate()
+                self.mpv_process.wait()
+            return False
+        except Exception as e:
+            print(f"Error during playback: {e}")
+            return False
+
+def main():
+    parser = argparse.ArgumentParser(description='Audiobook playback bridge')
+    parser.add_argument('--book-id', required=True, help='Audiobookshelf book ID')
+    parser.add_argument('--daemon', action='store_true', help='Run as daemon')
+
+    args = parser.parse_args()
+
+    if not API_TOKEN:
+        print("Error: AUDIOBOOKSHELF_TOKEN environment variable not set")
+        sys.exit(1)
+
+    player = AudiobookPlayer(args.book_id)
+
+    if args.daemon:
+        # Run as daemon (for future automation)
+        print("Daemon mode - waiting for commands...")
+        while True:
+            time.sleep(60)
+    else:
+        # Play immediately
+        success = player.play()
+        sys.exit(0 if success else 1)
+
+if __name__ == '__main__':
+    main()

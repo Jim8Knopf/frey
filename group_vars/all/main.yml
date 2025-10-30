@@ -12,12 +12,11 @@ features:
   authentication: false  # Authentik SSO - enable after initial setup
   file_management: false
   immich: true
-  homeassistant: false
-  backup: false
-  piper: false
+  homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
+  backup: false  # Automated backup system
   cookbook: true
-  power_monitoring: false
-  voice_assistant: false
+  power_monitoring: false  # Deprecated - use system.power_monitoring.enabled instead
+  voice_assistant: false  # Deprecated - integrated into homeassistant role
 
 # ================================
 # CONFIGURATION
@@ -474,6 +473,23 @@ media:
       enabled: false
       version: "latest"
 
+    mopidy:
+      enabled: false  # DISABLED: No ARM64-compatible image available
+      # TODO: Build custom ARM64 Mopidy image or use alternative music player
+      # For now, use Jellyfin directly for music playback
+      version: "latest"
+      image: "wernight/mopidy"  # Note: Only supports AMD64
+      port: 6680  # Required for pre-pull task (web interface port)
+      mpd_port: 6600  # MPD protocol for Home Assistant integration
+      http_port: 6680  # Web interface
+
+    audiobook_bridge:
+      enabled: true  # Enable for local audiobook playback with progress sync
+      version: "3.11-slim"
+      image: "python"
+      port: 0  # No port exposed (internal service only)
+      sync_interval: 5  # Progress sync interval in seconds
+
 # ===================================================================
 # PHOTO MANAGEMENT - IMMICH STACK
 # ===================================================================
@@ -548,4 +564,69 @@ cookbook:
       # Features
       enable_meal_planner: true
       recipe_scraping: true
+
+# ===================================================================
+# HOME ASSISTANT - HOME AUTOMATION PLATFORM
+# ===================================================================
+homeassistant:
+  group:
+    name: homeassistant
+    gid: 8123
+  user:
+    name: homeassistant_manager
+    uid: 8123
+    groups: "{{ homeassistant.group.name }}"
+  dir: "{{ storage.base_dir }}/homeassistant"
+
+  services:
+    homeassistant:
+      enabled: true  # Enable after initial setup
+      version: "stable"
+      port: 8123
+      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # NOTE: OIDC must be configured manually in Home Assistant UI
+      # Settings → Users → Add Integration → OpenID Connect
+      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/homeassistant/"
+      oidc_client_id: "homeassistant"
+
+    piper:
+      enabled: true  # Text-to-Speech via Wyoming protocol
+      version: "latest"
+      port: 10200
+      default_voice: "en_US-lessac-medium"
+      voices:
+        - "en_US-lessac-medium"
+        - "en_AU-southern-female"
+
+    wyoming_whisper:
+      enabled: false  # Speech-to-Text (optional, resource-intensive)
+      version: "latest"
+      port: 10300
+      model: "tiny-int8"  # tiny-int8, base-int8, small-int8
+      language: "en"
+
+# ===================================================================
+# SYSTEM - SYSTEM-LEVEL OPTIMIZATIONS
+# ===================================================================
+system:
+  power_monitoring:
+    enabled: false  # Enable for 12V battery-powered setups
+    low_threshold: 11.8
+    critical_threshold: 11.0
+    enable_graceful_shutdown: false
+
+  ssd_optimization:
+    enabled: false  # Enable if running on SSD
+    trim: true
+
+# ===================================================================
+# BACKUP - AUTOMATED BACKUP SYSTEM
+# ===================================================================
+backup:
+  enabled: false  # Enable after initial setup
+  schedule:
+    minute: "0"
+    hour: "3"  # 3 AM daily
+  retention_days: 7
+  backup_dir: "{{ storage.base_dir }}/backups"
 

@@ -3,7 +3,7 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "automation"
-    folders: [ollama, n8n, open-webui]
+    folders: [ollama, n8n, open-webui, homeassistant, piper, wyoming-whisper]
     checkVar: [storage.base_dir, automation.user.name]
 
 - name: Deploy automation stack compose file

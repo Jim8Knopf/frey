@@ -88,8 +88,8 @@
       when: features.media
 
     - role: automation
-      tags: [automation, services, ai]
-      when: features.automation
+      tags: [automation, services, ai, homeassistant, voice]
+      when: features.automation or features.homeassistant
 
     - role: immich
       tags: [photos, immich]
@@ -103,21 +103,13 @@
       tags: [cookbook, services]
       when: features.cookbook
 
-    # - role: piper
-    #   tags: [piper, voice, ai]
-    #   when: features.piper
+    - role: backup
+      tags: [backup]
+      when: backup.enabled | default(false)
 
-    # - role: voice_assistant
-    #   tags: [voice, ai]
-    #   when: features.voice_assistant
-
-    # - role: backup
-    #   tags: [backup]
-    #   when: features.backup
-
-    # - role: power_management
-    #   tags: [power]
-    #   when: features.power_monitoring
+    - role: system
+      tags: [system, optimization]
+      when: system.power_monitoring.enabled | default(false) or system.ssd_optimization.enabled | default(false)
 
   post_tasks:
     - name: Copy maintenance scripts to target

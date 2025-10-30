@@ -30,6 +30,15 @@
     msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
   when: failed_pulls | length > 0
 
+- name: Deploy audiobook bridge playback script
+  ansible.builtin.template:
+    src: audiobook-bridge/play_book.py.j2
+    dest: "{{ storage.appdata_dir }}/audiobook-bridge/play_book.py"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when: media.services.audiobook_bridge.enabled | default(false)
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2

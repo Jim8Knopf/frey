@@ -1,0 +1,55 @@
+---
+# ==============================================================================
+# SYSTEM - SYSTEM-LEVEL OPTIMIZATIONS AND MONITORING
+# ==============================================================================
+# Handles power monitoring for 12V setups and SSD optimizations
+
+# ==============================================================================
+# POWER MANAGEMENT (for 12V battery-powered setups)
+# ==============================================================================
+- name: Power Management - Deploy monitoring script
+  ansible.builtin.template:
+    src: power_monitor.py.j2
+    dest: /usr/local/bin/power_monitor.py
+    owner: root
+    group: root
+    mode: '0755'
+  when: system.power_monitoring.enabled | default(false)
+
+- name: Power Management - Create systemd service
+  ansible.builtin.template:
+    src: power-monitor.service.j2
+    dest: /etc/systemd/system/power-monitor.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: system.power_monitoring.enabled | default(false)
+  notify:
+    - reload systemd
+    - start power monitor
+
+# ==============================================================================
+# SSD OPTIMIZATION
+# ==============================================================================
+- name: SSD Optimization - Enable TRIM timer
+  ansible.builtin.systemd:
+    name: fstrim.timer
+    enabled: yes
+    state: started
+  when: system.ssd_optimization.enabled | default(false) and system.ssd_optimization.trim | default(false)
+
+- name: SSD Optimization - Reduce swappiness
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: '10'
+    state: present
+    reload: yes
+  when: system.ssd_optimization.enabled | default(false)
+
+- name: SSD Optimization - Configure log rotation
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.conf
+    regexp: '^rotate'
+    line: 'rotate 4'
+    backup: yes
+  when: system.ssd_optimization.enabled | default(false)
