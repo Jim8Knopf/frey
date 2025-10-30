@@ -1,0 +1,94 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+version: 1
+metadata:
+  name: Frey Hub - User Groups
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # Immich Groups
+  - model: authentik_core.group
+    id: immich-users-group
+    identifiers:
+      name: immich_users
+    attrs:
+      name: immich_users
+      is_superuser: false
+      attributes:
+        description: "Users who can access Immich photo management"
+
+  - model: authentik_core.group
+    id: immich-admins-group
+    identifiers:
+      name: immich_admins
+    attrs:
+      name: immich_admins
+      is_superuser: false
+      attributes:
+        description: "Administrators of Immich with full access"
+
+  # Jellyfin Groups
+  - model: authentik_core.group
+    id: jellyfin-users-group
+    identifiers:
+      name: jellyfin_users
+    attrs:
+      name: jellyfin_users
+      is_superuser: false
+      attributes:
+        description: "Users who can access Jellyfin media server"
+
+  - model: authentik_core.group
+    id: jellyfin-admins-group
+    identifiers:
+      name: jellyfin_admins
+    attrs:
+      name: jellyfin_admins
+      is_superuser: false
+      attributes:
+        description: "Administrators of Jellyfin with full access"
+
+  # Audiobookshelf Group
+  - model: authentik_core.group
+    id: audiobookshelf-users-group
+    identifiers:
+      name: audiobookshelf_users
+    attrs:
+      name: audiobookshelf_users
+      is_superuser: false
+      attributes:
+        description: "Users who can access Audiobookshelf"
+
+  # Grafana Groups
+  - model: authentik_core.group
+    id: grafana-viewers-group
+    identifiers:
+      name: grafana_viewers
+    attrs:
+      name: grafana_viewers
+      is_superuser: false
+      attributes:
+        description: "Read-only access to Grafana dashboards"
+        grafana_role: "Viewer"
+
+  - model: authentik_core.group
+    id: grafana-editors-group
+    identifiers:
+      name: grafana_editors
+    attrs:
+      name: grafana_editors
+      is_superuser: false
+      attributes:
+        description: "Can edit Grafana dashboards"
+        grafana_role: "Editor"
+
+  - model: authentik_core.group
+    id: grafana-admins-group
+    identifiers:
+      name: grafana_admins
+    attrs:
+      name: grafana_admins
+      is_superuser: false
+      attributes:
+        description: "Full Grafana admin access"
+        grafana_role: "Admin"

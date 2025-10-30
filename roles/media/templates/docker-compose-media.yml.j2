@@ -56,6 +56,20 @@ services:
       - {{ env_var }}
 {% endfor %}
 {% endif %}
+{% if infrastructure.services.authentik.enabled | default(false) %}
+{% if service_name == 'jellyfin' %}
+      # LDAP Authentication Configuration (requires LDAP-Auth plugin installed via Jellyfin UI)
+      - LDAP_SERVER={{ media.services.jellyfin.ldap_server }}
+      - LDAP_PORT={{ media.services.jellyfin.ldap_port }}
+      - LDAP_BASE_DN={{ media.services.jellyfin.ldap_base_dn }}
+      - LDAP_BIND_USER={{ media.services.jellyfin.ldap_bind_user }}
+      - LDAP_BIND_PASSWORD={{ authentik_ldap_bind_password }}
+      - LDAP_SEARCH_FILTER={{ media.services.jellyfin.ldap_search_filter }}
+      - LDAP_ADMIN_FILTER={{ media.services.jellyfin.ldap_admin_filter }}
+{% endif %}
+{# Audiobookshelf OIDC cannot be configured via environment variables #}
+{# Must be configured manually via web UI: Settings → Authentication → OpenID Connect #}
+{% endif %}
     restart: unless-stopped
     volumes:
       {{ service_config.volumes | to_nice_yaml(indent=6) | indent(6) | trim }}

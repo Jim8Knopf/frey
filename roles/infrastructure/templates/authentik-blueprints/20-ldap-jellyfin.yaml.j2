@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+version: 1
+metadata:
+  name: Frey Hub - Jellyfin LDAP Provider
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # LDAP Provider for Jellyfin
+  - model: authentik_providers_ldap.ldapprovider
+    id: jellyfin-ldap-provider
+    identifiers:
+      name: jellyfin-ldap-provider
+    attrs:
+      name: jellyfin-ldap-provider
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      base_dn: dc=ldap,dc=goauthentik,dc=io
+      search_mode: cached
+      bind_mode: cached
+      search_group: !Find [authentik_core.group, [name, jellyfin_users]]
+      certificate: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      tls_server_name: ""
+      uid_start_number: 2000
+      gid_start_number: 4000
+      mfa_support: true
+
+  # LDAP Outpost for Jellyfin
+  - model: authentik_outposts.outpost
+    id: jellyfin-ldap-outpost
+    identifiers:
+      name: jellyfin-ldap-outpost
+    attrs:
+      name: jellyfin-ldap-outpost
+      type: ldap
+      service_connection: !Find [authentik_outposts.dockerserviceconnection, [name, "Local Docker connection"]]
+      providers:
+        - !KeyOf jellyfin-ldap-provider
+      config:
+        log_level: info
+        docker_network: proxy
+        docker_map_ports: true
+        docker_labels:
+          traefik.enable: "false"
+        authentik_host: http://authentik_server:9000
+        authentik_host_insecure: true
+
+  # Application for Jellyfin
+  - model: authentik_core.application
+    identifiers:
+      slug: jellyfin
+    attrs:
+      name: Jellyfin
+      slug: jellyfin
+      provider: !KeyOf jellyfin-ldap-provider
+      policy_engine_mode: any
+      meta_launch_url: http://jellyfin.{{ network.domain_name }}
+      meta_description: Media server for movies, TV shows, and music
+      meta_publisher: Frey Hub
