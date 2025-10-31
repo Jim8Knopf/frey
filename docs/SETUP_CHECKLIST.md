@@ -135,6 +135,77 @@ Use this checklist to track your deployment and configuration progress.
 
 ---
 
+## 🗣️ Configure Voice Services (Optional)
+
+### Piper TTS (Text-to-Speech)
+- [ ] Set `homeassistant.services.piper.enabled: true` in main.yml
+- [ ] Deploy: `ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation`
+- [ ] Verify container running: `ssh frey "docker ps | grep piper"`
+- [ ] Add to Home Assistant `configuration.yaml`:
+  ```yaml
+  tts:
+    - platform: wyoming
+      uri: "tcp://piper:10200"
+  ```
+- [ ] Test TTS in Home Assistant: Services → TTS → Speak
+
+### Wyoming Whisper STT (Speech-to-Text) - Optional, Resource-Intensive
+- [ ] Set `homeassistant.services.wyoming_whisper.enabled: true` in main.yml
+- [ ] Choose model size: `tiny-int8` (fastest), `base-int8`, or `small-int8`
+- [ ] Deploy: `ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation`
+- [ ] Verify container running: `ssh frey "docker ps | grep whisper"`
+- [ ] Configure in Home Assistant: Settings → Voice Assistants
+
+---
+
+## 🌐 Configure WiFi Automatic Roaming (Optional)
+
+### Enable WiFi Roaming
+- [ ] Set `network.wifi.roaming.enabled: true` in main.yml
+- [ ] Configure `client_interface: "wlan0"` (or your WiFi interface)
+- [ ] (Optional) Add known networks to `known_wifi_networks` list
+- [ ] Deploy: `ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags wifi`
+- [ ] Verify service: `ssh frey "sudo systemctl status frey-wifi-roaming"`
+- [ ] Check logs: `ssh frey "sudo journalctl -u frey-wifi-roaming -f"`
+
+### Home Assistant MQTT Integration
+- [ ] Add MQTT sensors to Home Assistant `configuration.yaml`:
+  ```yaml
+  mqtt:
+    sensor:
+      - name: "Frey WiFi Network"
+        state_topic: "frey/wifi/roaming/status/current_ssid"
+      - name: "Frey WiFi Signal"
+        state_topic: "frey/wifi/roaming/status/signal_dbm"
+    binary_sensor:
+      - name: "Frey Has Internet"
+        state_topic: "frey/wifi/roaming/status/has_internet"
+  ```
+- [ ] Test: Check if sensors appear in Home Assistant
+- [ ] (Optional) Add control button for manual rescan
+
+### Verify WiFi Roaming
+- [ ] View network history: `ssh frey "sudo cat /var/lib/frey/wifi-network-history.json | jq"`
+- [ ] Test automatic connection to a public WiFi
+- [ ] Check captive portal bypass (if applicable)
+- [ ] Verify FreyHub AP remains accessible
+
+**See full guide**: `docs/WIFI_ROAMING_SETUP.md`
+
+---
+
+## 🍳 Configure Cookbook (Mealie) - Optional
+
+- [ ] Access `http://cookbook.frey`
+- [ ] Create admin account (first-time setup)
+- [ ] Settings → Set preferences (units, language, etc.)
+- [ ] Test recipe scraping: Add recipe by URL
+- [ ] Create meal plan for the week
+- [ ] Generate shopping list
+- [ ] (Optional) Import existing recipes
+
+---
+
 ## 👥 Configure User Groups in Authentik
 
 ### Grafana Groups
@@ -154,21 +225,53 @@ Use this checklist to track your deployment and configuration progress.
 
 ## 🧪 Final Testing
 
+### SSO/Authentication
 - [ ] Test Grafana SSO: `http://grafana.frey` → Sign in with Authentik
 - [ ] Test Home Assistant SSO: Log out and log in via Authentik
 - [ ] Test Immich OAuth: Log out and use "Login with OAuth"
 - [ ] Test Audiobookshelf SSO: Log out and use "Login with Authentik"
 - [ ] Test Jellyfin LDAP: Log out and log in with Authentik credentials
-- [ ] Test Mopidy: Access `http://mopidy.frey:6680`, check Jellyfin integration
-- [ ] Test DNS resolution: `nslookup auth.frey` from WiFi client
+
+### Media Services
+- [ ] Test Jellyfin playback: Play a movie/TV show
+- [ ] Test Sonarr: Add a TV series, check if episodes download
+- [ ] Test Radarr: Add a movie, check if it downloads
+- [ ] Test Audiobookshelf: Play an audiobook, verify progress tracking
+- [ ] (Optional) Test Mopidy: Access `http://mopidy.frey:6680`, check Jellyfin integration
+
+### Automation & Voice
+- [ ] Test Home Assistant: Control a device or trigger an automation
+- [ ] (Optional) Test Piper TTS: Use TTS service in Home Assistant
+- [ ] (Optional) Test voice assistant: Test wake word and voice commands
+- [ ] Test n8n: Create a simple workflow (e.g., webhook → notification)
+
+### Monitoring
+- [ ] Test Grafana dashboards: View system metrics
+- [ ] Test Prometheus: Query metrics at `http://prometheus.frey`
+- [ ] Test Uptime Kuma: Check service status at `http://uptime-kuma.frey`
+- [ ] Test log aggregation: View logs in Grafana → Explore → Loki
+
+### Network & WiFi
+- [ ] Test DNS resolution: `nslookup jellyfin.frey` from WiFi client
 - [ ] Test Traefik routing: All services accessible via `.frey` domain
+- [ ] Test FreyHub WiFi: Connect device to FreyHub, access services
+- [ ] (Optional) Test WiFi roaming: Move to public WiFi, verify automatic connection
+- [ ] (Optional) Test captive portal bypass: Connect to portal network, check auto-auth
+
+### Photos & Other Services
+- [ ] Test Immich: Upload a photo from mobile app, check face detection
+- [ ] (Optional) Test Cookbook: Add recipe, create meal plan, generate shopping list
+- [ ] Test Portainer: View and manage containers at `http://portainer.frey`
 
 ---
 
 ## 📝 Documentation
 
-- [ ] Read `docs/POST_INSTALLATION_MANUAL_STEPS.md` for detailed instructions
-- [ ] Bookmark `docs/QUICK_REFERENCE.md` for quick lookups
+- [ ] Read `docs/QUICK_SETUP.md` - Ultra-brief 30-minute setup guide
+- [ ] Read `docs/USER_GUIDE.md` - Comprehensive feature reference
+- [ ] Read `docs/POST_INSTALLATION_MANUAL_STEPS.md` - Detailed SSO configuration
+- [ ] (Optional) Read `docs/WIFI_ROAMING_SETUP.md` - WiFi automation deep dive
+- [ ] Bookmark `README.md` for quick reference and architecture overview
 - [ ] Save `docs/SETUP_CHECKLIST.md` (this file) for tracking progress
 
 ---

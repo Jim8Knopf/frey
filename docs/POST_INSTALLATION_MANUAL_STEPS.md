@@ -176,7 +176,138 @@ docker exec audiobook-bridge python3 /app/play_book.py --book-id YOUR_BOOK_ID
 
 ---
 
-## 👥 5. Create Authentik User Groups (For Role-Based Access)
+## 🌐 5. Configure WiFi Automatic Roaming (Optional)
+
+### **Overview**
+
+The WiFi Automatic Roaming System provides intelligent, hands-free WiFi connectivity management. Perfect for travel and mobile use cases.
+
+**See full guide**: [WIFI_ROAMING_SETUP.md](WIFI_ROAMING_SETUP.md)
+
+### **Quick Enable**
+
+1. Edit `group_vars/all/main.yml`:
+   ```yaml
+   network:
+     wifi:
+       roaming:
+         enabled: true
+         client_interface: "wlan0"
+         mqtt_topic: "frey/wifi/roaming"
+
+   # Optional: Add known networks
+   known_wifi_networks:
+     - ssid: "Home WiFi"
+       password: "myPassword123"
+       priority: 100
+     - ssid: "Office WiFi"
+       password: "workPassword"
+       priority: 90
+   ```
+
+2. Deploy WiFi configuration:
+   ```bash
+   ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags wifi
+   ```
+
+3. Verify service is running:
+   ```bash
+   ssh frey
+   sudo systemctl status frey-wifi-roaming
+   sudo journalctl -u frey-wifi-roaming -f
+   ```
+
+### **Features**
+
+- ✅ **Internet Verification** - Only connects to networks with working internet (filters IoT devices, printers)
+- ✅ **Automatic Captive Portal Bypass** - 80-90% success rate on common portals (Starbucks, hotels, airports)
+- ✅ **Intelligent Network Scoring** - Ranks networks by signal, security, history (0-100 score)
+- ✅ **Adaptive Scanning** - Adjusts scan frequency based on connection state (30s aggressive → 10min stable)
+- ✅ **MQTT Integration** - Control and monitor via Home Assistant or n8n
+- ✅ **Network Learning** - Tracks success rates, blacklists problematic networks
+- ✅ **Always-On FreyHub AP** - SSH access always available
+
+### **Home Assistant Integration**
+
+Add to Home Assistant `configuration.yaml`:
+
+```yaml
+# WiFi Roaming Sensors
+mqtt:
+  sensor:
+    - name: "Frey WiFi Network"
+      state_topic: "frey/wifi/roaming/status/current_ssid"
+
+    - name: "Frey WiFi Signal"
+      state_topic: "frey/wifi/roaming/status/signal_dbm"
+      unit_of_measurement: "dBm"
+
+  binary_sensor:
+    - name: "Frey Has Internet"
+      state_topic: "frey/wifi/roaming/status/has_internet"
+      payload_on: "true"
+      payload_off: "false"
+
+# Control Button
+button:
+  - platform: mqtt
+    name: "Frey Force WiFi Rescan"
+    command_topic: "frey/wifi/roaming/control/rescan"
+    payload_press: "true"
+```
+
+### **Management Commands**
+
+```bash
+# View real-time logs
+sudo journalctl -u frey-wifi-roaming -f
+
+# Check current WiFi status
+sudo wpa_cli -i wlan0 status
+
+# View network history
+sudo cat /var/lib/frey/wifi-network-history.json | jq
+
+# View blacklisted networks
+sudo cat /var/lib/frey/wifi-blacklist.json | jq
+
+# Manually trigger rescan
+mosquitto_pub -h localhost -t "frey/wifi/roaming/control/rescan" -m "true"
+
+# Change scan mode (aggressive/moderate/conservative)
+mosquitto_pub -h localhost -t "frey/wifi/roaming/control/mode" -m "aggressive"
+```
+
+### **Configuration Tuning**
+
+Edit `/etc/frey/wifi-roaming.conf` on the Pi:
+
+```bash
+# For travel (aggressive switching)
+SCAN_INTERVAL_DEFAULT=60           # 1 minute
+SCAN_INTERVAL_NO_CONNECTION=20     # 20 seconds
+SWITCH_THRESHOLD=10                # Switch more readily
+
+# For stationary use (conservative)
+SCAN_INTERVAL_DEFAULT=300          # 5 minutes
+SCAN_INTERVAL_GOOD=900             # 15 minutes
+SWITCH_THRESHOLD=25                # Only switch for much better networks
+
+# Restart to apply
+sudo systemctl restart frey-wifi-roaming
+```
+
+### **Verification**
+
+- [ ] WiFi roaming service enabled and running
+- [ ] Service logs showing network scans
+- [ ] Home Assistant MQTT sensors receiving data
+- [ ] Known networks configured (if using specific networks only)
+- [ ] Automatic connection working on test network
+
+---
+
+## 👥 6. Create Authentik User Groups (For Role-Based Access)
 
 ### **Grafana Groups**
 
@@ -205,17 +336,32 @@ docker exec audiobook-bridge python3 /app/play_book.py --book-id YOUR_BOOK_ID
 
 ## 🏁 Verification Checklist
 
+### **Core Services**
 - [ ] Authentik admin account created at `http://auth.frey`
 - [ ] Grafana SSO works (`http://grafana.frey`)
 - [ ] Home Assistant OIDC configured
 - [ ] Immich OAuth enabled
 - [ ] Audiobookshelf OIDC configured
 - [ ] Jellyfin LDAP plugin installed and configured
+
+### **Media Playback** (Optional)
 - [ ] Jellyfin API token generated for Mopidy
 - [ ] Jellyfin Smart Playlist plugin installed
 - [ ] Audiobookshelf API token generated
-- [ ] Authentik user groups configured
-- [ ] Test users assigned to appropriate groups
+- [ ] Audiobook bridge playback tested
+
+### **WiFi Roaming** (Optional)
+- [ ] WiFi roaming enabled in configuration
+- [ ] frey-wifi-roaming service running
+- [ ] Service logs showing network scans
+- [ ] Home Assistant MQTT sensors configured
+- [ ] Known networks configured (if restricting to specific networks)
+- [ ] Automatic connection tested on public WiFi
+
+### **User Management**
+- [ ] Authentik user groups configured (grafana_*, jellyfin_*)
+- [ ] Test users created and assigned to appropriate groups
+- [ ] SSO login tested with non-admin users
 
 ---
 
