@@ -1,0 +1,37 @@
+[Unit]
+Description=Frey Bluetooth Auto-Connection Service
+Documentation=file:///opt/frey/docs/BLUETOOTH_SETUP.md
+After=bluetooth.service pulseaudio.service
+Wants=bluetooth.service pulseaudio.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/frey-bluetooth-daemon
+Restart=always
+RestartSec={{ bluetooth_audio.connection.retry_delay | default(5) }}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=frey-bluetooth
+
+# Security hardening
+NoNewPrivileges=false
+PrivateTmp=yes
+ProtectSystem=false
+ProtectHome=yes
+
+# Allow Bluetooth and audio access
+SupplementaryGroups=bluetooth audio pulse
+
+# Resource limits
+MemoryLimit=50M
+CPUQuota=10%
+
+# Environment
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="SCAN_INTERVAL={{ bluetooth_audio.scan_interval | default(10) }}"
+Environment="MQTT_BROKER={{ mqtt.broker | default('localhost') }}"
+Environment="MQTT_PORT={{ mqtt.port | default(1883) }}"
+Environment="MQTT_TOPIC={{ bluetooth_audio.homeassistant.mqtt_topic | default('frey/bluetooth') }}"
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,0 @@
----
-# voice_assistant handlers
-- name: restart voice assistant
-  ansible.builtin.systemd:
-    name: voice_assistant
-    state: restarted
-    daemon_reload: yes

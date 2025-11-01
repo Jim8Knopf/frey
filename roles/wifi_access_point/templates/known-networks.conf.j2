@@ -1,0 +1,36 @@
+# ==============================================================================
+# FREY WIFI KNOWN NETWORKS
+# ==============================================================================
+# List of trusted WiFi networks with passwords and priorities
+# Location: /etc/frey/known-networks.conf
+#
+# FORMAT:
+#   SSID|PASSWORD|PRIORITY
+#
+# - SSID: Network name (case-sensitive)
+# - PASSWORD: Network password (leave empty for open networks)
+# - PRIORITY: 0-100 (higher = more preferred)
+#
+# PRIORITY GUIDE:
+#   100 - Home network (highest priority)
+#   80-99 - Trusted networks (work, family, friends)
+#   60-79 - Frequently used public networks
+#   40-59 - Occasionally used public networks
+#   20-39 - Rarely used networks
+#   0-19 - Low priority / fallback networks
+#
+# EXAMPLES:
+#   Home WiFi|mySecurePassword123|100
+#   Office WiFi|workPassword456|90
+#   Starbucks WiFi||60
+#   Hotel Guest||40
+# ==============================================================================
+
+# Add your known networks below
+# One network per line, format: SSID|PASSWORD|PRIORITY
+
+{% if known_wifi_networks is defined %}
+{% for network in known_wifi_networks %}
+{{ network.ssid }}|{{ network.password | default('') }}|{{ network.priority | default(50) }}
+{% endfor %}
+{% endif %}

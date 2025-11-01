@@ -3,8 +3,36 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "automation"
-    folders: [ollama, n8n, open-webui]
+    folders: [ollama, n8n, open-webui, homeassistant, piper, wyoming-whisper]
     checkVar: [storage.base_dir, automation.user.name]
+
+- name: Combine automation and homeassistant services for pre-pulling
+  ansible.builtin.set_fact:
+    automation_all_services: "{{ (automation.services.values() | list) + (homeassistant.services.values() | list) }}"
+  when: features.homeassistant | default(false)
+
+- name: Pre-pull all enabled automation stack images
+  community.docker.docker_image:
+    name: "{{ item.image }}"
+    source: pull
+    state: present
+    timeout: 300
+  loop: "{{ automation_all_services | default(automation.services.values()) | selectattr('enabled', 'equalto', true) | list }}"
+  loop_control:
+    label: "{{ item.image }}"
+  register: image_pull_results
+  retries: 2
+  delay: 10
+  failed_when: false
+
+- name: Set failed pulls fact
+  ansible.builtin.set_fact:
+    failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item.image') | list }}"
+
+- name: Report failed image pulls
+  ansible.builtin.debug:
+    msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
+  when: failed_pulls | length > 0
 
 - name: Deploy automation stack compose file
   ansible.builtin.template:

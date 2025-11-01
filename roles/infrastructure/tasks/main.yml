@@ -27,6 +27,7 @@
     - authentik-blueprints/10-oidc-immich.yaml.j2
     - authentik-blueprints/11-oidc-audiobookshelf.yaml.j2
     - authentik-blueprints/12-oidc-grafana.yaml.j2
+    - authentik-blueprints/13-oidc-homeassistant.yaml.j2
     - authentik-blueprints/20-ldap-jellyfin.yaml.j2
   when: infrastructure.services.authentik.enabled | default(false)
 

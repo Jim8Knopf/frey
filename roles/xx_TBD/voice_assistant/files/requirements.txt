@@ -1,6 +1,0 @@
-pvporcupine
-pyaudio
-vosk
-ollama
-requests
-sounddevice

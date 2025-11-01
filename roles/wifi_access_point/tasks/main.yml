@@ -255,6 +255,12 @@
     dest: /usr/local/bin/frey-wifi-tui
     mode: '0755'
 
+- name: Ensure base directory for WiFi connection guide exists
+  ansible.builtin.file:
+    path: "{{ storage.base_dir | default('/opt/frey') }}"
+    state: directory
+    mode: '0755'
+
 - name: Deploy WiFi connection guide
   ansible.builtin.copy:
     src: CONNECT-TO-WIFI.md
@@ -322,3 +328,96 @@
       - CLI Connect: sudo frey-connect-wifi "WiFiName" "password"
       - CLI Disconnect: sudo frey-disconnect-wifi
       - Documentation: {{ storage.base_dir | default('/opt/frey') }}/CONNECT-TO-WIFI.md
+
+# ==============================================================================
+# AUTOMATIC WIFI ROAMING SYSTEM
+# ==============================================================================
+
+- name: Install WiFi roaming dependencies
+  ansible.builtin.apt:
+    name:
+      - w3m                  # Text browser for captive portals
+      - jq                   # JSON parsing for network history
+      - mosquitto-clients    # MQTT for Home Assistant integration
+    state: present
+    update_cache: no
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Create Frey configuration directory
+  ansible.builtin.file:
+    path: /etc/frey
+    state: directory
+    mode: '0755'
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Create Frey state directory
+  ansible.builtin.file:
+    path: /var/lib/frey
+    state: directory
+    mode: '0755'
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Deploy WiFi roaming utility scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: '0755'
+  loop:
+    - frey-wifi-internet-verify.sh
+    - frey-wifi-captive-portal-auto.sh
+    - frey-wifi-network-scorer.sh
+    - frey-wifi-roaming-daemon.sh
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Deploy WiFi roaming configuration
+  ansible.builtin.template:
+    src: wifi-roaming.conf.j2
+    dest: /etc/frey/wifi-roaming.conf
+    mode: '0644'
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Deploy known networks configuration
+  ansible.builtin.template:
+    src: known-networks.conf.j2
+    dest: /etc/frey/known-networks.conf
+    mode: '0600'
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Deploy WiFi roaming systemd service
+  ansible.builtin.template:
+    src: frey-wifi-roaming.service.j2
+    dest: /etc/systemd/system/frey-wifi-roaming.service
+    mode: '0644'
+  when: network.wifi.roaming.enabled | default(false)
+  notify: Reload systemd
+
+- name: Enable and start WiFi roaming service
+  ansible.builtin.systemd:
+    name: frey-wifi-roaming
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Display WiFi roaming status
+  ansible.builtin.debug:
+    msg: |
+      ======================================
+      WiFi Automatic Roaming System
+      ======================================
+      Status: {{ 'Enabled' if (network.wifi.roaming.enabled | default(false)) else 'Disabled' }}
+      {% if network.wifi.roaming.enabled | default(false) %}
+      Service: frey-wifi-roaming.service
+      Config: /etc/frey/wifi-roaming.conf
+      Known Networks: /etc/frey/known-networks.conf
+
+      Control Commands:
+      - Check status: sudo systemctl status frey-wifi-roaming
+      - View logs: sudo journalctl -u frey-wifi-roaming -f
+      - Stop service: sudo systemctl stop frey-wifi-roaming
+      - Start service: sudo systemctl start frey-wifi-roaming
+
+      MQTT Topics (Home Assistant):
+      - Status: {{ network.wifi.roaming.mqtt_topic | default('frey/wifi/roaming') }}/status/#
+      - Control: {{ network.wifi.roaming.mqtt_topic | default('frey/wifi/roaming') }}/control/#
+      {% endif %}

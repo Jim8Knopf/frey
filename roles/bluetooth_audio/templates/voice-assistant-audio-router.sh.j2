@@ -1,0 +1,28 @@
+#!/bin/bash
+# ==============================================================================
+# FREY VOICE ASSISTANT AUDIO ROUTER
+# ==============================================================================
+# Purpose: Route voice assistant audio to/from Bluetooth devices
+# Usage: Called automatically by Home Assistant voice assistant
+# ==============================================================================
+
+# Get current Bluetooth sink (audio output)
+BT_SINK=$(pactl list sinks short | grep "bluez" | head -n1 | awk '{print $1}')
+
+# Get current Bluetooth source (microphone input)
+BT_SOURCE=$(pactl list sources short | grep "bluez" | grep -v "monitor" | head -n1 | awk '{print $1}')
+
+# Route audio based on what's available
+if [ -n "$BT_SINK" ]; then
+    # Bluetooth speaker available - set as default for TTS output
+    pactl set-default-sink "$BT_SINK" 2>/dev/null || true
+    echo "TTS output routed to Bluetooth"
+fi
+
+if [ -n "$BT_SOURCE" ]; then
+    # Bluetooth microphone available - set as default for voice input
+    pactl set-default-source "$BT_SOURCE" 2>/dev/null || true
+    echo "Voice input from Bluetooth microphone"
+fi
+
+exit 0

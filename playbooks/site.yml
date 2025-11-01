@@ -1,13 +1,50 @@
 ---
+# ==============================================================================
+# FREY MAIN PLAYBOOK
+# ==============================================================================
+# Purpose: Orchestrates the complete deployment of the Frey home server stack
+#
+# This playbook deploys 40+ Docker containers organized into service stacks:
+#   - Infrastructure (Traefik, Authentik SSO, Portainer, Dockge, AdGuard DNS)
+#   - Media (Jellyfin, Sonarr, Radarr, Audiobookshelf, qBittorrent, *arr suite)
+#   - Automation (Home Assistant, n8n, Ollama AI, Piper TTS, Wyoming Whisper)
+#   - Monitoring (Grafana, Prometheus, Loki, Uptime Kuma, Speedtest Tracker)
+#   - Photos (Immich with face recognition and mobile sync)
+#   - Cookbook (Mealie recipe manager)
+#   - WiFi AP (FreyHub access point with automatic roaming)
+#
+# Deployment is controlled via feature toggles in group_vars/all/main.yml
+# Secrets are encrypted with Ansible Vault in group_vars/all/secrets.yml
+#
+# Usage:
+#   Full deployment:     ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+#   Specific stack:      ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media
+#   Dry run:             ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check
+#
+# Tags available: wifi, security, docker, infrastructure, monitoring, media,
+#                 automation, homeassistant, voice, photos, immich, cookbook, backup
+# ==============================================================================
+
 - name: Deploy Enhanced Raspberry Pi 5 Off-Grid Media & AI Hub
   hosts: all
-  become: yes
+  become: yes  # Run tasks with sudo privileges
 
+  # Load configuration and encrypted secrets
   vars_files:
-    - ../group_vars/all/main.yml
-    - ../group_vars/all/secrets.yml
+    - ../group_vars/all/main.yml      # Main configuration (feature toggles, service settings)
+    - ../group_vars/all/secrets.yml   # Encrypted secrets (passwords, API tokens, OAuth secrets)
 
+  # ==============================================================================
+  # PRE-TASKS: Setup and preparation before role execution
+  # ==============================================================================
   pre_tasks:
+    # --------------------------------------------------------------------------
+    # FIX: Remove conflicting Docker APT sources
+    # --------------------------------------------------------------------------
+    # Problem: Some Docker installations leave behind conflicting apt sources
+    # Solution: Find and remove old download.docker.com references to prevent
+    #           package cache errors during deployment
+    # --------------------------------------------------------------------------
     - name: Find apt source files
       find:
         paths: /etc/apt/sources.list.d
@@ -31,95 +68,478 @@
       when: docker_source_matches is defined and docker_source_matches.results | length > 0
       become: true
 
+    # --------------------------------------------------------------------------
+    # Update package cache for all roles
+    # --------------------------------------------------------------------------
+    # Ensures we have latest package information before installing anything
+    # cache_valid_time: 3600 = Only update if cache is older than 1 hour
+    # --------------------------------------------------------------------------
     - name: Update package cache
       apt:
         update_cache: yes
         cache_valid_time: 3600
       tags: always
 
-    # - name: Display deployment info
-    #   ansible.builtin.debug:
-    #     msg: |
-    #       🚀 Starting Pi 5 Hub deployment
-    #       Target: {{ ansible_host }}
-    #       User: {{ ansible_user_id }}
-    #       Services: {% if features.media %}Media, {% endif %}{% if features.automation %}Automation, {% endif %}{% if features.ai, {% endif %}{% if features.monitoring %}Monitoring, {% endif %}{% if features.immich %}Photos{% endif %}
-
-    # - name: Create media subdirectories
-    #   ansible.builtin.file:
-    #     path: "{{ storage.base_dir | default('/opt/frey')}}"
-    #     state: directory
-    #     owner: "{{ user.uid }}"
-    #     group: "{{ user.gid }}"
-    #     mode: '0755'
+  # ==============================================================================
+  # ROLES: Service deployment in dependency order
+  # ==============================================================================
+  # Roles are executed in this order for dependency management:
+  #   1. WiFi & Security - Network and firewall setup first
+  #   2. Docker - Container runtime required by all services
+  #   3. Infrastructure - Core services (Traefik, Authentik, Portainer, DNS)
+  #   4. Service Stacks - Media, Automation, Monitoring, Photos, Cookbook
+  #   5. System - Power monitoring and SSD optimization (if enabled)
+  #
+  # Each role is conditionally executed based on feature toggles in main.yml
+  # Use tags for selective deployment (e.g., --tags media deploys only media stack)
+  # ==============================================================================
 
   roles:
-    # Core Infrastructure
+    # ==========================================================================
+    # NETWORK LAYER - WiFi Access Point & Security
+    # ==========================================================================
+
+    # --------------------------------------------------------------------------
+    # WiFi Access Point (FreyHub)
+    # --------------------------------------------------------------------------
+    # Deploys: Dual-interface WiFi access point with automatic roaming
+    #
+    # Features:
+    #   - FreyHub AP (wlan1) provides WiFi network for clients
+    #   - dnsmasq provides DHCP (10.20.0.50-150) and DNS (.frey domains)
+    #   - hostapd broadcasts WiFi network
+    #   - NAT/routing bridges AP clients to internet via eth0/wlan0
+    #   - DoH blocking forces clients to use local DNS
+    #   - Optional: Automatic WiFi roaming system
+    #     - Internet verification (filters non-internet networks)
+    #     - Captive portal auto-bypass (80-90% success rate)
+    #     - Intelligent network scoring and selection
+    #     - Adaptive scanning (30s aggressive → 10min stable)
+    #     - MQTT integration for Home Assistant control
+    #
+    # Configuration: network.wifi in main.yml
+    # Roaming Guide: docs/WIFI_ROAMING_SETUP.md
+    # --------------------------------------------------------------------------
     - role: wifi_access_point
       tags: [wifi, networking]
       when: features.wifi_access_point
 
+    # --------------------------------------------------------------------------
+    # Security Layer (UFW Firewall + Fail2Ban)
+    # --------------------------------------------------------------------------
+    # Deploys: Firewall and intrusion prevention
+    #
+    # Features:
+    #   - UFW firewall with automatic port configuration
+    #   - Opens ports based on enabled services (dynamic rules)
+    #   - Fail2Ban protects against brute-force attacks
+    #   - SSH hardening and rate limiting
+    #
+    # Configuration: security.* in main.yml
+    # --------------------------------------------------------------------------
     - role: security
       tags: [security]
       when: security.ufw.enable or security.fail2ban.enable
 
-    # - role: ssd_optimization
-    #   tags: [ssd, optimization]
-    #   when: optimization.ssd.enable
+    # ==========================================================================
+    # CONTAINER RUNTIME - Docker Setup
+    # ==========================================================================
 
+    # --------------------------------------------------------------------------
+    # Docker Minimal (Container Engine)
+    # --------------------------------------------------------------------------
+    # Deploys: Docker CE and Docker Compose V2
+    #
+    # This is the foundation for all services. Installs:
+    #   - Docker Engine (container runtime)
+    #   - Docker Compose V2 (multi-container orchestration)
+    #   - Docker networks (proxy, localdns, media_network, etc.)
+    #   - Base system dependencies
+    #
+    # All subsequent services run as Docker containers
+    # --------------------------------------------------------------------------
     - role: docker_minimal
       tags: [docker, base]
 
-    # Network and Management
+    # ==========================================================================
+    # INFRASTRUCTURE LAYER - Core Services
+    # ==========================================================================
+
+    # --------------------------------------------------------------------------
+    # Infrastructure Stack (Traefik, Authentik, Portainer, Dockge, AdGuard)
+    # --------------------------------------------------------------------------
+    # Deploys: Core infrastructure services that everything else depends on
+    #
+    # Services:
+    #   - Traefik (Reverse Proxy):
+    #       Routes http://<service>.frey to Docker containers
+    #       Automatic service discovery via Docker labels
+    #       Port 80/443 (HTTP/HTTPS), Dashboard: 8082
+    #
+    #   - Authentik (Single Sign-On):
+    #       OAuth2/OIDC provider (Grafana, Home Assistant, Immich, Audiobookshelf)
+    #       LDAP provider (Jellyfin)
+    #       User/group management with blueprints
+    #       Port 9300, URL: http://auth.frey
+    #
+    #   - Portainer (Container Management):
+    #       Web UI for Docker container management
+    #       Visual logs, stats, and control
+    #       Port 9000, URL: http://portainer.frey
+    #
+    #   - Dockge (Stack Editor):
+    #       Docker Compose file editor in web UI
+    #       Real-time logs and interactive terminal
+    #       Port 5001, URL: http://dockge.frey
+    #
+    #   - AdGuard Home (DNS + Ad Blocking):
+    #       Resolves .frey domains to local services
+    #       Network-wide ad blocking
+    #       DNS query logging
+    #       Port 3030, URL: http://adguard.frey
+    #
+    # User/Group: infrastructure_manager (uid: 46372)
+    # Configuration: infrastructure.services.* in main.yml
+    # SSO Setup: docs/POST_INSTALLATION_MANUAL_STEPS.md
+    # --------------------------------------------------------------------------
     - role: infrastructure
       tags: [infrastructure, management]
       when: features.infrastructure
 
-    # - role: dockge
-    #   tags: [dockge, management]
+    # ==========================================================================
+    # SERVICE LAYER - Application Stacks
+    # ==========================================================================
 
-    # Services
+    # --------------------------------------------------------------------------
+    # Monitoring Stack (Grafana, Prometheus, Loki, Uptime Kuma)
+    # --------------------------------------------------------------------------
+    # Deploys: Observability and monitoring services
+    #
+    # Services:
+    #   - Grafana (Dashboards):
+    #       Metrics visualization and dashboards
+    #       OAuth SSO with Authentik (automatic, no manual setup)
+    #       Role-based access (Admin/Editor/Viewer via Authentik groups)
+    #       Port 3000, URL: http://grafana.frey
+    #
+    #   - Prometheus (Metrics Database):
+    #       Time-series metrics collection
+    #       PromQL query language
+    #       Collects from: Node Exporter, cAdvisor, Speedtest
+    #       Port 9090, URL: http://prometheus.frey
+    #
+    #   - Loki (Log Aggregation):
+    #       Centralized log storage
+    #       LogQL query language (Prometheus-like)
+    #       Integration with Grafana
+    #       Port 3100, URL: http://loki.frey
+    #
+    #   - Promtail (Log Collector):
+    #       Collects logs from Docker containers and system
+    #       Sends to Loki for storage and querying
+    #
+    #   - Node Exporter (System Metrics):
+    #       Exports system metrics (CPU, RAM, disk, network)
+    #       Port 9100 (Prometheus scrapes this)
+    #
+    #   - cAdvisor (Container Metrics):
+    #       Per-container resource usage stats
+    #       Port 8081 (Prometheus scrapes this)
+    #
+    #   - Uptime Kuma (Service Monitoring):
+    #       HTTP/TCP/HTTPS uptime monitoring
+    #       Beautiful status page
+    #       Notifications (ntfy, Discord, Telegram, etc.)
+    #       Port 3001, URL: http://uptime-kuma.frey
+    #
+    #   - Speedtest Tracker (Internet Performance):
+    #       Scheduled speed tests
+    #       Historical bandwidth data
+    #       Grafana dashboard integration
+    #       Port 8181, URL: http://speedtest.frey
+    #
+    #   - Watchtower (Auto-Updates):
+    #       Monitors for new Docker images
+    #       Automatically pulls and restarts containers
+    #       Configurable schedule (default: daily)
+    #
+    # User/Group: monitoring_manager (uid: 12341)
+    # Configuration: monitoring.* in main.yml
+    # Grafana SSO: Automatic via OAuth (no manual setup needed)
+    # --------------------------------------------------------------------------
     - role: monitoring
       tags: [monitoring]
       when: features.monitoring
 
+    # --------------------------------------------------------------------------
+    # Media Stack (Jellyfin, *arr Suite, Audiobookshelf, qBittorrent)
+    # --------------------------------------------------------------------------
+    # Deploys: Media management and streaming services
+    #
+    # Services:
+    #   - Jellyfin (Media Server):
+    #       Netflix-like streaming for movies, TV, music
+    #       Hardware transcoding (Raspberry Pi 5 acceleration)
+    #       LDAP authentication via Authentik
+    #       Port 8096, URL: http://jellyfin.frey
+    #
+    #   - Sonarr (TV Show Manager):
+    #       Automatic TV show downloading
+    #       Episode tracking and calendar
+    #       Quality upgrades and management
+    #       Port 8989, URL: http://sonarr.frey
+    #
+    #   - Radarr (Movie Manager):
+    #       Automatic movie downloading
+    #       Quality upgrades and management
+    #       Port 7878, URL: http://radarr.frey
+    #
+    #   - Lidarr (Music Manager):
+    #       Music collection management
+    #       Automatic downloads
+    #       Port 8686, URL: http://lidarr.frey
+    #
+    #   - Bazarr (Subtitle Manager):
+    #       Automatic subtitle downloads
+    #       Multi-language support
+    #       Integration with Sonarr/Radarr
+    #       Port 6767, URL: http://bazarr.frey
+    #
+    #   - Prowlarr (Indexer Manager):
+    #       Centralized indexer configuration
+    #       Syncs to all *arr apps
+    #       FlareSolverr integration for Cloudflare
+    #       Port 9696, URL: http://prowlarr.frey
+    #
+    #   - Audiobookshelf (Audiobook Server):
+    #       Beautiful audiobook and podcast player
+    #       Progress tracking across devices
+    #       Mobile apps (iOS/Android) with offline download
+    #       OIDC authentication via Authentik
+    #       Port 13378, URL: http://audiobookshelf.frey
+    #
+    #   - qBittorrent (Download Client):
+    #       Torrent download client
+    #       Web-based interface
+    #       Integration with *arr apps
+    #       Optional VPN support
+    #       Port 8080, URL: http://qbittorrent.frey
+    #
+    #   - Jellyseerr (Request System):
+    #       User-friendly media request interface
+    #       Integration with Sonarr/Radarr
+    #       Port 5055, URL: http://jellyseerr.frey
+    #
+    #   - Audiobook Bridge (optional):
+    #       Home Assistant integration for audiobook playback
+    #       Progress sync and control
+    #
+    #   - Mopidy (optional, disabled - no ARM64 image):
+    #       Music player for Home Assistant
+    #       MPD protocol support
+    #       TODO: Build custom ARM64 image
+    #
+    # User/Group: media_manager (uid: 63342)
+    # Configuration: media.services.* in main.yml
+    # Media Storage: /opt/frey/media/{movies,tv,music,audiobooks,podcasts}
+    # Downloads: /opt/frey/downloads
+    # LDAP Setup (Jellyfin): docs/POST_INSTALLATION_MANUAL_STEPS.md
+    # --------------------------------------------------------------------------
     - role: media
       tags: [media]
       when: features.media
 
+    # --------------------------------------------------------------------------
+    # Automation Stack (Home Assistant, n8n, Ollama, Piper, Whisper)
+    # --------------------------------------------------------------------------
+    # Deploys: Home automation, workflow automation, and AI services
+    #
+    # Services:
+    #   - Home Assistant (Smart Home):
+    #       Smart device control and automation
+    #       Integrations for 2000+ devices
+    #       Voice control via Piper/Whisper
+    #       OIDC authentication via Authentik
+    #       Port 8123, URL: http://homeassistant.frey
+    #
+    #   - Piper TTS (Text-to-Speech):
+    #       Natural voice synthesis via Wyoming protocol
+    #       Multiple voices (US English, Australian English)
+    #       Home Assistant integration for announcements
+    #       Port 10200 (Wyoming protocol)
+    #
+    #   - Wyoming Whisper STT (Speech-to-Text):
+    #       Speech recognition via Wyoming protocol
+    #       Multiple model sizes (tiny-int8, base-int8, small-int8)
+    #       Resource-intensive, disabled by default
+    #       Port 10300 (Wyoming protocol)
+    #
+    #   - n8n (Workflow Automation):
+    #       Visual workflow builder (Zapier alternative)
+    #       300+ service integrations
+    #       Scheduling, webhooks, data transformation
+    #       Port 5678, URL: http://n8n.frey
+    #
+    #   - Ollama (Local AI):
+    #       Local Large Language Model inference
+    #       Run Llama, Mistral, and other open models
+    #       No cloud dependency
+    #       Port 11434, URL: http://ai.frey:11434
+    #
+    #   - Open WebUI (AI Chat Interface):
+    #       ChatGPT-like UI for Ollama
+    #       Conversation history
+    #       Model switching
+    #       Port 3002, URL: http://ai.frey
+    #
+    # User/Group: automation_manager (uid: 463288672) and homeassistant_manager (uid: 8123)
+    # Configuration: automation.* and homeassistant.* in main.yml
+    # OIDC Setup (Home Assistant): docs/POST_INSTALLATION_MANUAL_STEPS.md
+    # Voice Services: homeassistant.services.piper and .wyoming_whisper
+    # --------------------------------------------------------------------------
     - role: automation
-      tags: [automation, services, ai]
-      when: features.automation
+      tags: [automation, services, ai, homeassistant, voice]
+      when: features.automation or features.homeassistant
 
+    # --------------------------------------------------------------------------
+    # Bluetooth Audio (Auto-Connection System)
+    # --------------------------------------------------------------------------
+    # Deploys: Bluetooth audio with automatic device connection
+    #
+    # Features:
+    #   - Automatic pairing wizard (frey-bluetooth-pair)
+    #   - Priority-based auto-connection (headphones > car radio)
+    #   - PulseAudio audio routing (output and input)
+    #   - Home Assistant MQTT integration
+    #   - Voice assistant support:
+    #       TTS output to Bluetooth speakers (Piper)
+    #       Voice input from Bluetooth microphone (Whisper)
+    #   - Media playback routing (Jellyfin, Audiobookshelf)
+    #
+    # Management Commands:
+    #   - Pair devices:    sudo frey-bluetooth-pair
+    #   - Check status:    sudo frey-bluetooth-status
+    #   - Force connect:   sudo frey-bluetooth-connect <MAC>
+    #   - View logs:       sudo journalctl -u frey-bluetooth-auto-connect -f
+    #
+    # Configuration: bluetooth_audio.* in main.yml
+    # Documentation: docs/BLUETOOTH_SETUP.md
+    # --------------------------------------------------------------------------
+    - role: bluetooth_audio
+      tags: [bluetooth, audio]
+      when: bluetooth_audio.enabled | default(false)
+
+    # --------------------------------------------------------------------------
+    # Photos Stack (Immich)
+    # --------------------------------------------------------------------------
+    # Deploys: Self-hosted photo management (Google Photos alternative)
+    #
+    # Services:
+    #   - Immich (Photo Management):
+    #       Mobile auto-backup (iOS/Android apps)
+    #       Face recognition and object detection
+    #       Map-based photo browsing
+    #       Timeline and album views
+    #       Hardware acceleration (Raspberry Pi 5 RK3588)
+    #       OAuth authentication via Authentik
+    #       Port 2283, URL: http://immich.frey
+    #
+    #   - Immich PostgreSQL (Database):
+    #       Photo metadata and user data
+    #       Face recognition data
+    #
+    #   - Immich Redis (Cache):
+    #       Job queue and caching
+    #
+    #   - Immich Machine Learning:
+    #       Face detection and recognition
+    #       Object detection
+    #       Smart search
+    #
+    # User/Group: photos_manager (uid: 74686)
+    # Configuration: immich.services.* in main.yml
+    # Photo Storage: /opt/frey/photos/library
+    # OAuth Setup: docs/POST_INSTALLATION_MANUAL_STEPS.md
+    # Mobile Apps: Available on iOS App Store and Google Play
+    # --------------------------------------------------------------------------
     - role: immich
       tags: [photos, immich]
       when: features.immich
 
-    # - role: file_management
-    #   tags: [files]
-    #   when: features.file_management
-
+    # --------------------------------------------------------------------------
+    # Cookbook Stack (Mealie)
+    # --------------------------------------------------------------------------
+    # Deploys: Recipe manager and meal planner
+    #
+    # Services:
+    #   - Mealie (Recipe Manager):
+    #       Recipe scraping from URLs
+    #       Meal planning calendar
+    #       Shopping list generation
+    #       Recipe categorization and tagging
+    #       Multi-user support
+    #       Port 9925, URL: http://cookbook.frey
+    #
+    #   - Mealie PostgreSQL (Database):
+    #       Recipe and meal plan data
+    #
+    # User/Group: cookbook_manager (uid: 74690)
+    # Configuration: cookbook.services.* in main.yml
+    # SSO: Not yet integrated (future enhancement)
+    # --------------------------------------------------------------------------
     - role: cookbook
       tags: [cookbook, services]
       when: features.cookbook
 
-    # - role: piper
-    #   tags: [piper, voice, ai]
-    #   when: features.piper
+    # --------------------------------------------------------------------------
+    # Backup Stack (Future Enhancement)
+    # --------------------------------------------------------------------------
+    # Deploys: Automated backup system
+    #
+    # Status: In development
+    # Configuration: backup.* in main.yml
+    # Currently disabled by default
+    # --------------------------------------------------------------------------
+    - role: backup
+      tags: [backup]
+      when: backup.enabled | default(false)
 
-    # - role: voice_assistant
-    #   tags: [voice, ai]
-    #   when: features.voice_assistant
+    # ==========================================================================
+    # SYSTEM LAYER - System Optimizations
+    # ==========================================================================
 
-    # - role: backup
-    #   tags: [backup]
-    #   when: features.backup
+    # --------------------------------------------------------------------------
+    # System Optimizations (Power Monitoring, SSD)
+    # --------------------------------------------------------------------------
+    # Deploys: System-level optimizations
+    #
+    # Features:
+    #   - Power Monitoring (12V battery setups):
+    #       Monitor battery voltage
+    #       Graceful shutdown on low power
+    #       Configuration: system.power_monitoring.*
+    #
+    #   - SSD Optimization:
+    #       TRIM support for SSDs
+    #       Filesystem optimizations
+    #       Configuration: system.ssd_optimization.*
+    #
+    # Both features are optional and disabled by default
+    # --------------------------------------------------------------------------
+    - role: system
+      tags: [system, optimization]
+      when: system.power_monitoring.enabled | default(false) or system.ssd_optimization.enabled | default(false)
 
-    # - role: power_management
-    #   tags: [power]
-    #   when: features.power_monitoring
-
+  # ==============================================================================
+  # POST-TASKS: Cleanup and finalization after role execution
+  # ==============================================================================
   post_tasks:
+    # --------------------------------------------------------------------------
+    # Copy maintenance scripts to target system
+    # --------------------------------------------------------------------------
+    # Scripts for common maintenance tasks (backups, updates, health checks)
+    # Copied to /opt/frey/scripts/ on the Raspberry Pi
+    # --------------------------------------------------------------------------
     - name: Copy maintenance scripts to target
       copy:
         src: ../scripts/
@@ -127,6 +547,13 @@
         mode: '0755'
       tags: always
 
+    # --------------------------------------------------------------------------
+    # Create maintenance reminder script
+    # --------------------------------------------------------------------------
+    # Generates a script with health check URLs for all deployed services
+    # Available at /opt/frey/README_MAINTENANCE.sh
+    # Useful for quick status checks and troubleshooting
+    # --------------------------------------------------------------------------
     - name: Create maintenance reminder
       ansible.builtin.template:
         src: README_MAINTENANCE.sh.j2
@@ -139,3 +566,27 @@
             'http://portainer.' ~ (network.domain_name | default('local')),
             'http://dockge.' ~ (network.domain_name | default('local'))
           ] + (network.dns_rewrites | default([])) | map(attribute='name') | map('regex_replace', '^(.*)$', 'http://\\1.' ~ (network.domain_name | default('local'))) | list }}
+
+# ==============================================================================
+# DEPLOYMENT COMPLETE
+# ==============================================================================
+# Next Steps:
+#   1. Access http://auth.frey to create Authentik admin account
+#   2. Configure SSO for services (docs/POST_INSTALLATION_MANUAL_STEPS.md)
+#   3. Access services via http://<service>.frey domains
+#   4. (Optional) Enable WiFi roaming (docs/WIFI_ROAMING_SETUP.md)
+#
+# Documentation:
+#   - Quick Setup: docs/QUICK_SETUP.md
+#   - User Guide: docs/USER_GUIDE.md
+#   - Troubleshooting: docs/USER_GUIDE.md#troubleshooting
+#
+# Service URLs:
+#   - Traefik Dashboard: http://traefik.frey:8082
+#   - Authentik SSO: http://auth.frey
+#   - Grafana: http://grafana.frey
+#   - Home Assistant: http://homeassistant.frey
+#   - Jellyfin: http://jellyfin.frey
+#   - Immich: http://immich.frey
+#   - See README.md for complete service list
+# ==============================================================================

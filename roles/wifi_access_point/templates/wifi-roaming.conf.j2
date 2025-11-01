@@ -1,0 +1,110 @@
+# ==============================================================================
+# FREY WIFI ROAMING CONFIGURATION
+# ==============================================================================
+# Configuration file for the automatic WiFi roaming daemon
+# Location: /etc/frey/wifi-roaming.conf
+
+# ==============================================================================
+# Network Interface
+# ==============================================================================
+# Interface used for client WiFi connections (usually wlan0)
+INTERFACE_CLIENT="{{ network.wifi.client_interface | default('wlan0') }}"
+
+# ==============================================================================
+# Scanning Behavior (seconds)
+# ==============================================================================
+# Default scan interval (used in most situations)
+SCAN_INTERVAL_DEFAULT=120
+
+# Aggressive scanning when no WiFi connection
+SCAN_INTERVAL_NO_CONNECTION=30
+
+# Medium scanning when connected but no internet (captive portal, etc.)
+SCAN_INTERVAL_NO_INTERNET=60
+
+# Conservative scanning when everything is working well
+SCAN_INTERVAL_GOOD=600
+
+# ==============================================================================
+# Connection Thresholds
+# ==============================================================================
+# Minimum signal strength (dBm) - don't connect to weaker networks
+MIN_SIGNAL_DBM=-85
+
+# Score difference required to switch networks (prevents constant switching)
+# If new network score is > (current score + this threshold), switch
+SWITCH_THRESHOLD=15
+
+# Timeout for internet verification (seconds)
+INTERNET_TIMEOUT=10
+
+# ==============================================================================
+# Network Preferences
+# ==============================================================================
+# Prioritize saved/known networks over open networks
+PREFER_KNOWN_NETWORKS=true
+
+# Allow connections to open (no password) networks
+ALLOW_OPEN_NETWORKS=true
+
+# Attempt automatic captive portal authentication
+AUTO_PORTAL_AUTH=true
+
+# ==============================================================================
+# MQTT Configuration (Home Assistant / n8n Integration)
+# ==============================================================================
+MQTT_ENABLED=true
+MQTT_BROKER="{{ mqtt.broker | default('localhost') }}"
+MQTT_PORT={{ mqtt.port | default(1883) }}
+MQTT_TOPIC_PREFIX="frey/wifi/roaming"
+
+# MQTT Authentication (optional)
+# MQTT_USERNAME=""
+# MQTT_PASSWORD=""
+
+# ==============================================================================
+# Logging
+# ==============================================================================
+LOG_FILE="/var/log/frey-wifi-roaming.log"
+LOG_LEVEL="INFO"  # DEBUG, INFO, WARN, ERROR
+
+# ==============================================================================
+# Blacklist Patterns (regex)
+# ==============================================================================
+# Networks matching these patterns will never be connected to
+# Useful for filtering out IoT devices, printers, etc.
+BLACKLIST_PATTERNS=(
+    ".*-printer.*"
+    ".*-iot.*"
+    ".*-setup.*"
+    "HP-.*"
+    "Canon_.*"
+    "Brother_.*"
+    "DIRECT-.*"              # WiFi Direct devices
+    ".*_nomap"              # Privacy-focused networks asking not to be mapped
+    ".*\[hidden\].*"        # Hidden SSIDs
+)
+
+# ==============================================================================
+# Whitelist Patterns (optional)
+# ==============================================================================
+# If specified, ONLY networks matching these patterns will be considered
+# Leave empty to allow all networks (subject to blacklist)
+WHITELIST_PATTERNS=(
+    # Examples (commented out by default):
+    # ".*Free.*WiFi.*"
+    # "Starbucks.*"
+    # "Hotel.*"
+)
+
+# ==============================================================================
+# Advanced Settings
+# ==============================================================================
+# Maximum connection attempts before blacklisting network
+MAX_CONNECTION_ATTEMPTS=3
+
+# Blacklist duration after failed connections (seconds)
+BLACKLIST_DURATION=300  # 5 minutes
+
+# Enable experimental features
+EXPERIMENTAL_FEATURES=false

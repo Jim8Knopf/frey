@@ -12,12 +12,12 @@ features:
   authentication: false  # Authentik SSO - enable after initial setup
   file_management: false
   immich: true
-  homeassistant: false
-  backup: false
-  piper: false
+  homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
+  bluetooth_audio: true  # Bluetooth headphones/speakers with auto-connection
+  backup: false  # Automated backup system
   cookbook: true
-  power_monitoring: false
-  voice_assistant: false
+  power_monitoring: false  # Deprecated - use system.power_monitoring.enabled instead
+  voice_assistant: false  # Deprecated - integrated into homeassistant role
 
 # ================================
 # CONFIGURATION
@@ -206,12 +206,20 @@ automation:
     groups: "{{ automation.group.name }}"
   dir: "{{ storage.base_dir }}/automation"
 
-  ollama:
-    port: 11434
-  openwebui:
-    port: 3002
-  n8n:
-    port: 5678
+  services:
+    ollama:
+      enabled: true
+      image: "ollama/ollama:latest"
+      port: 11434
+      gpu_enabled: false
+    openwebui:
+      enabled: true
+      image: "ghcr.io/open-webui/open-webui:main"
+      port: 3002
+    n8n:
+      enabled: true
+      image: "n8nio/n8n:latest"
+      port: 5678
 
 # ================================
 # VOICE ASSISTANT
@@ -474,6 +482,23 @@ media:
       enabled: false
       version: "latest"
 
+    mopidy:
+      enabled: false  # DISABLED: No ARM64-compatible image available
+      # TODO: Build custom ARM64 Mopidy image or use alternative music player
+      # For now, use Jellyfin directly for music playback
+      version: "latest"
+      image: "wernight/mopidy"  # Note: Only supports AMD64
+      port: 6680  # Required for pre-pull task (web interface port)
+      mpd_port: 6600  # MPD protocol for Home Assistant integration
+      http_port: 6680  # Web interface
+
+    audiobook_bridge:
+      enabled: true  # Enable for local audiobook playback with progress sync
+      version: "3.11-slim"
+      image: "python"
+      port: 0  # No port exposed (internal service only)
+      sync_interval: 5  # Progress sync interval in seconds
+
 # ===================================================================
 # PHOTO MANAGEMENT - IMMICH STACK
 # ===================================================================
@@ -548,4 +573,113 @@ cookbook:
       # Features
       enable_meal_planner: true
       recipe_scraping: true
+
+# ===================================================================
+# HOME ASSISTANT - HOME AUTOMATION PLATFORM
+# ===================================================================
+homeassistant:
+  group:
+    name: homeassistant
+    gid: 8123
+  user:
+    name: homeassistant_manager
+    uid: 8123
+    groups: "{{ homeassistant.group.name }}"
+  dir: "{{ storage.base_dir }}/homeassistant"
+
+  services:
+    homeassistant:
+      enabled: true  # Enable after initial setup
+      version: "stable"
+      image: "ghcr.io/home-assistant/home-assistant:{{ homeassistant.services.homeassistant.version | default('stable') }}"
+      port: 8123
+      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # NOTE: OIDC must be configured manually in Home Assistant UI
+      # Settings → Users → Add Integration → OpenID Connect
+      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/homeassistant/"
+      oidc_client_id: "homeassistant"
+
+    piper:
+      enabled: true  # Text-to-Speech via Wyoming protocol
+      version: "latest"
+      image: "rhasspy/wyoming-piper:{{ homeassistant.services.piper.version | default('latest') }}"
+      port: 10200
+      default_voice: "en_US-lessac-medium"
+      voices:
+        - "en_US-lessac-medium"
+        - "en_AU-southern-female"
+
+    wyoming_whisper:
+      enabled: true  # Speech-to-Text (optional, resource-intensive)
+      version: "latest"
+      image: "rhasspy/wyoming-whisper:{{ homeassistant.services.wyoming_whisper.version | default('latest') }}"
+      port: 10300
+      model: "tiny-int8"  # tiny-int8, base-int8, small-int8
+      language: "en"
+
+# ===================================================================
+# SYSTEM - SYSTEM-LEVEL OPTIMIZATIONS
+# ===================================================================
+system:
+  power_monitoring:
+    enabled: false  # Enable for 12V battery-powered setups
+    low_threshold: 11.8
+    critical_threshold: 11.0
+    enable_graceful_shutdown: false
+
+  ssd_optimization:
+    enabled: false  # Enable if running on SSD
+    trim: true
+
+# ===================================================================
+# BLUETOOTH AUDIO - AUTOMATIC DEVICE CONNECTION
+# ===================================================================
+bluetooth_audio:
+  enabled: true  # Enable for Bluetooth audio support
+
+  # Automatic connection settings
+  auto_connect: true
+  scan_interval: 10  # seconds between device scans
+
+  # Paired devices (populated by frey-bluetooth-pair script)
+  devices: []
+    # Example devices (add via frey-bluetooth-pair):
+    # - name: "Headphones"
+    #   mac_address: "AA:BB:CC:DD:EE:FF"
+    #   priority: 100  # Higher = more preferred
+    #   profiles: [a2dp_sink, hsp_hs]  # Audio output + microphone
+    # - name: "Car Radio"
+    #   mac_address: "11:22:33:44:55:66"
+    #   priority: 50
+    #   profiles: [a2dp_sink]  # Audio output only
+
+  # Audio routing configuration
+  audio_routing:
+    default_sink: "bluetooth"    # bluetooth | local | auto
+    fallback_to_local: true      # Use Pi speakers if no Bluetooth connected
+    auto_switch: true            # Automatically switch to Bluetooth when connected
+
+  # Home Assistant integration
+  homeassistant:
+    integration: true                  # Enable MQTT sensors/controls
+    tts_to_bluetooth: true             # Route Piper TTS to Bluetooth speakers
+    voice_from_bluetooth: true         # Use Bluetooth mic for Whisper STT
+    mqtt_topic: "frey/bluetooth"       # MQTT topic prefix
+
+  # Connection settings
+  connection:
+    retry_attempts: 3
+    retry_delay: 5           # seconds between retries
+    connection_timeout: 15   # seconds to wait for connection
+
+# ===================================================================
+# BACKUP - AUTOMATED BACKUP SYSTEM
+# ===================================================================
+backup:
+  enabled: false  # Enable after initial setup
+  schedule:
+    minute: "0"
+    hour: "3"  # 3 AM daily
+  retention_days: 7
+  backup_dir: "{{ storage.base_dir }}/backups"
 

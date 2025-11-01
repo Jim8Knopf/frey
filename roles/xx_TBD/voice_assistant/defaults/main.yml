@@ -1,8 +1,0 @@
----
-# voice_assistant default variables
-voice_assistant:
-  deploy: false
-  wake_word: "computer"
-  porcupine_access_key: "YOUR_PICOVOICE_ACCESS_KEY" # Get a free key from https://console.picovoice.ai/
-  ollama_model: "llama3:latest"
-  piper_voice: "en_US-lessac-medium"

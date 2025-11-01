@@ -2,7 +2,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-{% if automation.ollama.gpu_enabled %}
+{% if automation.services.ollama.gpu_enabled %}
     devices:
       - /dev/kfd
       - /dev/dri
@@ -13,7 +13,7 @@ services:
       - localdns
       - automation_network
     ports:
-      - "{{ automation.ollama.port }}:11434"
+      - "{{ automation.services.ollama.port }}:11434"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -38,7 +38,7 @@ services:
       - localdns
       - automation_network
     ports:
-      - "{{ automation.openwebui.port }}:8080"
+      - "{{ automation.services.openwebui.port }}:8080"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -76,7 +76,7 @@ services:
       - localdns
       - automation_network
     ports:
-      - "{{ automation.n8n.port }}:5678"
+      - "{{ automation.services.n8n.port }}:5678"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -96,6 +96,82 @@ services:
       - N8N_SECURE_COOKIE=false
     volumes:
       - "{{ storage.appdata_dir }}/n8n:/home/node/.n8n"
+
+{% if features.homeassistant | default(false) %}
+  # ==============================================================================
+  # HOME ASSISTANT - HOME AUTOMATION PLATFORM
+  # ==============================================================================
+  {% if homeassistant.services.homeassistant.enabled | default(false) -%}
+  homeassistant:
+    image: "ghcr.io/home-assistant/home-assistant:{{ homeassistant.services.homeassistant.version | default('stable') }}"
+    container_name: homeassistant
+    restart: unless-stopped
+    ports:
+      - "{{ homeassistant.services.homeassistant.port | default(8123) }}:8123"
+    volumes:
+      - "{{ storage.appdata_dir }}/homeassistant:/config"
+      - /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro  # For Bluetooth and other system integrations
+    environment:
+      - TZ={{ network.timezone | default('UTC') }}
+{% if infrastructure.services.authentik.enabled | default(false) %}
+    # OIDC/SSO Configuration (requires manual setup in Home Assistant UI)
+    # Configure via: Settings → Users → Add Integration → OpenID Connect
+    # Issuer URL: {{ network.authentik_public_url }}/application/o/homeassistant/
+    # Client ID: {{ homeassistant.services.homeassistant.oidc_client_id | default('homeassistant') }}
+    # Client Secret: {{ homeassistant_oidc_client_secret }}
+{% endif %}
+    privileged: true  # Required for USB device access (Zigbee, Z-Wave, etc.)
+    networks:
+      proxy:              # For Traefik access
+      localdns:          # For DNS resolution
+      automation_network:  # Automation services network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.homeassistant.rule=Host(`homeassistant.{{ network.domain_name }}`)"
+      - "traefik.http.routers.homeassistant.entrypoints=web"
+      - "traefik.http.services.homeassistant.loadbalancer.server.port=8123"
+  {% endif %}
+
+  {% if homeassistant.services.piper.enabled | default(false) -%}
+  # Piper - Local Text-to-Speech (TTS) using Wyoming protocol
+  piper:
+    image: "rhasspy/wyoming-piper:{{ homeassistant.services.piper.version | default('latest') }}"
+    container_name: piper
+    restart: unless-stopped
+    ports:
+      - "{{ homeassistant.services.piper.port | default(10200) }}:10200"
+    volumes:
+      - "{{ storage.appdata_dir }}/piper:/data"
+    command:
+      --voice {{ homeassistant.services.piper.default_voice | default('en_US-lessac-medium') }}
+      --download-dir /data
+    networks:
+      automation_network:  # Only accessible from automation network
+    labels:
+      - "traefik.enable=false"  # Internal service only
+  {% endif %}
+
+  {% if homeassistant.services.wyoming_whisper.enabled | default(false) -%}
+  # Wyoming Whisper - Local Speech-to-Text (STT) using Faster Whisper
+  wyoming-whisper:
+    image: "rhasspy/wyoming-whisper:{{ homeassistant.services.wyoming_whisper.version | default('latest') }}"
+    container_name: wyoming-whisper
+    restart: unless-stopped
+    ports:
+      - "{{ homeassistant.services.wyoming_whisper.port | default(10300) }}:10300"
+    volumes:
+      - "{{ storage.appdata_dir }}/wyoming-whisper:/data"
+    command:
+      --model {{ homeassistant.services.wyoming_whisper.model | default('tiny-int8') }}
+      --language {{ homeassistant.services.wyoming_whisper.language | default('en') }}
+    networks:
+      automation_network:  # Only accessible from automation network
+    labels:
+      - "traefik.enable=false"  # Internal service only
+  {% endif %}
+{% endif %}
 
 networks:
   proxy:

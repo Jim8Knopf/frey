@@ -1,0 +1,5 @@
+---
+# Default variables for system role
+
+system_power_monitoring_default_enabled: false
+system_ssd_optimization_default_enabled: false
