@@ -1,0 +1,42 @@
+---
+# ==============================================================================
+# BLUETOOTH AUDIO ROLE - DEFAULT VARIABLES
+# ==============================================================================
+
+bluetooth_audio:
+  enabled: false
+  auto_connect: true
+
+  # Scan interval for available devices (seconds)
+  scan_interval: 10
+
+  # Device list (populated during pairing)
+  devices: []
+    # Example:
+    # - name: "Headphones"
+    #   mac_address: "AA:BB:CC:DD:EE:FF"
+    #   priority: 100
+    #   profiles: [a2dp_sink, hsp_hs]  # Audio output + mic
+    # - name: "Car Radio"
+    #   mac_address: "11:22:33:44:55:66"
+    #   priority: 50
+    #   profiles: [a2dp_sink]  # Audio output only
+
+  # Audio routing configuration
+  audio_routing:
+    default_sink: "bluetooth"    # bluetooth | local | auto
+    fallback_to_local: true      # Use Pi audio if no BT connected
+    auto_switch: true            # Automatically switch to BT when connected
+
+  # Home Assistant integration
+  homeassistant:
+    integration: true                  # Enable HA Bluetooth integration
+    tts_to_bluetooth: true             # Route Piper TTS to BT speakers
+    voice_from_bluetooth: true         # Use BT mic for Whisper STT
+    mqtt_topic: "frey/bluetooth"       # MQTT topic prefix
+
+  # Connection settings
+  connection:
+    retry_attempts: 3
+    retry_delay: 5    # seconds
+    connection_timeout: 15  # seconds

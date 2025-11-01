@@ -3,7 +3,7 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "media"  
-    folders: [movies, tv, music, audiobooks, podcasts]
+    folders: [movies, tv, music, audiobooks, podcasts,audiobook-bridge]
     checkVar: [media, storage.base_dir, media.user.name]
 
 

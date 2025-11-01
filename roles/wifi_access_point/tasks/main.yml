@@ -255,6 +255,12 @@
     dest: /usr/local/bin/frey-wifi-tui
     mode: '0755'
 
+- name: Ensure base directory for WiFi connection guide exists
+  ansible.builtin.file:
+    path: "{{ storage.base_dir | default('/opt/frey') }}"
+    state: directory
+    mode: '0755'
+
 - name: Deploy WiFi connection guide
   ansible.builtin.copy:
     src: CONNECT-TO-WIFI.md

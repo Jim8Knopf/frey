@@ -402,6 +402,34 @@
       when: features.automation or features.homeassistant
 
     # --------------------------------------------------------------------------
+    # Bluetooth Audio (Auto-Connection System)
+    # --------------------------------------------------------------------------
+    # Deploys: Bluetooth audio with automatic device connection
+    #
+    # Features:
+    #   - Automatic pairing wizard (frey-bluetooth-pair)
+    #   - Priority-based auto-connection (headphones > car radio)
+    #   - PulseAudio audio routing (output and input)
+    #   - Home Assistant MQTT integration
+    #   - Voice assistant support:
+    #       TTS output to Bluetooth speakers (Piper)
+    #       Voice input from Bluetooth microphone (Whisper)
+    #   - Media playback routing (Jellyfin, Audiobookshelf)
+    #
+    # Management Commands:
+    #   - Pair devices:    sudo frey-bluetooth-pair
+    #   - Check status:    sudo frey-bluetooth-status
+    #   - Force connect:   sudo frey-bluetooth-connect <MAC>
+    #   - View logs:       sudo journalctl -u frey-bluetooth-auto-connect -f
+    #
+    # Configuration: bluetooth_audio.* in main.yml
+    # Documentation: docs/BLUETOOTH_SETUP.md
+    # --------------------------------------------------------------------------
+    - role: bluetooth_audio
+      tags: [bluetooth, audio]
+      when: bluetooth_audio.enabled | default(false)
+
+    # --------------------------------------------------------------------------
     # Photos Stack (Immich)
     # --------------------------------------------------------------------------
     # Deploys: Self-hosted photo management (Google Photos alternative)

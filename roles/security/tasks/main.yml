@@ -181,6 +181,15 @@
 # - Connection tracking (optimized for many WiFi clients)
 # - Security hardening (prevent IP spoofing, ICMP redirects, etc.)
 
+- name: Ensure nf_conntrack module is loaded for connection tracking
+  community.general.modprobe:
+    name: nf_conntrack
+    state: present
+  when: network.wifi is defined
+  tags:
+    - sysctl
+    - wifi_ap
+
 - name: Configure sysctl for IP forwarding and connection tracking
   ansible.builtin.sysctl:
     name: "{{ item.key }}"

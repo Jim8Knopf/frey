@@ -1,0 +1,24 @@
+---
+# ==============================================================================
+# BLUETOOTH AUDIO ROLE - HANDLERS
+# ==============================================================================
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: Restart Bluetooth service
+  ansible.builtin.systemd:
+    name: bluetooth
+    state: restarted
+
+- name: Restart PulseAudio service
+  ansible.builtin.systemd:
+    name: pulseaudio
+    state: restarted
+
+- name: Restart Home Assistant
+  ansible.builtin.command:
+    cmd: docker restart homeassistant
+  when: features.homeassistant | default(false)
+  ignore_errors: yes

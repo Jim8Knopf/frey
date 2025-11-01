@@ -1,0 +1,294 @@
+---
+# ==============================================================================
+# BLUETOOTH AUDIO ROLE - MAIN TASKS
+# ==============================================================================
+# Purpose: Setup comprehensive Bluetooth audio with automatic connection
+#
+# Features:
+#   - Auto-pairing and auto-connection to known devices
+#   - Priority-based device selection (headphones > car radio)
+#   - PulseAudio integration for audio routing
+#   - Home Assistant integration via MQTT
+#   - Voice assistant support (TTS output + STT input via Bluetooth)
+#   - Media playback to Bluetooth speakers
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags bluetooth
+# ==============================================================================
+
+# ==============================================================================
+# PREREQUISITES CHECK
+# ==============================================================================
+
+- name: Assert required Bluetooth variables are defined
+  ansible.builtin.assert:
+    that:
+      - bluetooth_audio is defined
+      - bluetooth_audio.enabled | default(false) | bool
+    msg: "Bluetooth audio is not enabled in configuration"
+
+# ==============================================================================
+# PACKAGE INSTALLATION
+# ==============================================================================
+
+- name: Install Bluetooth stack and audio packages
+  ansible.builtin.apt:
+    name:
+      - bluez                        # Bluetooth protocol stack
+      - bluez-tools                  # Bluetooth command-line tools
+      - pulseaudio                   # Audio server
+      - pulseaudio-module-bluetooth  # PulseAudio Bluetooth support
+      - python3-gi                   # Python GObject bindings (for scripts)
+      - python3-dbus                 # Python D-Bus bindings
+      - alsa-utils                   # ALSA utilities
+      - mosquitto-clients            # MQTT for Home Assistant integration
+    state: present
+    update_cache: yes
+  register: bluetooth_packages
+
+# ==============================================================================
+# BLUETOOTH (BLUEZ) CONFIGURATION
+# ==============================================================================
+
+- name: Deploy BlueZ main configuration
+  ansible.builtin.template:
+    src: bluez-main.conf.j2
+    dest: /etc/bluetooth/main.conf
+    mode: '0644'
+    backup: yes
+  notify: Restart Bluetooth service
+
+- name: Enable and start Bluetooth service
+  ansible.builtin.systemd:
+    name: bluetooth
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+# ==============================================================================
+# PULSEAUDIO CONFIGURATION
+# ==============================================================================
+
+- name: Create PulseAudio system configuration directory
+  ansible.builtin.file:
+    path: /etc/pulse
+    state: directory
+    mode: '0755'
+
+- name: Deploy PulseAudio system daemon configuration
+  ansible.builtin.template:
+    src: pulseaudio-daemon.conf.j2
+    dest: /etc/pulse/daemon.conf
+    mode: '0644'
+    backup: yes
+  notify: Restart PulseAudio service
+
+- name: Deploy PulseAudio default sink/source configuration
+  ansible.builtin.template:
+    src: pulseaudio-default.pa.j2
+    dest: /etc/pulse/default.pa
+    mode: '0644'
+    backup: yes
+  notify: Restart PulseAudio service
+
+- name: Create PulseAudio system user
+  ansible.builtin.user:
+    name: pulse
+    system: yes
+    groups:
+      - audio
+      - bluetooth
+      - pulse-access
+    home: /var/run/pulse
+    shell: /bin/false
+    create_home: no
+  register: pulse_user
+
+- name: Create PulseAudio runtime directory
+  ansible.builtin.file:
+    path: /var/run/pulse
+    state: directory
+    owner: pulse
+    group: pulse
+    mode: '0755'
+
+- name: Deploy PulseAudio systemd service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=PulseAudio System Daemon
+      After=sound.target bluetooth.target
+      Requires=bluetooth.target
+
+      [Service]
+      Type=notify
+      ExecStart=/usr/bin/pulseaudio --system --disallow-module-loading=false
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/pulseaudio.service
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Enable and start PulseAudio system service
+  ansible.builtin.systemd:
+    name: pulseaudio
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+# ==============================================================================
+# BLUETOOTH CONFIGURATION DIRECTORY
+# ==============================================================================
+
+- name: Create Frey Bluetooth configuration directory
+  ansible.builtin.file:
+    path: /etc/frey/bluetooth
+    state: directory
+    mode: '0755'
+
+- name: Create Bluetooth state directory
+  ansible.builtin.file:
+    path: /var/lib/frey/bluetooth
+    state: directory
+    mode: '0755'
+
+# ==============================================================================
+# BLUETOOTH HELPER SCRIPTS
+# ==============================================================================
+
+- name: Deploy Bluetooth pairing helper script
+  ansible.builtin.copy:
+    src: frey-bluetooth-pair.sh
+    dest: /usr/local/bin/frey-bluetooth-pair
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Deploy Bluetooth connection manager script
+  ansible.builtin.copy:
+    src: frey-bluetooth-connect.sh
+    dest: /usr/local/bin/frey-bluetooth-connect
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Deploy Bluetooth status script
+  ansible.builtin.copy:
+    src: frey-bluetooth-status.sh
+    dest: /usr/local/bin/frey-bluetooth-status
+    mode: '0755'
+    owner: root
+    group: root
+
+# ==============================================================================
+# AUTO-CONNECTION DAEMON
+# ==============================================================================
+
+- name: Deploy Bluetooth auto-connection daemon
+  ansible.builtin.copy:
+    src: frey-bluetooth-daemon.sh
+    dest: /usr/local/bin/frey-bluetooth-daemon
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Deploy Bluetooth device priority configuration
+  ansible.builtin.template:
+    src: bluetooth-device-priority.conf.j2
+    dest: /etc/frey/bluetooth/device-priority.conf
+    mode: '0644'
+
+- name: Deploy Bluetooth auto-connection systemd service
+  ansible.builtin.template:
+    src: bluetooth-auto-connect.service.j2
+    dest: /etc/systemd/system/frey-bluetooth-auto-connect.service
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Enable and start Bluetooth auto-connection service
+  ansible.builtin.systemd:
+    name: frey-bluetooth-auto-connect
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+# ==============================================================================
+# HOME ASSISTANT INTEGRATION
+# ==============================================================================
+
+- name: Create Home Assistant packages directory
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/homeassistant/packages"
+    state: directory
+    mode: '0755'
+    owner: "{{ homeassistant.user.uid | default(8123) }}"
+    group: "{{ homeassistant.group.gid | default(8123) }}"
+  when:
+    - bluetooth_audio.homeassistant.integration | default(true)
+    - features.homeassistant | default(false)
+
+- name: Deploy Home Assistant Bluetooth configuration
+  ansible.builtin.template:
+    src: homeassistant-bluetooth.yaml.j2
+    dest: "{{ storage.appdata_dir }}/homeassistant/packages/bluetooth.yaml"
+    mode: '0644'
+  when:
+    - bluetooth_audio.homeassistant.integration | default(true)
+    - features.homeassistant | default(false)
+  notify: Restart Home Assistant
+
+# ==============================================================================
+# VOICE ASSISTANT INTEGRATION
+# ==============================================================================
+
+- name: Create voice assistant audio routing script
+  ansible.builtin.template:
+    src: voice-assistant-audio-router.sh.j2
+    dest: /usr/local/bin/frey-voice-audio-router
+    mode: '0755'
+  when:
+    - bluetooth_audio.homeassistant.voice_from_bluetooth | default(false)
+    - features.homeassistant | default(false)
+
+# ==============================================================================
+# DISPLAY STATUS
+# ==============================================================================
+
+- name: Display Bluetooth audio setup status
+  ansible.builtin.debug:
+    msg: |
+      ======================================
+      Bluetooth Audio System
+      ======================================
+      Status: Enabled
+      Auto-connection: {{ bluetooth_audio.auto_connect | default(true) }}
+
+      Pairing Command:
+        sudo frey-bluetooth-pair
+
+      Management Commands:
+        - Check status: sudo frey-bluetooth-status
+        - Force connect: sudo frey-bluetooth-connect <device>
+        - View daemon logs: sudo journalctl -u frey-bluetooth-auto-connect -f
+
+      Configuration:
+        - BlueZ: /etc/bluetooth/main.conf
+        - PulseAudio: /etc/pulse/default.pa
+        - Device Priority: /etc/frey/bluetooth/device-priority.conf
+
+      Home Assistant Integration: {{ 'Enabled' if (bluetooth_audio.homeassistant.integration | default(true)) else 'Disabled' }}
+      {% if bluetooth_audio.homeassistant.integration | default(true) %}
+      MQTT Topics:
+        - Status: frey/bluetooth/status/#
+        - Control: frey/bluetooth/control/#
+      {% endif %}
+
+      Next Steps:
+        1. Pair devices: sudo frey-bluetooth-pair
+        2. Test connection: sudo frey-bluetooth-status
+        3. Check auto-connection: sudo journalctl -u frey-bluetooth-auto-connect -f
+
+      Documentation: docs/BLUETOOTH_SETUP.md

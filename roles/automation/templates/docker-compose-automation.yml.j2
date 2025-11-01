@@ -2,7 +2,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-{% if automation.ollama.gpu_enabled %}
+{% if automation.services.ollama.gpu_enabled %}
     devices:
       - /dev/kfd
       - /dev/dri
@@ -13,7 +13,7 @@ services:
       - localdns
       - automation_network
     ports:
-      - "{{ automation.ollama.port }}:11434"
+      - "{{ automation.services.ollama.port }}:11434"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -38,7 +38,7 @@ services:
       - localdns
       - automation_network
     ports:
-      - "{{ automation.openwebui.port }}:8080"
+      - "{{ automation.services.openwebui.port }}:8080"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -76,7 +76,7 @@ services:
       - localdns
       - automation_network
     ports:
-      - "{{ automation.n8n.port }}:5678"
+      - "{{ automation.services.n8n.port }}:5678"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
