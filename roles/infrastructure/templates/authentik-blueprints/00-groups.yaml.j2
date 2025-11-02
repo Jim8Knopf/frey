@@ -59,6 +59,16 @@ entries:
       attributes:
         description: "Users who can access Audiobookshelf"
 
+  - model: authentik_core.group
+    id: audiobookshelf-users-group
+    identifiers:
+      name: audiobookshelf_admin
+    attrs:
+      name: audiobookshelf_admin
+      is_superuser: true
+      attributes:
+        description: "Admin user for Audiobookshelf"
+
   # Grafana Groups
   - model: authentik_core.group
     id: grafana-viewers-group

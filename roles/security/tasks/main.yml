@@ -382,6 +382,16 @@
   tags:
     - firewall
     - ufw
+    
+- name: Allow Docker traffic through UFW
+  ufw:
+    rule: allow
+    port: "6881"
+    proto: "{{ item }}"
+    comment: "DOCKER: qBittorrent torrent traffic"
+  loop:
+    - tcp
+    - udp
 
 # ------------------------------------------------------------------------------
 # 5. NAT CONFIGURATION (Internet Passthrough for WiFi AP)

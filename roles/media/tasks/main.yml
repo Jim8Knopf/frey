@@ -49,6 +49,25 @@
     backup: yes
   register: compose_template_result
 
+- name: Stop qBittorrent container before config modification
+  community.docker.docker_container:
+    name: "{{ media.services.qbittorrent.container_name }}"
+    state: stopped
+  when: not media.vpn.enabled
+
+- name: Disable qBittorrent proxy if VPN is disabled
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^Proxy\\Profiles\\BitTorrent='
+    line: 'Proxy\\Profiles\\BitTorrent=false'
+  when: not media.vpn.enabled
+
+- name: Start qBittorrent container after config modification
+  community.docker.docker_container:
+    name: "{{ media.services.qbittorrent.container_name }}"
+    state: started
+  when: not media.vpn.enabled
+
 - name: Show rendered compose
   ansible.builtin.shell: |
     nl -ba /opt/frey/stacks/media/docker-compose.yml

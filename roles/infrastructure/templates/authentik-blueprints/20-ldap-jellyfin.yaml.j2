@@ -42,7 +42,7 @@ entries:
         docker_map_ports: true
         docker_labels:
           traefik.enable: "false"
-        authentik_host: http://authentik_server:9000
+        authentik_host: http://auth.{{ network.domain_name }}
         authentik_host_insecure: true
 
   # Application for Jellyfin

@@ -23,15 +23,21 @@ entries:
         - matching_mode: strict
           url: http://audiobookshelf.{{ network.domain_name }}/auth/openid/callback
         - matching_mode: strict
+          url: http://audiobookshelf.{{ network.domain_name }}/audiobookshelf/auth/openid/callback
+        - matching_mode: strict
           url: http://audiobookshelf.{{ network.domain_name }}/auth/openid/mobile-redirect
         # LAN IP redirects (client_interface_ip - accessible from LAN)
         - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:13378/auth/openid/callback
         - matching_mode: strict
+          url: http://{{ network.wifi.client_interface_ip }}:13378/audiobookshelf/auth/openid/callback
+        - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:13378/auth/openid/mobile-redirect
         # WiFi AP IP redirects (works from WiFi clients)
         - matching_mode: strict
           url: http://{{ network.wifi.ip }}:13378/auth/openid/callback
+        - matching_mode: strict
+          url: http://{{ network.wifi.ip }}:13378/audiobookshelf/auth/openid/callback
         - matching_mode: strict
           url: http://{{ network.wifi.ip }}:13378/auth/openid/mobile-redirect
         # Mobile app redirect
@@ -46,6 +52,7 @@ entries:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
       include_claims_in_id_token: true
 
   # Application for Audiobookshelf

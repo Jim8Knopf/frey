@@ -9,7 +9,7 @@ features:
   media: true
   monitoring: true
   automation: true
-  authentication: false  # Authentik SSO - enable after initial setup
+  authentication: true  # Authentik SSO - enable after initial setup
   file_management: false
   immich: true
   homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
@@ -406,7 +406,7 @@ media:
       # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
       # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
       # Uses internal Docker service name for reliable communication across networks
-      ldap_server: "authentik-ldap-outpost"
+      ldap_server: "ak-outpost-jellyfin-ldap-outpost"
       ldap_port: 389
       ldap_base_dn: "dc=ldap,dc=goauthentik,dc=io"
       ldap_bind_user: "cn=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
