@@ -1,0 +1,18 @@
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country={{ network.wifi.country | default('AU') }}
+
+# DISABLE P2P to prevent interface conflicts with WiFi roaming
+p2p_disabled=1
+
+{% if network.wifi.roaming.known_networks is defined %}
+{% for wifi_network in network.wifi.roaming.known_networks %}
+network={
+    ssid="{{ wifi_network.ssid }}"
+    {% if wifi_network.password %}psk="{{ wifi_network.password }}"
+    {% else %}key_mgmt=NONE
+    {% endif %}
+    priority={{ wifi_network.priority | default(1) }}
+}
+{% endfor %}
+{% endif %}

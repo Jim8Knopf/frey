@@ -29,8 +29,8 @@
 # Add your known networks below
 # One network per line, format: SSID|PASSWORD|PRIORITY
 
-{% if known_wifi_networks is defined %}
-{% for network in known_wifi_networks %}
+{% if networks.wifi.known is defined %}
+{% for network in networks.wifi.known %}
 {{ network.ssid }}|{{ network.password | default('') }}|{{ network.priority | default(50) }}
 {% endfor %}
 {% endif %}

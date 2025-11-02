@@ -1,3 +1,6 @@
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --vault-password-file .vault_pass
+---
+
 # 🏰 Frey - Raspberry Pi 5 Home Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -269,7 +272,7 @@ network:
       mqtt_topic: "frey/wifi/roaming"
 
 # Pre-configured networks
-known_wifi_networks:
+networks.wifi.known:
   - ssid: "Home WiFi"
     password: "myPassword123"
     priority: 100

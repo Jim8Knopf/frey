@@ -1,0 +1,15 @@
+[Unit]
+Description=WPA supplicant for {{ network.wifi.client_interface }}
+After=network.target
+Before=network-online.target frey-wifi-roaming.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/sbin/wpa_supplicant -c /etc/wpa_supplicant/wpa_supplicant-{{ network.wifi.client_interface }}.conf -i {{ network.wifi.client_interface }} -D nl80211,wext
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

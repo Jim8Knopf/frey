@@ -1,0 +1,10 @@
+#!/bin/bash
+# .git/hooks/post-commit
+
+FILE_PATTERN="group_vars/all/secrets.yml"
+ENCRYPTED_PATTERN='^\$ANSIBLE_VAULT'
+
+if [ -f "$FILE_PATTERN" ] && head -1 "$FILE_PATTERN" | grep -q '$ANSIBLE_VAULT'; then
+    echo "💡 Remember: Your secrets.yml is encrypted. To edit:"
+    echo "   ansible-vault edit $FILE_PATTERN --vault-password-file .vault_pass"
+fi

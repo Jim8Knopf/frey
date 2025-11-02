@@ -163,7 +163,7 @@ Use this checklist to track your deployment and configuration progress.
 ### Enable WiFi Roaming
 - [ ] Set `network.wifi.roaming.enabled: true` in main.yml
 - [ ] Configure `client_interface: "wlan0"` (or your WiFi interface)
-- [ ] (Optional) Add known networks to `known_wifi_networks` list
+- [ ] (Optional) Add known networks to `networks.wifi.known` list
 - [ ] Deploy: `ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags wifi`
 - [ ] Verify service: `ssh frey "sudo systemctl status frey-wifi-roaming"`
 - [ ] Check logs: `ssh frey "sudo journalctl -u frey-wifi-roaming -f"`
