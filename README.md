@@ -1,5 +1,4 @@
-ansible-playbook site.yml --vault-password-file .vault_pass
-
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --vault-password-file .vault_pass
 ---
 
 # 🏰 Frey - Raspberry Pi 5 Home Server

@@ -193,8 +193,8 @@ media:
         - "{{ storage.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
       environment:
         - "POSTGRES_DB=jellystat"
-        - "POSTGRES_USER=jellystat"
-        - "POSTGRES_PASSWORD=jellystat"
+        - "POSTGRES_USER={{ media.services.jellystat.postgres.user }}"
+        - "POSTGRES_PASSWORD={{ media.services.jellystat.postgres.password }}"
 
     ytdl-sub:
       enabled: false

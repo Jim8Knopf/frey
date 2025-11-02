@@ -69,9 +69,8 @@ network:
     
     # Interface configuration
     interface: "wlan1"             # WiFi interface for AP mode
-    # TODO what about ethernet
-    client_interface: "wlan0" # Client interface for roaming
-
+    client_interface: "wlan0"      # Client interface for roaming
+    client_interface_ip: "192.168.0.252" #TODO Client interface IP (for authentik)
     roaming:
       enabled: true
       client_interface: "wlan0"  # Interface for connecting to public WiFi
@@ -230,9 +229,8 @@ automation:
 # VOICE ASSISTANT
 # ================================
 voice_assistant:
-  deploy: false
+  deploy: true
   wake_word: "frey"
-  porcupine_access_key: "YOUR_PICOVOICE_ACCESS_KEY"
   ollama_model: "llama3:latest"
   piper_voice: "en_US-lessac-medium"
   piper_voices:
