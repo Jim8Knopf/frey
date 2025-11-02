@@ -69,8 +69,13 @@ network:
     
     # Interface configuration
     interface: "wlan1"             # WiFi interface for AP mode
-    client_interface: "eth0"       # Interface for internet connection
-    client_interface_ip: "192.168.0.252" #TODO Client interface IP
+    # TODO what about ethernet
+    client_interface: "wlan0" # Client interface for roaming
+
+    roaming:
+      enabled: true
+      client_interface: "wlan0"  # Interface for connecting to public WiFi
+      mqtt_topic: "frey/wifi/roaming"
     
     # WiFi radio settings
     channel: 7                     # WiFi channel (1-11 for 2.4GHz)

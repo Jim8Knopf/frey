@@ -33,7 +33,7 @@ network:
       mqtt_topic: "frey/wifi/roaming"
 
 # Optional: Define known networks
-known_wifi_networks:
+networks.wifi.known:
   - ssid: "Home WiFi"
     password: "mySecurePassword123"
     priority: 100  # Highest priority
@@ -437,7 +437,7 @@ sudo systemctl restart hostapd
 - **Open Networks:** System will connect to open WiFi if `ALLOW_OPEN_NETWORKS=true`
 - **Auto-Connect Risk:** Connecting to any open WiFi has security implications
 - **Recommendation:** Use VPN when on public WiFi
-- **Known Networks:** Use `known_wifi_networks` to limit to trusted networks only
+- **Known Networks:** Use `networks.wifi.known` to limit to trusted networks only
 
 ### Restrict to Known Networks Only
 

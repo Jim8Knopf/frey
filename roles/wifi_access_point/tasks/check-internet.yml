@@ -1,0 +1,26 @@
+---
+- name: Check internet connectivity
+  block:
+    - name: Attempt to connect to a reliable internet host
+      ansible.builtin.uri:
+        url: "http://connectivity-check.ubuntu.com/"
+        method: GET
+        timeout: 5
+        status_code: 200
+      register: internet_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Set internet_available fact based on result
+      ansible.builtin.set_fact:
+        internet_available: "{{ internet_check.status == 200 }}"
+      when: internet_check is defined
+
+  rescue:
+    - name: Set internet_available to false if check fails
+      ansible.builtin.set_fact:
+        internet_available: false
+
+- name: Display connectivity status
+  ansible.builtin.debug:
+    msg: "Internet connectivity: {{ internet_available | default(false) }}"

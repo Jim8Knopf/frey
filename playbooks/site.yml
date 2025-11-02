@@ -38,6 +38,13 @@
   # PRE-TASKS: Setup and preparation before role execution
   # ==============================================================================
   pre_tasks:
+
+    # TODO
+    - name: Check for internet connectivity
+      ansible.builtin.shell: ping -c 1 8.8.8.8
+      register: internet_connection
+      failed_when: false
+      changed_when: false
     # --------------------------------------------------------------------------
     # FIX: Remove conflicting Docker APT sources
     # --------------------------------------------------------------------------
@@ -78,7 +85,9 @@
       apt:
         update_cache: yes
         cache_valid_time: 3600
+      ignore_errors: true
       tags: always
+
 
   # ==============================================================================
   # ROLES: Service deployment in dependency order

@@ -56,6 +56,11 @@ interface {{ network.wifi.client_interface }}
 # If this interface goes down, system falls back to other interfaces
 metric 100
 
+# DISABLE WPA SUPPLICANT HOOK
+# The Frey WiFi Roaming daemon handles WPA supplicant for this interface.
+# This prevents dhcpcd from interfering with the roaming service.
+nohook wpa_supplicant
+
 # ------------------------------------------------------------------------------
 # ACCESS POINT INTERFACE CONFIGURATION (WiFi AP)
 # ------------------------------------------------------------------------------

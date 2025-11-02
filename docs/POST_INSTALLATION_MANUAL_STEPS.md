@@ -196,7 +196,7 @@ The WiFi Automatic Roaming System provides intelligent, hands-free WiFi connecti
          mqtt_topic: "frey/wifi/roaming"
 
    # Optional: Add known networks
-   known_wifi_networks:
+   networks.wifi.known:
      - ssid: "Home WiFi"
        password: "myPassword123"
        priority: 100

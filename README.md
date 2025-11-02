@@ -269,7 +269,7 @@ network:
       mqtt_topic: "frey/wifi/roaming"
 
 # Pre-configured networks
-known_wifi_networks:
+networks.wifi.known:
   - ssid: "Home WiFi"
     password: "myPassword123"
     priority: 100

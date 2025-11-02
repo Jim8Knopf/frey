@@ -19,11 +19,18 @@
   when:
     - (network.wifi.interface == ansible_default_ipv4.interface) and (force_apply | default(false) | bool) == false
 
+- name: Check for internet connectivity
+  ansible.builtin.shell: ping -c 1 8.8.8.8
+  register: internet_connection
+  failed_when: false
+  changed_when: false
+
 - name: Install packages required for AP
   ansible.builtin.apt:
     name: "{{ wifi_ap_packages | default(['hostapd','dnsmasq','rfkill','iw','dhcpcd5','wpasupplicant','dialog']) }}"
     state: present
     update_cache: yes
+  when: internet_connection.rc == 0
 
 - name: Check which conflicting services exist
   ansible.builtin.systemd:
@@ -330,94 +337,184 @@
       - Documentation: {{ storage.base_dir | default('/opt/frey') }}/CONNECT-TO-WIFI.md
 
 # ==============================================================================
-# AUTOMATIC WIFI ROAMING SYSTEM
+# KERNEL-LEVEL P2P DISABLE (REQUIRED FOR WIFI ROAMING)
 # ==============================================================================
 
-- name: Install WiFi roaming dependencies
-  ansible.builtin.apt:
-    name:
-      - w3m                  # Text browser for captive portals
-      - jq                   # JSON parsing for network history
-      - mosquitto-clients    # MQTT for Home Assistant integration
-    state: present
-    update_cache: no
-  when: network.wifi.roaming.enabled | default(false)
-
-- name: Create Frey configuration directory
-  ansible.builtin.file:
-    path: /etc/frey
-    state: directory
-    mode: '0755'
-  when: network.wifi.roaming.enabled | default(false)
-
-- name: Create Frey state directory
-  ansible.builtin.file:
-    path: /var/lib/frey
-    state: directory
-    mode: '0755'
-  when: network.wifi.roaming.enabled | default(false)
-
-- name: Deploy WiFi roaming utility scripts
+- name: Disable P2P at kernel level for future reboots
   ansible.builtin.copy:
-    src: "{{ item }}"
-    dest: "/usr/local/bin/{{ item }}"
-    mode: '0755'
-  loop:
-    - frey-wifi-internet-verify.sh
-    - frey-wifi-captive-portal-auto.sh
-    - frey-wifi-network-scorer.sh
-    - frey-wifi-roaming-daemon.sh
-  when: network.wifi.roaming.enabled | default(false)
-
-- name: Deploy WiFi roaming configuration
-  ansible.builtin.template:
-    src: wifi-roaming.conf.j2
-    dest: /etc/frey/wifi-roaming.conf
+    dest: /etc/modprobe.d/disable-p2p.conf
+    content: "options brcmfmac p2p_disable=1"
     mode: '0644'
   when: network.wifi.roaming.enabled | default(false)
 
-- name: Deploy known networks configuration
-  ansible.builtin.template:
-    src: known-networks.conf.j2
-    dest: /etc/frey/known-networks.conf
-    mode: '0600'
-  when: network.wifi.roaming.enabled | default(false)
+- name: Create P2P cleanup service for next boot
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/frey-p2p-cleanup.service
+    content: |
+      [Unit]
+      Description=Frey P2P Interface Cleanup
+      After=network.target
+      Before=wpa_supplicant-{{ network.wifi.client_interface }}.service frey-wifi-roaming.service
 
-- name: Deploy WiFi roaming systemd service
-  ansible.builtin.template:
-    src: frey-wifi-roaming.service.j2
-    dest: /etc/systemd/system/frey-wifi-roaming.service
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/bash -c 'iw dev | grep "P2P-device" | awk "{print \$2}" | xargs -r -I {} iw dev {} del'
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
     mode: '0644'
   when: network.wifi.roaming.enabled | default(false)
   notify: Reload systemd
 
-- name: Enable and start WiFi roaming service
+- name: Enable P2P cleanup service
   ansible.builtin.systemd:
-    name: frey-wifi-roaming
+    name: frey-p2p-cleanup
+    enabled: yes
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Attempt safe P2P removal (won't break AP connection)
+  ansible.builtin.shell:
+    cmd: iw dev | grep "P2P-device" | awk '{print $2}' | xargs -r -I {} iw dev {} del
+  register: p2p_remove_attempt
+  changed_when: p2p_remove_attempt.rc == 0
+  failed_when: false
+  when: network.wifi.roaming.enabled | default(false)
+
+# ==============================================================================
+# AUTOMATIC WIFI ROAMING SYSTEM
+# WPA_SUPPLICANT SETUP FOR CLIENT INTERFACE (Required for WiFi Roaming)
+# ==============================================================================
+
+- name: Debug client interface variable
+  ansible.builtin.debug:
+    msg: "Client interface: {{ network.wifi.client_interface }}"
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Ensure client interface is up
+  ansible.builtin.command:
+    cmd: ip link set {{ network.wifi.client_interface }} up
+  changed_when: true
+  failed_when: false
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Clean up P2P interface conflicts
+  ansible.builtin.shell:
+    cmd: |
+      # Remove any existing P2P interfaces
+      for iface in $(iw dev | awk '/P2P-device/ {print $2}'); do
+        iw dev "$iface" del 2>/dev/null || true
+      done
+      # Ensure wlan0 is in managed mode
+      iw dev {{ network.wifi.client_interface }} set type managed 2>/dev/null || true
+  when: network.wifi.roaming.enabled | default(false)
+  changed_when: true
+
+- name: Check if client interface exists
+  ansible.builtin.command:
+    cmd: ip link show {{ network.wifi.client_interface }}
+  register: interface_check
+  changed_when: false
+  failed_when: interface_check.rc != 0
+  when: network.wifi.roaming.enabled | default(false)
+
+- name: Deploy wpa_supplicant configuration for client interface
+  ansible.builtin.template:
+    src: wpa_supplicant-wlan0.conf.j2
+    dest: /etc/wpa_supplicant/wpa_supplicant-{{ network.wifi.client_interface }}.conf
+    mode: '0600'
+  when: 
+    - network.wifi.roaming.enabled | default(false)
+    - interface_check.rc == 0
+
+- name: Deploy wpa_supplicant systemd service for client interface
+  ansible.builtin.template:
+    src: wpa_supplicant-wlan0.service.j2
+    dest: /etc/systemd/system/wpa_supplicant-{{ network.wifi.client_interface }}.service
+    mode: '0644'
+  when: 
+    - network.wifi.roaming.enabled | default(false)
+    - interface_check.rc == 0
+  notify: Reload systemd
+
+- name: Enable and start wpa_supplicant for client interface
+  ansible.builtin.systemd:
+    name: wpa_supplicant-{{ network.wifi.client_interface }}
     enabled: yes
     state: started
     daemon_reload: yes
+  when: 
+    - network.wifi.roaming.enabled | default(false)
+    - interface_check.rc == 0
+  register: wpa_service_start
+
+- name: Check wpa_supplicant service status
+  ansible.builtin.systemd:
+    name: wpa_supplicant-{{ network.wifi.client_interface }}
+  register: wpa_service_status
+  when: 
+    - network.wifi.roaming.enabled | default(false)
+    - interface_check.rc == 0
+  changed_when: false
+
+- name: Debug wpa_supplicant service status
+  ansible.builtin.debug:
+    msg: "wpa_supplicant service state: {{ wpa_service_status.status.ActiveState }}"
+  when: 
+    - network.wifi.roaming.enabled | default(false)
+    - interface_check.rc == 0
+
+- name: Wait for wpa_supplicant control interface (with fallback)
+  block:
+    - name: Wait for wpa_supplicant control interface
+      ansible.builtin.wait_for:
+        path: /var/run/wpa_supplicant/{{ network.wifi.client_interface }}
+        timeout: 15
+      when: 
+        - network.wifi.roaming.enabled | default(false)
+        - interface_check.rc == 0
+
+  rescue:
+    - name: Check if wpa_supplicant process is running
+      ansible.builtin.shell:
+        cmd: ps aux | grep wpa_supplicant | grep {{ network.wifi.client_interface }} || echo "NOT_RUNNING"
+      register: wpa_process_check
+      changed_when: false
+      when: network.wifi.roaming.enabled | default(false)
+
+    - name: Show wpa_supplicant process status
+      ansible.builtin.debug:
+        msg: "wpa_supplicant process status: {{ wpa_process_check.stdout }}"
+      when: network.wifi.roaming.enabled | default(false)
+
+    - name: Check wpa_supplicant logs
+      ansible.builtin.shell:
+        cmd: journalctl -u wpa_supplicant-{{ network.wifi.client_interface }} -n 10 --no-pager || echo "NO_LOGS"
+      register: wpa_logs
+      changed_when: false
+      when: network.wifi.roaming.enabled | default(false)
+
+    - name: Show wpa_supplicant logs
+      ansible.builtin.debug:
+        msg: "wpa_supplicant logs: {{ wpa_logs.stdout }}"
+      when: network.wifi.roaming.enabled | default(false)
+
+    - name: Continue despite wpa_supplicant control interface issue
+      ansible.builtin.debug:
+        msg: "Continuing despite wpa_supplicant control interface not being ready"
+      when: network.wifi.roaming.enabled | default(false)
+
+- name: Test wpa_supplicant connectivity (optional)
+  ansible.builtin.command:
+    cmd: wpa_cli -i {{ network.wifi.client_interface }} status
+  register: wpa_cli_test
+  changed_when: false
+  failed_when: false  # Don't fail the playbook if this doesn't work
   when: network.wifi.roaming.enabled | default(false)
 
-- name: Display WiFi roaming status
+- name: Debug wpa_cli test result
   ansible.builtin.debug:
-    msg: |
-      ======================================
-      WiFi Automatic Roaming System
-      ======================================
-      Status: {{ 'Enabled' if (network.wifi.roaming.enabled | default(false)) else 'Disabled' }}
-      {% if network.wifi.roaming.enabled | default(false) %}
-      Service: frey-wifi-roaming.service
-      Config: /etc/frey/wifi-roaming.conf
-      Known Networks: /etc/frey/known-networks.conf
-
-      Control Commands:
-      - Check status: sudo systemctl status frey-wifi-roaming
-      - View logs: sudo journalctl -u frey-wifi-roaming -f
-      - Stop service: sudo systemctl stop frey-wifi-roaming
-      - Start service: sudo systemctl start frey-wifi-roaming
-
-      MQTT Topics (Home Assistant):
-      - Status: {{ network.wifi.roaming.mqtt_topic | default('frey/wifi/roaming') }}/status/#
-      - Control: {{ network.wifi.roaming.mqtt_topic | default('frey/wifi/roaming') }}/control/#
-      {% endif %}
+    msg: "wpa_cli test result: {{ wpa_cli_test.stdout }}"
+  when: 
+    - network.wifi.roaming.enabled | default(false)
+    - wpa_cli_test is defined

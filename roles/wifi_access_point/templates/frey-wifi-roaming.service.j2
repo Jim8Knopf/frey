@@ -8,7 +8,7 @@ After=hostapd.service dnsmasq.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/frey-wifi-roaming-daemon --foreground
+ExecStart=/usr/local/bin/frey-wifi-roaming-daemon.sh --foreground
 Restart=always
 RestartSec=10
 StandardOutput=journal
