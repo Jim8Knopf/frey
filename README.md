@@ -1,3 +1,7 @@
+ansible-playbook site.yml --vault-password-file .vault_pass
+
+---
+
 # 🏰 Frey - Raspberry Pi 5 Home Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
