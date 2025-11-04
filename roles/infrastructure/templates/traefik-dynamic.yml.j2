@@ -1,0 +1,17 @@
+# Traefik Dynamic Configuration
+# Middlewares for routing customization
+
+http:
+  middlewares:
+    local-ipwhitelist:
+      ipWhiteList:
+        sourceRange:
+          - "10.20.0.0/24"  # WiFi network
+          - "10.20.2.0/24"  # Media network
+          - "172.30.4.0/24" # Library network
+
+    large-uploads:
+      buffering:
+        maxRequestBodyBytes: 5368709120  # 5 GB - for large file uploads (audiobooks, drone footage)
+        maxResponseBodyBytes: 5368709120  # 5 GB
+        memRequestBodyBytes: 1048576      # 1 MB buffered in memory

@@ -6,16 +6,6 @@ api:
   dashboard: true
   insecure: false  # Secure dashboard access
 
-# Middleware configurations
-http:
-  middlewares:
-    local-ipwhitelist:
-      ipWhiteList:
-        sourceRange:
-          - "10.20.0.0/24"  # WiFi network
-          - "10.20.2.0/24"  # Media network
-          - "172.30.4.0/24" # Library network
-
 entryPoints:
   web:
     address: ":80"
@@ -47,7 +37,10 @@ providers:
     exposedByDefault: false  # Security: opt-in for container exposure
     network: proxy          # Use proxy network for routing
     watch: true
-    
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
 log:
   level: INFO  # Change to DEBUG for troubleshooting
 

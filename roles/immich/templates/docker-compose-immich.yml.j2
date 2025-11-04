@@ -57,6 +57,7 @@ services:
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.immich.rule=Host(`immich.{{ network.domain_name }}`)"
       - "traefik.http.routers.immich.entrypoints=web"
+      - "traefik.http.routers.immich.middlewares=large-uploads@file"
       - "traefik.http.services.immich.loadbalancer.server.port=2283"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:2283/api/server/ping || exit 1"]

@@ -75,6 +75,7 @@ network:
       enabled: true
       client_interface: "wlan0"  # Interface for connecting to public WiFi
       mqtt_topic: "frey/wifi/roaming"
+      known_networks: "{{ wifi_ap.known_networks }}"  # From secrets.yml
     
     # WiFi radio settings
     channel: 7                     # WiFi channel (1-11 for 2.4GHz)
@@ -341,7 +342,7 @@ infrastructure:
         http: 5001
     authentik:
       enabled: true  # Enable after initial infrastructure setup
-      version: "latest"
+      version: "2025.2.4"  # Pinned version for reproducible deployments
       port: 9300  # Changed from 9000 to avoid conflict with Portainer
       port_https: 9443
       postgres_version: "16-alpine"
@@ -406,12 +407,26 @@ media:
       # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
       # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
       # Uses internal Docker service name for reliable communication across networks
+      # NOTE: Configuration is managed via XML file (plugin doesn't support env vars)
       ldap_server: "ak-outpost-jellyfin-ldap-outpost"
-      ldap_port: 389
+      ldap_port: 3389                # Authentik LDAP outpost uses non-standard port 3389 (not 389)
+      ldap_use_ssl: false            # No SSL for internal Docker network communication
+      ldap_use_starttls: false       # No STARTTLS needed
+      ldap_skip_ssl_verify: false    # N/A when SSL disabled
       ldap_base_dn: "dc=ldap,dc=goauthentik,dc=io"
       ldap_bind_user: "cn=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
       ldap_search_filter: "(memberOf=cn=jellyfin_users,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
+      ldap_admin_base_dn: ""         # Same as ldap_base_dn (empty uses default)
       ldap_admin_filter: "(memberOf=cn=jellyfin_admins,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
+      # User creation and library access settings
+      ldap_create_users: true        # Auto-create Jellyfin users on first LDAP login
+      ldap_enable_all_folders: true  # Grant LDAP users access to all media libraries
+      # LDAP attribute mappings (standard Authentik LDAP schema)
+      ldap_search_attributes: "uid, cn, mail, displayName"
+      ldap_uid_attribute: "uid"
+      ldap_username_attribute: "cn"
+      ldap_password_attribute: "userPassword"
+      ldap_allow_pass_change: false  # Users change passwords in Authentik, not Jellyfin
     
     jellyseerr:
       enabled: true
@@ -423,9 +438,9 @@ media:
       version: "latest"
       port: 8080
       ports: 
-       - "{{ media.vpn.port }}:{{ media.vpn.port }}"
-       - 8080:8080 # Web UI
-       - 6881:6881 # Torrent Port
+        - "8080:8080"    # Web UI
+        - "51234:51234/tcp"    # Torrent Port
+        - "51234:51234/udp"    # Torrent Port
 
     nzbget:
       enabled: true

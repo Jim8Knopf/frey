@@ -48,26 +48,57 @@ entries:
       attributes:
         description: "Administrators of Jellyfin with full access"
 
-  # Audiobookshelf Group
+  # # Audiobookshelf Group
+  # - model: authentik_core.group
+  #   id: audiobookshelf-users-group
+  #   identifiers:
+  #     name: audiobookshelf_users
+  #   attrs:
+  #     name: audiobookshelf_users
+  #     is_superuser: false
+  #     attributes:
+  #       description: "Users who can access Audiobookshelf"
+
+  # - model: authentik_core.group
+  #   id: audiobookshelf-admins-group
+  #   identifiers:
+  #     name: audiobookshelf_admin
+  #   attrs:
+  #     name: audiobookshelf_admin
+  #     is_superuser: true
+  #     attributes:
+  #       description: "Admin user for Audiobookshelf"
+
+  # Audiobookshelf role-mapping groups (exact names required by ABS)
   - model: authentik_core.group
-    id: audiobookshelf-users-group
+    id: abs-admin-group
     identifiers:
-      name: audiobookshelf_users
+      name: admin
     attrs:
-      name: audiobookshelf_users
+      name: admin
       is_superuser: false
       attributes:
-        description: "Users who can access Audiobookshelf"
+        description: "Audiobookshelf Admin role (mapped from Authentik)"
 
   - model: authentik_core.group
-    id: audiobookshelf-users-group
+    id: abs-user-group
     identifiers:
-      name: audiobookshelf_admin
+      name: user
     attrs:
-      name: audiobookshelf_admin
-      is_superuser: true
+      name: user
+      is_superuser: false
       attributes:
-        description: "Admin user for Audiobookshelf"
+        description: "Audiobookshelf User role (mapped from Authentik)"
+
+  - model: authentik_core.group
+    id: abs-guest-group
+    identifiers:
+      name: guest
+    attrs:
+      name: guest
+      is_superuser: false
+      attributes:
+        description: "Audiobookshelf Guest role (mapped from Authentik)"
 
   # Grafana Groups
   - model: authentik_core.group

@@ -39,6 +39,38 @@
     mode: '0755'
   when: media.services.audiobook_bridge.enabled | default(false)
 
+# ==============================================================================
+# JELLYFIN LDAP AUTHENTICATION CONFIGURATION
+# ==============================================================================
+# Deploy LDAP-Auth plugin configuration for unified authentication via Authentik
+# NOTE: LDAP Authentication plugin must be installed manually first via Jellyfin UI
+#       (Dashboard > Plugins > Catalog > "LDAP Authentication")
+# This task manages the plugin's XML configuration file automatically
+
+- name: Ensure Jellyfin plugins/configurations directory exists
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when:
+    - infrastructure.services.authentik.enabled | default(false)
+    - media.services.jellyfin.enabled | default(false)
+
+- name: Deploy Jellyfin LDAP-Auth plugin configuration
+  ansible.builtin.template:
+    src: jellyfin-ldap-auth.xml.j2
+    dest: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations/LDAP-Auth.xml"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0600'
+    backup: yes
+  when:
+    - infrastructure.services.authentik.enabled | default(false)
+    - media.services.jellyfin.enabled | default(false)
+  notify: Restart Jellyfin
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2

@@ -53,6 +53,7 @@ media:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
         - "{{ media.dir }}/movies:/data/movies"
+        - "{{ media.dir }}/music:/data/music"
 
     jellyseerr:
       enabled: true
@@ -75,8 +76,8 @@ media:
       ports: 
         - "{{ media.vpn.port }}:{{ media.vpn.port }}"  # VPN port
         - "8080:8080"    # Web UI
-        - "6881:6881/tcp"    # Torrent Port
-        - "6881:6881/udp"    # Torrent Port
+        - "51234:51234/tcp"    # Torrent Port
+        - "51234:51234/udp"    # Torrent Port
       volumes:
         - "{{ storage.appdata_dir }}/qbittorrent:/config"
         - "{{ media.downloads }}:/downloads"

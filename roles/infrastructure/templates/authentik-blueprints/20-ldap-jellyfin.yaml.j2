@@ -17,7 +17,7 @@ entries:
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
       base_dn: dc=ldap,dc=goauthentik,dc=io
       search_mode: cached
-      bind_mode: cached
+      bind_mode: cached  # Cached bind for better performance with internal users
       search_group: !Find [authentik_core.group, [name, jellyfin_users]]
       certificate: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       tls_server_name: ""

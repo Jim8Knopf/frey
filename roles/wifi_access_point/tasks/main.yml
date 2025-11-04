@@ -337,51 +337,6 @@
       - Documentation: {{ storage.base_dir | default('/opt/frey') }}/CONNECT-TO-WIFI.md
 
 # ==============================================================================
-# KERNEL-LEVEL P2P DISABLE (REQUIRED FOR WIFI ROAMING)
-# ==============================================================================
-
-- name: Disable P2P at kernel level for future reboots
-  ansible.builtin.copy:
-    dest: /etc/modprobe.d/disable-p2p.conf
-    content: "options brcmfmac p2p_disable=1"
-    mode: '0644'
-  when: network.wifi.roaming.enabled | default(false)
-
-- name: Create P2P cleanup service for next boot
-  ansible.builtin.copy:
-    dest: /etc/systemd/system/frey-p2p-cleanup.service
-    content: |
-      [Unit]
-      Description=Frey P2P Interface Cleanup
-      After=network.target
-      Before=wpa_supplicant-{{ network.wifi.client_interface }}.service frey-wifi-roaming.service
-
-      [Service]
-      Type=oneshot
-      ExecStart=/bin/bash -c 'iw dev | grep "P2P-device" | awk "{print \$2}" | xargs -r -I {} iw dev {} del'
-      RemainAfterExit=yes
-
-      [Install]
-      WantedBy=multi-user.target
-    mode: '0644'
-  when: network.wifi.roaming.enabled | default(false)
-  notify: Reload systemd
-
-- name: Enable P2P cleanup service
-  ansible.builtin.systemd:
-    name: frey-p2p-cleanup
-    enabled: yes
-  when: network.wifi.roaming.enabled | default(false)
-
-- name: Attempt safe P2P removal (won't break AP connection)
-  ansible.builtin.shell:
-    cmd: iw dev | grep "P2P-device" | awk '{print $2}' | xargs -r -I {} iw dev {} del
-  register: p2p_remove_attempt
-  changed_when: p2p_remove_attempt.rc == 0
-  failed_when: false
-  when: network.wifi.roaming.enabled | default(false)
-
-# ==============================================================================
 # AUTOMATIC WIFI ROAMING SYSTEM
 # WPA_SUPPLICANT SETUP FOR CLIENT INTERFACE (Required for WiFi Roaming)
 # ==============================================================================
@@ -397,18 +352,6 @@
   changed_when: true
   failed_when: false
   when: network.wifi.roaming.enabled | default(false)
-
-- name: Clean up P2P interface conflicts
-  ansible.builtin.shell:
-    cmd: |
-      # Remove any existing P2P interfaces
-      for iface in $(iw dev | awk '/P2P-device/ {print $2}'); do
-        iw dev "$iface" del 2>/dev/null || true
-      done
-      # Ensure wlan0 is in managed mode
-      iw dev {{ network.wifi.client_interface }} set type managed 2>/dev/null || true
-  when: network.wifi.roaming.enabled | default(false)
-  changed_when: true
 
 - name: Check if client interface exists
   ansible.builtin.command:
@@ -515,6 +458,106 @@
 - name: Debug wpa_cli test result
   ansible.builtin.debug:
     msg: "wpa_cli test result: {{ wpa_cli_test.stdout }}"
-  when: 
+  when:
     - network.wifi.roaming.enabled | default(false)
     - wpa_cli_test is defined
+
+# ==============================================================================
+# WiFi Roaming Daemon Deployment
+# ==============================================================================
+# Deploy the intelligent WiFi roaming system that automatically:
+# - Scans for and connects to known networks
+# - Scores networks by signal strength and priority
+# - Detects and handles captive portals
+# - Falls back gracefully when no networks available
+
+- name: Deploy WiFi roaming daemon script
+  ansible.builtin.copy:
+    src: frey-wifi-roaming-daemon.sh
+    dest: /usr/local/bin/frey-wifi-roaming-daemon
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Deploy WiFi internet verification helper
+  ansible.builtin.copy:
+    src: frey-wifi-internet-verify.sh
+    dest: /usr/local/bin/frey-wifi-internet-verify
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Deploy WiFi network scorer helper
+  ansible.builtin.copy:
+    src: frey-wifi-network-scorer.sh
+    dest: /usr/local/bin/frey-wifi-network-scorer
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Deploy WiFi captive portal auto-handler
+  ansible.builtin.copy:
+    src: frey-wifi-captive-portal-auto.sh
+    dest: /usr/local/bin/frey-wifi-captive-portal-auto
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Deploy WiFi roaming systemd service
+  ansible.builtin.template:
+    src: frey-wifi-roaming.service.j2
+    dest: /etc/systemd/system/frey-wifi-roaming.service
+    mode: '0644'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  notify: Reload systemd
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Enable and start WiFi roaming daemon
+  ansible.builtin.systemd:
+    name: frey-wifi-roaming
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Check WiFi roaming daemon status
+  ansible.builtin.systemd:
+    name: frey-wifi-roaming
+  register: roaming_daemon_status
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Display WiFi roaming daemon status
+  ansible.builtin.debug:
+    msg: "WiFi roaming daemon is {{ roaming_daemon_status.status.ActiveState }}"
+  when:
+    - network.wifi.roaming.enabled | default(false)
+    - roaming_daemon_status is defined
+  tags:
+    - wifi_roaming
+    - roaming_daemon

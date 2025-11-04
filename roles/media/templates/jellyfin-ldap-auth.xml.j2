@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Jellyfin LDAP-Auth Plugin Configuration
+  Managed by Ansible - DO NOT EDIT MANUALLY
+
+  This configuration connects Jellyfin to the Authentik LDAP outpost for
+  unified authentication across all Frey services.
+
+  Variables source: group_vars/all/main.yml (media.services.jellyfin.ldap_*)
+  Password source: group_vars/all/secrets.yml (authentik_ldap_bind_password)
+-->
+<PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <!-- LDAP Server Connection -->
+  <LdapServer>{{ media.services.jellyfin.ldap_server }}</LdapServer>
+  <LdapPort>{{ media.services.jellyfin.ldap_port }}</LdapPort>
+  <UseSsl>{{ media.services.jellyfin.ldap_use_ssl | lower }}</UseSsl>
+  <UseStartTls>{{ media.services.jellyfin.ldap_use_starttls | lower }}</UseStartTls>
+  <SkipSslVerify>{{ media.services.jellyfin.ldap_skip_ssl_verify | lower }}</SkipSslVerify>
+
+  <!-- LDAP Bind Credentials -->
+  <LdapBindUser>{{ media.services.jellyfin.ldap_bind_user }}</LdapBindUser>
+  <LdapBindPassword>{{ authentik_ldap_bind_password }}</LdapBindPassword>
+
+  <!-- LDAP Search Base and Filters -->
+  <LdapBaseDn>{{ media.services.jellyfin.ldap_base_dn }}</LdapBaseDn>
+  <LdapSearchFilter>{{ media.services.jellyfin.ldap_search_filter }}</LdapSearchFilter>
+
+  <!-- LDAP Admin Configuration -->
+  <LdapAdminBaseDn>{{ media.services.jellyfin.ldap_admin_base_dn }}</LdapAdminBaseDn>
+  <LdapAdminFilter>{{ media.services.jellyfin.ldap_admin_filter }}</LdapAdminFilter>
+  <EnableLdapAdminFilterMemberUid>false</EnableLdapAdminFilterMemberUid>
+
+  <!-- LDAP Attribute Mappings -->
+  <LdapSearchAttributes>{{ media.services.jellyfin.ldap_search_attributes }}</LdapSearchAttributes>
+  <LdapUidAttribute>{{ media.services.jellyfin.ldap_uid_attribute }}</LdapUidAttribute>
+  <LdapUsernameAttribute>{{ media.services.jellyfin.ldap_username_attribute }}</LdapUsernameAttribute>
+  <LdapPasswordAttribute>{{ media.services.jellyfin.ldap_password_attribute }}</LdapPasswordAttribute>
+
+  <!-- User Creation and Access Control -->
+  <CreateUsersFromLdap>{{ media.services.jellyfin.ldap_create_users | lower }}</CreateUsersFromLdap>
+  <EnableAllFolders>{{ media.services.jellyfin.ldap_enable_all_folders | lower }}</EnableAllFolders>
+  <EnabledFolders />
+
+  <!-- Password Management -->
+  <AllowPassChange>{{ media.services.jellyfin.ldap_allow_pass_change | lower }}</AllowPassChange>
+
+  <!-- SSL Certificate Paths (not used with internal Docker networking) -->
+  <LdapClientCertPath></LdapClientCertPath>
+  <LdapClientKeyPath></LdapClientKeyPath>
+  <LdapRootCaPath></LdapRootCaPath>
+</PluginConfiguration>

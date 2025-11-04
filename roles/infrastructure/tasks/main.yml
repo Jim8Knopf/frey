@@ -14,6 +14,14 @@
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
 
+- name: Create Traefik dynamic configuration
+  ansible.builtin.template:
+    src: traefik-dynamic.yml.j2
+    dest: "{{ storage.appdata_dir }}/traefik/dynamic.yml"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0644'
+
 - name: Template Authentik blueprint files
   ansible.builtin.template:
     src: "{{ item }}"
