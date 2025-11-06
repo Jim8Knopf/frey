@@ -19,24 +19,34 @@ entries:
       client_id: {{ immich.services.immich.oidc_client_id | default('immich') }}
       client_secret: {{ immich_oidc_client_secret }}
       redirect_uris:
-        # DNS-based redirects (works when DNS resolves)
+        # DNS-based redirects - HTTPS (Traefik serves with TLS)
+        - matching_mode: strict
+          url: https://immich.{{ network.domain_name }}/auth/login
+        - matching_mode: strict
+          url: https://immich.{{ network.domain_name }}/user-settings
+        # DNS-based redirects - HTTP fallback
         - matching_mode: strict
           url: http://immich.{{ network.domain_name }}/auth/login
         - matching_mode: strict
           url: http://immich.{{ network.domain_name }}/user-settings
-        # LAN IP redirects (client_interface_ip - accessible from LAN)
+        # LAN IP redirects - HTTPS
+        - matching_mode: strict
+          url: https://{{ network.wifi.client_interface_ip }}:{{ immich.services.immich.port | default(2283) }}/auth/login
+        - matching_mode: strict
+          url: https://{{ network.wifi.client_interface_ip }}:{{ immich.services.immich.port | default(2283) }}/user-settings
+        # LAN IP redirects - HTTP fallback
         - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:{{ immich.services.immich.port | default(2283) }}/auth/login
         - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:{{ immich.services.immich.port | default(2283) }}/user-settings
-        # WiFi AP IP redirects (works from WiFi clients)
+        # WiFi AP IP redirects - HTTP only (local network)
         - matching_mode: strict
           url: http://{{ network.wifi.ip }}:{{ immich.services.immich.port | default(2283) }}/auth/login
         - matching_mode: strict
           url: http://{{ network.wifi.ip }}:{{ immich.services.immich.port | default(2283) }}/user-settings
-        # Mobile app redirect
+        # Mobile app redirect - CORRECTED FORMAT
         - matching_mode: strict
-          url: app.immich:/
+          url: app.immich:///oauth-callback
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
       access_code_validity: minutes=1
@@ -46,6 +56,7 @@ entries:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, groups]]
       include_claims_in_id_token: true
 
   # Application for Immich

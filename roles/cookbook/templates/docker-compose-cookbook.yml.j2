@@ -43,7 +43,9 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.cookbook.rule=Host(`cookbook.{{ network.domain_name }}`)"
-      - "traefik.http.routers.cookbook.entrypoints=web"
+      - "traefik.http.routers.cookbook.entrypoints=web,websecure"
+      - "traefik.http.routers.cookbook.tls=true"
+      - "traefik.http.routers.cookbook.tls.certresolver=step-ca"
       - "traefik.http.services.cookbook.loadbalancer.server.port=9000"
     # Healthcheck disabled - curl not available in container
     # Container health can be monitored via logs and direct API access

@@ -21,7 +21,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.dockge.rule=Host(`dockge.{{ network.domain_name }}`)"
-      - "traefik.http.routers.dockge.entrypoints=web"
+      - "traefik.http.routers.dockge.entrypoints=web,websecure"
+      - "traefik.http.routers.dockge.tls=true"
       - "traefik.http.services.dockge.loadbalancer.server.port=5001"
   {% endif %}
 
@@ -53,7 +54,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.prometheus.rule=Host(`prometheus.{{ network.domain_name }}`)"
-      - "traefik.http.routers.prometheus.entrypoints=web"
+      - "traefik.http.routers.prometheus.entrypoints=web,websecure"
+      - "traefik.http.routers.prometheus.tls=true"
       - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
   {% endif %}
 
@@ -81,7 +83,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.node-exporter.rule=Host(`metrics.{{ network.domain_name }}`)"
-      - "traefik.http.routers.node-exporter.entrypoints=web"
+      - "traefik.http.routers.node-exporter.entrypoints=web,websecure"
+      - "traefik.http.routers.node-exporter.tls=true"
       - "traefik.http.services.node-exporter.loadbalancer.server.port=9100"
   {% endif %}
 
@@ -108,7 +111,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.cadvisor.rule=Host(`cadvisor.{{ network.domain_name }}`)"
-      - "traefik.http.routers.cadvisor.entrypoints=web"
+      - "traefik.http.routers.cadvisor.entrypoints=web,websecure"
+      - "traefik.http.routers.cadvisor.tls=true"
       - "traefik.http.services.cadvisor.loadbalancer.server.port=8080"
   {% endif %}
 
@@ -153,7 +157,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.grafana.rule=Host(`grafana.{{ network.domain_name | default('local') }}`)"
-      - "traefik.http.routers.grafana.entrypoints=web"
+      - "traefik.http.routers.grafana.entrypoints=web,websecure"
+      - "traefik.http.routers.grafana.tls=true"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
   {% endif %}
 
@@ -174,7 +179,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.loki.rule=Host(`loki.{{ network.domain_name }}`)"
-      - "traefik.http.routers.loki.entrypoints=web"
+      - "traefik.http.routers.loki.entrypoints=web,websecure"
+      - "traefik.http.routers.loki.tls=true"
       - "traefik.http.services.loki.loadbalancer.server.port=3100"
   {% endif %}
 
@@ -211,7 +217,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.uptime.rule=Host(`uptime.{{ network.domain_name }}`)"
-      - "traefik.http.routers.uptime.entrypoints=web"
+      - "traefik.http.routers.uptime.entrypoints=web,websecure"
+      - "traefik.http.routers.uptime.tls=true"
       - "traefik.http.services.uptime.loadbalancer.server.port=3001"
   {% endif %}
 
@@ -254,7 +261,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.speedtest.rule=Host(`speedtest.{{ network.domain_name }}`)"
-      - "traefik.http.routers.speedtest.entrypoints=web"
+      - "traefik.http.routers.speedtest.entrypoints=web,websecure"
+      - "traefik.http.routers.speedtest.tls=true"
       - "traefik.http.services.speedtest.loadbalancer.server.port=80"
   {% endif %}
 

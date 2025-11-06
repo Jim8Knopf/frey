@@ -133,3 +133,24 @@ entries:
       attributes:
         description: "Full Grafana admin access"
         grafana_role: "Admin"
+
+  # Mealie (Cookbook) Groups
+  - model: authentik_core.group
+    id: mealie-users-group
+    identifiers:
+      name: mealie_users
+    attrs:
+      name: mealie_users
+      is_superuser: false
+      attributes:
+        description: "Basic Mealie recipe manager access"
+
+  - model: authentik_core.group
+    id: mealie-admins-group
+    identifiers:
+      name: mealie_admins
+    attrs:
+      name: mealie_admins
+      is_superuser: false
+      attributes:
+        description: "Mealie admin access with full recipe management"

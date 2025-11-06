@@ -22,6 +22,9 @@ features:
 # ================================
 # CONFIGURATION
 # ================================
+# Admin contact information
+admin_email: "Jason.Kolb@ik.me"
+
 users:
   default: 
     name: else
@@ -52,7 +55,7 @@ network:
   # Uses DNS via Traefik for clean OAuth flow (primary access method)
   # OAuth: grafana.frey → auth.frey → grafana.frey
   # Works offline via AdGuard local DNS resolution
-  authentik_public_url: "http://auth.{{ network.domain_name }}"
+  authentik_public_url: "https://auth.{{ network.domain_name }}"
   wifi:
     # Network identification
     ssid: "FreyHub"                 # Network name visible to clients
@@ -170,7 +173,7 @@ security:
       ports.file_management.code_server
     ], [])) +
     (features.cookbook | ternary([
-      ports.cookbook.cookbook
+      cookbook.services.mealie.port
     ], [])) +
     (features.voice_assistant | ternary([
       ports.voice_assistant.piper
@@ -330,6 +333,8 @@ infrastructure:
         http: 80
         https: 443
         dashboard: 8082
+      config:
+        acme_email: "{{ admin_email }}"  # Using admin email for Let's Encrypt notifications
     portainer:
       enabled: true
       version: "latest"
@@ -344,9 +349,15 @@ infrastructure:
       enabled: true  # Enable after initial infrastructure setup
       version: "2025.2.4"  # Pinned version for reproducible deployments
       port: 9300  # Changed from 9000 to avoid conflict with Portainer
-      port_https: 9443
+      port_https: 9446
       postgres_version: "16-alpine"
       redis_version: "alpine"
+    step_ca:
+      enabled: true  # Enable when ready to implement ACME-based certificate management
+      version: "latest"
+      port: 9336  # External port mapping (maps to internal 9443)
+      # After enabling, run: docker exec -it step-ca step ca init
+      # Then configure ACME provisioner: docker exec -it step-ca step ca provisioner add acme --type ACME
 
 # ===================================================================
 # MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
@@ -542,9 +553,9 @@ immich:
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
       # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
-      # Issuer URL uses public IP (browser needs to access discovery endpoint)
+      # Issuer URL uses auth.frey DNS (accessible via localdns Docker network)
       # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
-      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/immich/"
+      oidc_issuer_url: "https://auth.{{ network.domain_name }}/application/o/immich/"
       oidc_client_id: "immich"
       oidc_scope: "openid profile email"
       oidc_button_text: "Login with Authentik"
@@ -575,19 +586,30 @@ cookbook:
     mealie:
       enabled: true
       version: "latest"
-      port: 9925
+      port: 9900
+      ports:
+        - "9900:9000"
+      image: "hay-kot/mealie"
       # Database
       db_type: "postgres"
       # Storage paths
-      data_dir: "{{ storage.appdata_dir }}/mealie"
-      db_data_location: "{{ storage.appdata_dir }}/mealie-db"
+      data_dir: "{{ storage.appdata_dir }}/mealie/data"
+      db_data_location: "{{ storage.appdata_dir }}/mealie/db"
       # API settings
       api_docs: true
       base_url: "http://cookbook.{{ network.domain_name }}"
       # Security
       allow_signup: false
-      # SSO (disabled by default, ready for future)
-      oidc_enabled: false
+      # SSO Configuration
+      oidc_enabled: true
+      oidc_client_id: "mealie"
+      oidc_configuration_url: "http://auth.{{ network.domain_name }}:9000/application/o/mealie/.well-known/openid-configuration"
+      oidc_user_group: "mealie_users"
+      oidc_admin_group: "mealie_admins"
+      oidc_auto_redirect: false
+      oidc_provider_name: "Authentik"
+      oidc_signup_enabled: true
+      oidc_remember_me: true
       # Features
       enable_meal_planner: true
       recipe_scraping: true

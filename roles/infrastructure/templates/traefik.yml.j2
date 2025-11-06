@@ -9,36 +9,49 @@ api:
 entryPoints:
   web:
     address: ":80"
-    # Optionally redirect to HTTPS
-    # http:
-    #   redirections:
-    #     entryPoint:
-    #       to: websecure
-    #       scheme: https
+    transport:
+      respondingTimeouts:
+        readTimeout: 600s      # 10 minutes for reading request (large uploads)
+        writeTimeout: 600s     # 10 minutes for writing response (large downloads)
+        idleTimeout: 3600s     # 1 hour idle connection timeout for qBittorrent and other persistent connections
+    # Redirect HTTP to HTTPS
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
   websecure:
     address: ":443"
-    # Configure TLS
-    # http:
-    #   tls:
-    #     certResolver: letsencrypt
+    transport:
+      respondingTimeouts:
+        readTimeout: 600s
+        writeTimeout: 600s
+        idleTimeout: 3600s
 
-# Configure certificate resolver for Let's Encrypt
-# certificatesResolvers:
-#   letsencrypt:
-#     acme:
-#       email: your-email@example.com
-#       storage: acme.json
-#       httpChallenge:
-#         entryPoint: web
+# Certificate management via Step-CA ACME
+# Static certificates removed - using automated ACME instead
+
+certificatesResolvers:
+  step-ca:
+    acme:
+      email: admin@frey.local
+      storage: /acme/acme.json
+      # Connect to Step-CA's internal Docker port (9443, not external 9336)
+      caServer: https://step-ca:9443/acme/acme/directory
+      certificatesDuration: 2160  # 90 days
+      keyType: EC256  # Use ECDSA keys for better performance
+      # Trust Step CA root certificate for ACME endpoint verification
+      # Note: rootCAs field requires Traefik to trust the Step CA cert
+      # Alternative: Configure system-wide trust or use insecureSkipVerify (not recommended)
+      tlsChallenge: {}  # Use TLS-ALPN-01 challenge
+      httpChallenge:  # Add HTTP challenge as fallback
+        entryPoint: web
 
 providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false  # Security: opt-in for container exposure
     network: proxy          # Use proxy network for routing
-    watch: true
-  file:
-    filename: /etc/traefik/dynamic.yml
     watch: true
 
 log:

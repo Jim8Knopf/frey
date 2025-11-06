@@ -92,10 +92,9 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
-      - "traefik.http.routers.{{service_name}}.entrypoints=web"
-{% if service_name in ['audiobookshelf'] %}
-      - "traefik.http.routers.{{service_name}}.middlewares=large-uploads@file"
-{% endif %}
+      - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
+      - "traefik.http.routers.{{service_name}}.tls=true"
+      - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
 
 {% endfor -%}

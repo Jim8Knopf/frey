@@ -81,11 +81,21 @@
     backup: yes
   register: compose_template_result
 
+- name: Check if qBittorrent container exists
+  community.docker.docker_container_info:
+    name: "{{ media.services.qbittorrent.container_name }}"
+  register: qbittorrent_container_info
+  when: not media.vpn.enabled
+  ignore_errors: true
+
 - name: Stop qBittorrent container before config modification
   community.docker.docker_container:
     name: "{{ media.services.qbittorrent.container_name }}"
     state: stopped
-  when: not media.vpn.enabled
+  when:
+    - not media.vpn.enabled
+    - qbittorrent_container_info.exists is defined
+    - qbittorrent_container_info.exists
 
 - name: Disable qBittorrent proxy if VPN is disabled
   ansible.builtin.lineinfile:
@@ -93,12 +103,16 @@
     regexp: '^Proxy\\Profiles\\BitTorrent='
     line: 'Proxy\\Profiles\\BitTorrent=false'
   when: not media.vpn.enabled
+  ignore_errors: true
 
 - name: Start qBittorrent container after config modification
   community.docker.docker_container:
     name: "{{ media.services.qbittorrent.container_name }}"
     state: started
-  when: not media.vpn.enabled
+  when:
+    - not media.vpn.enabled
+    - qbittorrent_container_info.exists is defined
+    - qbittorrent_container_info.exists
 
 - name: Show rendered compose
   ansible.builtin.shell: |

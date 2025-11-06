@@ -19,21 +19,42 @@ entries:
       client_id: {{ media.services.audiobookshelf.oidc_client_id | default('audiobookshelf') }}
       client_secret: {{ audiobookshelf_oidc_client_secret }}
       redirect_uris:
-        # DNS-based redirects (works when DNS resolves)
+        # DNS-based redirects - HTTPS (primary, works with Step-CA certificates)
+        - matching_mode: strict
+          url: https://audiobookshelf.{{ network.domain_name }}/auth/openid/callback
+        - matching_mode: strict
+          url: https://audiobookshelf.{{ network.domain_name }}/audiobookshelf/auth/openid/callback
+        - matching_mode: strict
+          url: https://audiobookshelf.{{ network.domain_name }}/auth/openid/mobile-redirect
+        # DNS-based redirects - HTTP (fallback)
         - matching_mode: strict
           url: http://audiobookshelf.{{ network.domain_name }}/auth/openid/callback
         - matching_mode: strict
           url: http://audiobookshelf.{{ network.domain_name }}/audiobookshelf/auth/openid/callback
         - matching_mode: strict
           url: http://audiobookshelf.{{ network.domain_name }}/auth/openid/mobile-redirect
-        # LAN IP redirects (client_interface_ip - accessible from LAN)
+        # LAN IP redirects - HTTPS (client_interface_ip - accessible from LAN)
+        - matching_mode: strict
+          url: https://{{ network.wifi.client_interface_ip }}:13378/auth/openid/callback
+        - matching_mode: strict
+          url: https://{{ network.wifi.client_interface_ip }}:13378/audiobookshelf/auth/openid/callback
+        - matching_mode: strict
+          url: https://{{ network.wifi.client_interface_ip }}:13378/auth/openid/mobile-redirect
+        # LAN IP redirects - HTTP (fallback)
         - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:13378/auth/openid/callback
         - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:13378/audiobookshelf/auth/openid/callback
         - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:13378/auth/openid/mobile-redirect
-        # WiFi AP IP redirects (works from WiFi clients)
+        # WiFi AP IP redirects - HTTPS (works from WiFi clients)
+        - matching_mode: strict
+          url: https://{{ network.wifi.ip }}:13378/auth/openid/callback
+        - matching_mode: strict
+          url: https://{{ network.wifi.ip }}:13378/audiobookshelf/auth/openid/callback
+        - matching_mode: strict
+          url: https://{{ network.wifi.ip }}:13378/auth/openid/mobile-redirect
+        # WiFi AP IP redirects - HTTP (fallback)
         - matching_mode: strict
           url: http://{{ network.wifi.ip }}:13378/auth/openid/callback
         - matching_mode: strict

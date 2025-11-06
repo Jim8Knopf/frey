@@ -3,21 +3,119 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "infrastructure"
-    folders: [traefik, portainer, authentik, authentik/database, authentik/redis, authentik/media, authentik/certs, authentik/custom-templates, authentik/blueprints]
+    folders: [traefik, traefik/certificates, portainer, authentik, authentik/database, authentik/redis, authentik/media, authentik/certs, authentik/custom-templates, authentik/blueprints, step-ca]
     checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, storage.stacks]
+
+- name: Fix Step CA directory ownership for container user
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/step-ca"
+    owner: 1000  # step user inside step-ca container
+    group: 1000  # step group inside step-ca container
+    mode: '0755'
+    state: directory
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+# Certificate Generation Tasks
+- name: Check if Frey CA certificate exists
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
+  register: ca_cert_check
+
+- name: Generate Frey Root CA private key
+  ansible.builtin.command:
+    cmd: >
+      openssl genrsa
+      -out {{ storage.appdata_dir }}/traefik/certificates/frey-ca.key
+      4096
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.key"
+  when: not ca_cert_check.stat.exists
+
+- name: Generate Frey Root CA certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -new
+      -key {{ storage.appdata_dir }}/traefik/certificates/frey-ca.key
+      -out {{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt
+      -days 3650
+      -subj "/CN=Frey Root CA/O=Frey Hub/C=US"
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
+  when: not ca_cert_check.stat.exists
+
+- name: Generate wildcard private key for *.frey
+  ansible.builtin.command:
+    cmd: >
+      openssl genrsa
+      -out {{ storage.appdata_dir }}/traefik/certificates/frey.key
+      4096
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey.key"
+  when: not ca_cert_check.stat.exists
+
+- name: Generate certificate signing request for *.frey
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key {{ storage.appdata_dir }}/traefik/certificates/frey.key
+      -out {{ storage.appdata_dir }}/traefik/certificates/frey.csr
+      -subj "/CN=*.frey/O=Frey Hub/C=US"
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey.csr"
+  when: not ca_cert_check.stat.exists
+
+- name: Create OpenSSL extension file for SAN
+  ansible.builtin.copy:
+    content: |
+      [v3_req]
+      basicConstraints = CA:FALSE
+      keyUsage = digitalSignature, keyEncipherment
+      subjectAltName = @alt_names
+
+      [alt_names]
+      DNS.1 = *.frey
+      DNS.2 = frey
+    dest: "{{ storage.appdata_dir }}/traefik/certificates/san.cnf"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0644'
+  when: not ca_cert_check.stat.exists
+
+- name: Sign wildcard certificate with CA
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in {{ storage.appdata_dir }}/traefik/certificates/frey.csr
+      -CA {{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt
+      -CAkey {{ storage.appdata_dir }}/traefik/certificates/frey-ca.key
+      -CAcreateserial
+      -out {{ storage.appdata_dir }}/traefik/certificates/frey.crt
+      -days 3650
+      -extensions v3_req
+      -extfile {{ storage.appdata_dir }}/traefik/certificates/san.cnf
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey.crt"
+  when: not ca_cert_check.stat.exists
+
+- name: Set ownership on certificate files
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/traefik/certificates/{{ item }}"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0644'
+  loop:
+    - frey-ca.crt
+    - frey-ca.key
+    - frey.crt
+    - frey.key
+  when: not ca_cert_check.stat.exists
+
+- name: Copy CA certificate to local Downloads directory
+  ansible.builtin.fetch:
+    src: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
+    dest: "{{ lookup('env', 'HOME') }}/Downloads/frey-ca.crt"
+    flat: yes
+  when: ca_cert_check.stat.exists or not ca_cert_check.stat.exists
 
 - name: Create Traefik static configuration
   ansible.builtin.template:
     src: traefik.yml.j2
     dest: "{{ storage.appdata_dir }}/traefik/traefik.yml"
-    owner: "{{ infrastructure.user.name }}"
-    group: "{{ infrastructure.group.name }}"
-    mode: '0644'
-
-- name: Create Traefik dynamic configuration
-  ansible.builtin.template:
-    src: traefik-dynamic.yml.j2
-    dest: "{{ storage.appdata_dir }}/traefik/dynamic.yml"
     owner: "{{ infrastructure.user.name }}"
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
@@ -36,6 +134,7 @@
     - authentik-blueprints/11-oidc-audiobookshelf.yaml.j2
     - authentik-blueprints/12-oidc-grafana.yaml.j2
     - authentik-blueprints/13-oidc-homeassistant.yaml.j2
+    - authentik-blueprints/14-oidc-mealie.yaml.j2
     - authentik-blueprints/20-ldap-jellyfin.yaml.j2
   when: infrastructure.services.authentik.enabled | default(false)
 

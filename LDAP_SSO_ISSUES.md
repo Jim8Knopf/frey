@@ -51,11 +51,11 @@
 
 ---
 
-## Issue 2: Audiobookshelf SSO - NEW ISSUE
+## Issue 2: Audiobookshelf SSO - RESOLVED
 
 ### Problem
 - **Error**: "Unauthorized"
-- **Status**: ❌ NEW ISSUE - User will handle deployment
+- **Status**: ✅ RESOLVED
 
 ### OIDC Configuration (from secrets.yml)
 - **Client ID**: `audiobookshelf` (configured in blueprint)
@@ -72,9 +72,59 @@
 4. Blueprint not applied after changes
 5. Audiobookshelf OIDC settings incorrect
 
+### Solution Implemented
+1. Created three Audiobookshelf-specific groups in Authentik with exact names required by ABS: `admin`, `user`, `guest`
+2. Added Jason user to `admin` group for full administrative access
+3. Added akadmin user to `admin` group as well
+4. Re-added `groups` scope to OIDC provider property mappings
+
 ### Container Status
-- `ghcr.io/advplyr/audiobookshelf:latest` - Running (Up 3 hours)
-- Port: Check media docker-compose for port mapping
+- `ghcr.io/advplyr/audiobookshelf:latest` - Running and accessible
+- SSO login working correctly with group-based role mapping
+
+---
+
+## Issue 3: Large File Upload Timeout - RESOLVED
+
+### Problem
+- **Error**: All file uploads (large and small) timing out after exactly 60 seconds
+- **Services Affected**: Audiobookshelf (audiobooks 500MB-2GB), Immich (drone footage up to 4GB)
+- **Status**: ✅ RESOLVED
+
+### Root Cause
+- Traefik's buffering middleware was buffering entire upload before forwarding to backend
+- Default 60-second timeout caused "context canceled" errors (HTTP 499)
+- Middleware was unnecessary and causing more problems than it solved
+
+### Solution Implemented - Phase 1: Remove Buffering Middleware
+1. Deleted `/home/jim/Projects/frey/roles/infrastructure/templates/traefik-dynamic.yml.j2` file
+2. Removed file provider from Traefik static configuration
+3. Removed dynamic.yml volume mount from infrastructure docker-compose
+4. Removed dynamic.yml deployment task from infrastructure role
+5. Removed middleware labels from Audiobookshelf and Immich services
+6. Redeployed infrastructure, media, and immich stacks
+
+### Solution Implemented - Phase 2: Add Global Timeout Configuration
+After removing buffering middleware, uploads still timed out at 60 seconds due to Traefik's default timeout settings.
+
+**Root Cause**: Traefik's default `readTimeout` was cutting off uploads before completion, causing "Invalid request, no files" errors in Audiobookshelf.
+
+**Fix Applied**: Added global timeout configuration to `traefik.yml.j2`:
+- `readTimeout: 600s` (10 minutes for large file uploads)
+- `writeTimeout: 600s` (10 minutes for large file downloads)
+- `idleTimeout: 180s` (3 minutes for idle connections)
+
+### Files Modified
+- `roles/infrastructure/templates/traefik.yml.j2` - Added transport.respondingTimeouts configuration
+- `roles/infrastructure/templates/docker-compose-infrastructure.yml.j2` - Removed dynamic.yml volume mount
+- `roles/infrastructure/tasks/main.yml` - Removed dynamic.yml deployment task
+- `roles/media/templates/docker-compose-media.yml.j2` - Removed middleware label
+- `roles/immich/templates/docker-compose-immich.yml.j2` - Removed middleware label
+
+### Expected Result
+- File uploads up to 10 minutes duration should now work without timeout
+- Both Audiobookshelf (m4b audiobooks) and Immich (drone footage) uploads should succeed
+- No more "Invalid request, no files" or timeout errors
 
 ---
 
