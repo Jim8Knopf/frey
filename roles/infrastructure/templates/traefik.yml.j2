@@ -14,12 +14,8 @@ entryPoints:
         readTimeout: 600s      # 10 minutes for reading request (large uploads)
         writeTimeout: 600s     # 10 minutes for writing response (large downloads)
         idleTimeout: 3600s     # 1 hour idle connection timeout for qBittorrent and other persistent connections
-    # Redirect HTTP to HTTPS
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
+    # HTTP entrypoint - no global redirect to allow ACME HTTP-01 challenges
+    # Individual routers will handle HTTPS redirects as needed
   websecure:
     address: ":443"
     transport:
@@ -40,11 +36,9 @@ certificatesResolvers:
       caServer: https://step-ca:9443/acme/acme/directory
       certificatesDuration: 2160  # 90 days
       keyType: EC256  # Use ECDSA keys for better performance
-      # Trust Step CA root certificate for ACME endpoint verification
-      # Note: rootCAs field requires Traefik to trust the Step CA cert
-      # Alternative: Configure system-wide trust or use insecureSkipVerify (not recommended)
-      tlsChallenge: {}  # Use TLS-ALPN-01 challenge
-      httpChallenge:  # Add HTTP challenge as fallback
+      # Use HTTP-01 challenge for validation (requires port 80 accessible)
+      # Step CA will connect to http://service.frey/.well-known/acme-challenge/token
+      httpChallenge:
         entryPoint: web
 
 providers:
@@ -58,3 +52,9 @@ log:
   level: INFO  # Change to DEBUG for troubleshooting
 
 accessLog: {}  # Enable access logs
+
+# Provide a default TLS certificate (wildcard) as fallback
+tls:
+  certificates:
+    - certFile: /certificates/frey.crt
+      keyFile: /certificates/frey.key

@@ -91,11 +91,24 @@ services:
       - deunhealth.restart.on.unhealthy=true
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
+{% if service_name == 'audiobookshelf' %}
+      # Align with other services: HTTPS via Step-CA with HTTP→HTTPS redirect
+      - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
+      - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
+      - "traefik.http.routers.{{service_name}}.tls=true"
+      - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
+      - "traefik.http.routers.{{service_name}}-http.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
+      - "traefik.http.routers.{{service_name}}-http.entrypoints=web"
+      - "traefik.http.middlewares.{{service_name}}-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.{{service_name}}-http.middlewares={{service_name}}-redirect"
+      - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
+{% else %}
       - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
       - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
       - "traefik.http.routers.{{service_name}}.tls=true"
       - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
+{% endif %}
 
 {% endfor -%}
 

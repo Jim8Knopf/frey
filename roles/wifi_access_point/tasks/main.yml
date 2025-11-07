@@ -62,10 +62,11 @@
     backup: yes
 
 - name: Restart dhcpcd
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: dhcpcd
     state: restarted
     enabled: yes
+    daemon_reload: yes
 
 - name: Wait for AP IP to be present on the host
   ansible.builtin.wait_for:
@@ -111,18 +112,20 @@
       failed_when: false
 
     - name: Start hostapd if it was not running or reconfigure failed
-      ansible.builtin.service:
+      ansible.builtin.systemd:
         name: hostapd
         state: started
         enabled: yes
+        daemon_reload: yes
       when: hostapd_reconf is not defined or hostapd_reconf.rc != 0
 
   rescue:
     - name: Ensure hostapd service is started (rescue)
-      ansible.builtin.service:
+      ansible.builtin.systemd:
         name: hostapd
         state: started
         enabled: yes
+        daemon_reload: yes
 
 - name: Pause briefly to let hostapd initialize
   ansible.builtin.pause:
@@ -203,17 +206,19 @@
   failed_when: dnsmasq_test.rc != 0
 
 - name: Force restart dnsmasq to apply new configuration
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: dnsmasq
     state: restarted
     enabled: yes
+    daemon_reload: yes
   when: dnsmasq_test.rc == 0
 
 - name: Enable and start Frey NAT Manager service
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: frey-nat-manager
     state: started
     enabled: yes
+    daemon_reload: yes
 
 - name: Wait for dnsmasq to bind on port 53 (DNS)
   ansible.builtin.wait_for:

@@ -352,6 +352,11 @@ infrastructure:
       port_https: 9446
       postgres_version: "16-alpine"
       redis_version: "alpine"
+      # Blueprint re-apply control:
+      # - Set to a list of filenames to re-apply specific blueprints
+      #   e.g., ['11-oidc-audiobookshelf.yaml', '10-oidc-immich.yaml']
+      # - Or set to 'all' to re-apply every blueprint file
+      reapply_blueprints: ['11-oidc-audiobookshelf.yaml']
     step_ca:
       enabled: true  # Enable when ready to implement ACME-based certificate management
       version: "latest"
@@ -394,6 +399,11 @@ media:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
         - "{{ media.dir }}/podcasts:/podcasts"
+        # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+        - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/etc/ssl/certs/step-ca.crt:ro"
+      environment:
+        # Ensure Node trusts Step-CA when calling https://auth.frey
+        - "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/step-ca.crt"
       # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
       # NOTE: Audiobookshelf OIDC CANNOT be configured via environment variables
       # Must be configured manually via web UI: Settings → Authentication → OpenID Connect
@@ -722,4 +732,3 @@ backup:
     hour: "3"  # 3 AM daily
   retention_days: 7
   backup_dir: "{{ storage.base_dir }}/backups"
-

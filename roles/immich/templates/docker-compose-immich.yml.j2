@@ -40,6 +40,9 @@ services:
       - "{{ immich.services.immich.upload_location }}:/usr/src/app/upload"
       # Timezone for correct timestamp display
       - /etc/localtime:/etc/localtime:ro
+      # Step CA root certificate for Authentik SSL
+      - /etc/ssl/certs/step-ca.crt:/usr/local/share/ca-certificates/step-ca.crt:ro
+      - /etc/ca-certificates.conf:/etc/ca-certificates.conf:ro
     env_file:
       - .env
     ports:
@@ -62,6 +65,8 @@ services:
       - "traefik.http.routers.immich.tls=true"
       -  "traefik.http.routers.immich.tls.certresolver=step-ca"
       - "traefik.http.services.immich.loadbalancer.server.port=2283"
+    # Update CA certificates on container start
+    command: sh -c 'update-ca-certificates && /usr/src/app/start.sh'
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:2283/api/server/ping || exit 1"]
       interval: 30s

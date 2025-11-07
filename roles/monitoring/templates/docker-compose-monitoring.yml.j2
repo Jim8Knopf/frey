@@ -159,6 +159,7 @@ services:
       - "traefik.http.routers.grafana.rule=Host(`grafana.{{ network.domain_name | default('local') }}`)"
       - "traefik.http.routers.grafana.entrypoints=web,websecure"
       - "traefik.http.routers.grafana.tls=true"
+      - "traefik.http.routers.grafana.tls.certresolver=step-ca"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
   {% endif %}
 

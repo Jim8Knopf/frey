@@ -79,6 +79,10 @@ services:
       AUTHENTIK_BOOTSTRAP_PASSWORD: {{ authentik_bootstrap_password }}
       AUTHENTIK_BOOTSTRAP_TOKEN: {{ authentik_bootstrap_token }}
       AUTHENTIK_BOOTSTRAP_EMAIL: {{ authentik_bootstrap_email | default('admin@local') }}
+      # Auto-import and instantiate blueprints on startup
+      AUTHENTIK_BOOTSTRAP_BLUEPRINTS: "/blueprints/*.yaml"
+      # Ensure Authentik scans the mounted custom blueprint directory
+      AUTHENTIK_BLUEPRINTS__DIRS: "/blueprints"
       # Error reporting (disabled for privacy)
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
       # Trust proxy headers from Traefik
@@ -92,7 +96,7 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/authentik/media:/media"
       - "{{ storage.appdata_dir }}/authentik/custom-templates:/templates"
-      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints/custom:ro"
+      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints:ro"
     networks:
       proxy:
       localdns:
@@ -163,13 +167,14 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: {{ authentik_db_name | default('authentik') }}
       AUTHENTIK_POSTGRESQL__PASSWORD: {{ authentik_postgres_password }}
       AUTHENTIK_SECRET_KEY: {{ authentik_secret_key }}
+      AUTHENTIK_BLUEPRINTS__DIRS: "/blueprints"
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
     user: root
     volumes:
       - "{{ storage.appdata_dir }}/authentik/media:/media"
       - "{{ storage.appdata_dir }}/authentik/certs:/certs"
       - "{{ storage.appdata_dir }}/authentik/custom-templates:/templates"
-      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints/custom:ro"
+      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints:ro"
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - infrastructure_network
@@ -200,9 +205,11 @@ services:
       localdns:          # Required for DNS resolution
     extra_hosts:
       - "ca.{{ network.domain_name }}:127.0.0.1"  # Required for health check
-      # Map all *.frey domains to host IP for ACME validation
+      # Map all *.frey domains to Traefik container for ACME validation
+      # Using 'host-gateway' special value which resolves to Docker host's internal IP
+      # This allows Step CA to reach Traefik on the proxy network
 {% for service in network.dns_rewrites %}
-      - "{{ service.name }}.{{ network.domain_name }}:10.20.0.1"
+      - "{{ service.name }}.{{ network.domain_name }}:host-gateway"
 {% endfor %}
     environment:
       - DOCKER_STEPCA_INIT_NAME=Frey CA
