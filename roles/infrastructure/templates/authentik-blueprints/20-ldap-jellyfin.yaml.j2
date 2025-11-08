@@ -42,8 +42,8 @@ entries:
         docker_map_ports: true
         docker_labels:
           traefik.enable: "false"
-        authentik_host: http://auth.{{ network.domain_name }}
-        authentik_host_insecure: true
+        authentik_host: https://auth.{{ network.domain_name }}
+        authentik_host_insecure: true  # Skip TLS verify; Traefik cert is Step-CA
 
   # Application for Jellyfin
   - model: authentik_core.application

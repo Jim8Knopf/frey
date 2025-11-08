@@ -114,6 +114,11 @@ services:
       - "traefik.http.routers.authentik.tls=true"
       - "traefik.http.routers.authentik.tls.certresolver=step-ca"
       - "traefik.http.services.authentik.loadbalancer.server.port=9000"
+      # HTTP router to support internal outposts reaching http://auth.frey
+      - "traefik.http.routers.authentik-http.rule=Host(`auth.{{ domain_name | default(network.domain_name | default('local')) }}`)"
+      - "traefik.http.routers.authentik-http.entrypoints=web"
+      - "traefik.http.middlewares.auth-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.authentik-http.middlewares=auth-redirect"
     healthcheck:
       test: ["CMD-SHELL", "ak healthcheck || exit 1"]
       interval: 30s

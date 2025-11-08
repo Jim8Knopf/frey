@@ -81,8 +81,9 @@ network:
       known_networks: "{{ wifi_ap.known_networks }}"  # From secrets.yml
     
     # WiFi radio settings
-    channel: 7                     # WiFi channel (1-11 for 2.4GHz)
-    hw_mode: g                     # g = 2.4GHz band
+    # Set hw_mode to 'auto' to prefer 5GHz when supported, else fall back to 2.4GHz
+    hw_mode: auto                  # auto: prefer 5GHz (a) if supported; else 2.4GHz (g)
+    # channel: 7                     # Desired channel; auto logic overrides to 36 on 5GHz if invalid
     ieee80211n: 1                  # Enable 802.11n features
     wmm_enabled: 1                 # Enable WiFi multimedia (QoS)
     
@@ -435,8 +436,9 @@ media:
       ldap_use_starttls: false       # No STARTTLS needed
       ldap_skip_ssl_verify: false    # N/A when SSL disabled
       ldap_base_dn: "dc=ldap,dc=goauthentik,dc=io"
-      ldap_bind_user: "cn=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
-      ldap_search_filter: "(memberOf=cn=jellyfin_users,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
+      # Authentik LDAP outpost uses uid as the RDN for users; DN must use uid
+      ldap_bind_user: "uid=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
+      ldap_search_filter: "(uid=*)"  # Rely on Authentik provider search_group to restrict users
       ldap_admin_base_dn: ""         # Same as ldap_base_dn (empty uses default)
       ldap_admin_filter: "(memberOf=cn=jellyfin_admins,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
       # User creation and library access settings
@@ -445,7 +447,7 @@ media:
       # LDAP attribute mappings (standard Authentik LDAP schema)
       ldap_search_attributes: "uid, cn, mail, displayName"
       ldap_uid_attribute: "uid"
-      ldap_username_attribute: "cn"
+      ldap_username_attribute: "uid"
       ldap_password_attribute: "userPassword"
       ldap_allow_pass_change: false  # Users change passwords in Authentik, not Jellyfin
     

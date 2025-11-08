@@ -32,6 +32,45 @@
     update_cache: yes
   when: internet_connection.rc == 0
 
+- name: Detect 5GHz (802.11a/n) support on AP interface
+  ansible.builtin.shell: |
+    iw list 2>/dev/null | awk '/Band 2/ {print "5GHZ"; exit}'
+  register: wifi_band2_check
+  changed_when: false
+  failed_when: false
+
+- name: Set effective WiFi mode/channel facts
+  ansible.builtin.set_fact:
+    wifi_5ghz_supported: "{{ wifi_band2_check.stdout | trim == '5GHZ' }}"
+    wifi_hw_mode_effective: "{{ (network.wifi.hw_mode | default('g')) if (network.wifi.hw_mode is defined and network.wifi.hw_mode not in ['auto','AUTO']) else ((wifi_band2_check.stdout | trim == '5GHZ') | ternary('a','g')) }}"
+    wifi_channel_effective: >-
+      {{
+        (
+          (36) if (wifi_hw_mode_effective == 'a' and (
+            (network.wifi.channel is not defined) or
+            ((network.wifi.channel | int) not in [36,40,44,48,149,153,157,161])
+          ))
+          else (
+            (network.wifi.channel | int) if (wifi_hw_mode_effective == 'a') else
+            (
+              (network.wifi.channel | int) if (
+                (network.wifi.channel is defined) and
+                ((network.wifi.channel | int) >= 1) and
+                ((network.wifi.channel | int) <= 11)
+              ) else (7)
+            )
+          )
+        )
+      }}
+
+- name: Report WiFi band capability and chosen settings
+  ansible.builtin.debug:
+    msg: |
+      5GHz supported: {{ wifi_5ghz_supported | bool }}
+      Requested hw_mode: {{ network.wifi.hw_mode | default('auto') }}
+      Effective hw_mode: {{ wifi_hw_mode_effective }}
+      Effective channel: {{ wifi_channel_effective }}
+
 - name: Check which conflicting services exist
   ansible.builtin.systemd:
     name: "{{ item }}"

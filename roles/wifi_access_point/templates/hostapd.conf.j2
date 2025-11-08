@@ -56,13 +56,13 @@ country_code={{ network.wifi.country | default('US') }}
 # - g = 2.4GHz (802.11g/n) - better range, more congestion
 # - a = 5GHz (802.11a/n/ac) - faster speeds, less congestion, shorter range
 # Default: g (2.4GHz) for maximum compatibility
-hw_mode={{ network.wifi.hw_mode | default('g') }}
+hw_mode={{ wifi_hw_mode_effective | default(network.wifi.hw_mode | default('g')) }}
 
 # Channel selection:
 # 2.4GHz (hw_mode=g): channels 1, 6, 11 (non-overlapping in US)
 # 5GHz (hw_mode=a): channels 36, 40, 44, 48, 149, 153, 157, 161
 # Channel 7 is default (middle of 2.4GHz band)
-channel={{ network.wifi.channel | default(7) }}
+channel={{ wifi_channel_effective | default(network.wifi.channel | default(7)) }}
 
 # ------------------------------------------------------------------------------
 # SECURITY CONFIGURATION (WPA2-PSK)

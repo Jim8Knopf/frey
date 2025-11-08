@@ -72,12 +72,13 @@ media:
       verion: "latest"
       image: "lscr.io/linuxserver/qbittorrent"
       container_name: "qbittorrent"
+      listen_port: 51234
       port: 8080   # Container's internal port for Traefik
       ports: 
         - "{{ media.vpn.port }}:{{ media.vpn.port }}"  # VPN port
         - "8080:8080"    # Web UI
-        - "51234:51234/tcp"    # Torrent Port
-        - "51234:51234/udp"    # Torrent Port
+        - "{{ media.services.qbittorrent.listen_port | default(51234) }}:{{ media.services.qbittorrent.listen_port | default(51234) }}/tcp"    # Torrent Port
+        - "{{ media.services.qbittorrent.listen_port | default(51234) }}:{{ media.services.qbittorrent.listen_port | default(51234) }}/udp"    # Torrent Port
       volumes:
         - "{{ storage.appdata_dir }}/qbittorrent:/config"
         - "{{ media.downloads }}:/downloads"

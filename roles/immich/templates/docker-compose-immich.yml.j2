@@ -40,11 +40,13 @@ services:
       - "{{ immich.services.immich.upload_location }}:/usr/src/app/upload"
       # Timezone for correct timestamp display
       - /etc/localtime:/etc/localtime:ro
-      # Step CA root certificate for Authentik SSL
-      - /etc/ssl/certs/step-ca.crt:/usr/local/share/ca-certificates/step-ca.crt:ro
-      - /etc/ca-certificates.conf:/etc/ca-certificates.conf:ro
+      # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+      - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/usr/local/share/ca-certificates/step-ca.crt:ro"
     env_file:
       - .env
+    environment:
+      # Ensure Node trusts Step-CA when calling https://auth.frey
+      - NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/step-ca.crt
     ports:
       - "{{ immich.services.immich.port }}:2283"
     depends_on:
@@ -61,12 +63,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.immich.rule=Host(`immich.{{ network.domain_name }}`)"
-      - "traefik.http.routers.immich.entrypoints=web,websecure"
+      - "traefik.http.routers.immich.entrypoints=websecure"
       - "traefik.http.routers.immich.tls=true"
-      -  "traefik.http.routers.immich.tls.certresolver=step-ca"
+      - "traefik.http.routers.immich.tls.certresolver=step-ca"
+      - "traefik.http.routers.immich-http.rule=Host(`immich.{{ network.domain_name }}`)"
+      - "traefik.http.routers.immich-http.entrypoints=web"
       - "traefik.http.services.immich.loadbalancer.server.port=2283"
-    # Update CA certificates on container start
-    command: sh -c 'update-ca-certificates && /usr/src/app/start.sh'
+    # Use default container entrypoint; avoid relying on shell binaries not present in distroless images
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:2283/api/server/ping || exit 1"]
       interval: 30s

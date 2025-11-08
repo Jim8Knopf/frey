@@ -525,7 +525,7 @@
 - name: Allow Docker traffic through UFW
   ufw:
     rule: allow
-    port: "51234"
+    port: "{{ media.services.qbittorrent.listen_port | default(51234) }}"
     proto: "{{ item }}"
     comment: "DOCKER: qBittorrent torrent traffic"
   loop:
@@ -574,19 +574,25 @@
     - wifi_ap
     - nat
   block:
-    - name: Get upstream interface for NAT
-      ansible.builtin.shell: |
-        # Use detected upstream interface from earlier
-        echo "{{ upstream_interface_result.stdout | trim }}"
+    - name: Detect upstream interface for NAT (fallback-safe)
+      ansible.builtin.shell:
+        cmd: |
+          # Detect interface with default route; don't rely on earlier tagged tasks
+          ip route | awk '$1 == "default" {print $5; exit}'
       register: nat_upstream_interface
       changed_when: false
+      failed_when: false
+
+    - name: Select NAT upstream interface (with default fallback)
+      ansible.builtin.set_fact:
+        nat_iface: "{{ (nat_upstream_interface.stdout | trim) | default(ansible_default_ipv4.interface, true) }}"
 
     - name: Configure MASQUERADE for WiFi AP clients
       ansible.builtin.iptables:
         table: nat
         chain: POSTROUTING
         source: "{{ network.wifi.network }}"
-        out_interface: "{{ nat_upstream_interface.stdout | trim }}"
+        out_interface: "{{ nat_iface }}"
         jump: MASQUERADE
         comment: "NAT: Internet passthrough for WiFi AP clients"
 
@@ -621,7 +627,7 @@
           :POSTROUTING ACCEPT [0:0]
 
           # MASQUERADE traffic from WiFi AP clients ({{ network.wifi.network }})
-          -A POSTROUTING -s {{ network.wifi.network }} -o {{ upstream_interface_result.stdout | trim }} -j MASQUERADE
+          -A POSTROUTING -s {{ network.wifi.network }} -o {{ nat_iface }} -j MASQUERADE
 
           # End NAT table
           COMMIT
