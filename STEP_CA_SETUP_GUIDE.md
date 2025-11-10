@@ -109,6 +109,26 @@ curl -k https://ca.frey:9446/acme/acme/directory
 
 Should return JSON with ACME endpoints.
 
+## Phase 2.5: Extend Certificate Lifetime (90 Days)
+
+By default Step CA only issues 24-hour certificates, which is why browsers started flagging `immich.frey` as expired every day. The infrastructure role now automatically patches `/opt/frey/appdata/step-ca/config/ca.json` so the ACME provisioner hands out 90-day certificates (matching Traefik's `certificatesDuration`).
+
+1. Pull the latest repo changes and run:
+   ```bash
+   ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+     --tags infrastructure --vault-password-file .vault_pass
+   ```
+   This run will:
+   - Update the ACME provisioner's `default|max|minTLSCertDuration` values
+   - Restart the `step-ca` container
+   - Reset Traefik's ACME store so new certs are requested immediately
+
+2. (Optional) Confirm the new validity window once Traefik finishes obtaining certificates:
+   ```bash
+   echo | openssl s_client -servername immich.frey -connect immich.frey:443 2>/dev/null | openssl x509 -noout -dates
+   ```
+   Expect `notAfter` to be roughly 90 days in the future instead of 24 hours.
+
 ## Phase 3: Configure Traefik for ACME
 
 ### Step 3.1: Update Traefik Configuration

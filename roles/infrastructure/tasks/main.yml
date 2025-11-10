@@ -15,6 +15,70 @@
     state: directory
   when: infrastructure.services.step_ca.enabled | default(false)
 
+- name: Check for Step CA configuration file
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/step-ca/config/ca.json"
+  register: step_ca_config
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+- name: Check Step CA root certificate readability
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+  register: step_ca_root
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+- name: Ensure Step CA root certificate mode allows container access
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+    mode: '0644'
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_root.stat.exists
+
+- name: Enforce 90-day certificates for Step CA ACME provisioner
+  ansible.builtin.shell: |
+    set -euo pipefail
+    python3 - <<'PY'
+    import json
+    import pathlib
+
+    config_path = pathlib.Path("{{ storage.appdata_dir }}/step-ca/config/ca.json")
+    data = json.loads(config_path.read_text())
+
+    provisioners = data.get("authority", {}).get("provisioners", [])
+    changed = False
+    acme_found = False
+
+    for prov in provisioners:
+        if prov.get("type") != "ACME":
+            continue
+        acme_found = True
+        claims = prov.setdefault("claims", {})
+        for key, value in (
+            ("defaultTLSCertDuration", "2160h"),
+            ("maxTLSCertDuration", "2160h"),
+            ("minTLSCertDuration", "5m"),
+        ):
+            if claims.get(key) != value:
+                claims[key] = value
+                changed = True
+
+    if not acme_found:
+        print("noop")
+    elif changed:
+        config_path.write_text(json.dumps(data, indent=2) + "\n")
+        print("updated")
+    else:
+        print("noop")
+    PY
+  args:
+    executable: /bin/bash
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_config.stat.exists
+  register: step_ca_claims
+  changed_when: "'updated' in step_ca_claims.stdout"
+
 # Certificate Generation Tasks
 - name: Check if Frey CA certificate exists
   ansible.builtin.stat:
@@ -170,6 +234,16 @@
   community.docker.docker_compose_v2:
     project_src: "{{ storage.stacks }}/infrastructure"
     state: present
+
+- name: Restart Step CA after claim updates
+  community.docker.docker_container:
+    name: step-ca
+    state: started
+    restart: true
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_claims is defined
+    - (step_ca_claims.stdout | default('')) is search('updated')
 
 # --------------------------------------------------------------------------
 # FORCE RENEWAL OF AUTH.FREY CERTIFICATE VIA STEP-CA
@@ -476,6 +550,17 @@
   when: infrastructure.services.authentik.enabled | default(false)
   tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
 
+- name: Check existence of Mealie provider
+  ansible.builtin.shell: |
+    set -euo pipefail
+    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
+      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
+      "SELECT COUNT(*) FROM authentik_providers_oauth2_oauth2provider WHERE client_id='mealie'"
+  register: ak_mealie_count
+  changed_when: false
+  when: infrastructure.services.authentik.enabled | default(false)
+  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
+
 - name: Check existence of service accounts
   ansible.builtin.shell: |
     set -euo pipefail
@@ -496,6 +581,9 @@
         )
         + (
           ['10-oidc-immich.yaml'] if ((ak_immich_count.stdout | default('0') | trim | int) > 0) else []
+        )
+        + (
+          ['14-oidc-mealie.yaml'] if ((ak_mealie_count.stdout | default('0') | trim | int) > 0) else []
         )
         + (
           ['01-service-accounts.yaml'] if ((ak_sa_sum.stdout | default('0') | trim | int) >= 1) else []

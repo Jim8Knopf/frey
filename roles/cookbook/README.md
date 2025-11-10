@@ -333,6 +333,7 @@ docker exec mealie_postgres pg_isready -U mealie
 2. Verify redirect URI matches IdP configuration
 3. Check group memberships in IdP
 4. View Mealie logs: `docker logs mealie | grep -i oidc`
+5. If the login button immediately returns “Internal Server Error”, redeploy the cookbook stack so the container picks up the Step-CA trust bundle (`SSL_CERT_FILE=/etc/ssl/certs/step-ca.crt`) and updated HTTPS callback URLs.
 
 ## Advanced Configuration
 

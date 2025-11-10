@@ -38,8 +38,7 @@ services:
     image: portainer/portainer-ce:latest
     container_name: portainer
     restart: unless-stopped
-    ports:
-      - "{{ (infrastructure.services.portainer.port | default(9000)) }}:9000"
+    # No direct host port; access via Traefik only
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{storage.appdata_dir }}/portainer/data:/data"
@@ -200,8 +199,7 @@ services:
     image: smallstep/step-ca:{{ infrastructure.services.step_ca.version | default('latest') }}
     container_name: step-ca
     restart: unless-stopped
-    ports:
-      - "9336:9443"  # External port 9336 maps to internal 9443
+    # No direct host port; Traefik and internal clients use the container network
     volumes:
       - "{{ storage.appdata_dir }}/step-ca:/home/step"
     networks:

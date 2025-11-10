@@ -4,8 +4,7 @@ services:
     image: "{{ monitoring.dockge.image }}:{{ monitoring.dockge.version }}"
     container_name: dockge
     restart: unless-stopped
-    ports:
-      - "{{ monitoring.dockge.port }}:5001"
+    # No direct host port; access via Traefik only
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{ storage.appdata_dir }}/dockge:/app/data"
@@ -21,8 +20,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.dockge.rule=Host(`dockge.{{ network.domain_name }}`)"
-      - "traefik.http.routers.dockge.entrypoints=web,websecure"
+      - "traefik.http.routers.dockge.entrypoints=websecure"
       - "traefik.http.routers.dockge.tls=true"
+      - "traefik.http.routers.dockge.tls.certresolver=step-ca"
+      - "traefik.http.routers.dockge-http.rule=Host(`dockge.{{ network.domain_name }}`)"
+      - "traefik.http.routers.dockge-http.entrypoints=web"
+      - "traefik.http.middlewares.dockge-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.dockge-http.middlewares=dockge-redirect"
       - "traefik.http.services.dockge.loadbalancer.server.port=5001"
   {% endif %}
 
@@ -32,8 +36,7 @@ services:
     container_name: prometheus
     restart: unless-stopped
     user: "0"
-    ports:
-      - "{{ monitoring.prometheus.port }}:9090"
+    # No direct host port; access via Traefik only
     volumes:
       - "{{ storage.appdata_dir }}/prometheus:/etc/prometheus"
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -54,8 +57,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.prometheus.rule=Host(`prometheus.{{ network.domain_name }}`)"
-      - "traefik.http.routers.prometheus.entrypoints=web,websecure"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
       - "traefik.http.routers.prometheus.tls=true"
+      - "traefik.http.routers.prometheus.tls.certresolver=step-ca"
+      - "traefik.http.routers.prometheus-http.rule=Host(`prometheus.{{ network.domain_name }}`)"
+      - "traefik.http.routers.prometheus-http.entrypoints=web"
+      - "traefik.http.middlewares.prometheus-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.prometheus-http.middlewares=prometheus-redirect"
       - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
   {% endif %}
 
@@ -64,8 +72,7 @@ services:
     image: "{{ monitoring['node-exporter'].image }}:{{ monitoring['node-exporter'].version }}"
     container_name: node-exporter
     restart: unless-stopped
-    ports:
-      - "{{ monitoring['node-exporter'].port }}:9100"
+    # No direct host port; access via Traefik only
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
@@ -83,8 +90,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.node-exporter.rule=Host(`metrics.{{ network.domain_name }}`)"
-      - "traefik.http.routers.node-exporter.entrypoints=web,websecure"
+      - "traefik.http.routers.node-exporter.entrypoints=websecure"
       - "traefik.http.routers.node-exporter.tls=true"
+      - "traefik.http.routers.node-exporter.tls.certresolver=step-ca"
+      - "traefik.http.routers.node-exporter-http.rule=Host(`metrics.{{ network.domain_name }}`)"
+      - "traefik.http.routers.node-exporter-http.entrypoints=web"
+      - "traefik.http.middlewares.metrics-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.node-exporter-http.middlewares=metrics-redirect"
       - "traefik.http.services.node-exporter.loadbalancer.server.port=9100"
   {% endif %}
 
@@ -95,8 +107,7 @@ services:
     privileged: true
     devices:
       - /dev/kmsg:/dev/kmsg
-    ports:
-      - "{{ monitoring.cadvisor.port }}:8080"
+    # No direct host port; access via Traefik only
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
@@ -111,8 +122,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.cadvisor.rule=Host(`cadvisor.{{ network.domain_name }}`)"
-      - "traefik.http.routers.cadvisor.entrypoints=web,websecure"
+      - "traefik.http.routers.cadvisor.entrypoints=websecure"
       - "traefik.http.routers.cadvisor.tls=true"
+      - "traefik.http.routers.cadvisor.tls.certresolver=step-ca"
+      - "traefik.http.routers.cadvisor-http.rule=Host(`cadvisor.{{ network.domain_name }}`)"
+      - "traefik.http.routers.cadvisor-http.entrypoints=web"
+      - "traefik.http.middlewares.cadvisor-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.cadvisor-http.middlewares=cadvisor-redirect"
       - "traefik.http.services.cadvisor.loadbalancer.server.port=8080"
   {% endif %}
 
@@ -121,8 +137,7 @@ services:
     image: "{{ monitoring.grafana.image }}:{{ monitoring.grafana.version }}"
     container_name: grafana
     restart: unless-stopped
-    ports:
-      - "{{ monitoring.grafana.port }}:3000"
+    # No direct host port; access via Traefik only
     volumes:
       - "{{ storage.appdata_dir }}/grafana:/var/lib/grafana"
       - "{{ storage.appdata_dir }}/grafana/provisioning:/etc/grafana/provisioning"
@@ -157,9 +172,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.grafana.rule=Host(`grafana.{{ network.domain_name | default('local') }}`)"
-      - "traefik.http.routers.grafana.entrypoints=web,websecure"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
       - "traefik.http.routers.grafana.tls=true"
       - "traefik.http.routers.grafana.tls.certresolver=step-ca"
+      - "traefik.http.routers.grafana-http.rule=Host(`grafana.{{ network.domain_name | default('local') }}`)"
+      - "traefik.http.routers.grafana-http.entrypoints=web"
+      - "traefik.http.middlewares.grafana-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.grafana-http.middlewares=grafana-redirect"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
   {% endif %}
 
@@ -168,8 +187,7 @@ services:
     image: "{{ monitoring.loki.image }}:{{ monitoring.loki.version }}"
     container_name: loki
     restart: unless-stopped
-    ports:
-      - "{{ monitoring.loki.port }}:3100"
+    # No direct host port; access via Traefik only
     volumes:
       - "{{ storage.appdata_dir }}/loki:/loki"
     networks:
@@ -180,8 +198,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.loki.rule=Host(`loki.{{ network.domain_name }}`)"
-      - "traefik.http.routers.loki.entrypoints=web,websecure"
+      - "traefik.http.routers.loki.entrypoints=websecure"
       - "traefik.http.routers.loki.tls=true"
+      - "traefik.http.routers.loki.tls.certresolver=step-ca"
+      - "traefik.http.routers.loki-http.rule=Host(`loki.{{ network.domain_name }}`)"
+      - "traefik.http.routers.loki-http.entrypoints=web"
+      - "traefik.http.middlewares.loki-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.loki-http.middlewares=loki-redirect"
       - "traefik.http.services.loki.loadbalancer.server.port=3100"
   {% endif %}
 
@@ -205,8 +228,7 @@ services:
     image: "{{ monitoring['uptime-kuma'].image }}:{{ monitoring['uptime-kuma'].version }}"
     container_name: uptime-kuma
     restart: unless-stopped
-    ports:
-      - "{{ monitoring['uptime-kuma'].port }}:3001"
+    # No direct host port; access via Traefik only
     volumes:
       - "{{ storage.appdata_dir }}/uptime-kuma:/app/data"
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -218,8 +240,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.uptime.rule=Host(`uptime.{{ network.domain_name }}`)"
-      - "traefik.http.routers.uptime.entrypoints=web,websecure"
+      - "traefik.http.routers.uptime.entrypoints=websecure"
       - "traefik.http.routers.uptime.tls=true"
+      - "traefik.http.routers.uptime.tls.certresolver=step-ca"
+      - "traefik.http.routers.uptime-http.rule=Host(`uptime.{{ network.domain_name }}`)"
+      - "traefik.http.routers.uptime-http.entrypoints=web"
+      - "traefik.http.middlewares.uptime-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.uptime-http.middlewares=uptime-redirect"
       - "traefik.http.services.uptime.loadbalancer.server.port=3001"
   {% endif %}
 
@@ -251,8 +278,7 @@ services:
       - OOKLA_EULA_GDPR=true
     volumes:
       - '{{ storage.appdata_dir }}/speedtest:/config'
-    ports:
-      - '{{ monitoring['speedtest-tracker'].port }}:80'
+    # No direct host port; access via Traefik only
     restart: unless-stopped
     networks:
       proxy:              # For Traefik access
@@ -262,8 +288,13 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.speedtest.rule=Host(`speedtest.{{ network.domain_name }}`)"
-      - "traefik.http.routers.speedtest.entrypoints=web,websecure"
+      - "traefik.http.routers.speedtest.entrypoints=websecure"
       - "traefik.http.routers.speedtest.tls=true"
+      - "traefik.http.routers.speedtest.tls.certresolver=step-ca"
+      - "traefik.http.routers.speedtest-http.rule=Host(`speedtest.{{ network.domain_name }}`)"
+      - "traefik.http.routers.speedtest-http.entrypoints=web"
+      - "traefik.http.middlewares.speedtest-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.speedtest-http.middlewares=speedtest-redirect"
       - "traefik.http.services.speedtest.loadbalancer.server.port=80"
   {% endif %}
 

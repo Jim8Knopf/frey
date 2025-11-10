@@ -357,7 +357,7 @@ infrastructure:
       # - Set to a list of filenames to re-apply specific blueprints
       #   e.g., ['11-oidc-audiobookshelf.yaml', '10-oidc-immich.yaml']
       # - Or set to 'all' to re-apply every blueprint file
-      reapply_blueprints: ['11-oidc-audiobookshelf.yaml']
+      reapply_blueprints: ['11-oidc-audiobookshelf.yaml','14-oidc-mealie.yaml']
     step_ca:
       enabled: true  # Enable when ready to implement ACME-based certificate management
       version: "latest"
@@ -607,15 +607,19 @@ cookbook:
       # Storage paths
       data_dir: "{{ storage.appdata_dir }}/mealie/data"
       db_data_location: "{{ storage.appdata_dir }}/mealie/db"
+      container_uid: 911
+      container_gid: 911
+      postgres_uid: 999
+      postgres_gid: 999
       # API settings
       api_docs: true
-      base_url: "http://cookbook.{{ network.domain_name }}"
+      base_url: "https://cookbook.{{ network.domain_name }}"
       # Security
       allow_signup: false
       # SSO Configuration
       oidc_enabled: true
       oidc_client_id: "mealie"
-      oidc_configuration_url: "http://auth.{{ network.domain_name }}:9000/application/o/mealie/.well-known/openid-configuration"
+      oidc_configuration_url: "https://auth.{{ network.domain_name }}/application/o/mealie/.well-known/openid-configuration"
       oidc_user_group: "mealie_users"
       oidc_admin_group: "mealie_admins"
       oidc_auto_redirect: false
