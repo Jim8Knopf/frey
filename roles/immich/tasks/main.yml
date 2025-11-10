@@ -86,6 +86,19 @@
   tags:
     - config
 
+- name: Ensure required Docker networks for Immich exist
+  community.docker.docker_network:
+    name: "{{ item }}"
+    state: present
+    driver: bridge
+  loop:
+    - photos_network
+    - proxy
+    - localdns
+    - infrastructure_network
+  tags:
+    - config
+
 - name: Validate Docker Compose file syntax
   ansible.builtin.command:
     cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" config --quiet
@@ -130,18 +143,65 @@
           - Insufficient disk space or memory
           - Image pull failures (check internet connection)
 
-- name: Wait for Immich server to be ready
-  ansible.builtin.uri:
-    url: "http://localhost:{{ immich.services.immich.port }}/api/server/ping"
-    status_code: 200
-    timeout: 10
-  register: immich_health
-  until: immich_health.status == 200
-  retries: 5
-  delay: 10
-  failed_when: false
-  tags:
-    - health_check
+- name: Wait for Immich server to be ready and collect diagnostics on failure
+  block:
+    - name: Wait for Immich server to be ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ immich.services.immich.port }}/api/server/ping"
+        status_code: 200
+        timeout: 10
+      register: immich_health
+      until: immich_health.status == 200
+      retries: 20
+      delay: 5
+      tags: [health_check]
+  rescue:
+    - name: Show Immich compose ps
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" ps
+      register: immich_ps
+      changed_when: false
+
+    - name: Tail Immich server logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" logs --tail=120 immich-server
+      register: immich_server_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Tail Immich database logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" logs --tail=80 database
+      register: immich_db_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Tail Immich redis logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" logs --tail=40 redis
+      register: immich_redis_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Display Immich diagnostics
+      ansible.builtin.debug:
+        msg: |
+          Immich failed readiness check; diagnostics follow.
+          docker ps:
+          {{ immich_ps.stdout }}
+
+          immich-server logs (last 120 lines):
+          {{ immich_server_logs.stdout }}
+
+          database logs (last 80 lines):
+          {{ immich_db_logs.stdout }}
+
+          redis logs (last 40 lines):
+          {{ immich_redis_logs.stdout }}
+
+    - name: Fail with helpful message after diagnostics
+      ansible.builtin.fail:
+        msg: "Immich readiness check failed. See diagnostics above."
 
 - name: Display Immich stack deployment summary
   ansible.builtin.debug:
@@ -179,4 +239,3 @@
          - Restart: docker compose -C {{ storage.stacks }}/immich restart
          - Update: docker compose -C {{ storage.stacks }}/immich pull && docker compose -C {{ storage.stacks }}/immich up -d
   when: immich_health.status == 200
-

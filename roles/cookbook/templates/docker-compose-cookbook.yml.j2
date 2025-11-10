@@ -27,23 +27,37 @@ services:
     container_name: mealie
     image: ghcr.io/mealie-recipes/mealie:{{ cookbook.services.mealie.version | default('latest') }}
     restart: unless-stopped
-    ports:
-      - "{{ cookbook.services.mealie.port }}:9000"
     env_file:
       - .env
     volumes:
       - "{{ cookbook.services.mealie.data_dir }}:/app/data"
+      # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+      - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/etc/ssl/certs/step-ca.crt:ro"
+    environment:
+      # Ensure Python requests trusts Step-CA when calling https://auth.frey
+      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/step-ca.crt
+      # Force OpenSSL-based stacks (httpx, authlib) to trust Step-CA as well
+      - SSL_CERT_FILE=/etc/ssl/certs/step-ca.crt
+      - SSL_CERT_DIR=/etc/ssl/certs
     depends_on:
       - mealie-postgres
+    ports: {{ cookbook.services.mealie.ports | default(['9900:9000']) }}
     networks:
       - cookbook
       - proxy
+      - localdns
     labels:
       # Traefik routing configuration
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.cookbook.rule=Host(`cookbook.{{ network.domain_name }}`)"
-      - "traefik.http.routers.cookbook.entrypoints=web"
+      - "traefik.http.routers.cookbook.entrypoints=websecure"
+      - "traefik.http.routers.cookbook.tls=true"
+      - "traefik.http.routers.cookbook.tls.certresolver=step-ca"
+      - "traefik.http.routers.cookbook-http.rule=Host(`cookbook.{{ network.domain_name }}`)"
+      - "traefik.http.routers.cookbook-http.entrypoints=web"
+      - "traefik.http.middlewares.cookbook-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.cookbook-http.middlewares=cookbook-redirect"
       - "traefik.http.services.cookbook.loadbalancer.server.port=9000"
     # Healthcheck disabled - curl not available in container
     # Container health can be monitored via logs and direct API access
@@ -74,4 +88,6 @@ networks:
     name: cookbook_network
     driver: bridge
   proxy:
+    external: true
+  localdns:
     external: true

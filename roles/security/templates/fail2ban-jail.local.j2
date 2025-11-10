@@ -7,13 +7,12 @@
 [DEFAULT]
 # Whitelist trusted IP addresses and networks
 # These IPs will NEVER be banned by fail2ban
-ignoreip = 127.0.0.1/8 ::1 {% for network in network_security.trusted_networks %}{{ network }} {% endfor %}{% if network_security.trusted_device_ips is defined %}{{ network_security.trusted_device_ips | join(' ') }}{% endif %}
+ignoreip = 127.0.0.1/8 ::1 {% for network in network_security.trusted_networks %}{{ network }} {% endfor %}{{ network_security.trusted_device_ips | default([]) | join(' ') }}
 
 # Ban settings - more lenient for home use
-bantime  = 1h
+bantime  = 10m
 findtime  = 10m
 maxretry = 10
-backend = systemd
 
 # Email notifications (disabled by default)
 destemail = root@localhost
@@ -26,7 +25,7 @@ action = %(action_)s
 [sshd]
 # SSH jail - protects against brute force attacks
 enabled = true
-port = {{ security.ssh_port | default('ssh') }}
+port = ssh
 logpath = %(sshd_log)s
 backend = %(sshd_backend)s
 maxretry = 10
@@ -34,4 +33,4 @@ findtime = 10m
 bantime = 1h
 
 # Additional whitelist for SSH (belt and suspenders approach)
-ignoreip = 127.0.0.1/8 ::1 {% for network in network_security.trusted_networks %}{{ network }} {% endfor %}{% if network_security.trusted_device_ips is defined %}{{ network_security.trusted_device_ips | join(' ') }}{% endif %}
+ignoreip = 127.0.0.1/8 ::1 {% for network in network_security.trusted_networks %}{{ network }} {% endfor %}{{ network_security.trusted_device_ips | default([]) | join(' ') }}

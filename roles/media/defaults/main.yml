@@ -53,6 +53,7 @@ media:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
         - "{{ media.dir }}/movies:/data/movies"
+        - "{{ media.dir }}/music:/data/music"
 
     jellyseerr:
       enabled: true
@@ -71,18 +72,18 @@ media:
       verion: "latest"
       image: "lscr.io/linuxserver/qbittorrent"
       container_name: "qbittorrent"
+      listen_port: 51234
       port: 8080   # Container's internal port for Traefik
       ports: 
         - "{{ media.vpn.port }}:{{ media.vpn.port }}"  # VPN port
         - "8080:8080"    # Web UI
-        - "6881:6881"    # Torrent Port
+        - "{{ media.services.qbittorrent.listen_port | default(51234) }}:{{ media.services.qbittorrent.listen_port | default(51234) }}/tcp"    # Torrent Port
+        - "{{ media.services.qbittorrent.listen_port | default(51234) }}:{{ media.services.qbittorrent.listen_port | default(51234) }}/udp"    # Torrent Port
       volumes:
         - "{{ storage.appdata_dir }}/qbittorrent:/config"
         - "{{ media.downloads }}:/downloads"
       environment:
         - "WEBUI_PORT=8080"
-        - "TORRENT_PORT=6881"
-        - TORRENTING_PORT={{ media.vpn.port }}
         
     nzbget:
       enabled: true

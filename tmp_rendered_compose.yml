@@ -92,8 +92,8 @@ services:
       - "{{ storage.downloads_dir }}:/downloads"
     ports:
       - "8080:8080"
-      - "6881:6881"
-      - "6881:6881/udp"
+      - "51234:51234"
+      - "51234:51234/udp"
     networks: [proxy]
     restart: unless-stopped
     labels:

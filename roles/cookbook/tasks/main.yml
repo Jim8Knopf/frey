@@ -35,6 +35,24 @@
   tags:
     - directories
 
+- name: Align Mealie application data ownership with container user
+  ansible.builtin.file:
+    path: "{{ cookbook.services.mealie.data_dir }}"
+    owner: "{{ cookbook.services.mealie.container_uid | default(1000) }}"
+    group: "{{ cookbook.services.mealie.container_gid | default(1000) }}"
+    recurse: true
+  tags:
+    - directories
+
+- name: Align Mealie Postgres data ownership with database user
+  ansible.builtin.file:
+    path: "{{ cookbook.services.mealie.db_data_location }}"
+    owner: "{{ cookbook.services.mealie.postgres_uid | default(999) }}"
+    group: "{{ cookbook.services.mealie.postgres_gid | default(999) }}"
+    recurse: true
+  tags:
+    - directories
+
 - name: Pre-pull Mealie images
   community.docker.docker_image:
     name: "{{ item }}"
@@ -87,15 +105,24 @@
     state: present
   register: compose_result
 
+- name: Wait for Mealie port to accept connections
+  ansible.builtin.wait_for:
+    host: "{{ cookbook.services.mealie.health_host | default('127.0.0.1') }}"
+    port: "{{ cookbook.services.mealie.port | int }}"
+    timeout: "{{ cookbook.services.mealie.wait_timeout | default(240) | int }}"
+    delay: 5
+    state: started
+  register: mealie_port_wait
+
 - name: Wait for Mealie to be ready
   ansible.builtin.uri:
-    url: "http://{{ network.wifi.ip }}:{{ cookbook.services.mealie.port }}/api/app/about"
+    url: "http://{{ cookbook.services.mealie.health_host | default('127.0.0.1') }}:{{ cookbook.services.mealie.port }}/api/app/about"
     status_code: 200
+    timeout: 10
   register: mealie_health
   until: mealie_health.status == 200
   retries: 5
-  delay: 10
-  failed_when: false
+  delay: 6
 
 - name: Display Mealie deployment summary
   ansible.builtin.debug:

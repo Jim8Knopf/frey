@@ -1,0 +1,82 @@
+from django.db import transaction
+from authentik.core.models import Application, Provider
+from authentik.providers.oauth2.models import OAuth2Provider
+from authentik.flows.models import Flow
+from authentik.crypto.models import CertificateKeyPair
+
+domain = "{{ network.domain_name }}"
+client_id = "{{ media.services.audiobookshelf.oidc_client_id | default('audiobookshelf') }}"
+client_secret = "{{ audiobookshelf_oidc_client_secret }}"
+
+auth_flow = Flow.objects.get(slug='default-authentication-flow')
+authz_flow = Flow.objects.get(slug='default-provider-authorization-implicit-consent')
+inv_flow = Flow.objects.get(slug='default-invalidation-flow')
+signing_key = CertificateKeyPair.objects.filter(name='authentik Self-signed Certificate').first()
+
+# Redirect URIs: both root and subfolder variants + mobile redirect
+redirect_uris = [
+    {"matching_mode": "strict", "url": f"https://audiobookshelf.{domain}/auth/openid/callback"},
+    {"matching_mode": "strict", "url": f"http://audiobookshelf.{domain}/auth/openid/callback"},
+    {"matching_mode": "strict", "url": f"https://audiobookshelf.{domain}/audiobookshelf/auth/openid/callback"},
+    {"matching_mode": "strict", "url": f"http://audiobookshelf.{domain}/audiobookshelf/auth/openid/callback"},
+    {"matching_mode": "strict", "url": f"https://audiobookshelf.{domain}/auth/openid/mobile-redirect"},
+    {"matching_mode": "strict", "url": f"http://audiobookshelf.{domain}/auth/openid/mobile-redirect"},
+    {"matching_mode": "strict", "url": f"https://audiobookshelf.{domain}/audiobookshelf/auth/openid/mobile-redirect"},
+    {"matching_mode": "strict", "url": f"http://audiobookshelf.{domain}/audiobookshelf/auth/openid/mobile-redirect"},
+]
+
+with transaction.atomic():
+    # Normalize existing providers linked to the ABS application
+    abs_app, _ = Application.objects.get_or_create(slug='audiobookshelf', defaults={"name": "Audiobookshelf"})
+
+    candidates = []
+    if abs_app.provider_id:
+        try:
+            candidates.append(Provider.objects.get(id=abs_app.provider_id))
+        except Provider.DoesNotExist:
+            pass
+
+    # Preferred provider by name
+    try:
+        candidates.append(Provider.objects.get(name='audiobookshelf-provider'))
+    except Provider.DoesNotExist:
+        pass
+
+    # Pick first existing candidate or create new
+    if candidates:
+        p = candidates[0]
+    else:
+        p = Provider.objects.create(name='audiobookshelf-provider')
+
+    # Ensure proper flows and name
+    p.name = 'audiobookshelf-provider'
+    p.authentication_flow = auth_flow
+    p.authorization_flow = authz_flow
+    p.invalidation_flow = inv_flow
+    p.save()
+
+    # Ensure OAuth2 child exists and is linked
+    op, _ = OAuth2Provider.objects.get_or_create(provider_ptr=p)
+    op.client_type = 'confidential'
+    op.client_id = client_id
+    op.client_secret = client_secret
+    op.include_claims_in_id_token = True
+    op.refresh_token_validity = "days=30"
+    op.access_code_validity = "minutes=1"
+    op.access_token_validity = "minutes=10"
+    if signing_key:
+        op.signing_key = signing_key
+    # Assign JSON payload directly to avoid dataclass requirement
+    op._redirect_uris = redirect_uris
+    op.save()
+
+    # Re-link application to correct provider
+    abs_app.name = 'Audiobookshelf'
+    abs_app.provider = p
+    abs_app.meta_launch_url = f"http://audiobookshelf.{domain}"
+    abs_app.meta_description = 'Audiobook and podcast server'
+    abs_app.meta_publisher = 'Frey Hub'
+    abs_app.policy_engine_mode = 'any'
+    abs_app.save()
+
+print("OK: Audiobookshelf ensured and normalized")

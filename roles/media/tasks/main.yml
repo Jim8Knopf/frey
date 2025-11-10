@@ -39,6 +39,64 @@
     mode: '0755'
   when: media.services.audiobook_bridge.enabled | default(false)
 
+# ==============================================================================
+# JELLYFIN LDAP AUTHENTICATION CONFIGURATION
+# ==============================================================================
+# Deploy LDAP-Auth plugin configuration for unified authentication via Authentik
+# NOTE: LDAP Authentication plugin must be installed manually first via Jellyfin UI
+#       (Dashboard > Plugins > Catalog > "LDAP Authentication")
+# This task manages the plugin's XML configuration file automatically
+
+- name: Ensure Jellyfin plugins/configurations directory exists
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when:
+    - infrastructure.services.authentik.enabled | default(false)
+    - media.services.jellyfin.enabled | default(false)
+
+- name: Deploy Jellyfin LDAP-Auth plugin configuration
+  ansible.builtin.template:
+    src: jellyfin-ldap-auth.xml.j2
+    dest: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations/LDAP-Auth.xml"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0600'
+    backup: yes
+  when:
+    - infrastructure.services.authentik.enabled | default(false)
+    - media.services.jellyfin.enabled | default(false)
+  notify: Restart Jellyfin
+
+- name: Deploy Jellyfin LDAP-Auth plugin configuration (assembly filename)
+  ansible.builtin.template:
+    src: jellyfin-ldap-auth.xml.j2
+    dest: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations/Jellyfin.Plugin.LDAP-Auth.xml"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0600'
+    backup: yes
+  when:
+    - infrastructure.services.authentik.enabled | default(false)
+    - media.services.jellyfin.enabled | default(false)
+  notify: Restart Jellyfin
+
+- name: Deploy Jellyfin LDAP-Auth plugin configuration (alternate assembly filename)
+  ansible.builtin.template:
+    src: jellyfin-ldap-auth.xml.j2
+    dest: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations/Jellyfin.Plugin.LDAPAuth.xml"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0600'
+    backup: yes
+  when:
+    - infrastructure.services.authentik.enabled | default(false)
+    - media.services.jellyfin.enabled | default(false)
+  notify: Restart Jellyfin
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2
@@ -48,6 +106,132 @@
     mode: '0644'
     backup: yes
   register: compose_template_result
+
+- name: Ensure downloads directory exists with proper permissions
+  ansible.builtin.file:
+    path: "{{ media.downloads }}"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0775'
+
+- name: Check if qBittorrent container exists
+  community.docker.docker_container_info:
+    name: "{{ media.services.qbittorrent.container_name }}"
+  register: qbittorrent_container_info
+  when: not media.vpn.enabled
+  ignore_errors: true
+
+- name: Stop qBittorrent container before config modification
+  community.docker.docker_container:
+    name: "{{ media.services.qbittorrent.container_name }}"
+    state: stopped
+  when:
+    - not media.vpn.enabled
+    - qbittorrent_container_info.exists is defined
+    - qbittorrent_container_info.exists
+
+- name: Disable qBittorrent proxy if VPN is disabled
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^Proxy\\Profiles\\BitTorrent='
+    line: 'Proxy\Profiles\BitTorrent=false'
+  when: not media.vpn.enabled
+  ignore_errors: true
+
+- name: Ensure qBittorrent proxy is fully disabled (no VPN)
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^Preferences\\Connection\\ProxyType='
+    line: 'Preferences\Connection\ProxyType=0'
+    create: yes
+  when: not media.vpn.enabled
+  ignore_errors: true
+
+- name: Disable proxy for peer connections (no VPN)
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^Preferences\\Connection\\ProxyPeerConnections='
+    line: 'Preferences\Connection\ProxyPeerConnections=false'
+    create: yes
+  when: not media.vpn.enabled
+  ignore_errors: true
+
+- name: Disable proxy only-for-torrents (no VPN)
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^Preferences\\Connection\\ProxyOnlyForTorrents='
+    line: 'Preferences\Connection\ProxyOnlyForTorrents=false'
+    create: yes
+  when: not media.vpn.enabled
+  ignore_errors: true
+
+- name: Ensure WebUI port is consistent
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^(Preferences\\WebUI\\Port|WebUI\\Port)='
+    line: 'Preferences\WebUI\Port={{ media.services.qbittorrent.port | default(8080) }}'
+    create: yes
+  ignore_errors: true
+
+- name: Ensure qBittorrent listen port is set
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^(BitTorrent\\Session\\Port|Session\\Port|Connection\\PortRangeMin)='
+    line: 'BitTorrent\Session\Port={{ media.services.qbittorrent.listen_port | default(51234) }}'
+    create: yes
+  ignore_errors: true
+
+- name: Disable random listen port (stability)
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^(BitTorrent\\Session\\UseRandomPort|Preferences\\Connection\\UseRandomPort)='
+    line: 'BitTorrent\Session\UseRandomPort=false'
+    create: yes
+  ignore_errors: true
+
+- name: Ensure anonymous mode is disabled (improves tracker compatibility)
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^(BitTorrent\\AnonymousMode)='
+    line: 'BitTorrent\AnonymousMode=false'
+    create: yes
+  ignore_errors: true
+
+- name: Clear any interface binding (Interface/Address/Name)
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^Preferences\\Connection\\(Interface|InterfaceName|InterfaceAddress)='
+    state: absent
+  ignore_errors: true
+
+- name: Clear any session interface binding
+  ansible.builtin.lineinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    regexp: '^BitTorrent\\Session\\(Interface|InterfaceName|InterfaceAddress)='
+    state: absent
+  ignore_errors: true
+
+- name: Ensure DHT/PeX/LSD and UPnP/NAT-PMP are enabled
+  ansible.builtin.blockinfile:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    marker: "# {mark} ANSIBLE MANAGED QBIT SETTINGS"
+    block: |
+      BitTorrent\DHT\Enabled=true
+      BitTorrent\PeX=true
+      BitTorrent\LSD=true
+      BitTorrent\Session\UseUPnP=true
+      BitTorrent\Session\UseNAT-PMP=true
+  ignore_errors: true
+
+- name: Start qBittorrent container after config modification
+  community.docker.docker_container:
+    name: "{{ media.services.qbittorrent.container_name }}"
+    state: started
+  when:
+    - not media.vpn.enabled
+    - qbittorrent_container_info.exists is defined
+    - qbittorrent_container_info.exists
 
 - name: Show rendered compose
   ansible.builtin.shell: |
@@ -95,4 +279,3 @@
     - name: Fail with helpful message
       ansible.builtin.fail:
         msg: "Media stack deployment failed. Check the logs above and ensure all required directories exist."
-

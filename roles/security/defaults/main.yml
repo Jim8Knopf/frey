@@ -32,7 +32,23 @@ network_security:
   trusted_networks:
     - "192.168.0.0/24"          # Home network - full access to all services
     - "10.20.30.0/24"           # Secondary management network (if needed)
+    - "10.20.0.0/24"            # WiFi AP network - CRITICAL for SSH access to Pi
     # Note: Current upstream network will be auto-detected and added at runtime
+    # Note: WiFi AP clients still blocked from direct container ports (see protected_ports)
+
+  # TRUSTED DEVICES - Never Banned by Fail2ban
+  # ------------------------------------------------------------------------------
+  # These specific device IPs/MACs are whitelisted and will NEVER be banned.
+  # Use this for your primary management devices (laptop, phone, etc.)
+  #
+  # IMPORTANT: Add your devices here to prevent lockouts!
+  trusted_device_ips:
+    - "192.168.0.184"         # Jim's laptop (home WiFi)
+    # Add your phone's IP here once identified
+
+  trusted_device_macs:
+    - "b4:b5:b6:a7:57:c9"     # Jim's laptop WiFi MAC
+    # Add your phone's MAC here once identified
 
   # WIFI AP NETWORK - Restricted Access
   # ------------------------------------------------------------------------------

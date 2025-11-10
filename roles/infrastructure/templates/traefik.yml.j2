@@ -6,40 +6,40 @@ api:
   dashboard: true
   insecure: false  # Secure dashboard access
 
-# Middleware configurations
-http:
-  middlewares:
-    local-ipwhitelist:
-      ipWhiteList:
-        sourceRange:
-          - "10.20.0.0/24"  # WiFi network
-          - "10.20.2.0/24"  # Media network
-          - "172.30.4.0/24" # Library network
-
 entryPoints:
   web:
     address: ":80"
-    # Optionally redirect to HTTPS
-    # http:
-    #   redirections:
-    #     entryPoint:
-    #       to: websecure
-    #       scheme: https
+    transport:
+      respondingTimeouts:
+        readTimeout: 600s      # 10 minutes for reading request (large uploads)
+        writeTimeout: 600s     # 10 minutes for writing response (large downloads)
+        idleTimeout: 3600s     # 1 hour idle connection timeout for qBittorrent and other persistent connections
+    # HTTP entrypoint - no global redirect to allow ACME HTTP-01 challenges
+    # Individual routers will handle HTTPS redirects as needed
   websecure:
     address: ":443"
-    # Configure TLS
-    # http:
-    #   tls:
-    #     certResolver: letsencrypt
+    transport:
+      respondingTimeouts:
+        readTimeout: 600s
+        writeTimeout: 600s
+        idleTimeout: 3600s
 
-# Configure certificate resolver for Let's Encrypt
-# certificatesResolvers:
-#   letsencrypt:
-#     acme:
-#       email: your-email@example.com
-#       storage: acme.json
-#       httpChallenge:
-#         entryPoint: web
+# Certificate management via Step-CA ACME
+# Static certificates removed - using automated ACME instead
+
+certificatesResolvers:
+  step-ca:
+    acme:
+      email: admin@frey.local
+      storage: /acme/acme.json
+      # Connect to Step-CA's internal Docker port (9443, not external 9336)
+      caServer: https://step-ca:9443/acme/acme/directory
+      certificatesDuration: 2160  # 90 days
+      keyType: EC256  # Use ECDSA keys for better performance
+      # Use HTTP-01 challenge for validation (requires port 80 accessible)
+      # Step CA will connect to http://service.frey/.well-known/acme-challenge/token
+      httpChallenge:
+        entryPoint: web
 
 providers:
   docker:
@@ -47,8 +47,14 @@ providers:
     exposedByDefault: false  # Security: opt-in for container exposure
     network: proxy          # Use proxy network for routing
     watch: true
-    
+
 log:
   level: INFO  # Change to DEBUG for troubleshooting
 
 accessLog: {}  # Enable access logs
+
+# Provide a default TLS certificate (wildcard) as fallback
+tls:
+  certificates:
+    - certFile: /certificates/frey.crt
+      keyFile: /certificates/frey.key

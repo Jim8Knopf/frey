@@ -130,7 +130,8 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.homeassistant.rule=Host(`homeassistant.{{ network.domain_name }}`)"
-      - "traefik.http.routers.homeassistant.entrypoints=web"
+      - "traefik.http.routers.homeassistant.entrypoints=web,websecure"
+      - "traefik.http.routers.homeassistant.tls=true"
       - "traefik.http.services.homeassistant.loadbalancer.server.port=8123"
   {% endif %}
 

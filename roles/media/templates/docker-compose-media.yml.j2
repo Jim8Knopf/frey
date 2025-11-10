@@ -48,38 +48,42 @@ services:
     image: "{{ service_config.image }}:{{ service_config.version }}"
     container_name: {{ service_name }}
     environment:
-      - PUID={{ media.user.uid }}
-      - PGID={{ media.group.gid }}
-      - TZ={{ network.timezone }}
-{% if service_config.environment is defined %}
-{% for env_var in service_config.environment %}
+{% for env_var in ([
+  'PUID=' ~ media.user.uid|string,
+  'PGID=' ~ media.group.gid|string,
+  'TZ=' ~ network.timezone
+] + (service_config.environment | default([]))) %}
       - {{ env_var }}
 {% endfor %}
-{% endif %}
-{% if infrastructure.services.authentik.enabled | default(false) %}
-{% if service_name == 'jellyfin' %}
-      # LDAP Authentication Configuration (requires LDAP-Auth plugin installed via Jellyfin UI)
-      - LDAP_SERVER={{ media.services.jellyfin.ldap_server }}
-      - LDAP_PORT={{ media.services.jellyfin.ldap_port }}
-      - LDAP_BASE_DN={{ media.services.jellyfin.ldap_base_dn }}
-      - LDAP_BIND_USER={{ media.services.jellyfin.ldap_bind_user }}
-      - LDAP_BIND_PASSWORD={{ authentik_ldap_bind_password }}
-      - LDAP_SEARCH_FILTER={{ media.services.jellyfin.ldap_search_filter }}
-      - LDAP_ADMIN_FILTER={{ media.services.jellyfin.ldap_admin_filter }}
-{% endif %}
-{# Audiobookshelf OIDC cannot be configured via environment variables #}
-{# Must be configured manually via web UI: Settings → Authentication → OpenID Connect #}
-{% endif %}
+{# ==============================================================================
+   AUTHENTICATION NOTES
+   ==============================================================================
+
+   JELLYFIN LDAP: Configuration managed via XML file (not environment variables)
+   - The LDAP-Auth plugin does NOT support environment variables
+   - Configuration is deployed via Ansible template: jellyfin-ldap-auth.xml.j2
+   - Location: /config/plugins/configurations/LDAP-Auth.xml
+   - Requires plugin installed manually first via Jellyfin UI
+
+   AUDIOBOOKSHELF OIDC: Must be configured via web UI (not environment variables)
+   - Cannot be automated via docker-compose environment variables
+   - Manual setup: Settings → Authentication → OpenID Connect
+   - Use values from media.services.audiobookshelf.oidc_* variables
+   ============================================================================== #}
     restart: unless-stopped
     volumes:
-      {{ service_config.volumes | to_nice_yaml(indent=6) | indent(6) | trim }}
+{% for volume in service_config.volumes %}
+      - {{ volume }}
+{% endfor %}
     networks:
       proxy: {}        # Required for Traefik routing
       localdns: {}     # Required for DNS resolution
       media_network: {} # Service-specific network
     ports:
 {% if service_config.ports is defined %}
-      {{ service_config.ports | to_nice_yaml(indent=6) | indent(6) | trim }}
+{% for port in service_config.ports %}
+      - {{ port }}
+{% endfor %}
 {% else %}
       - "{{ service_config.port }}:{{ service_config.port }}"  # Direct access for library network
 {% endif %}
@@ -87,9 +91,24 @@ services:
       - deunhealth.restart.on.unhealthy=true
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
+{% if service_name == 'audiobookshelf' %}
+      # Align with other services: HTTPS via Step-CA with HTTP→HTTPS redirect
       - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
-      - "traefik.http.routers.{{service_name}}.entrypoints=web"
+      - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
+      - "traefik.http.routers.{{service_name}}.tls=true"
+      - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
+      - "traefik.http.routers.{{service_name}}-http.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
+      - "traefik.http.routers.{{service_name}}-http.entrypoints=web"
+      - "traefik.http.middlewares.{{service_name}}-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.{{service_name}}-http.middlewares={{service_name}}-redirect"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
+{% else %}
+      - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
+      - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
+      - "traefik.http.routers.{{service_name}}.tls=true"
+      - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
+      - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
+{% endif %}
 
 {% endfor -%}
 

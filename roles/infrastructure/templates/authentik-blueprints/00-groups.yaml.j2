@@ -48,16 +48,57 @@ entries:
       attributes:
         description: "Administrators of Jellyfin with full access"
 
-  # Audiobookshelf Group
+  # # Audiobookshelf Group
+  # - model: authentik_core.group
+  #   id: audiobookshelf-users-group
+  #   identifiers:
+  #     name: audiobookshelf_users
+  #   attrs:
+  #     name: audiobookshelf_users
+  #     is_superuser: false
+  #     attributes:
+  #       description: "Users who can access Audiobookshelf"
+
+  # - model: authentik_core.group
+  #   id: audiobookshelf-admins-group
+  #   identifiers:
+  #     name: audiobookshelf_admin
+  #   attrs:
+  #     name: audiobookshelf_admin
+  #     is_superuser: true
+  #     attributes:
+  #       description: "Admin user for Audiobookshelf"
+
+  # Audiobookshelf role-mapping groups (exact names required by ABS)
   - model: authentik_core.group
-    id: audiobookshelf-users-group
+    id: abs-admin-group
     identifiers:
-      name: audiobookshelf_users
+      name: admin
     attrs:
-      name: audiobookshelf_users
+      name: admin
       is_superuser: false
       attributes:
-        description: "Users who can access Audiobookshelf"
+        description: "Audiobookshelf Admin role (mapped from Authentik)"
+
+  - model: authentik_core.group
+    id: abs-user-group
+    identifiers:
+      name: user
+    attrs:
+      name: user
+      is_superuser: false
+      attributes:
+        description: "Audiobookshelf User role (mapped from Authentik)"
+
+  - model: authentik_core.group
+    id: abs-guest-group
+    identifiers:
+      name: guest
+    attrs:
+      name: guest
+      is_superuser: false
+      attributes:
+        description: "Audiobookshelf Guest role (mapped from Authentik)"
 
   # Grafana Groups
   - model: authentik_core.group
@@ -92,3 +133,24 @@ entries:
       attributes:
         description: "Full Grafana admin access"
         grafana_role: "Admin"
+
+  # Mealie (Cookbook) Groups
+  - model: authentik_core.group
+    id: mealie-users-group
+    identifiers:
+      name: mealie_users
+    attrs:
+      name: mealie_users
+      is_superuser: false
+      attributes:
+        description: "Basic Mealie recipe manager access"
+
+  - model: authentik_core.group
+    id: mealie-admins-group
+    identifiers:
+      name: mealie_admins
+    attrs:
+      name: mealie_admins
+      is_superuser: false
+      attributes:
+        description: "Mealie admin access with full recipe management"

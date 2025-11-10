@@ -40,8 +40,13 @@ services:
       - "{{ immich.services.immich.upload_location }}:/usr/src/app/upload"
       # Timezone for correct timestamp display
       - /etc/localtime:/etc/localtime:ro
+      # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+      - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/usr/local/share/ca-certificates/step-ca.crt:ro"
     env_file:
       - .env
+    environment:
+      # Ensure Node trusts Step-CA when calling https://auth.frey
+      - NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/step-ca.crt
     ports:
       - "{{ immich.services.immich.port }}:2283"
     depends_on:
@@ -49,15 +54,22 @@ services:
       - database
     restart: unless-stopped
     networks:
-      - photos
+      - photos_network
+      - infrastructure_network
       - proxy
+      - localdns
     labels:
       # Traefik routing configuration
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.immich.rule=Host(`immich.{{ network.domain_name }}`)"
-      - "traefik.http.routers.immich.entrypoints=web"
+      - "traefik.http.routers.immich.entrypoints=websecure"
+      - "traefik.http.routers.immich.tls=true"
+      - "traefik.http.routers.immich.tls.certresolver=step-ca"
+      - "traefik.http.routers.immich-http.rule=Host(`immich.{{ network.domain_name }}`)"
+      - "traefik.http.routers.immich-http.entrypoints=web"
       - "traefik.http.services.immich.loadbalancer.server.port=2283"
+    # Use default container entrypoint; avoid relying on shell binaries not present in distroless images
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:2283/api/server/ping || exit 1"]
       interval: 30s
@@ -80,7 +92,7 @@ services:
       - .env
     restart: unless-stopped
     networks:
-      - photos
+      - photos_network
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import requests; requests.get(\"http://localhost:3003/ping\", timeout=10)'"]
       interval: 30s
@@ -98,7 +110,7 @@ services:
     image: docker.io/valkey/valkey:8-alpine
     restart: unless-stopped
     networks:
-      - photos
+      - photos_network
     healthcheck:
       test: ["CMD-SHELL", "valkey-cli ping || exit 1"]
       interval: 30s
@@ -123,7 +135,7 @@ services:
       - "{{ immich.services.immich.db_data_location }}:/var/lib/postgresql/data"
     restart: unless-stopped
     networks:
-      - photos
+      - photos_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready --dbname='${DB_DATABASE_NAME}' --username='${DB_USERNAME}' || exit 1"]
       interval: 30s
@@ -132,15 +144,6 @@ services:
       start_period: 30s
     command: ["postgres", "-c", "shared_preload_libraries=vchord.so", "-c", 'search_path="$$user", public, vectors', "-c", "logging_collector=on", "-c", "max_wal_size=2GB", "-c", "shared_buffers=512MB", "-c", "wal_compression=on"]
 
-# ==============================================================================
-# NETWORKS
-# ==============================================================================
-networks:
-  photos:
-    name: photos_network
-    driver: bridge
-  proxy:
-    external: true
 
 # ==============================================================================
 # CONFIGURATION NOTES
@@ -190,3 +193,19 @@ networks:
 # - Logs: docker compose logs -f immich-server
 # - Database backup: See Immich docs for backup procedures
 # ==============================================================================
+
+
+# ==============================================================================
+# NETWORKS
+# ==============================================================================
+# ==============================================================================
+networks:
+  photos_network:
+    external: true
+    driver: bridge
+  infrastructure_network:
+    external: true
+  proxy:
+    external: true
+  localdns:
+    external: true

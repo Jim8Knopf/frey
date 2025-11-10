@@ -9,7 +9,7 @@ features:
   media: true
   monitoring: true
   automation: true
-  authentication: false  # Authentik SSO - enable after initial setup
+  authentication: true  # Authentik SSO - enable after initial setup
   file_management: false
   immich: true
   homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
@@ -22,6 +22,9 @@ features:
 # ================================
 # CONFIGURATION
 # ================================
+# Admin contact information
+admin_email: "Jason.Kolb@ik.me"
+
 users:
   default: 
     name: else
@@ -52,7 +55,7 @@ network:
   # Uses DNS via Traefik for clean OAuth flow (primary access method)
   # OAuth: grafana.frey → auth.frey → grafana.frey
   # Works offline via AdGuard local DNS resolution
-  authentik_public_url: "http://auth.{{ network.domain_name }}"
+  authentik_public_url: "https://auth.{{ network.domain_name }}"
   wifi:
     # Network identification
     ssid: "FreyHub"                 # Network name visible to clients
@@ -75,10 +78,12 @@ network:
       enabled: true
       client_interface: "wlan0"  # Interface for connecting to public WiFi
       mqtt_topic: "frey/wifi/roaming"
+      known_networks: "{{ wifi_ap.known_networks }}"  # From secrets.yml
     
     # WiFi radio settings
-    channel: 7                     # WiFi channel (1-11 for 2.4GHz)
-    hw_mode: g                     # g = 2.4GHz band
+    # Set hw_mode to 'auto' to prefer 5GHz when supported, else fall back to 2.4GHz
+    hw_mode: auto                  # auto: prefer 5GHz (a) if supported; else 2.4GHz (g)
+    # channel: 7                     # Desired channel; auto logic overrides to 36 on 5GHz if invalid
     ieee80211n: 1                  # Enable 802.11n features
     wmm_enabled: 1                 # Enable WiFi multimedia (QoS)
     
@@ -169,7 +174,7 @@ security:
       ports.file_management.code_server
     ], [])) +
     (features.cookbook | ternary([
-      ports.cookbook.cookbook
+      cookbook.services.mealie.port
     ], [])) +
     (features.voice_assistant | ternary([
       ports.voice_assistant.piper
@@ -329,6 +334,8 @@ infrastructure:
         http: 80
         https: 443
         dashboard: 8082
+      config:
+        acme_email: "{{ admin_email }}"  # Using admin email for Let's Encrypt notifications
     portainer:
       enabled: true
       version: "latest"
@@ -341,11 +348,22 @@ infrastructure:
         http: 5001
     authentik:
       enabled: true  # Enable after initial infrastructure setup
-      version: "latest"
+      version: "2025.2.4"  # Pinned version for reproducible deployments
       port: 9300  # Changed from 9000 to avoid conflict with Portainer
-      port_https: 9443
+      port_https: 9446
       postgres_version: "16-alpine"
       redis_version: "alpine"
+      # Blueprint re-apply control:
+      # - Set to a list of filenames to re-apply specific blueprints
+      #   e.g., ['11-oidc-audiobookshelf.yaml', '10-oidc-immich.yaml']
+      # - Or set to 'all' to re-apply every blueprint file
+      reapply_blueprints: ['11-oidc-audiobookshelf.yaml','14-oidc-mealie.yaml']
+    step_ca:
+      enabled: true  # Enable when ready to implement ACME-based certificate management
+      version: "latest"
+      port: 9336  # External port mapping (maps to internal 9443)
+      # After enabling, run: docker exec -it step-ca step ca init
+      # Then configure ACME provisioner: docker exec -it step-ca step ca provisioner add acme --type ACME
 
 # ===================================================================
 # MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
@@ -382,6 +400,11 @@ media:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
         - "{{ media.dir }}/podcasts:/podcasts"
+        # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+        - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/etc/ssl/certs/step-ca.crt:ro"
+      environment:
+        # Ensure Node trusts Step-CA when calling https://auth.frey
+        - "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/step-ca.crt"
       # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
       # NOTE: Audiobookshelf OIDC CANNOT be configured via environment variables
       # Must be configured manually via web UI: Settings → Authentication → OpenID Connect
@@ -406,12 +429,27 @@ media:
       # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
       # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
       # Uses internal Docker service name for reliable communication across networks
-      ldap_server: "authentik-ldap-outpost"
-      ldap_port: 389
+      # NOTE: Configuration is managed via XML file (plugin doesn't support env vars)
+      ldap_server: "ak-outpost-jellyfin-ldap-outpost"
+      ldap_port: 3389                # Authentik LDAP outpost uses non-standard port 3389 (not 389)
+      ldap_use_ssl: false            # No SSL for internal Docker network communication
+      ldap_use_starttls: false       # No STARTTLS needed
+      ldap_skip_ssl_verify: false    # N/A when SSL disabled
       ldap_base_dn: "dc=ldap,dc=goauthentik,dc=io"
-      ldap_bind_user: "cn=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
-      ldap_search_filter: "(memberOf=cn=jellyfin_users,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
+      # Authentik LDAP outpost uses uid as the RDN for users; DN must use uid
+      ldap_bind_user: "uid=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
+      ldap_search_filter: "(uid=*)"  # Rely on Authentik provider search_group to restrict users
+      ldap_admin_base_dn: ""         # Same as ldap_base_dn (empty uses default)
       ldap_admin_filter: "(memberOf=cn=jellyfin_admins,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
+      # User creation and library access settings
+      ldap_create_users: true        # Auto-create Jellyfin users on first LDAP login
+      ldap_enable_all_folders: true  # Grant LDAP users access to all media libraries
+      # LDAP attribute mappings (standard Authentik LDAP schema)
+      ldap_search_attributes: "uid, cn, mail, displayName"
+      ldap_uid_attribute: "uid"
+      ldap_username_attribute: "uid"
+      ldap_password_attribute: "userPassword"
+      ldap_allow_pass_change: false  # Users change passwords in Authentik, not Jellyfin
     
     jellyseerr:
       enabled: true
@@ -423,9 +461,9 @@ media:
       version: "latest"
       port: 8080
       ports: 
-       - "{{ media.vpn.port }}:{{ media.vpn.port }}"
-       - 8080:8080 # Web UI
-       - 6881:6881 # Torrent Port
+        - "8080:8080"    # Web UI
+        - "51234:51234/tcp"    # Torrent Port
+        - "51234:51234/udp"    # Torrent Port
 
     nzbget:
       enabled: true
@@ -527,9 +565,9 @@ immich:
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
       # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
-      # Issuer URL uses public IP (browser needs to access discovery endpoint)
+      # Issuer URL uses auth.frey DNS (accessible via localdns Docker network)
       # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
-      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/immich/"
+      oidc_issuer_url: "https://auth.{{ network.domain_name }}/application/o/immich/"
       oidc_client_id: "immich"
       oidc_scope: "openid profile email"
       oidc_button_text: "Login with Authentik"
@@ -560,19 +598,34 @@ cookbook:
     mealie:
       enabled: true
       version: "latest"
-      port: 9925
+      port: 9900
+      ports:
+        - "9900:9000"
+      image: "hay-kot/mealie"
       # Database
       db_type: "postgres"
       # Storage paths
-      data_dir: "{{ storage.appdata_dir }}/mealie"
-      db_data_location: "{{ storage.appdata_dir }}/mealie-db"
+      data_dir: "{{ storage.appdata_dir }}/mealie/data"
+      db_data_location: "{{ storage.appdata_dir }}/mealie/db"
+      container_uid: 911
+      container_gid: 911
+      postgres_uid: 999
+      postgres_gid: 999
       # API settings
       api_docs: true
-      base_url: "http://cookbook.{{ network.domain_name }}"
+      base_url: "https://cookbook.{{ network.domain_name }}"
       # Security
       allow_signup: false
-      # SSO (disabled by default, ready for future)
-      oidc_enabled: false
+      # SSO Configuration
+      oidc_enabled: true
+      oidc_client_id: "mealie"
+      oidc_configuration_url: "https://auth.{{ network.domain_name }}/application/o/mealie/.well-known/openid-configuration"
+      oidc_user_group: "mealie_users"
+      oidc_admin_group: "mealie_admins"
+      oidc_auto_redirect: false
+      oidc_provider_name: "Authentik"
+      oidc_signup_enabled: true
+      oidc_remember_me: true
       # Features
       enable_meal_planner: true
       recipe_scraping: true
@@ -685,4 +738,3 @@ backup:
     hour: "3"  # 3 AM daily
   retention_days: 7
   backup_dir: "{{ storage.base_dir }}/backups"
-

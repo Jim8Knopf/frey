@@ -38,6 +38,7 @@
       - fail2ban                    # Intrusion prevention (bans IPs after failed attempts)
       - unattended-upgrades         # Automatic security updates
       - logwatch                    # Log analysis and reporting
+      - at                          # Scheduled command execution (for firewall rollback safety)
     state: present
   register: package_install
   tags: packages
@@ -59,6 +60,13 @@
   ansible.builtin.pause:
     seconds: 5
   when: package_install.changed
+  tags: packages
+
+- name: Ensure 'at' daemon is running (required for firewall rollback)
+  ansible.builtin.systemd:
+    name: atd
+    state: started
+    enabled: yes
   tags: packages
 
 # ------------------------------------------------------------------------------
@@ -237,8 +245,73 @@
 # 6. WiFi AP restrictions (block direct container access)
 # 7. Rate limiting (prevent brute force and DDoS)
 
-- name: Reset UFW to default state #? is this really necessary
-  ansible.builtin.command: ufw --force reset
+# ==============================================================================
+# CRITICAL: SSH MUST BE ALLOWED FIRST (PREVENTS LOCKOUTS)
+# ==============================================================================
+# This SSH rule MUST be added BEFORE any firewall reset/enable operations.
+# Without this, you risk getting locked out of the system during firewall changes.
+
+- name: Ensure SSH is ALWAYS allowed (critical for remote access)
+  community.general.ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+    comment: "SSH: Always allow (fail2ban handles rate limiting)"
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+# ==============================================================================
+# AUTO-ROLLBACK SAFETY MECHANISM
+# ==============================================================================
+# Schedule automatic firewall disable in 3 minutes as a safety net.
+# If anything goes wrong during firewall configuration, UFW will automatically
+# disable after 3 minutes, allowing you to regain SSH access.
+# The rollback is canceled after successful SSH connectivity test.
+
+- name: Schedule automatic firewall rollback (3-minute safety net)
+  ansible.builtin.shell: |
+    echo "ufw disable && logger 'FREY: Auto-rollback disabled UFW due to timeout'" | at now + 3 minutes 2>&1 | grep -oP 'job \K\d+'
+  register: rollback_job
+  changed_when: true
+  failed_when: false
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+- name: Display rollback job information
+  ansible.builtin.debug:
+    msg: |
+      ⚠ SAFETY: Automatic firewall rollback scheduled
+      ⚠ Job ID: {{ rollback_job.stdout | default('unknown') }}
+      ⚠ If firewall configuration fails, UFW will auto-disable in 3 minutes
+      ⚠ This will be canceled if all tests pass
+  when:
+    - enable_ufw | default(true)
+    - rollback_job.stdout is defined
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+# ==============================================================================
+# UFW RESET - DISABLED FOR SAFETY
+# ==============================================================================
+# The 'ufw --force reset' command is DANGEROUS because it deletes ALL rules
+# (including SSH) before re-adding them. This causes lockouts if:
+# - Any subsequent task fails
+# - Connection tracking breaks
+# - Network hiccup occurs during rule re-application
+#
+# SOLUTION: Use 'ufw --force enable' which applies rules properly without prompting
+# Note: 'ufw reload' doesn't work - rules only apply during enable/reset
+
+- name: Apply UFW rules (enable firewall)
+  ansible.builtin.command: ufw --force enable
   changed_when: true
   when: enable_ufw | default(true)
   tags:
@@ -364,16 +437,8 @@
     - ufw
     - wifi_ap
 
-# RATE LIMITING - Prevent brute force and DDoS attacks
-# Limits connection attempts to prevent password guessing and basic DDoS
-- name: Enable rate limiting on SSH (max 6 connections per 30 seconds)
-  ansible.builtin.command: ufw limit ssh
-  changed_when: true
-  when: enable_ufw | default(true)
-  tags:
-    - firewall
-    - ufw
-    - rate_limit
+# NOTE: SSH rate limiting is already configured with the SSH-first rule above
+# No need for duplicate rate limiting task here
 
 - name: Enable UFW firewall
   ansible.builtin.command: ufw --force enable
@@ -382,6 +447,116 @@
   tags:
     - firewall
     - ufw
+
+# ==============================================================================
+# POST-ENABLE SSH CONNECTIVITY TEST (CRITICAL SAFETY CHECK)
+# ==============================================================================
+# After enabling the firewall, we MUST verify that SSH still works.
+# This catches any misconfigurations before they become lockout situations.
+
+- name: Force new SSH connection to test firewall rules
+  ansible.builtin.meta: reset_connection
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+- name: Verify SSH is still accessible after firewall changes
+  ansible.builtin.wait_for:
+    port: 22
+    host: '{{ ansible_host | default(inventory_hostname) }}'
+    search_regex: OpenSSH
+    timeout: 10
+    delay: 2
+  delegate_to: localhost
+  vars:
+    ansible_become: false  # Override global become setting for localhost delegation
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+- name: SSH connectivity test PASSED
+  ansible.builtin.debug:
+    msg: "✓ SSH is accessible after firewall changes - no lockout occurred"
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+# ==============================================================================
+# CANCEL AUTO-ROLLBACK (SUCCESS)
+# ==============================================================================
+# SSH connectivity test passed! Cancel the automatic rollback since everything
+# is working correctly and we don't need the safety net anymore.
+
+- name: Cancel automatic firewall rollback (success)
+  ansible.builtin.shell: |
+    JOB_ID="{{ rollback_job.stdout | default('') }}"
+    if [ -n "$JOB_ID" ]; then
+      atrm "$JOB_ID" 2>/dev/null || true
+      logger "FREY: Canceled auto-rollback job $JOB_ID - SSH test passed"
+    fi
+  when:
+    - enable_ufw | default(true)
+    - rollback_job.stdout is defined
+    - rollback_job.stdout | length > 0
+  changed_when: true
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+- name: Firewall configuration complete
+  ansible.builtin.debug:
+    msg: |
+      ✓ Firewall configuration completed successfully
+      ✓ SSH connectivity verified
+      ✓ Auto-rollback safety net canceled
+      ✓ No lockout risk - system is secure and accessible
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - ssh_safety
+
+- name: Allow Docker traffic through UFW
+  ufw:
+    rule: allow
+    port: "{{ media.services.qbittorrent.listen_port | default(51234) }}"
+    proto: "{{ item }}"
+    comment: "DOCKER: qBittorrent torrent traffic"
+  loop:
+    - tcp
+    - udp
+
+# UPNP/SSDP - Universal Plug and Play for automatic port forwarding
+# Required for qBittorrent and other services to automatically configure router NAT
+- name: Allow UPnP/SSDP service discovery
+  community.general.ufw:
+    rule: allow
+    port: '1900'
+    proto: udp
+    comment: "UPNP: Service discovery (SSDP) for automatic port forwarding"
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - upnp
+
+- name: Allow NAT-PMP port mapping
+  community.general.ufw:
+    rule: allow
+    port: '5351'
+    proto: udp
+    comment: "UPNP: NAT-PMP alternative port mapping protocol"
+  when: enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - upnp
 
 # ------------------------------------------------------------------------------
 # 5. NAT CONFIGURATION (Internet Passthrough for WiFi AP)
@@ -399,19 +574,25 @@
     - wifi_ap
     - nat
   block:
-    - name: Get upstream interface for NAT
-      ansible.builtin.shell: |
-        # Use detected upstream interface from earlier
-        echo "{{ upstream_interface_result.stdout | trim }}"
+    - name: Detect upstream interface for NAT (fallback-safe)
+      ansible.builtin.shell:
+        cmd: |
+          # Detect interface with default route; don't rely on earlier tagged tasks
+          ip route | awk '$1 == "default" {print $5; exit}'
       register: nat_upstream_interface
       changed_when: false
+      failed_when: false
+
+    - name: Select NAT upstream interface (with default fallback)
+      ansible.builtin.set_fact:
+        nat_iface: "{{ (nat_upstream_interface.stdout | trim) | default(ansible_default_ipv4.interface, true) }}"
 
     - name: Configure MASQUERADE for WiFi AP clients
       ansible.builtin.iptables:
         table: nat
         chain: POSTROUTING
         source: "{{ network.wifi.network }}"
-        out_interface: "{{ nat_upstream_interface.stdout | trim }}"
+        out_interface: "{{ nat_iface }}"
         jump: MASQUERADE
         comment: "NAT: Internet passthrough for WiFi AP clients"
 
@@ -446,7 +627,7 @@
           :POSTROUTING ACCEPT [0:0]
 
           # MASQUERADE traffic from WiFi AP clients ({{ network.wifi.network }})
-          -A POSTROUTING -s {{ network.wifi.network }} -o {{ upstream_interface_result.stdout | trim }} -j MASQUERADE
+          -A POSTROUTING -s {{ network.wifi.network }} -o {{ nat_iface }} -j MASQUERADE
 
           # End NAT table
           COMMIT

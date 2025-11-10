@@ -8,10 +8,15 @@ services:
       - "80:80"       # HTTP - accessible from WiFi AP
       - "443:443"     # HTTPS - accessible from WiFi AP
       - "{{ infrastructure.services.traefik.ports.dashboard }}:8080" # Dashboard (localhost only)
+    environment:
+      # Trust Step CA root certificate for ACME client (Lego)
+      - LEGO_CA_CERTIFICATES=/etc/ssl/step-ca/root_ca.crt
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - "{{storage.appdata_dir }}/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
-      - "{{storage.appdata_dir }}/traefik/acme.json:/acme.json" # For Let's Encrypt certificates
+      - "{{storage.appdata_dir }}/traefik/certificates:/certificates" # For Let's Encrypt certificates
+      - "{{storage.appdata_dir }}/step-ca/certs:/etc/ssl/step-ca:ro"  # Access to Step CA certificates
+      - "{{ storage.appdata_dir }}/traefik/acme:/acme" # ACME storage
     networks:
       proxy:              # Required for Traefik routing
         aliases:
@@ -24,15 +29,16 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"  # Explicitly specify proxy network
       - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name | default(network.domain_name | default('local')) }}`)"
-      - "traefik.http.routers.traefik.entrypoints=web"  # HTTP only for now
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.tls.certresolver=step-ca"
       - "traefik.http.services.traefik.loadbalancer.server.port=8080"
 
   portainer:
     image: portainer/portainer-ce:latest
     container_name: portainer
     restart: unless-stopped
-    ports:
-      - "{{ (infrastructure.services.portainer.port | default(9000)) }}:9000"
+    # No direct host port; access via Traefik only
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "{{storage.appdata_dir }}/portainer/data:/data"
@@ -44,7 +50,9 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"  # Explicitly specify proxy network
       - "traefik.http.routers.portainer.rule=Host(`portainer.{{ domain_name | default(network.domain_name | default('local')) }}`)"
-      - "traefik.http.routers.portainer.entrypoints=web"  # HTTP only for now
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.routers.portainer.tls=true"
+      - "traefik.http.routers.portainer.tls.certresolver=step-ca"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
 {% if infrastructure.services.authentik.enabled | default(false) %}
@@ -70,6 +78,10 @@ services:
       AUTHENTIK_BOOTSTRAP_PASSWORD: {{ authentik_bootstrap_password }}
       AUTHENTIK_BOOTSTRAP_TOKEN: {{ authentik_bootstrap_token }}
       AUTHENTIK_BOOTSTRAP_EMAIL: {{ authentik_bootstrap_email | default('admin@local') }}
+      # Auto-import and instantiate blueprints on startup
+      AUTHENTIK_BOOTSTRAP_BLUEPRINTS: "/blueprints/*.yaml"
+      # Ensure Authentik scans the mounted custom blueprint directory
+      AUTHENTIK_BLUEPRINTS__DIRS: "/blueprints"
       # Error reporting (disabled for privacy)
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
       # Trust proxy headers from Traefik
@@ -79,11 +91,11 @@ services:
       AUTHENTIK_SERVER_NAME: "auth.{{ network.domain_name }}"
     ports:
       - "{{ infrastructure.services.authentik.port | default(9000) }}:9000"
-      - "{{ infrastructure.services.authentik.port_https | default(9443) }}:9443"
+      - "{{ infrastructure.services.authentik.port_https | default(9446) }}:9446"
     volumes:
       - "{{ storage.appdata_dir }}/authentik/media:/media"
       - "{{ storage.appdata_dir }}/authentik/custom-templates:/templates"
-      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints/custom:ro"
+      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints:ro"
     networks:
       proxy:
       localdns:
@@ -97,8 +109,15 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.authentik.rule=Host(`auth.{{ domain_name | default(network.domain_name | default('local')) }}`)"
-      - "traefik.http.routers.authentik.entrypoints=web"
+      - "traefik.http.routers.authentik.entrypoints=websecure"
+      - "traefik.http.routers.authentik.tls=true"
+      - "traefik.http.routers.authentik.tls.certresolver=step-ca"
       - "traefik.http.services.authentik.loadbalancer.server.port=9000"
+      # HTTP router to support internal outposts reaching http://auth.frey
+      - "traefik.http.routers.authentik-http.rule=Host(`auth.{{ domain_name | default(network.domain_name | default('local')) }}`)"
+      - "traefik.http.routers.authentik-http.entrypoints=web"
+      - "traefik.http.middlewares.auth-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.authentik-http.middlewares=auth-redirect"
     healthcheck:
       test: ["CMD-SHELL", "ak healthcheck || exit 1"]
       interval: 30s
@@ -152,13 +171,14 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: {{ authentik_db_name | default('authentik') }}
       AUTHENTIK_POSTGRESQL__PASSWORD: {{ authentik_postgres_password }}
       AUTHENTIK_SECRET_KEY: {{ authentik_secret_key }}
+      AUTHENTIK_BLUEPRINTS__DIRS: "/blueprints"
       AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
     user: root
     volumes:
       - "{{ storage.appdata_dir }}/authentik/media:/media"
       - "{{ storage.appdata_dir }}/authentik/certs:/certs"
       - "{{ storage.appdata_dir }}/authentik/custom-templates:/templates"
-      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints/custom:ro"
+      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints:ro"
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - infrastructure_network
@@ -167,6 +187,62 @@ services:
         condition: service_healthy
       authentik-redis:
         condition: service_healthy
+{% endif %}
+
+  # ==============================================================================
+  # STEP-CA - PRIVATE CERTIFICATE AUTHORITY
+  # ==============================================================================
+  # Provides automated certificate management via ACME protocol
+  # Integrates with Traefik for automatic cert generation and renewal
+{% if infrastructure.services.step_ca.enabled | default(false) %}
+  step-ca:
+    image: smallstep/step-ca:{{ infrastructure.services.step_ca.version | default('latest') }}
+    container_name: step-ca
+    restart: unless-stopped
+    # No direct host port; Traefik and internal clients use the container network
+    volumes:
+      - "{{ storage.appdata_dir }}/step-ca:/home/step"
+    networks:
+      proxy:              # Required for Traefik routing
+      infrastructure_network:  # Service-specific network
+      localdns:          # Required for DNS resolution
+    extra_hosts:
+      - "ca.{{ network.domain_name }}:127.0.0.1"  # Required for health check
+      # Map all *.frey domains to Traefik container for ACME validation
+      # Using 'host-gateway' special value which resolves to Docker host's internal IP
+      # This allows Step CA to reach Traefik on the proxy network
+{% for service in network.dns_rewrites %}
+      - "{{ service.name }}.{{ network.domain_name }}:host-gateway"
+{% endfor %}
+    environment:
+      - DOCKER_STEPCA_INIT_NAME=Frey CA
+      - DOCKER_STEPCA_INIT_DNS_NAMES=ca.{{ network.domain_name }},step-ca.{{ network.domain_name }},step-ca,localhost,127.0.0.1
+      - DOCKER_STEPCA_INIT_PROVISIONER_NAME=admin
+      - DOCKER_STEPCA_INIT_PASSWORD={{ infrastructure.services.step_ca.admin_password }}
+      - STEPCA_EXTERNAL_PORT=9336  # External port for reference
+      - STEPCA_DEFAULT_CNS=ca.{{ network.domain_name }}
+      - DOCKER_STEPCA_INIT_ACME=true
+      - DOCKER_STEPCA_INIT_SSH=false
+      - SSL_CERT_FILE=/etc/ssl/step-ca/root_ca.crt  # Trust our own CA certificate
+      - STEPCLI_PASSWORD={{ infrastructure.services.step_ca.admin_password }}
+      - CERTIFICATE_PASSWORD={{ infrastructure.services.step_ca.admin_password }}
+      - SECRETS_PASSWORD={{infrastructure.services.step_ca.admin_password }}
+      - DOCKER_STEPCA_INIT_ADDRESS=:9443  # Internal port (Traefik connects here)
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.step-ca.rule=Host(`ca.{{ network.domain_name }}`)"
+      - "traefik.http.routers.step-ca.entrypoints=web,websecure"
+      - "traefik.http.routers.step-ca.tls=true"
+      - "traefik.http.routers.step-ca.tls.certresolver=step-ca"
+      - "traefik.http.services.step-ca.loadbalancer.server.port=9443"  # Internal port
+      - "traefik.http.services.step-ca.loadbalancer.server.scheme=https"
+    healthcheck:
+      test: ["CMD", "step", "ca", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 {% endif %}
 
 # Network definitions as per architecture guide
