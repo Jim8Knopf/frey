@@ -48,8 +48,17 @@
           - "dnsmasq_state.stdout == 'active'"
         fail_msg: "dnsmasq is not active; check dnsmasq configuration"
 
+    - name: Set default DNS sample host
+      ansible.builtin.set_fact:
+        dns_sample_host: "{{ network.domain_name }}"
+
+    - name: Override DNS sample host from rewrites
+      ansible.builtin.set_fact:
+        dns_sample_host: "{{ (network.dns_rewrites | first).host | default((network.dns_rewrites | first).name ~ '.' ~ (network.domain_name | default('local'))) }}"
+      when: (network.dns_rewrites | default([])) | length > 0
+
     - name: Test local DNS resolution for configured domain
-      ansible.builtin.command: "dig @{{ network.wifi.ip }} {{ (network.dns_rewrites | default([]) | first).name if (network.dns_rewrites | default([])) else network.domain_name }} +short"
+      ansible.builtin.command: "dig @{{ network.wifi.ip }} {{ dns_sample_host }} +short"
       register: dns_test
       changed_when: false
       failed_when: dns_test.rc != 0

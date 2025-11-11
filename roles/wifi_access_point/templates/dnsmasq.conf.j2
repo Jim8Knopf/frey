@@ -84,7 +84,8 @@ local=/{{ network.domain_name }}/
 
 {% if network.dns_rewrites is defined %}
 {% for service in network.dns_rewrites %}
-host-record={{ service.name }}.{{ network.domain_name }},{{ network.wifi.ip }}
+{% set host_name = service.host | default(service.name ~ '.' ~ network.domain_name) %}
+host-record={{ host_name }},{{ network.wifi.ip }}
 {% endfor %}
 {% endif %}
 

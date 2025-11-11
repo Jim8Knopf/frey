@@ -1,0 +1,97 @@
+pageInfo:
+  title: "Frey Hub"
+  description: "Landing zone for Frey services, status, and documentation."
+{% if landing_page.nav_links | default([]) %}
+  navLinks:
+{% for link in landing_page.nav_links %}
+    - title: "{{ link.title }}"
+      path: "{{ link.url }}"
+{% endfor %}
+{% endif %}
+
+appConfig:
+  theme: glass
+  iconSize: medium
+  layout: auto
+  language: en
+  statusCheck: false
+  disableConfiguration: false
+  disableConfigurationForNonAdmin: true
+  preventWriteToDisk: true
+  customCss: |
+    .landing-guide {padding: 0.5rem 0.75rem;border: 1px solid rgba(255,255,255,0.1);border-radius: 8px;background: rgba(0,0,0,0.25);margin-bottom: 0.75rem;}
+    .landing-guide h3 {margin: 0 0 0.5rem 0;font-size: 1.05rem;display: flex;align-items: center;gap: 0.4rem;}
+    .landing-guide ol {margin: 0 0 0.5rem 1.2rem;padding: 0;}
+    .landing-guide ul {margin: 0 0 0.25rem 1rem;padding: 0;}
+    .landing-guide i {color: #f6ad55;}
+  auth:
+    enableGuestAccess: {{ landing_page.allow_guest_access | default(false) | bool }}
+    enableOidc: {{ landing_page.oidc.enable | default(false) | bool }}
+{% if landing_page.oidc.enable | default(false) %}
+    oidc:
+      clientId: "{{ landing_page.oidc.client_id }}"
+      endpoint: "{{ network.authentik_public_url }}/application/o/dashy/"
+      scope: "{{ landing_page.oidc.scope }}"
+{% if landing_page.oidc.admin_group is defined %}
+      adminGroup: "{{ landing_page.oidc.admin_group }}"
+{% endif %}
+{% endif %}
+
+sections:
+{% for section in landing_page.sections %}
+  - name: "{{ section.name }}"
+    icon: "{{ section.icon }}"
+{% if section.description %}
+    description: "{{ section.description }}"
+{% endif %}
+    displayData:
+      itemSize: "{{ section.item_size | default('medium') }}"
+{% if section.type is defined %}
+      sectionLayout: auto
+{% endif %}
+    items:
+{% for item in section.services %}
+      - title: "{{ item.title }}"
+        description: "{{ item.description }}"
+        url: "{{ item.url }}"
+        icon: "{{ item.icon }}"
+        target: newtab
+{% if item.tags is defined %}
+        tags:
+{% for tag in item.tags %}
+          - "{{ tag }}"
+{% endfor %}
+{% endif %}
+{% if item.groups is defined %}
+        displayData:
+          showForKeycloakUsers:
+            groups:
+{% for group in item.groups %}
+              - "{{ group }}"
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% if section.type | default('services') == 'certificate' %}
+    widgets:
+{% for guide in landing_page.certificate_guides %}
+      - type: embed
+        name: "{{ guide.title }}"
+        options:
+          html: |
+            <div class="landing-guide">
+              <h3><i class="{{ guide.icon }}"></i> {{ guide.title }}</h3>
+              <ol>
+{% for step in guide.steps %}
+                <li>{{ step }}</li>
+{% endfor %}
+              </ol>
+              <p><strong>Verify</strong></p>
+              <ul>
+{% for verify in guide.verify %}
+                <li>{{ verify }}</li>
+{% endfor %}
+              </ul>
+            </div>
+{% endfor %}
+{% endif %}
+{% endfor %}

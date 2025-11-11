@@ -1,0 +1,84 @@
+---
+- name: Ensure landing page system user exists
+  include_tasks: "../playbooks/templates/create_user.yml"
+  vars:
+    stack: "landing_page"
+
+- name: Ensure landing page directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ landing_page.user.name }}"
+    group: "{{ landing_page.group.name }}"
+    mode: '0755'
+  loop:
+    - "{{ landing_page.data_dir }}"
+    - "{{ landing_page.user_data_dir }}"
+    - "{{ landing_page.assets_dir }}"
+    - "{{ landing_page.docs_dir }}"
+    - "{{ landing_page.overrides_dir }}"
+
+- name: Sync Dashy source overrides
+  ansible.builtin.copy:
+    src: dashy_overrides/
+    dest: "{{ landing_page.overrides_dir }}"
+    owner: "{{ landing_page.user.name }}"
+    group: "{{ landing_page.group.name }}"
+    mode: '0644'
+  when: (landing_page.source_overrides | default([])) | length > 0
+
+- name: Check for Frey root CA certificate
+  ansible.builtin.stat:
+    path: "{{ landing_page.certificate.source_path }}"
+  register: landing_ca
+
+- name: Stage Frey root CA for download
+  ansible.builtin.copy:
+    src: "{{ landing_page.certificate.source_path }}"
+    dest: "{{ landing_page.assets_dir }}/{{ landing_page.certificate.download_name }}"
+    owner: "{{ landing_page.user.name }}"
+    group: "{{ landing_page.group.name }}"
+    mode: '0644'
+    remote_src: true
+  when: landing_ca.stat.exists
+
+- name: Warn when Frey root CA is missing
+  ansible.builtin.debug:
+    msg: "Frey CA not found at {{ landing_page.certificate.source_path }}. Run the infrastructure role (Traefik/Step-CA) first."
+  when: not landing_ca.stat.exists
+
+- name: Publish certificate installation guide
+  ansible.builtin.template:
+    src: frey-ca.html.j2
+    dest: "{{ landing_page.docs_dir }}/{{ landing_page.certificate.docs_filename }}"
+    owner: "{{ landing_page.user.name }}"
+    group: "{{ landing_page.group.name }}"
+    mode: '0644'
+
+- name: Render Dashy configuration
+  ansible.builtin.template:
+    src: dashy-conf.yml.j2
+    dest: "{{ landing_page.config_path }}"
+    owner: "{{ landing_page.user.name }}"
+    group: "{{ landing_page.group.name }}"
+    mode: '0644'
+
+- name: Render landing page compose file
+  ansible.builtin.template:
+    src: docker-compose-landing.yml.j2
+    dest: "{{ storage.stacks }}/landing_page/docker-compose.yml"
+    owner: "{{ landing_page.user.name }}"
+    group: "{{ landing_page.group.name }}"
+    mode: '0644'
+
+- name: Validate landing page compose definition
+  ansible.builtin.command:
+    cmd: docker compose -f "{{ storage.stacks }}/landing_page/docker-compose.yml" config --quiet
+  register: landing_compose_validation
+  changed_when: false
+
+- name: Deploy landing page stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks }}/landing_page"
+    state: present
+    remove_orphans: true

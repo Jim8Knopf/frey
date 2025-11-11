@@ -215,6 +215,7 @@ All services accessible via friendly `.frey` domains:
 
 | Category | Service | URL |
 |----------|---------|-----|
+| **Landing** | Frey Portal (Dashy) | https://frey |
 | **Infrastructure** | Traefik Dashboard | http://traefik.frey:8082 |
 | | Authentik (SSO) | http://auth.frey |
 | | Portainer | http://portainer.frey |
@@ -233,6 +234,8 @@ All services accessible via friendly `.frey` domains:
 | | Uptime Kuma | http://uptime-kuma.frey |
 | **Photos** | Immich | http://immich.frey |
 | **Cookbook** | Mealie | http://cookbook.frey |
+
+`https://frey` now serves as the Authentik-protected landing page with per-user tiles plus the Frey root CA download and platform-specific trust instructions.
 
 ---
 

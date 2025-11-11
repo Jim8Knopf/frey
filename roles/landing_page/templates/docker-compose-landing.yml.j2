@@ -1,0 +1,45 @@
+{% set landing_hosts = [landing_page.hostname] %}
+{% if landing_page.alt_hostname is defined and landing_page.alt_hostname %}
+{%   set landing_hosts = landing_hosts + [landing_page.alt_hostname] %}
+{% endif %}
+{% set landing_rule = landing_hosts | map('regex_replace', '^(.*)$', 'Host(`\\1`)') | join(' || ') %}
+
+networks:
+  proxy:
+    external: true
+  localdns:
+    external: true
+
+services:
+  landing:
+    image: "{{ landing_page.image }}:{{ landing_page.version }}"
+    container_name: "{{ landing_page.container_name }}"
+    restart: unless-stopped
+    environment:
+      - TZ={{ network.timezone }}
+      - NODE_ENV=production
+      - PORT={{ landing_page.port | default(8080) }}
+      - DASHY_CONFIG=/app/user-data/conf.yml
+    volumes:
+      - "{{ landing_page.user_data_dir }}:/app/user-data:ro"
+      - "{{ landing_page.assets_dir }}:/app/public/assets:ro"
+{% for override in landing_page.source_overrides | default([]) %}
+      - "{{ landing_page.overrides_dir }}/{{ override }}:/app/{{ override }}:ro"
+{% endfor %}
+    networks:
+      proxy: {}
+      localdns: {}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.landing.rule={{ landing_rule }}"
+      - "traefik.http.routers.landing.entrypoints=websecure"
+      - "traefik.http.routers.landing.tls=true"
+      - "traefik.http.routers.landing.tls.certresolver=step-ca"
+      - "traefik.http.routers.landing.service=landing"
+      - "traefik.http.services.landing.loadbalancer.server.port={{ landing_page.port | default(8080) }}"
+      - "traefik.http.routers.landing-http.rule={{ landing_rule }}"
+      - "traefik.http.routers.landing-http.entrypoints=web"
+      - "traefik.http.routers.landing-http.service=landing"
+      - "traefik.http.middlewares.landing-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.landing-http.middlewares=landing-redirect"

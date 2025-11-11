@@ -154,3 +154,194 @@ entries:
       is_superuser: false
       attributes:
         description: "Mealie admin access with full recipe management"
+
+  # Landing page RBAC groups
+  - model: authentik_core.group
+    id: frey-admins-group
+    identifiers:
+      name: frey_admins
+    attrs:
+      name: frey_admins
+      is_superuser: false
+      attributes:
+        description: "Global Frey administrators with full landing-page access"
+
+  - model: authentik_core.group
+    id: traefik-admins-group
+    identifiers:
+      name: traefik_admins
+    attrs:
+      name: traefik_admins
+      is_superuser: false
+      attributes:
+        description: "Manage Traefik dashboard and reverse proxy"
+
+  - model: authentik_core.group
+    id: portainer-admins-group
+    identifiers:
+      name: portainer_admins
+    attrs:
+      name: portainer_admins
+      is_superuser: false
+      attributes:
+        description: "Manage containers via Portainer"
+
+  - model: authentik_core.group
+    id: dockge-users-group
+    identifiers:
+      name: dockge_users
+    attrs:
+      name: dockge_users
+      is_superuser: false
+      attributes:
+        description: "Access Dockge stack editor"
+
+  - model: authentik_core.group
+    id: adguard-admins-group
+    identifiers:
+      name: adguard_admins
+    attrs:
+      name: adguard_admins
+      is_superuser: false
+      attributes:
+        description: "DNS and DHCP administration (AdGuard Home)"
+
+  - model: authentik_core.group
+    id: jellyseerr-users-group
+    identifiers:
+      name: jellyseerr_users
+    attrs:
+      name: jellyseerr_users
+      is_superuser: false
+      attributes:
+        description: "Media request workflow access (Jellyseerr)"
+
+  - model: authentik_core.group
+    id: audiobookshelf-users-group
+    identifiers:
+      name: audiobookshelf_users
+    attrs:
+      name: audiobookshelf_users
+      is_superuser: false
+      attributes:
+        description: "Audiobookshelf listener access"
+
+  - model: authentik_core.group
+    id: sonarr-users-group
+    identifiers:
+      name: sonarr_users
+    attrs:
+      name: sonarr_users
+      is_superuser: false
+      attributes:
+        description: "Sonarr library management access"
+
+  - model: authentik_core.group
+    id: radarr-users-group
+    identifiers:
+      name: radarr_users
+    attrs:
+      name: radarr_users
+      is_superuser: false
+      attributes:
+        description: "Radarr movie automation access"
+
+  - model: authentik_core.group
+    id: bazarr-users-group
+    identifiers:
+      name: bazarr_users
+    attrs:
+      name: bazarr_users
+      is_superuser: false
+      attributes:
+        description: "Subtitle automation access (Bazarr)"
+
+  - model: authentik_core.group
+    id: lidarr-users-group
+    identifiers:
+      name: lidarr_users
+    attrs:
+      name: lidarr_users
+      is_superuser: false
+      attributes:
+        description: "Music automation access (Lidarr)"
+
+  - model: authentik_core.group
+    id: qbittorrent-users-group
+    identifiers:
+      name: qbittorrent_users
+    attrs:
+      name: qbittorrent_users
+      is_superuser: false
+      attributes:
+        description: "Torrent client dashboard access (qBittorrent)"
+
+  - model: authentik_core.group
+    id: prowlarr-users-group
+    identifiers:
+      name: prowlarr_users
+    attrs:
+      name: prowlarr_users
+      is_superuser: false
+      attributes:
+        description: "Indexer administration (Prowlarr)"
+
+  - model: authentik_core.group
+    id: prometheus-users-group
+    identifiers:
+      name: prometheus_users
+    attrs:
+      name: prometheus_users
+      is_superuser: false
+      attributes:
+        description: "Prometheus metrics explorer access"
+
+  - model: authentik_core.group
+    id: uptime-users-group
+    identifiers:
+      name: uptime_kuma_users
+    attrs:
+      name: uptime_kuma_users
+      is_superuser: false
+      attributes:
+        description: "Uptime Kuma dashboard access"
+
+  - model: authentik_core.group
+    id: speedtest-users-group
+    identifiers:
+      name: speedtest_users
+    attrs:
+      name: speedtest_users
+      is_superuser: false
+      attributes:
+        description: "Speedtest Tracker access"
+
+  - model: authentik_core.group
+    id: metrics-users-group
+    identifiers:
+      name: metrics_users
+    attrs:
+      name: metrics_users
+      is_superuser: false
+      attributes:
+        description: "cAdvisor and node metrics access"
+
+  - model: authentik_core.group
+    id: homeassistant-users-group
+    identifiers:
+      name: homeassistant_users
+    attrs:
+      name: homeassistant_users
+      is_superuser: false
+      attributes:
+        description: "Home Assistant dashboard access"
+
+  - model: authentik_core.group
+    id: n8n-admins-group
+    identifiers:
+      name: n8n_admins
+    attrs:
+      name: n8n_admins
+      is_superuser: false
+      attributes:
+        description: "n8n automation builder access"

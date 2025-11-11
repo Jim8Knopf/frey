@@ -215,6 +215,22 @@
       tags: [infrastructure, management]
       when: features.infrastructure
 
+    # --------------------------------------------------------------------------
+    # Landing Page (Dashy)
+    # --------------------------------------------------------------------------
+    # Deploys: Authentik-protected dashboard at https://frey
+    #
+    # Features:
+    #   - OIDC (Authentik) sign-on
+    #   - Role-aware tiles (hide services without access)
+    #   - Embedded Frey CA certificate instructions + download
+    #
+    # Configuration: landing_page.* in group_vars/all/main.yml
+    # --------------------------------------------------------------------------
+    - role: landing_page
+      tags: [landing, infrastructure]
+      when: features.landing_page | default(false)
+
     # ==========================================================================
     # SERVICE LAYER - Application Stacks
     # ==========================================================================
@@ -557,25 +573,6 @@
       tags: always
 
     # --------------------------------------------------------------------------
-    # Create maintenance reminder script
-    # --------------------------------------------------------------------------
-    # Generates a script with health check URLs for all deployed services
-    # Available at /opt/frey/README_MAINTENANCE.sh
-    # Useful for quick status checks and troubleshooting
-    # --------------------------------------------------------------------------
-    - name: Create maintenance reminder
-      ansible.builtin.template:
-        src: README_MAINTENANCE.sh.j2
-        dest: "{{ storage.base_dir }}/README_MAINTENANCE.sh"
-        mode: '0755'
-      vars:
-        health_check_urls: >
-          {{ [
-            'http://traefik.' ~ (network.domain_name | default('local')),
-            'http://portainer.' ~ (network.domain_name | default('local')),
-            'http://dockge.' ~ (network.domain_name | default('local'))
-          ] + (network.dns_rewrites | default([])) | map(attribute='name') | map('regex_replace', '^(.*)$', 'http://\\1.' ~ (network.domain_name | default('local'))) | list }}
-
 # ==============================================================================
 # DEPLOYMENT COMPLETE
 # ==============================================================================

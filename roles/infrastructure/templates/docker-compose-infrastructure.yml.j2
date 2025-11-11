@@ -113,6 +113,15 @@ services:
       - "traefik.http.routers.authentik.tls=true"
       - "traefik.http.routers.authentik.tls.certresolver=step-ca"
       - "traefik.http.services.authentik.loadbalancer.server.port=9000"
+{% set landing_cors_origins = landing_page.allowed_origins | default([]) if landing_page is defined else [] %}
+{% if landing_cors_origins | length > 0 %}
+      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolalloworiginlist={{ landing_cors_origins | join(',') }}"
+      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolallowcredentials=true"
+      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolallowmethods=GET,OPTIONS,POST"
+      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolallowheaders=Authorization,Content-Type"
+      - "traefik.http.middlewares.authentik-cors.headers.addvaryheader=true"
+      - "traefik.http.routers.authentik.middlewares=authentik-cors"
+{% endif %}
       # HTTP router to support internal outposts reaching http://auth.frey
       - "traefik.http.routers.authentik-http.rule=Host(`auth.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.authentik-http.entrypoints=web"
@@ -212,7 +221,8 @@ services:
       # Using 'host-gateway' special value which resolves to Docker host's internal IP
       # This allows Step CA to reach Traefik on the proxy network
 {% for service in network.dns_rewrites %}
-      - "{{ service.name }}.{{ network.domain_name }}:host-gateway"
+{% set host_name = service.host | default(service.name ~ '.' ~ network.domain_name) %}
+      - "{{ host_name }}:host-gateway"
 {% endfor %}
     environment:
       - DOCKER_STEPCA_INIT_NAME=Frey CA

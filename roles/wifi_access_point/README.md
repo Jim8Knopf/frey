@@ -25,7 +25,7 @@ The role relies on a small set of variables. Put these in your playbook `vars` o
 - `network.wifi.dhcp_range_start` / `network.wifi.dhcp_range_end` — DHCP pool
 - `network.wifi.ssid` / `network.wifi.password` — AP SSID and PSK
 - `network.domain_name` — short domain used in dnsmasq (default `frey`)
-- `network.dns_rewrites` — list of `{ name: <short-name> }` records that will be served by dnsmasq pointing to the AP IP
+- `network.dns_rewrites` — list of `{ name: <short-name>, host: optional_fqdn }` records that will be served by dnsmasq pointing to the AP IP
 - `network.wifi.enable_nat` (bool) — when `true` the role will expect NAT rules to be present (default `false`). NAT policy is normally managed by the `security` role; enabling this causes verification to check for a MASQUERADE rule.
 
 Safety and deployment rules (important — read before running)
