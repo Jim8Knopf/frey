@@ -199,6 +199,7 @@
     - authentik-blueprints/12-oidc-grafana.yaml.j2
     - authentik-blueprints/13-oidc-homeassistant.yaml.j2
     - authentik-blueprints/14-oidc-mealie.yaml.j2
+    - authentik-blueprints/15-oidc-dashy.yaml.j2
     - authentik-blueprints/20-ldap-jellyfin.yaml.j2
   when: infrastructure.services.authentik.enabled | default(false)
   register: authentik_blueprints_render

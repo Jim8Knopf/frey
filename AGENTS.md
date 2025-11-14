@@ -16,10 +16,10 @@
 - Common ops (Pi): `docker ps`, `docker logs -f <svc>`, `docker compose restart` in `/opt/frey/stacks/<stack>`.
 
 ## Coding Style & Naming Conventions
-- YAML: 2‑space indentation, no tabs; one document per file.
-- Ansible: snake_case variables; task names are imperative (“Configure Traefik labels”).
+- YAML: 2-space indentation, no tabs; one document per file.
+- Ansible: snake_case variables; task names are imperative ("Configure Traefik labels").
 - Roles: standard layout (`roles/<name>/{tasks,templates,files,handlers,vars}`); idempotent tasks only.
-- Files/vars: prefer `group_vars/all/main.yml` for toggles; secrets live only in `secrets.yml` (Vault‑encrypted).
+- Files/vars: prefer `group_vars/all/main.yml` for toggles; secrets live only in `secrets.yml` (Vault-encrypted).
 
 ## Testing Guidelines
 - Validate locally with `--check --diff`; then run targeted tags (e.g., `--tags infrastructure`).
@@ -29,9 +29,9 @@
 
 ## Commit & Pull Request Guidelines
 - Commit style: Conventional Commits (e.g., `feat(wifi): improve roaming`, `fix(vault): encrypt secrets`).
-- Don’ts: never commit plaintext secrets; `.vault_pass` must be local and `chmod 600`.
-- PR checklist: clear description, linked issue, scope (tags/roles touched), before/after behavior, logs or screenshots (e.g., service URL working), and docs updates if user‑facing.
-- Enable hooks: `git config core.hooksPath git-hooks && chmod +x git-hooks/*` (auto‑encrypt prompts for `secrets.yml`).
+- Don'ts: never commit plaintext secrets; `.vault_pass` must be local and `chmod 600`.
+- PR checklist: clear description, linked issue, scope (tags/roles touched), before/after behavior, logs or screenshots (e.g., service URL working), and docs updates if user-facing.
+- Enable hooks: `git config core.hooksPath git-hooks && chmod +x git-hooks/*` (auto-encrypt prompts for `secrets.yml`).
 
 ## Security & Configuration Tips
 - Keep feature toggles in `group_vars/all/main.yml`; rotate credentials in Vault.

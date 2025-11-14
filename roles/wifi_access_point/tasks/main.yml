@@ -39,10 +39,13 @@
   changed_when: false
   failed_when: false
 
-- name: Set effective WiFi mode/channel facts
+- name: Set effective WiFi band and mode facts
   ansible.builtin.set_fact:
     wifi_5ghz_supported: "{{ wifi_band2_check.stdout | trim == '5GHZ' }}"
     wifi_hw_mode_effective: "{{ (network.wifi.hw_mode | default('g')) if (network.wifi.hw_mode is defined and network.wifi.hw_mode not in ['auto','AUTO']) else ((wifi_band2_check.stdout | trim == '5GHZ') | ternary('a','g')) }}"
+
+- name: Set effective WiFi channel fact
+  ansible.builtin.set_fact:
     wifi_channel_effective: >-
       {{
         (
@@ -71,14 +74,22 @@
       Effective hw_mode: {{ wifi_hw_mode_effective }}
       Effective channel: {{ wifi_channel_effective }}
 
+- name: Determine if wpa_supplicant should be stopped
+  ansible.builtin.set_fact:
+    wifi_disable_wpasupplicant: "{{ (network.wifi.client_interface is not defined) or (network.wifi.client_interface == network.wifi.interface) }}"
+
+- name: Build list of conflicting services
+  ansible.builtin.set_fact:
+    wifi_conflicting_services: >-
+      {{
+        ['systemd-resolved', 'NetworkManager', 'dialog']
+        + (wifi_disable_wpasupplicant | ternary(['wpa_supplicant'], []))
+      }}
+
 - name: Check which conflicting services exist
   ansible.builtin.systemd:
     name: "{{ item }}"
-  loop:
-    - systemd-resolved
-    - NetworkManager
-    - wpa_supplicant
-    - dialog
+  loop: "{{ wifi_conflicting_services }}"
   register: service_check
   failed_when: false
   changed_when: false

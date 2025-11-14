@@ -1,0 +1,94 @@
+{% set repo_root = playbook_dir | dirname %}
+{% set user_guide_path = repo_root ~ '/docs/USER_GUIDE.md' %}
+{% set render_command = "python3 - <<'PY'\nimport markdown\nfrom pathlib import Path\nsource = Path(r'__PATH__').read_text(encoding='utf-8')\nhtml = markdown.markdown(source, extensions=['fenced_code', 'tables', 'toc'])\nprint(html)\nPY" %}
+{% set user_guide_html = lookup('pipe', render_command | replace('__PATH__', user_guide_path)) %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Frey User Guide</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    body {
+      font-family: "Inter", "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 2rem;
+      background: #0b0f17;
+      color: #f8fafc;
+      line-height: 1.65;
+    }
+    a { color: #6ee7b7; }
+    h1, h2, h3, h4 {
+      color: #f97316;
+      margin-top: 2.5rem;
+    }
+    h1:first-child {
+      margin-top: 0;
+    }
+    p {
+      margin: 0 0 1rem 0;
+    }
+    pre {
+      background: #111827;
+      padding: 1rem;
+      border-radius: 10px;
+      overflow-x: auto;
+      border: 1px solid rgba(148,163,184,0.35);
+    }
+    code {
+      font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+      background: rgba(15,23,42,0.85);
+      padding: 0.15rem 0.35rem;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1.5rem;
+      background: rgba(15,23,42,0.7);
+    }
+    th, td {
+      border: 1px solid rgba(148,163,184,0.3);
+      padding: 0.65rem;
+      text-align: left;
+    }
+    th {
+      background: rgba(249,115,22,0.12);
+      color: #fed7aa;
+    }
+    ul, ol {
+      padding-left: 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .guide-container {
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    .guide-card {
+      background: rgba(15,23,42,0.75);
+      border: 1px solid rgba(148,163,184,0.3);
+      border-radius: 18px;
+      padding: 2rem;
+      box-shadow: 0 30px 60px rgba(2, 6, 23, 0.65);
+    }
+    @media (max-width: 768px) {
+      body {
+        padding: 1rem;
+      }
+      .guide-card {
+        padding: 1.25rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="guide-container">
+    <div class="guide-card">
+      {{ user_guide_html | safe }}
+    </div>
+  </div>
+</body>
+</html>

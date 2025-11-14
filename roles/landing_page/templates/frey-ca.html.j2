@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Frey Root CA Installation</title>
+  <style>
+    body { font-family: "Inter", "Segoe UI", sans-serif; background-color: #0d1117; color: #f1f5f9; margin: 0; padding: 2rem; line-height: 1.5; }
+    a { color: #4ade80; }
+    h1, h2 { margin-top: 0; }
+    .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(148,163,184,0.3); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem; box-shadow: 0 10px 40px rgba(15,23,42,0.35); }
+    ol, ul { padding-left: 1.25rem; }
+    code { background: rgba(15,23,42,0.8); padding: 0.15rem 0.35rem; border-radius: 4px; font-size: 0.95rem; }
+    .guide h3 { margin-top: 0; }
+  </style>
+</head>
+<body>
+  <h1>Frey Root Certificate Authority</h1>
+  <p>Install the Frey private CA on every device before visiting <code>*.{{ network.domain_name }}</code> services. This avoids HTTPS warnings and ensures trusted TLS for Traefik, Authentik, and every self-hosted application.</p>
+
+  <div class="card">
+    <h2>Download</h2>
+    <p>Always download the certificate directly from your Frey host:</p>
+    <p><strong>File:</strong> <a href="/assets/{{ landing_page.certificate.download_name }}">{{ landing_page.certificate.download_name }}</a></p>
+    <p>SHA-256: <code>Run openssl sha256 {{ landing_page.certificate.download_name }} to verify</code></p>
+  </div>
+
+  <div class="card">
+    <h2>Why install the CA?</h2>
+    <ul>
+      <li>Enables trusted HTTPS for <code>https://frey</code> and every <code>https://service.{{ network.domain_name }}</code> endpoint.</li>
+      <li>Allows mobile apps (Home Assistant, Immich, Jellyfin, etc.) to sync without certificate prompts.</li>
+      <li>Powers mutual trust for Authentik OIDC callbacks and API clients.</li>
+    </ul>
+  </div>
+
+{% for guide in landing_page.certificate_guides %}
+  <div class="card guide" id="{{ guide.slug }}">
+    <h3>{{ guide.title }}</h3>
+    <ol>
+{% for step in guide.steps %}
+      <li>{{ step }}</li>
+{% endfor %}
+    </ol>
+    <p><strong>Verify:</strong></p>
+    <ul>
+{% for verify in guide.verify %}
+      <li>{{ verify }}</li>
+{% endfor %}
+    </ul>
+  </div>
+{% endfor %}
+
+  <div class="card">
+    <h2>Troubleshooting</h2>
+    <ul>
+      <li>Browsers cache trust for a few minutes; restart the browser if warnings persist.</li>
+      <li>Android requires a screen lock before user CA certificates can be added.</li>
+      <li>On Linux, confirm trust with <code>trust list | grep "Frey Root"</code>.</li>
+    </ul>
+  </div>
+</body>
+</html>

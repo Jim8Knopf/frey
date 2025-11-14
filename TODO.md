@@ -154,3 +154,10 @@ This is the structured and prioritized TODO checklist for the Frey project.
 - Should we use a single database for all services or multiple databases? **→ Single PostgreSQL with schemas.**
 - How should the media user be handled across services? **→ Shared `media` user/group (UID/GID 1000).**
 - Are there any other services or features we should prioritize?
+
+
+note tool for whatever:
+- notion
+- logseq
+- tana
+- obsidian 
