@@ -55,6 +55,14 @@
     group: "{{ landing_page.group.name }}"
     mode: '0644'
 
+- name: Publish Frey user guide
+  ansible.builtin.template:
+    src: frey-user-guide.html.j2
+    dest: "{{ landing_page.docs_dir }}/{{ landing_page.user_guide.docs_filename }}"
+    owner: "{{ landing_page.user.name }}"
+    group: "{{ landing_page.group.name }}"
+    mode: '0644'
+
 - name: Render Dashy configuration
   ansible.builtin.template:
     src: dashy-conf.yml.j2

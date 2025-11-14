@@ -10,7 +10,7 @@ pageInfo:
 {% endif %}
 
 appConfig:
-  theme: glass
+  theme: dracula
   iconSize: medium
   layout: auto
   language: en
@@ -24,6 +24,10 @@ appConfig:
     .landing-guide ol {margin: 0 0 0.5rem 1.2rem;padding: 0;}
     .landing-guide ul {margin: 0 0 0.25rem 1rem;padding: 0;}
     .landing-guide i {color: #f6ad55;}
+  freyLinks:
+    userGuide: "/assets/docs/{{ landing_page.user_guide.docs_filename }}"
+    certificateGuide: "/assets/docs/{{ landing_page.certificate.docs_filename }}"
+    certificateDownload: "/assets/{{ landing_page.certificate.download_name }}"
   auth:
     enableGuestAccess: {{ landing_page.allow_guest_access | default(false) | bool }}
     enableOidc: {{ landing_page.oidc.enable | default(false) | bool }}
@@ -39,6 +43,16 @@ appConfig:
 
 sections:
 {% for section in landing_page.sections %}
+{% set section_groups = [] %}
+{% for svc in section.services %}
+{%   if svc.groups is defined %}
+{%     for grp in svc.groups %}
+{%       if grp not in section_groups %}
+{%         set section_groups = section_groups + [grp] %}
+{%       endif %}
+{%     endfor %}
+{%   endif %}
+{% endfor %}
   - name: "{{ section.name }}"
     icon: "{{ section.icon }}"
 {% if section.description %}
@@ -48,6 +62,13 @@ sections:
       itemSize: "{{ section.item_size | default('medium') }}"
 {% if section.type is defined %}
       sectionLayout: auto
+{% endif %}
+{% if section_groups %}
+      showForKeycloakUsers:
+        groups:
+{% for group in section_groups %}
+          - "{{ group }}"
+{% endfor %}
 {% endif %}
     items:
 {% for item in section.services %}

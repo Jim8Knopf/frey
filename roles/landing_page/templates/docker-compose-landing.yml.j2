@@ -41,5 +41,3 @@ services:
       - "traefik.http.routers.landing-http.rule={{ landing_rule }}"
       - "traefik.http.routers.landing-http.entrypoints=web"
       - "traefik.http.routers.landing-http.service=landing"
-      - "traefik.http.middlewares.landing-redirect.redirectscheme.scheme=https"
-      - "traefik.http.routers.landing-http.middlewares=landing-redirect"

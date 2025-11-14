@@ -114,7 +114,7 @@ export const isLoggedIn = () => {
 /* Returns true if authentication is enabled */
 export const isAuthEnabled = () => {
   const users = getUsers();
-  return (users.length > 0);
+  return (users.length > 0) || isOidcEnabled();
 };
 
 /* Returns true if guest access is enabled */

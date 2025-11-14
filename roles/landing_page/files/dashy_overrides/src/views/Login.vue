@@ -1,5 +1,54 @@
 <template>
   <div class="login-page">
+    <section class="guest-onboarding" v-if="!isUserAlreadyLoggedIn">
+      <article class="onboarding-card doc-card">
+        <div>
+          <p class="eyebrow">Documentation</p>
+          <h2>Frey User Guide</h2>
+          <p>Review every stack and role before requesting access.</p>
+        </div>
+        <div class="button-row">
+          <a
+            :href="userGuideUrl"
+            target="_blank"
+            rel="noopener"
+            class="cta-button"
+          >
+            Open Guide
+          </a>
+          <a
+            :href="certificateGuideUrl"
+            target="_blank"
+            rel="noopener"
+            class="ghost-button"
+          >
+            Certificate Guide
+          </a>
+        </div>
+      </article>
+      <article class="onboarding-card cert-card">
+        <div>
+          <p class="eyebrow">Trust Frey</p>
+          <h2>Install the Root Certificate</h2>
+          <p>Download the Frey CA over HTTP, install it, then switch to HTTPS.</p>
+        </div>
+        <div class="button-row stacked">
+          <a
+            :href="certificateDownloadUrl"
+            class="cta-button"
+            download
+          >
+            Download CA
+          </a>
+          <div class="protocol-links">
+            <span>Dashboard endpoints:</span>
+            <a :href="httpOrigin">HTTP</a>
+            <span>•</span>
+            <a :href="httpsOrigin">HTTPS</a>
+          </div>
+        </div>
+      </article>
+    </section>
     <!-- User is already logged in -->
     <div v-if="isUserAlreadyLoggedIn" class="already-logged-in">
       <h2>{{ $t('login.already-logged-in-title') }}</h2>
@@ -147,6 +196,37 @@ export default {
     isOidcEnabled() {
       return isOidcEnabled();
     },
+    freyLinks() {
+      return this.appConfig.freyLinks || {};
+    },
+    userGuideUrl() {
+      const path = this.freyLinks.userGuide || '/assets/docs/frey-user-guide.html';
+      return new URL(path, window.location.origin).toString();
+    },
+    certificateGuideUrl() {
+      const path = this.freyLinks.certificateGuide || '/assets/docs/frey-ca.html';
+      return new URL(path, window.location.origin).toString();
+    },
+    certificateDownloadUrl() {
+      const path = this.freyLinks.certificateDownload || '/assets/frey-root-ca.crt';
+      return new URL(path, window.location.origin).toString();
+    },
+    httpOrigin() {
+      const url = new URL(window.location.href);
+      url.protocol = 'http:';
+      url.pathname = '/';
+      url.search = '';
+      url.hash = '';
+      return url.toString().replace(/\/$/, '');
+    },
+    httpsOrigin() {
+      const url = new URL(window.location.href);
+      url.protocol = 'https:';
+      url.pathname = '/';
+      url.search = '';
+      url.hash = '';
+      return url.toString().replace(/\/$/, '');
+    },
     isUserAlreadyLoggedIn() {
       const loggedIn = (!this.users || this.users.length === 0 || isLoggedIn());
       return (loggedIn && this.existingUsername);
@@ -239,6 +319,106 @@ export default {
 </script>
 
 <style lang="scss">
+
+.guest-onboarding {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.25rem;
+  margin: 0 auto 2rem;
+  width: min(1100px, 100%);
+}
+
+.onboarding-card {
+  background: rgba(13, 19, 33, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 18px;
+  padding: 1.75rem;
+  min-height: 220px;
+  box-shadow: 0 25px 55px rgba(2, 6, 23, 0.55);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.doc-card {
+  background: radial-gradient(circle at top, rgba(79, 70, 229, 0.35), rgba(15, 23, 42, 0.95));
+}
+
+.cert-card {
+  background: radial-gradient(circle at top, rgba(17, 94, 89, 0.35), rgba(15, 23, 42, 0.95));
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  font-size: 0.75rem;
+  color: rgba(248, 250, 252, 0.7);
+  margin-bottom: 0.25rem;
+}
+
+.button-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1.25rem;
+}
+
+.button-row.stacked {
+  flex-direction: column;
+}
+
+.cta-button,
+.ghost-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.9rem 1.4rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.cta-button {
+  background: linear-gradient(135deg, #f97316, #facc15);
+  color: #0f172a;
+  box-shadow: 0 15px 40px rgba(249, 115, 22, 0.55);
+}
+
+.ghost-button {
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: #f8fafc;
+}
+
+.cta-button:hover,
+.ghost-button:hover {
+  transform: translateY(-1px);
+}
+
+.protocol-links {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  color: rgba(248, 250, 252, 0.85);
+  font-size: 0.9rem;
+}
+
+.protocol-links a {
+  color: #fef3c7;
+  text-decoration: underline;
+}
+
+.guest-onboarding + .already-logged-in,
+.guest-onboarding + .oidc-login,
+.guest-onboarding + .login-form {
+  margin-top: 0;
+}
+
+.guest-onboarding {
+  @media (max-width: 700px) {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* Login page base styles */
 .login-page {
