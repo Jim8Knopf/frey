@@ -99,6 +99,10 @@ network:
     - name: frey
       host: "{{ network.domain_name }}"
     - name: landing
+    # Landing + apex host
+    - name: frey
+      host: "{{ network.domain_name }}"
+    - name: landing
     # Infrastructure services
     - name: traefik
     - name: portainer
@@ -124,6 +128,9 @@ network:
     - name: jellyseerr
     - name: lidarr
     - name: jellystat
+    # Automation + smart home
+    - name: homeassistant
+    - name: n8n
     # Automation + smart home
     - name: homeassistant
     - name: n8n
@@ -320,6 +327,33 @@ monitoring:
     port: 8181
     image: "lscr.io/linuxserver/speedtest-tracker"
     version: "latest"
+  # Application-specific exporters for comprehensive monitoring
+  postgres-exporter:
+    enabled: true
+    port: 9187
+    image: "prometheuscommunity/postgres-exporter"
+    version: "latest"
+  redis-exporter:
+    enabled: true
+    port: 9121
+    image: "oliver006/redis_exporter"
+    version: "latest"
+  adguard-exporter:
+    enabled: true
+    port: 9617
+    image: "ebrianne/adguard-exporter"
+    version: "latest"
+  qbittorrent-exporter:
+    enabled: true
+    port: 9022
+    image: "esanchezm/prometheus-qbittorrent-exporter"
+    version: "latest"
+  # Dashboard auto-provisioning
+  dashboard_provisioning:
+    enabled: true
+  # Alerting configuration
+  alerting:
+    enabled: true
 
 
 # ===================================================================
@@ -344,6 +378,9 @@ infrastructure:
         dashboard: 8082
       config:
         acme_email: "{{ admin_email }}"  # Using admin email for Let's Encrypt notifications
+      metrics:
+        enabled: true
+        port: 8083
     portainer:
       enabled: true
       version: "latest"
@@ -398,20 +435,19 @@ landing_page:
   config_path: "{{ storage.appdata_dir }}/landing/user-data/conf.yml"
   assets_dir: "{{ storage.appdata_dir }}/landing/user-data/assets"
   docs_dir: "{{ storage.appdata_dir }}/landing/user-data/assets/docs"
-  overrides_dir: "{{ storage.appdata_dir }}/landing/user-data/overrides"
+  overrides_dir: "{{ storage.appdata_dir }}/landing/overrides"
+  source_overrides: []
   image: "ghcr.io/lissy93/dashy"
   version: "latest"
   container_name: landing-page
   compose_project: landing_page
   port: 8080
-  allow_guest_access: false
+  allow_guest_access: true
   nav_links:
     - title: "User Guide"
-      url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.user_guide.docs_filename }}"
+      url: "https://cookbook.{{ network.domain_name }}"
     - title: "Certificate Guide"
       url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.certificate.docs_filename }}"
-    - title: "Download Root CA"
-      url: "https://{{ landing_page.hostname }}/assets/{{ landing_page.certificate.download_name }}"
   certificate:
     source_path: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
     download_name: "frey-root-ca.crt"
@@ -581,13 +617,22 @@ landing_page:
           url: "https://n8n.{{ network.domain_name }}"
           icon: "fas fa-code-branch"
           groups: ["n8n_admins"]
-  # Dashy source overrides applied inside the container (relative to /app)
-  source_overrides:
-    - src/utils/OidcAuth.js
-    - src/utils/Auth.js
-    - src/views/Login.vue
-    - src/components/Settings/AuthButtons.vue
-    - src/assets/interface-icons/user-login.svg
+    - name: "Trust & Documentation"
+      type: certificate
+      icon: "fas fa-certificate"
+      description: "Install the Frey CA to trust every *.{{ network.domain_name }} service."
+      item_size: small
+      services:
+        - title: "Download Frey Root CA"
+          description: "Install this certificate on every device before using services."
+          url: "https://frey/assets/{{ landing_page.certificate.download_name }}"
+          icon: "fas fa-download"
+          tags: ["certificate"]
+        - title: "Detailed Instructions"
+          description: "Android and Manjaro/Linux walkthrough."
+          url: "https://frey/assets/docs/{{ landing_page.certificate.docs_filename }}"
+          icon: "fas fa-book-reader"
+          tags: ["how-to"]
 
 # ===================================================================
 # MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION

@@ -23,6 +23,10 @@ entryPoints:
         readTimeout: 600s
         writeTimeout: 600s
         idleTimeout: 3600s
+{% if infrastructure.services.traefik.metrics.enabled | default(false) %}
+  metrics:
+    address: ":8083"
+{% endif %}
 
 # Certificate management via Step-CA ACME
 # Static certificates removed - using automated ACME instead
@@ -52,6 +56,16 @@ log:
   level: INFO  # Change to DEBUG for troubleshooting
 
 accessLog: {}  # Enable access logs
+
+{% if infrastructure.services.traefik.metrics.enabled | default(false) %}
+# Prometheus metrics
+metrics:
+  prometheus:
+    addEntryPointsLabels: true
+    addRoutersLabels: true
+    addServicesLabels: true
+    entryPoint: metrics
+{% endif %}
 
 # Provide a default TLS certificate (wildcard) as fallback
 tls:

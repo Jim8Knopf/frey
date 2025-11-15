@@ -250,7 +250,17 @@ network:
     - name: portainer
     - name: traefik
     # Add more services as needed
+  wifi:
+    upstream_dns_servers:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    use_system_dns: true        # Also trust DNS learned from the uplink (hotel/captive WiFi)
+    system_resolv_conf: "/etc/resolv.conf"
 ```
+
+Set `use_system_dns: false` if you only want to forward to the hardcoded resolvers.
+The default (`true`) keeps Cloudflare/Google as the first choice while still
+falling back to whatever DNS servers a hotel or captive WiFi network requires.
 
 ## Usage
 
@@ -321,7 +331,7 @@ Installs `hostapd` (creates AP), `dnsmasq` (DHCP/DNS), and utilities.
 ### 6. DNS Resolution
 - Clients get `.frey` domain resolution
 - Services are accessible via friendly names
-- Upstream DNS (8.8.8.8, 8.8.4.4) for internet
+- Upstream DNS defaults to Cloudflare/Google with automatic fallback to whatever the uplink network hands out (handles hotel/captive WiFi)
 
 ## Troubleshooting
 

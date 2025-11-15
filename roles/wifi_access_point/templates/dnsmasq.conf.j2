@@ -8,7 +8,7 @@
 # - DHCP server for automatic IP assignment to WiFi clients
 # - Local domain (.frey) resolution for internal services
 # - Wildcard DNS to route all *.frey to Traefik reverse proxy
-# - Upstream DNS forwarding (Cloudflare 1.1.1.1 and Google 8.8.8.8)
+# - Upstream DNS forwarding (Cloudflare/Google plus uplink-provided servers)
 #
 # PERFORMANCE: With caching enabled, most DNS queries return in <10ms
 # SECURITY: DNS rebinding protection enabled, localhost responses allowed
@@ -126,23 +126,22 @@ dns-forward-max=150
 # ------------------------------------------------------------------------------
 # Forward queries for external domains (not *.frey) to these DNS providers
 
-# Cloudflare DNS - Fast, privacy-focused (blocks malware/phishing)
-server=1.1.1.1
+# Primary upstream DNS resolvers (queried first)
+{% set upstream_dns_servers = network.wifi.upstream_dns_servers | default(['1.1.1.1', '8.8.8.8']) %}
+{% for resolver in upstream_dns_servers %}
+server={{ resolver }}
+{% endfor %}
 
-# Google DNS - Reliable fallback
-server=8.8.8.8
-
-# Don't read /etc/resolv.conf (use only the servers specified above)
-# This gives us full control over DNS forwarding regardless of system config
+{% if network.wifi.use_system_dns | default(true) %}
+# Also trust DNS servers learned from the upstream interface (hotels often block public resolvers)
+resolv-file={{ network.wifi.system_resolv_conf | default('/etc/resolv.conf') }}
+{% else %}
+# Stick to the hardcoded upstream servers only
 no-resolv
 
-# ------------------------------------------------------------------------------
-# PERFORMANCE TUNING
-# ------------------------------------------------------------------------------
-
-# Don't poll /etc/resolv.conf for changes (we don't use it anyway)
-# Reduces unnecessary file system operations
+# Don't monitor resolv.conf for changes when we ignore upstream DHCP DNS
 no-poll
+{% endif %}
 
 # Don't read /etc/hosts file (we define our hosts explicitly above)
 # Faster startup, no conflicts with system hosts file

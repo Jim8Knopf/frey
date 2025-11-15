@@ -92,6 +92,27 @@
     group: "{{ monitoring.group.name }}"
     mode: '0644'
 
+- name: Warn when Immich DB password missing (disables Immich Postgres exporter)
+  ansible.builtin.debug:
+    msg: "immich_db_password not defined — skipping postgres-exporter for Immich. Add it to group_vars/all/secrets.yml to enable exporter."
+  when:
+    - monitoring['postgres-exporter'].enabled | default(false)
+    - immich_db_password is not defined
+
+- name: Warn when AdGuard exporter credentials are missing
+  ansible.builtin.debug:
+    msg: "adguard_username/adguard_password not defined — skipping adguard-exporter. Add both to group_vars/all/secrets.yml to enable exporter."
+  when:
+    - monitoring['adguard-exporter'].enabled | default(false)
+    - (adguard_username is not defined) or (adguard_password is not defined)
+
+- name: Warn when qBittorrent exporter credentials are missing
+  ansible.builtin.debug:
+    msg: "qbittorrent_username/qbittorrent_password not defined — skipping qbittorrent-exporter. Add both to group_vars/all/secrets.yml (or disable the exporter) to enable metrics."
+  when:
+    - monitoring['qbittorrent-exporter'].enabled | default(false)
+    - (qbittorrent_username is not defined) or (qbittorrent_password is not defined)
+
 - name: Deploy monitoring stack compose file
   ansible.builtin.template:
     src: docker-compose-monitoring.yml.j2
@@ -142,6 +163,46 @@
     owner: "{{ monitoring.user.name }}"
     group: "{{ monitoring.group.name }}"
     mode: '0644'
+
+# Dashboard auto-provisioning setup
+- name: Create Grafana dashboard provisioning configuration
+  ansible.builtin.template:
+    src: grafana-dashboard-provisioning.yml.j2
+    dest: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/dashboards.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Download Grafana dashboards from Grafana.com
+  ansible.builtin.uri:
+    url: "{{ item.url }}"
+    dest: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/{{ item.id }}-{{ item.name | lower | replace(' ', '-') }}.json"
+    creates: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/{{ item.id }}-{{ item.name | lower | replace(' ', '-') }}.json"
+    timeout: 30
+  loop: "{{ lookup('file', 'grafana-dashboards.json') | from_json | json_query('dashboards') }}"
+  register: dashboard_downloads
+  failed_when: false
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+# Prometheus alerting setup
+- name: Create Prometheus alerts directory
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/prometheus/alerts"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0755'
+  when: monitoring.alerting.enabled | default(false)
+
+- name: Deploy Prometheus alerting rules
+  ansible.builtin.template:
+    src: prometheus-alerts.yml.j2
+    dest: "{{ storage.appdata_dir }}/prometheus/alerts/alerts.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+  when: monitoring.alerting.enabled | default(false)
 
 - name: Start monitoring stack using compose
   community.docker.docker_compose_v2:

@@ -1,0 +1,262 @@
+{% raw %}
+groups:
+  - name: system_alerts
+    interval: 30s
+    rules:
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 80% (current value: {{ $value | humanize }}%)"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% (current value: {{ $value | humanize }}%)"
+
+      # Low disk space
+      - alert: LowDiskSpace
+        expr: (node_filesystem_avail_bytes{mountpoint="/opt/frey"} / node_filesystem_size_bytes{mountpoint="/opt/frey"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on /opt/frey"
+          description: "Disk space is below 15% ({{ $value | humanize }}% remaining)"
+
+      # Critical disk space
+      - alert: CriticalDiskSpace
+        expr: (node_filesystem_avail_bytes{mountpoint="/opt/frey"} / node_filesystem_size_bytes{mountpoint="/opt/frey"}) * 100 < 5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Disk space critically low on /opt/frey"
+          description: "Disk space is below 5% ({{ $value | humanize }}% remaining)"
+
+      # High temperature (Raspberry Pi specific)
+      - alert: HighTemperature
+        expr: node_hwmon_temp_celsius > 70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High temperature detected"
+          description: "System temperature is above 70°C (current: {{ $value | humanize }}°C)"
+
+  - name: container_alerts
+    interval: 30s
+    rules:
+      # Container high memory usage
+      - alert: HighContainerMemory
+        expr: (container_memory_usage_bytes{name!~".*exporter.*"} / container_spec_memory_limit_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} high memory usage"
+          description: "Container memory usage is above 90% (current value: {{ $value | humanize }}%)"
+
+      # Container restart detected
+      - alert: ContainerRestarting
+        expr: rate(container_last_seen{name!~".*exporter.*"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} is restarting frequently"
+          description: "Container has restarted multiple times in the last 5 minutes"
+{% endraw %}
+{% if monitoring['postgres-exporter'].enabled | default(false) %}
+{% raw %}
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # PostgreSQL down
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL {{ $labels.database }} is down"
+          description: "PostgreSQL database has been down for more than 1 minute"
+
+      # High database connections
+      - alert: HighDatabaseConnections
+        expr: (pg_stat_database_numbackends / pg_settings_max_connections) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database connections on {{ $labels.database }}"
+          description: "Database connections are above 80% (current value: {{ $value | humanize }}%)"
+
+      # Database slow queries
+      - alert: PostgreSQLSlowQueries
+        expr: rate(pg_stat_activity_max_tx_duration{datname!~"template.*"}[5m]) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow queries detected in {{ $labels.datname }}"
+          description: "Long-running queries detected (> 5 minutes)"
+{% endraw %}
+{% endif %}
+
+{% if monitoring['redis-exporter'].enabled | default(false) %}
+{% raw %}
+      # Redis down
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Redis has been down for more than 1 minute"
+
+      # High Redis memory usage
+      - alert: RedisHighMemory
+        expr: (redis_memory_used_bytes / redis_memory_max_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis memory usage is above 90% (current: {{ $value | humanize }}%)"
+
+      # Low Redis cache hit rate
+      - alert: RedisLowHitRate
+        expr: (rate(redis_keyspace_hits_total[5m]) / (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m]))) * 100 < 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis cache hit rate is low"
+          description: "Cache hit rate is below 50% (current: {{ $value | humanize }}%)"
+{% endraw %}
+{% endif %}
+{% raw %}
+  - name: network_alerts
+    interval: 30s
+    rules:
+      # High network errors
+      - alert: HighNetworkErrors
+        expr: rate(node_network_receive_errs_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High network errors on {{ $labels.device }}"
+          description: "Network interface is experiencing high error rates"
+
+      # High network traffic
+      - alert: HighNetworkTraffic
+        expr: rate(node_network_receive_bytes_total{device!~"lo|veth.*"}[5m]) > 100000000
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "High network traffic on {{ $labels.device }}"
+          description: "Network interface receiving > 100MB/s for 10 minutes"
+{% endraw %}
+{% if infrastructure.services.traefik.metrics.enabled | default(false) %}
+{% raw %}
+  - name: traefik_alerts
+    interval: 30s
+    rules:
+      # High HTTP error rate
+      - alert: HighHTTPErrorRate
+        expr: (sum(rate(traefik_service_requests_total{code=~"5.."}[5m])) / sum(rate(traefik_service_requests_total[5m]))) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP 5xx error rate"
+          description: "HTTP 5xx error rate is above 5% (current: {{ $value | humanize }}%)"
+
+      # Traefik service down
+      - alert: TraefikServiceDown
+        expr: traefik_service_server_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Traefik backend {{ $labels.service }} is down"
+          description: "Service has been unreachable for more than 2 minutes"
+
+      # High request latency
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (service, le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency for {{ $labels.service }}"
+          description: "99th percentile latency is above 1 second (current: {{ $value | humanize }}s)"
+{% endraw %}
+{% endif %}
+
+{% if monitoring['adguard-exporter'].enabled | default(false) %}
+{% raw %}
+  - name: adguard_alerts
+    interval: 30s
+    rules:
+      # AdGuard Home query processing stopped
+      - alert: AdGuardQueryProcessingDisabled
+        expr: adguard_query_processing_enabled == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AdGuard Home has stopped processing queries"
+          description: "AdGuard Home query processing is disabled"
+
+      # High DNS query failure rate
+      - alert: HighDNSFailureRate
+        expr: (rate(adguard_num_dns_queries_failed_total[5m]) / rate(adguard_num_dns_queries_total[5m])) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High DNS query failure rate"
+          description: "DNS failures above 10% (current: {{ $value | humanize }}%)"
+{% endraw %}
+{% endif %}
+
+{% if monitoring['qbittorrent-exporter'].enabled | default(false) %}
+{% raw %}
+  - name: qbittorrent_alerts
+    interval: 30s
+    rules:
+      # qBittorrent high disk usage
+      - alert: QBittorrentHighDiskUsage
+        expr: qbittorrent_torrent_download_speed_bytes + qbittorrent_torrent_upload_speed_bytes > 50000000
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "qBittorrent high sustained bandwidth usage"
+          description: "Combined up/download speed > 50MB/s for 1 hour"
+
+      # qBittorrent stalled torrents
+      - alert: QBittorrentStalledTorrents
+        expr: qbittorrent_torrents_count{status="stalledDL"} > 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Multiple stalled downloads in qBittorrent"
+          description: "{{ $value }} torrents have been stalled for 30 minutes"
+{% endraw %}
+{% endif %}

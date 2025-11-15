@@ -25,6 +25,11 @@ network:
     country: "US"
     hw_mode: g
     channel: 7
+    upstream_dns_servers:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    use_system_dns: true
+    system_resolv_conf: "/etc/resolv.conf"
   # Enable NAT from AP network to client/uplink interface (optional)
   enable_nat: false
   # Method to persist NAT rules: 'iptables-persistent' or 'iptables-save'
