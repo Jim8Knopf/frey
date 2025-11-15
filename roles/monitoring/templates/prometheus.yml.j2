@@ -32,7 +32,6 @@ scrape_configs:
       - targets: ['node-exporter:9100']
         labels:
           service: 'node-exporter'
-          instance: 'frey-pi5'
 
   # Container metrics
   - job_name: 'cadvisor'

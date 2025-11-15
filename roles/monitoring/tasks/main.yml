@@ -185,6 +185,21 @@
   failed_when: false
   when: monitoring.dashboard_provisioning.enabled | default(false)
 
+- name: Check Docker dashboard file for label patching
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/13496-docker-and-system-monitoring.json"
+  register: docker_dashboard
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Align Docker dashboard node job label with Frey exporters
+  ansible.builtin.replace:
+    path: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/13496-docker-and-system-monitoring.json"
+    regexp: "cominfra-stg"
+    replace: "{{ monitoring.prometheus_jobs.node_exporter | default('node-exporter') }}"
+  when:
+    - monitoring.dashboard_provisioning.enabled | default(false)
+    - docker_dashboard.stat.exists | default(false)
+
 # Prometheus alerting setup
 - name: Create Prometheus alerts directory
   ansible.builtin.file:
