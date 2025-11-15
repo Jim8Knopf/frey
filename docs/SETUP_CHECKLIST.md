@@ -28,7 +28,7 @@ Use this checklist to track your deployment and configuration progress.
 
 ## 📊 Configure Grafana
 
-- [ ] Access `http://grafana.frey`
+- [ ] Access `https://grafana.frey`
 - [ ] Click "Sign in with Authentik"
 - [ ] Verify successful login
 - [ ] **Status**: ✅ Works automatically (no manual steps)
@@ -226,7 +226,7 @@ Use this checklist to track your deployment and configuration progress.
 ## 🧪 Final Testing
 
 ### SSO/Authentication
-- [ ] Test Grafana SSO: `http://grafana.frey` → Sign in with Authentik
+- [ ] Test Grafana SSO: `https://grafana.frey` → Sign in with Authentik
 - [ ] Test Home Assistant SSO: Log out and log in via Authentik
 - [ ] Test Immich OAuth: Log out and use "Login with OAuth"
 - [ ] Test Audiobookshelf SSO: Log out and use "Login with Authentik"

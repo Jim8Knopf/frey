@@ -51,9 +51,6 @@ entries:
         # DNS-based redirect (works when DNS resolves) - HTTPS
         - matching_mode: strict
           url: https://grafana.{{ network.domain_name }}/login/generic_oauth
-        # DNS-based redirect (works when DNS resolves) - HTTP fallback
-        - matching_mode: strict
-          url: http://grafana.{{ network.domain_name }}/login/generic_oauth
         # LAN IP redirect (client_interface_ip - accessible from LAN)
         - matching_mode: strict
           url: http://{{ network.wifi.client_interface_ip }}:{{ monitoring.grafana.port | default(3000) }}/login/generic_oauth
@@ -84,6 +81,6 @@ entries:
       slug: grafana
       provider: !KeyOf grafana-provider
       policy_engine_mode: any
-      meta_launch_url: http://grafana.{{ network.domain_name }}
+      meta_launch_url: https://grafana.{{ network.domain_name }}
       meta_description: Monitoring and observability dashboards
       meta_publisher: Frey Hub

@@ -32,7 +32,7 @@
 | Service | URL | Initial Setup |
 |---------|-----|---------------|
 | Authentik | `http://auth.frey` | Create admin account |
-| Grafana | `http://grafana.frey` | Login via Authentik |
+| Grafana | `https://grafana.frey` | Login via Authentik |
 | Home Assistant | `http://homeassistant.frey` | Create admin account first |
 | Immich | `http://immich.frey` | Create admin account first |
 | Audiobookshelf | `http://audiobookshelf.frey` | Create admin account first |

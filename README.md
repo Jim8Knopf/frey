@@ -229,7 +229,7 @@ All services accessible via friendly `.frey` domains:
 | **Automation** | Home Assistant | http://homeassistant.frey |
 | | n8n | http://n8n.frey |
 | | Open WebUI | http://ai.frey |
-| **Monitoring** | Grafana | http://grafana.frey |
+| **Monitoring** | Grafana | https://grafana.frey |
 | | Prometheus | http://prometheus.frey |
 | | Uptime Kuma | http://uptime-kuma.frey |
 | **Photos** | Immich | http://immich.frey |

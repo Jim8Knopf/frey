@@ -334,7 +334,7 @@ http://audiobookshelf.frey/login/?autoLaunch=0
 - **Client Secret**: Copy this value
 - **Redirect URIs**:
   ```
-  http://grafana.frey/login/generic_oauth
+  https://grafana.frey/login/generic_oauth
   http://<pi-ip>:3000/login/generic_oauth
   ```
 
@@ -506,7 +506,7 @@ For each service, test login with a regular user account:
    - LDAP authentication happens in background
    - Logs into Jellyfin
 
-4. **Grafana** (`http://grafana.frey`):
+4. **Grafana** (`https://grafana.frey`):
    - Click **Sign in with Authentik**
    - Redirects to Authentik
    - Login with user credentials
@@ -641,7 +641,7 @@ docker exec -it authentik_server ak set_password akadmin
 | Immich | `http://immich.frey` | 2283 |
 | Audiobookshelf | `http://audiobookshelf.frey` | 13378 |
 | Jellyfin | `http://jellyfin.frey` | 8096 |
-| Grafana | `http://grafana.frey` | 3000 |
+| Grafana | `https://grafana.frey` | 3000 |
 
 ### Default Credentials
 

@@ -32,7 +32,7 @@ Follow **[POST_INSTALLATION_MANUAL_STEPS.md](POST_INSTALLATION_MANUAL_STEPS.md)*
 
 ### 3. **Access Your Services**
 - Authentik: `http://auth.frey`
-- Grafana: `http://grafana.frey`
+- Grafana: `https://grafana.frey`
 - Home Assistant: `http://homeassistant.frey`
 - Immich: `http://immich.frey`
 - Jellyfin: `http://jellyfin.frey`

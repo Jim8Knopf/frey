@@ -245,7 +245,7 @@
     #       Metrics visualization and dashboards
     #       OAuth SSO with Authentik (automatic, no manual setup)
     #       Role-based access (Admin/Editor/Viewer via Authentik groups)
-    #       Port 3000, URL: http://grafana.frey
+    #       Port 3000, URL: https://grafana.frey
     #
     #   - Prometheus (Metrics Database):
     #       Time-series metrics collection
@@ -590,7 +590,7 @@
 # Service URLs:
 #   - Traefik Dashboard: http://traefik.frey:8082
 #   - Authentik SSO: http://auth.frey
-#   - Grafana: http://grafana.frey
+#   - Grafana: https://grafana.frey
 #   - Home Assistant: http://homeassistant.frey
 #   - Jellyfin: http://jellyfin.frey
 #   - Immich: http://immich.frey

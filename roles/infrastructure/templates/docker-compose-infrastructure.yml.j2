@@ -207,11 +207,11 @@ services:
   # Provides automated certificate management via ACME protocol
   # Integrates with Traefik for automatic cert generation and renewal
 {% if infrastructure.services.step_ca.enabled | default(false) %}
-{% set dns_hostnames = [] %}
+{% set dns_hosts = namespace(values=[]) %}
 {% for service in network.dns_rewrites | default([]) %}
 {% set host_name = service.host | default(service.name ~ '.' ~ network.domain_name) %}
-{% if host_name not in dns_hostnames %}
-{% set dns_hostnames = dns_hostnames + [host_name] %}
+{% if host_name not in dns_hosts.values %}
+{% set dns_hosts.values = dns_hosts.values + [host_name] %}
 {% endif %}
 {% endfor %}
   step-ca:
@@ -230,7 +230,7 @@ services:
       # Map all *.frey domains to Traefik container for ACME validation
       # Using 'host-gateway' special value which resolves to Docker host's internal IP
       # This allows Step CA to reach Traefik on the proxy network
-{% for host_name in dns_hostnames %}
+{% for host_name in dns_hosts.values %}
       "{{ host_name }}": "host-gateway"
 {% endfor %}
     environment:

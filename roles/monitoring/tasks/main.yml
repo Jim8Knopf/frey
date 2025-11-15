@@ -208,6 +208,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ storage.stacks }}/monitoring"
     state: present
+    remove_orphans: true
 
 - name: Ensure monitoring appdata ownership matches container users (fix UID/GID mismatches)
   become: true

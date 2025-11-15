@@ -148,7 +148,7 @@ services:
       # DNS-based root URL for Traefik access (primary access method)
       # OAuth flow: grafana.frey → auth.frey → grafana.frey
       # Works offline via AdGuard local DNS resolution
-      - GF_SERVER_ROOT_URL=http://grafana.{{ network.domain_name }}
+      - GF_SERVER_ROOT_URL=https://grafana.{{ network.domain_name }}
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
 {% if infrastructure.services.authentik.enabled | default(false) %}
       # OIDC/SSO Authentication with Authentik (uses internal Docker service name)
