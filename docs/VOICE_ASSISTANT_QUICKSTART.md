@@ -152,6 +152,17 @@ A single smart script (`frey-docker-control`) handles all Docker operations. The
 
 **No need to create automations for each service!** The LLM is smart enough to understand and call the right commands.
 
+### Dynamic Service Discovery
+
+The system **automatically discovers all your containers** from Docker - no configuration needed!
+
+✅ Works with ANY container you deploy (now or in the future)
+✅ Fuzzy matching: "jelly" finds "jellyfin", "torrent" finds "qbittorrent"
+✅ Case insensitive: "JELLYFIN" or "jellyfin" both work
+✅ No hardcoded service lists to maintain
+
+Add a new service? Just deploy it - voice control works immediately!
+
 ## Troubleshooting
 
 ### "Wyoming service not found"

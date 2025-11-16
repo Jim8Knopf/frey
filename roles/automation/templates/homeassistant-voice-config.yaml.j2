@@ -31,33 +31,37 @@ shell_command:
 #
 # You can control Docker services using the frey_docker command with two parameters:
 # - action: start, stop, restart, or status
-# - service: jellyfin, sonarr, radarr, bazarr, lidarr, prowlarr, qbittorrent,
-#            audiobookshelf, jellyseerr, homeassistant, n8n, portainer, grafana,
-#            prometheus, traefik, adguard, or any container name
+# - service: ANY container name or partial match
+#
+# The system automatically discovers all containers, so users can control:
+# - Any media service (jellyfin, sonarr, radarr, bazarr, lidarr, prowlarr, qbittorrent, audiobookshelf, jellyseerr)
+# - Infrastructure (portainer, traefik, dockge, authentik, adguardhome)
+# - Automation (homeassistant, n8n, ollama)
+# - Monitoring (grafana, prometheus, uptime-kuma)
+# - Or ANY other container they have running
 #
 # You can also:
 # - Get system info: frey_system_info (no parameters)
 # - List all services: frey_list_services (no parameters)
 #
+# The system uses fuzzy matching, so these all work:
+# - "jellyfin" or "jelly" → matches jellyfin container
+# - "sonarr" or "sonar" → matches sonarr container
+# - "torrent" or "qbit" → matches qbittorrent container
+# - Case insensitive: "JELLYFIN" works too
+#
 # Examples:
 # User: "Start Jellyfin" → Call: frey_docker(action="start", service="jellyfin")
 # User: "Is Sonarr running?" → Call: frey_docker(action="status", service="sonarr")
 # User: "What services are running?" → Call: frey_list_services()
-# User: "What's the system status?" → Call: frey_system_info()
+# User: "Restart the torrent client" → Call: frey_docker(action="restart", service="torrent")
 #
 # Always respond conversationally and confirm actions taken.
 # Keep responses concise since they will be spoken aloud.
 #
-# Service name variations (all these work):
-# - "Jellyfin" or "Jelly"
-# - "Sonarr" or "Sonar"
-# - "Radarr" or "Radar"
-# - "qBittorrent" or "torrent"
-# - "Audiobookshelf" or "audiobook"
-# - "Home Assistant" or "home"
-#
 # Protected services (cannot be stopped):
 # - homeassistant, ollama, piper, wyoming-whisper, openwakeword, traefik
+# If user tries to stop these, explain they're critical and can't be stopped via voice.
 # ==================================================================================
 
 # ==================================================================================
@@ -91,29 +95,14 @@ shell_command:
 # ==================================================================================
 # AVAILABLE SERVICES
 # ==================================================================================
-# These services are available for voice control:
+# ALL Docker containers are automatically available for voice control!
 #
-# Media Services:
-{% for service in ['jellyfin', 'sonarr', 'radarr', 'bazarr', 'lidarr', 'prowlarr', 'qbittorrent', 'audiobookshelf', 'jellyseerr'] %}
-#   - {{ service }}
-{% endfor %}
+# The system dynamically discovers containers, so you can control:
+# - Any container you deploy now or in the future
+# - No need to update this config when adding new services
+# - Fuzzy matching works (partial names, case insensitive)
 #
-# Infrastructure:
-{% for service in ['portainer', 'traefik', 'dockge', 'authentik', 'adguardhome'] %}
-#   - {{ service }}
-{% endfor %}
-#
-# Automation:
-{% for service in ['homeassistant', 'n8n', 'ollama'] %}
-#   - {{ service }}
-{% endfor %}
-#
-# Monitoring:
-{% for service in ['grafana', 'prometheus', 'uptime-kuma'] %}
-#   - {{ service }}
-{% endfor %}
-#
-# The LLM understands all of these and their common variations.
+# Use "list services" voice command to see all running containers.
 # ==================================================================================
 
 # ==================================================================================
