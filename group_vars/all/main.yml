@@ -394,56 +394,20 @@ landing_page:
     groups: "{{ landing_page.group.name }}"
   dir: "{{ storage.base_dir }}/landing"
   data_dir: "{{ storage.appdata_dir }}/landing"
-  user_data_dir: "{{ storage.appdata_dir }}/landing/user-data"
-  config_path: "{{ storage.appdata_dir }}/landing/user-data/conf.yml"
-  assets_dir: "{{ storage.appdata_dir }}/landing/user-data/assets"
-  docs_dir: "{{ storage.appdata_dir }}/landing/user-data/assets/docs"
-  overrides_dir: "{{ storage.appdata_dir }}/landing/user-data/overrides"
-  image: "ghcr.io/lissy93/dashy"
-  version: "latest"
+  app_dir: "{{ storage.appdata_dir }}/landing/app"
+  assets_dir: "{{ storage.appdata_dir }}/landing/assets"
   container_name: landing-page
   compose_project: landing_page
   port: 8080
   allow_guest_access: false
-  nav_links:
-    - title: "User Guide"
-      url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.user_guide.docs_filename }}"
-    - title: "Certificate Guide"
-      url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.certificate.docs_filename }}"
-    - title: "Download Root CA"
-      url: "https://{{ landing_page.hostname }}/assets/{{ landing_page.certificate.download_name }}"
   certificate:
     source_path: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
     download_name: "frey-root-ca.crt"
-    docs_filename: "frey-ca.html"
-  user_guide:
-    docs_filename: "frey-user-guide.html"
   oidc:
     enable: true
     client_id: "dashy"
-    endpoint: "{{ network.authentik_public_url }}/application/o/dashy/"
     scope: "openid profile email groups"
     admin_group: "frey_admins"
-  certificate_guides:
-    - slug: android
-      title: "Android 14/15"
-      icon: "fab fa-android"
-      steps:
-        - "Download {{ landing_page.certificate.download_name }} from the landing page."
-        - "Open Settings -> Security & privacy -> More security settings -> Encryption & credentials."
-        - "Tap Install certificate -> CA certificate, approve the warning, and pick the Frey file."
-        - "Reboot the device to make Chrome, Firefox, and installed apps trust *.{{ network.domain_name }}."
-      verify:
-        - "Settings -> Security -> Encryption & credentials -> Trusted credentials (User tab) shows Frey Root CA."
-    - slug: manjaro
-      title: "Manjaro / Arch Linux"
-      icon: "fas fa-linux"
-      steps:
-        - "Copy {{ landing_page.certificate.download_name }} to /usr/local/share/ca-certificates/frey-root-ca.crt (sudo install -m 644 ...)."
-        - "Run sudo update-ca-trust (or sudo trust extract-compat) to refresh the system trust store."
-        - "Restart browsers or dockerized services that should trust *.{{ network.domain_name }}."
-      verify:
-        - "`trust list | grep \"Frey Root\"` prints the certificate fingerprint."
   sections:
     - name: "Core Access"
       icon: "fas fa-sitemap"
