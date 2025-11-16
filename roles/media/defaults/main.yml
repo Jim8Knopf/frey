@@ -96,7 +96,6 @@ media:
         - "{{ media.downloads }}:/downloads"
         - /data:/data
         - /etc/localtime:/etc/localtime:ro
-        - ./nzbget:/config      #TODO
 
     prowlarr:
       enabled: true
