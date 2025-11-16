@@ -3,6 +3,7 @@
 {%   set landing_hosts = landing_hosts + [landing_page.alt_hostname] %}
 {% endif %}
 {% set landing_rule = landing_hosts | map('regex_replace', '^(.*)$', 'Host(`\\1`)') | join(' || ') %}
+{% set services_json = landing_page.sections | to_json %}
 
 networks:
   proxy:
@@ -12,20 +13,26 @@ networks:
 
 services:
   landing:
-    image: "{{ landing_page.image }}:{{ landing_page.version }}"
+    build:
+      context: "{{ landing_page.app_dir }}"
+      dockerfile: Dockerfile
+    image: "frey-landing:latest"
     container_name: "{{ landing_page.container_name }}"
     restart: unless-stopped
     environment:
       - TZ={{ network.timezone }}
       - NODE_ENV=production
       - PORT={{ landing_page.port | default(8080) }}
-      - DASHY_CONFIG=/app/user-data/conf.yml
+      - OIDC_ISSUER={{ network.authentik_public_url }}/application/o/{{ landing_page.oidc.client_id }}/
+      - OIDC_CLIENT_ID={{ landing_page.oidc.client_id }}
+      - OIDC_REDIRECT_URI={{ landing_page.public_url }}/auth/callback
+      - OIDC_SCOPE={{ landing_page.oidc.scope }}
+      - SESSION_SECRET={{ lookup('password', '/dev/null chars=ascii_letters,digits length=32') }}
+      - SERVICES_CONFIG={{ services_json | to_json }}
+      - WIFI_ENABLED={{ network.wifi.enabled | default(false) | lower }}
+      - WIFI_SSID={{ network.wifi.ssid | default('') }}
     volumes:
-      - "{{ landing_page.user_data_dir }}:/app/user-data:ro"
       - "{{ landing_page.assets_dir }}:/app/public/assets:ro"
-{% for override in landing_page.source_overrides | default([]) %}
-      - "{{ landing_page.overrides_dir }}/{{ override }}:/app/{{ override }}:ro"
-{% endfor %}
     networks:
       proxy: {}
       localdns: {}

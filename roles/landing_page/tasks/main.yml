@@ -13,19 +13,16 @@
     mode: '0755'
   loop:
     - "{{ landing_page.data_dir }}"
-    - "{{ landing_page.user_data_dir }}"
+    - "{{ landing_page.app_dir }}"
     - "{{ landing_page.assets_dir }}"
-    - "{{ landing_page.docs_dir }}"
-    - "{{ landing_page.overrides_dir }}"
 
-- name: Sync Dashy source overrides
+- name: Copy custom landing page application
   ansible.builtin.copy:
-    src: dashy_overrides/
-    dest: "{{ landing_page.overrides_dir }}"
+    src: app/
+    dest: "{{ landing_page.app_dir }}"
     owner: "{{ landing_page.user.name }}"
     group: "{{ landing_page.group.name }}"
     mode: '0644'
-  when: (landing_page.source_overrides | default([])) | length > 0
 
 - name: Check for Frey root CA certificate
   ansible.builtin.stat:
@@ -46,30 +43,6 @@
   ansible.builtin.debug:
     msg: "Frey CA not found at {{ landing_page.certificate.source_path }}. Run the infrastructure role (Traefik/Step-CA) first."
   when: not landing_ca.stat.exists
-
-- name: Publish certificate installation guide
-  ansible.builtin.template:
-    src: frey-ca.html.j2
-    dest: "{{ landing_page.docs_dir }}/{{ landing_page.certificate.docs_filename }}"
-    owner: "{{ landing_page.user.name }}"
-    group: "{{ landing_page.group.name }}"
-    mode: '0644'
-
-- name: Publish Frey user guide
-  ansible.builtin.template:
-    src: frey-user-guide.html.j2
-    dest: "{{ landing_page.docs_dir }}/{{ landing_page.user_guide.docs_filename }}"
-    owner: "{{ landing_page.user.name }}"
-    group: "{{ landing_page.group.name }}"
-    mode: '0644'
-
-- name: Render Dashy configuration
-  ansible.builtin.template:
-    src: dashy-conf.yml.j2
-    dest: "{{ landing_page.config_path }}"
-    owner: "{{ landing_page.user.name }}"
-    group: "{{ landing_page.group.name }}"
-    mode: '0644'
 
 - name: Render landing page compose file
   ansible.builtin.template:

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Frey Hub</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Loading state -->
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Loading...</p>
+    </div>
+
+    <!-- Main content (hidden initially) -->
+    <div id="content" style="display: none;">
+      <!-- Header -->
+      <header class="header">
+        <div class="container">
+          <h1 class="logo">
+            <i class="fas fa-home"></i>
+            Frey Hub
+          </h1>
+          <nav class="nav">
+            <div id="auth-buttons"></div>
+          </nav>
+        </div>
+      </header>
+
+      <!-- WiFi Connection Card (shown when WiFi is enabled and not connected) -->
+      <div id="wifi-card" class="container" style="display: none;">
+        <div class="card wifi-card">
+          <h3><i class="fas fa-wifi"></i> Connect to WiFi</h3>
+          <p>Connect your device to the Frey WiFi network for local access.</p>
+          <div class="wifi-form">
+            <div class="form-group">
+              <label>Network: <strong id="wifi-ssid"></strong></label>
+            </div>
+            <div class="form-group">
+              <input type="password" id="wifi-password" placeholder="Enter WiFi password" class="input">
+            </div>
+            <button id="wifi-connect-btn" class="btn btn-primary">
+              <i class="fas fa-link"></i> Connect
+            </button>
+          </div>
+          <div id="wifi-status"></div>
+        </div>
+      </div>
+
+      <!-- Certificate Guide (shown when not authenticated or on HTTP) -->
+      <div id="cert-guide" class="container" style="display: none;">
+        <div class="card cert-card">
+          <h2><i class="fas fa-certificate"></i> Welcome to Frey</h2>
+          <p class="lead">To access Frey services securely, you need to install the Frey Root Certificate Authority on your device.</p>
+
+          <div class="cert-section">
+            <h3><i class="fas fa-download"></i> Download Certificate</h3>
+            <p>Download the certificate directly from your Frey host:</p>
+            <a href="/assets/frey-root-ca.crt" class="btn btn-primary" download>
+              <i class="fas fa-download"></i> Download Frey Root CA
+            </a>
+          </div>
+
+          <div class="cert-section">
+            <h3><i class="fas fa-question-circle"></i> Why install the CA?</h3>
+            <ul>
+              <li>Enables trusted HTTPS for all Frey services</li>
+              <li>Allows mobile apps to sync without certificate prompts</li>
+              <li>Powers secure authentication with Authentik</li>
+            </ul>
+          </div>
+
+          <div class="cert-section">
+            <h3><i class="fab fa-android"></i> Android Installation</h3>
+            <ol>
+              <li>Download the certificate file</li>
+              <li>Open Settings → Security & privacy → More security settings → Encryption & credentials</li>
+              <li>Tap Install certificate → CA certificate</li>
+              <li>Select the downloaded Frey certificate file</li>
+              <li>Reboot your device</li>
+            </ol>
+            <p><strong>Verify:</strong> Settings → Trusted credentials (User tab) should show "Frey Root CA"</p>
+          </div>
+
+          <div class="cert-section">
+            <h3><i class="fab fa-linux"></i> Linux Installation</h3>
+            <ol>
+              <li>Copy the certificate to <code>/usr/local/share/ca-certificates/frey-root-ca.crt</code></li>
+              <li>Run <code>sudo update-ca-trust</code></li>
+              <li>Restart your browser</li>
+            </ol>
+            <p><strong>Verify:</strong> Run <code>trust list | grep "Frey Root"</code></p>
+          </div>
+
+          <div class="cert-section">
+            <h3><i class="fab fa-windows"></i> Windows Installation</h3>
+            <ol>
+              <li>Double-click the downloaded certificate file</li>
+              <li>Click "Install Certificate"</li>
+              <li>Select "Local Machine" and click Next</li>
+              <li>Choose "Place all certificates in the following store"</li>
+              <li>Browse and select "Trusted Root Certification Authorities"</li>
+              <li>Click Next and Finish</li>
+            </ol>
+          </div>
+
+          <div class="cert-section">
+            <h3><i class="fab fa-apple"></i> macOS/iOS Installation</h3>
+            <ol>
+              <li>Download and open the certificate file</li>
+              <li>macOS: Add to Keychain, then open Keychain Access → Certificates → Right-click certificate → Get Info → Trust → Always Trust</li>
+              <li>iOS: Settings → Profile Downloaded → Install → Enter passcode → Install</li>
+              <li>iOS: Settings → General → About → Certificate Trust Settings → Enable for Frey Root CA</li>
+            </ol>
+          </div>
+
+          <div class="login-prompt">
+            <p>After installing the certificate, access Frey via HTTPS:</p>
+            <a href="https://frey" class="btn btn-success">
+              <i class="fas fa-lock"></i> Access via HTTPS
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Services Dashboard (shown when authenticated via HTTPS) -->
+      <div id="services-dashboard" class="container" style="display: none;">
+        <div id="services-sections"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
