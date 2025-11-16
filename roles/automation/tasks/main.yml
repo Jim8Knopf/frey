@@ -42,14 +42,24 @@
     group: "{{ automation.group.name }}"
     mode: '0644'
 
-- name: Deploy Home Assistant configuration for voice assistant
+- name: Deploy voice assistant files
   when: voice_assistant.enabled | default(false)
-  ansible.builtin.template:
-    src: homeassistant-voice-config.yaml.j2
-    dest: "{{ storage.appdata_dir }}/homeassistant/voice_assistant_config.yaml"
-    owner: "{{ automation.user.name }}"
-    group: "{{ automation.group.name }}"
-    mode: '0644'
+  block:
+    - name: Deploy frey-docker-control script
+      ansible.builtin.template:
+        src: frey-docker-control.sh.j2
+        dest: /usr/local/bin/frey-docker-control
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Deploy Home Assistant voice configuration
+      ansible.builtin.template:
+        src: homeassistant-voice-config.yaml.j2
+        dest: "{{ storage.appdata_dir }}/homeassistant/voice_assistant_config.yaml"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
 
 - name: Start automation stack containers using compose
   community.docker.docker_compose_v2:

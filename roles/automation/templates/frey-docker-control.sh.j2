@@ -1,0 +1,178 @@
+#!/bin/bash
+# Frey Docker Control Script
+# Smart Docker container management for voice assistant
+
+set -e
+
+ACTION="$1"
+SERVICE="$2"
+
+# Service name mappings (for voice recognition variations)
+declare -A SERVICE_MAP=(
+    # Media services
+    ["jellyfin"]="jellyfin"
+    ["jelly"]="jellyfin"
+    ["sonarr"]="sonarr"
+    ["sonar"]="sonarr"
+    ["radarr"]="radarr"
+    ["radar"]="radarr"
+    ["bazarr"]="bazarr"
+    ["bazaar"]="bazarr"
+    ["lidarr"]="lidarr"
+    ["lidar"]="lidarr"
+    ["prowlarr"]="prowlarr"
+    ["prowler"]="prowlarr"
+    ["qbittorrent"]="qbittorrent"
+    ["torrent"]="qbittorrent"
+    ["audiobookshelf"]="audiobookshelf"
+    ["audiobook"]="audiobookshelf"
+    ["jellyseerr"]="jellyseerr"
+
+    # Infrastructure
+    ["portainer"]="portainer"
+    ["traefik"]="traefik"
+    ["traffic"]="traefik"
+    ["dockge"]="dockge"
+    ["authentik"]="authentik"
+    ["adguard"]="adguardhome"
+
+    # Automation
+    ["homeassistant"]="homeassistant"
+    ["home"]="homeassistant"
+    ["n8n"]="n8n"
+
+    # Monitoring
+    ["grafana"]="grafana"
+    ["prometheus"]="prometheus"
+    ["uptime"]="uptime-kuma"
+)
+
+# Protected services (cannot be stopped via voice)
+PROTECTED_SERVICES=("homeassistant" "ollama" "piper" "wyoming-whisper" "openwakeword" "traefik")
+
+# Normalize service name
+normalize_service() {
+    local input=$(echo "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    echo "${SERVICE_MAP[$input]:-$input}"
+}
+
+# Check if service is protected
+is_protected() {
+    local service="$1"
+    for protected in "${PROTECTED_SERVICES[@]}"; do
+        if [[ "$service" == "$protected" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Get container status
+get_status() {
+    local service="$1"
+    if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
+        echo "running"
+    elif docker ps -a --format '{{.Names}}' | grep -q "^${service}$"; then
+        echo "stopped"
+    else
+        echo "not_found"
+    fi
+}
+
+# List running services
+list_services() {
+    local count=$(docker ps --format '{{.Names}}' | wc -l)
+    echo "Currently running: $count containers"
+    docker ps --format 'table {{.Names}}\t{{.Status}}' | tail -n +2
+}
+
+# Main logic
+case "$ACTION" in
+    start)
+        SERVICE=$(normalize_service "$SERVICE")
+        STATUS=$(get_status "$SERVICE")
+
+        if [[ "$STATUS" == "not_found" ]]; then
+            echo "Error: Service '$SERVICE' not found"
+            exit 1
+        elif [[ "$STATUS" == "running" ]]; then
+            echo "Service '$SERVICE' is already running"
+            exit 0
+        else
+            docker start "$SERVICE"
+            echo "Started $SERVICE"
+        fi
+        ;;
+
+    stop)
+        SERVICE=$(normalize_service "$SERVICE")
+
+        if is_protected "$SERVICE"; then
+            echo "Error: Cannot stop protected service '$SERVICE'"
+            exit 1
+        fi
+
+        STATUS=$(get_status "$SERVICE")
+
+        if [[ "$STATUS" == "not_found" ]]; then
+            echo "Error: Service '$SERVICE' not found"
+            exit 1
+        elif [[ "$STATUS" == "stopped" ]]; then
+            echo "Service '$SERVICE' is already stopped"
+            exit 0
+        else
+            docker stop "$SERVICE"
+            echo "Stopped $SERVICE"
+        fi
+        ;;
+
+    restart)
+        SERVICE=$(normalize_service "$SERVICE")
+
+        if is_protected "$SERVICE"; then
+            echo "Warning: Restarting protected service '$SERVICE'"
+        fi
+
+        STATUS=$(get_status "$SERVICE")
+
+        if [[ "$STATUS" == "not_found" ]]; then
+            echo "Error: Service '$SERVICE' not found"
+            exit 1
+        else
+            docker restart "$SERVICE"
+            echo "Restarted $SERVICE"
+        fi
+        ;;
+
+    status)
+        if [[ -z "$SERVICE" ]]; then
+            list_services
+        else
+            SERVICE=$(normalize_service "$SERVICE")
+            STATUS=$(get_status "$SERVICE")
+
+            if [[ "$STATUS" == "not_found" ]]; then
+                echo "Service '$SERVICE' not found"
+                exit 1
+            else
+                echo "Service '$SERVICE' is $STATUS"
+            fi
+        fi
+        ;;
+
+    list)
+        list_services
+        ;;
+
+    *)
+        echo "Usage: $0 {start|stop|restart|status|list} [service_name]"
+        echo ""
+        echo "Examples:"
+        echo "  $0 start jellyfin"
+        echo "  $0 stop sonarr"
+        echo "  $0 restart radarr"
+        echo "  $0 status jellyfin"
+        echo "  $0 list"
+        exit 1
+        ;;
+esac

@@ -1,128 +1,143 @@
 # ==================================================================================
 # FREY VOICE ASSISTANT CONFIGURATION FOR HOME ASSISTANT
 # ==================================================================================
-# This file provides shell commands and intents for Home Assistant voice control
+# This file provides shell commands for Home Assistant voice control via Ollama LLM
+#
 # Include this in your configuration.yaml:
 #   shell_command: !include voice_assistant_config.yaml
 #
-# After deployment, configure in Home Assistant UI:
-# 1. Settings → Devices & Services → Add Integration → "Wyoming Protocol"
-#    - Add Whisper (STT): wyoming-whisper:10300
-#    - Add Piper (TTS): piper:10200
-#    - Add OpenWakeWord: openwakeword:10400
-# 2. Settings → Devices & Services → Add Integration → "Ollama"
-#    - Host: ollama:11434
-#    - Model: {{ voice_assistant.ollama_model }}
-# 3. Settings → Voice assistants → Create new assistant
-#    - Choose Wyoming services for STT/TTS
-#    - Choose Ollama as conversation agent
+# The LLM (Ollama with {{ voice_assistant.ollama_model }}) understands natural language
+# and calls these commands dynamically based on user intent.
 # ==================================================================================
 
-# Shell commands for Docker container control
+# Smart Docker control commands
+# The LLM calls these with parameters based on what you say
 shell_command:
-  # Start Docker containers
-  docker_start_jellyfin: "docker start jellyfin"
-  docker_start_sonarr: "docker start sonarr"
-  docker_start_radarr: "docker start radarr"
-  docker_start_bazarr: "docker start bazarr"
-  docker_start_lidarr: "docker start lidarr"
-  docker_start_prowlarr: "docker start prowlarr"
-  docker_start_qbittorrent: "docker start qbittorrent"
-  docker_start_audiobookshelf: "docker start audiobookshelf"
-  docker_start_n8n: "docker start n8n"
-  docker_start_portainer: "docker start portainer"
-  docker_start_grafana: "docker start grafana"
-
-  # Stop Docker containers
-  docker_stop_jellyfin: "docker stop jellyfin"
-  docker_stop_sonarr: "docker stop sonarr"
-  docker_stop_radarr: "docker stop radarr"
-  docker_stop_bazarr: "docker stop bazarr"
-  docker_stop_lidarr: "docker stop lidarr"
-  docker_stop_prowlarr: "docker stop prowlarr"
-  docker_stop_qbittorrent: "docker stop qbittorrent"
-  docker_stop_audiobookshelf: "docker stop audiobookshelf"
-  docker_stop_n8n: "docker stop n8n"
-  docker_stop_portainer: "docker stop portainer"
-  docker_stop_grafana: "docker stop grafana"
-
-  # Restart Docker containers
-  docker_restart_jellyfin: "docker restart jellyfin"
-  docker_restart_sonarr: "docker restart sonarr"
-  docker_restart_radarr: "docker restart radarr"
-  docker_restart_bazarr: "docker restart bazarr"
+  # Docker container management (calls frey-docker-control.sh)
+  frey_docker: "/usr/local/bin/frey-docker-control {{ action }} {{ service }}"
 
   # System information
-  docker_ps: "docker ps --format 'table {{`{{.Names}}`}}\t{{`{{.Status}}`}}'"
-  system_info: "uptime && free -h && df -h /opt/frey"
+  frey_system_info: "echo 'System Status:' && uptime && echo '' && free -h && echo '' && df -h /opt/frey"
+  frey_list_services: "/usr/local/bin/frey-docker-control list"
 
 # ==================================================================================
-# CONVERSATION AGENT PROMPTS (Configure in Ollama integration)
+# OLLAMA CONVERSATION AGENT CONFIGURATION
 # ==================================================================================
-# System prompt for Ollama conversation agent:
+# Configure this in Home Assistant: Settings → Devices & Services → Extended OpenAI
+#
+# System Prompt (tell Ollama how to use these commands):
 #
 # You are Frey, a helpful voice assistant for managing a home server.
-# You can control Docker services, check system status, and answer questions.
 #
-# Available services: Jellyfin, Sonarr, Radarr, Bazarr, Lidarr, Prowlarr,
-# qBittorrent, Audiobookshelf, Home Assistant, n8n, Portainer, Grafana
+# You can control Docker services using the frey_docker command with two parameters:
+# - action: start, stop, restart, or status
+# - service: jellyfin, sonarr, radarr, bazarr, lidarr, prowlarr, qbittorrent,
+#            audiobookshelf, jellyseerr, homeassistant, n8n, portainer, grafana,
+#            prometheus, traefik, adguard, or any container name
 #
-# When users ask to:
-# - Start a service: Respond with intent to call service: shell_command.docker_start_<service>
-# - Stop a service: Respond with intent to call service: shell_command.docker_stop_<service>
-# - Check status: Respond with intent to call service: shell_command.docker_ps
+# You can also:
+# - Get system info: frey_system_info (no parameters)
+# - List all services: frey_list_services (no parameters)
 #
-# Be concise since responses are spoken aloud.
+# Examples:
+# User: "Start Jellyfin" → Call: frey_docker(action="start", service="jellyfin")
+# User: "Is Sonarr running?" → Call: frey_docker(action="status", service="sonarr")
+# User: "What services are running?" → Call: frey_list_services()
+# User: "What's the system status?" → Call: frey_system_info()
+#
+# Always respond conversationally and confirm actions taken.
+# Keep responses concise since they will be spoken aloud.
+#
+# Service name variations (all these work):
+# - "Jellyfin" or "Jelly"
+# - "Sonarr" or "Sonar"
+# - "Radarr" or "Radar"
+# - "qBittorrent" or "torrent"
+# - "Audiobookshelf" or "audiobook"
+# - "Home Assistant" or "home"
+#
+# Protected services (cannot be stopped):
+# - homeassistant, ollama, piper, wyoming-whisper, openwakeword, traefik
 # ==================================================================================
 
 # ==================================================================================
-# AUTOMATION EXAMPLES
+# FUNCTION CALLING SETUP (Extended OpenAI / Ollama)
 # ==================================================================================
-# Copy these to your automations.yaml or create via UI
+# When configuring Extended OpenAI integration with Ollama, enable function calling
+# and define these functions:
 #
-# Example: Voice command to start Jellyfin
-# automation:
-#   - alias: "Voice: Start Jellyfin"
-#     trigger:
-#       - platform: conversation
-#         command:
-#           - "start jellyfin"
-#           - "turn on jellyfin"
-#     action:
-#       - service: shell_command.docker_start_jellyfin
-#       - service: tts.speak
-#         data:
-#           message: "Starting Jellyfin now"
+# Function 1: frey_docker
+# Description: Control Docker containers (start, stop, restart, check status)
+# Parameters:
+#   - action (required, enum): start, stop, restart, status
+#   - service (required, string): Service name (jellyfin, sonarr, radarr, etc.)
 #
-# Example: Voice command to check running services
-# automation:
-#   - alias: "Voice: List running services"
-#     trigger:
-#       - platform: conversation
-#         command:
-#           - "what services are running"
-#           - "list running services"
-#     action:
-#       - service: shell_command.docker_ps
-#       - service: tts.speak
-#         data:
-#           message: "Here are the running services"
+# Function 2: frey_list_services
+# Description: List all running Docker containers
+# Parameters: None
+#
+# Function 3: frey_system_info
+# Description: Get system information (uptime, memory, disk usage)
+# Parameters: None
+#
+# With function calling enabled, the LLM will automatically:
+# 1. Understand your voice command
+# 2. Choose the right function to call
+# 3. Extract parameters from your natural language
+# 4. Execute the command
+# 5. Respond naturally with the result
 # ==================================================================================
 
 # ==================================================================================
-# ASSISTANT CONFIGURATION
+# AVAILABLE SERVICES
 # ==================================================================================
-# Recommended settings for Home Assistant voice pipeline:
+# These services are available for voice control:
 #
-# Assist Pipeline:
-#   - Name: "Frey Voice Assistant"
-#   - Speech-to-Text: Wyoming Whisper (wyoming-whisper:10300)
-#   - Text-to-Speech: Wyoming Piper (piper:10200)
-#   - Wake word: Wyoming OpenWakeWord (openwakeword:10400)
-#     - Wake word: {{ voice_assistant.wake_word }}
-#   - Conversation agent: Ollama (ollama:11434)
-#     - Model: {{ voice_assistant.ollama_model }}
+# Media Services:
+{% for service in ['jellyfin', 'sonarr', 'radarr', 'bazarr', 'lidarr', 'prowlarr', 'qbittorrent', 'audiobookshelf', 'jellyseerr'] %}
+#   - {{ service }}
+{% endfor %}
 #
-# Mobile App: Enable "Assist" in app settings to use voice on phone
-# ESP32 satellites: Use ESPHome Wyoming integration for hardware wake word devices
+# Infrastructure:
+{% for service in ['portainer', 'traefik', 'dockge', 'authentik', 'adguardhome'] %}
+#   - {{ service }}
+{% endfor %}
+#
+# Automation:
+{% for service in ['homeassistant', 'n8n', 'ollama'] %}
+#   - {{ service }}
+{% endfor %}
+#
+# Monitoring:
+{% for service in ['grafana', 'prometheus', 'uptime-kuma'] %}
+#   - {{ service }}
+{% endfor %}
+#
+# The LLM understands all of these and their common variations.
+# ==================================================================================
+
+# ==================================================================================
+# VOICE COMMAND EXAMPLES
+# ==================================================================================
+# Natural language commands that work out of the box:
+#
+# Service Control:
+#   "Start Jellyfin"
+#   "Stop Sonarr"
+#   "Restart Radarr"
+#   "Turn on the torrent client"
+#
+# Service Status:
+#   "Is Jellyfin running?"
+#   "Check the status of Sonarr"
+#   "What's the status of the media services?"
+#
+# System Information:
+#   "What services are running?"
+#   "List all containers"
+#   "Show me the system status"
+#   "How much disk space is left?"
+#   "What's the memory usage?"
+#
+# The LLM handles variations, synonyms, and natural phrasing automatically.
 # ==================================================================================

@@ -112,6 +112,8 @@ docker restart homeassistant
 
 ## Voice Commands
 
+**The LLM (Ollama) automatically understands natural language - no automations needed!**
+
 Try these after setup:
 
 **General:**
@@ -119,59 +121,36 @@ Try these after setup:
 - "OK Nabu, what time is it?"
 - "OK Nabu, tell me a joke"
 
-**Service Control** (requires automations - see below):
+**Service Control** (works immediately):
 - "OK Nabu, start Jellyfin"
-- "OK Nabu, restart Sonarr"
+- "OK Nabu, stop Sonarr"
+- "OK Nabu, restart Radarr"
+- "OK Nabu, turn on the torrent client"
 
-## Adding Service Control (Optional)
+**Service Status:**
+- "OK Nabu, is Jellyfin running?"
+- "OK Nabu, what services are running?"
+- "OK Nabu, check the status of Sonarr"
 
-To control Docker containers, create automations:
+**System Info:**
+- "OK Nabu, show me the system status"
+- "OK Nabu, how much disk space is left?"
+- "OK Nabu, what's the memory usage?"
 
-### Via UI
+**The LLM understands variations!** You can say "Jelly" instead of "Jellyfin", "torrent" instead of "qBittorrent", etc.
 
-1. **Settings → Automations → Create Automation**
-2. Choose **"Start from scratch"**
-3. Configure:
-   - **Trigger**: Sentence
-     - Sentence: "start jellyfin"
-   - **Action**: Shell command
-     - Command: `docker_start_jellyfin`
+## How It Works (No Automations Needed!)
 
-### Via YAML
+The system uses **function calling** with Ollama:
 
-Create `automations.yaml`:
+1. You speak a command
+2. Ollama (LLM) understands what you want
+3. Ollama calls the right shell command with parameters
+4. Result is spoken back to you
 
-```yaml
-- alias: "Voice: Start Jellyfin"
-  trigger:
-    - platform: conversation
-      command:
-        - "start jellyfin"
-        - "turn on jellyfin"
-  action:
-    - service: shell_command.docker_start_jellyfin
-    - service: tts.speak
-      target:
-        entity_id: tts.piper
-      data:
-        message: "Starting Jellyfin now"
+A single smart script (`frey-docker-control`) handles all Docker operations. The LLM figures out what service and what action you want.
 
-- alias: "Voice: Stop Jellyfin"
-  trigger:
-    - platform: conversation
-      command:
-        - "stop jellyfin"
-        - "turn off jellyfin"
-  action:
-    - service: shell_command.docker_stop_jellyfin
-    - service: tts.speak
-      target:
-        entity_id: tts.piper
-      data:
-        message: "Stopping Jellyfin"
-```
-
-Repeat for other services (Sonarr, Radarr, etc.)
+**No need to create automations for each service!** The LLM is smart enough to understand and call the right commands.
 
 ## Troubleshooting
 
