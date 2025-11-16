@@ -3,7 +3,7 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "automation"
-    folders: [ollama, n8n, open-webui, homeassistant, piper, wyoming-whisper]
+    folders: [ollama, n8n, open-webui, homeassistant, piper, wyoming-whisper, openwakeword, voice-assistant]
     checkVar: [storage.base_dir, automation.user.name]
 
 - name: Combine automation and homeassistant services for pre-pulling
@@ -42,7 +42,83 @@
     group: "{{ automation.group.name }}"
     mode: '0644'
 
+- name: Deploy voice assistant Python files
+  when: voice_assistant.deploy | default(false)
+  block:
+    - name: Copy voice assistant requirements
+      ansible.builtin.template:
+        src: voice-assistant/requirements.txt.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/requirements.txt"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Copy voice assistant main script
+      ansible.builtin.template:
+        src: voice-assistant/main.py.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/main.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0755'
+
+    - name: Copy voice pipeline module
+      ansible.builtin.template:
+        src: voice-assistant/voice_pipeline.py.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/voice_pipeline.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Copy Wyoming client module
+      ansible.builtin.template:
+        src: voice-assistant/wyoming_client.py.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/wyoming_client.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Copy Ollama client module
+      ansible.builtin.template:
+        src: voice-assistant/ollama_client.py.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/ollama_client.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Copy system commands module
+      ansible.builtin.template:
+        src: voice-assistant/system_commands.py.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/system_commands.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Copy audio handler module
+      ansible.builtin.template:
+        src: voice-assistant/audio_handler.py.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/audio_handler.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Copy entrypoint script
+      ansible.builtin.template:
+        src: voice-assistant/entrypoint.sh.j2
+        dest: "{{ storage.appdata_dir }}/voice-assistant/entrypoint.sh"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0755'
+
 - name: Start automation stack containers using compose
   community.docker.docker_compose_v2:
     project_src: "{{ storage.stacks }}/automation"
     state: present
+
+- name: Pull Ollama model for voice assistant
+  when: voice_assistant.deploy | default(false)
+  community.docker.docker_container_exec:
+    container: ollama
+    command: "ollama pull {{ voice_assistant.ollama_model }}"
+  register: model_pull
+  failed_when: false
+  changed_when: "'success' in model_pull.stdout | default('')"

@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""
+Audio Handler - Manages audio recording and playback.
+"""
+
+import pyaudio
+import wave
+import io
+import logging
+import struct
+import time
+from typing import Optional
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+class AudioHandler:
+    """Handles audio input/output operations."""
+
+    def __init__(self, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2):
+        """
+        Initialize audio handler.
+
+        Args:
+            sample_rate: Audio sample rate (Hz)
+            channels: Number of audio channels
+            sample_width: Sample width in bytes (2 = 16-bit)
+        """
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.sample_width = sample_width
+        self.chunk_size = 1024
+
+        # Initialize PyAudio
+        try:
+            self.audio = pyaudio.PyAudio()
+            logger.info(f"Audio initialized: {sample_rate}Hz, {channels}ch, {sample_width*8}bit")
+        except Exception as e:
+            logger.error(f"Failed to initialize audio: {e}")
+            self.audio = None
+
+    def record_chunk(self, duration: float) -> Optional[bytes]:
+        """
+        Record a short audio chunk.
+
+        Args:
+            duration: Recording duration in seconds
+
+        Returns:
+            Raw audio bytes or None
+        """
+        if not self.audio:
+            return None
+
+        try:
+            # Open stream
+            stream = self.audio.open(
+                format=self.audio.get_format_from_width(self.sample_width),
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size
+            )
+
+            # Calculate number of chunks to record
+            num_chunks = int(self.sample_rate / self.chunk_size * duration)
+
+            # Record chunks
+            frames = []
+            for _ in range(num_chunks):
+                data = stream.read(self.chunk_size, exception_on_overflow=False)
+                frames.append(data)
+
+            # Close stream
+            stream.stop_stream()
+            stream.close()
+
+            return b''.join(frames)
+
+        except Exception as e:
+            logger.error(f"Failed to record chunk: {e}")
+            return None
+
+    def record_with_silence_detection(
+        self,
+        max_duration: float = 10.0,
+        silence_duration: float = 1.5,
+        silence_threshold: int = 500
+    ) -> Optional[bytes]:
+        """
+        Record audio with automatic silence detection.
+
+        Args:
+            max_duration: Maximum recording duration
+            silence_duration: Duration of silence to stop recording
+            silence_threshold: RMS threshold for silence detection
+
+        Returns:
+            WAV audio data or None
+        """
+        if not self.audio:
+            logger.error("Audio not initialized")
+            return None
+
+        try:
+            # Open stream
+            stream = self.audio.open(
+                format=self.audio.get_format_from_width(self.sample_width),
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size
+            )
+
+            logger.info("🎤 Listening...")
+
+            frames = []
+            silent_chunks = 0
+            silence_chunks_needed = int(self.sample_rate / self.chunk_size * silence_duration)
+            max_chunks = int(self.sample_rate / self.chunk_size * max_duration)
+
+            for i in range(max_chunks):
+                # Read audio chunk
+                data = stream.read(self.chunk_size, exception_on_overflow=False)
+                frames.append(data)
+
+                # Calculate RMS (volume level)
+                rms = self._calculate_rms(data)
+
+                # Check if silent
+                if rms < silence_threshold:
+                    silent_chunks += 1
+                else:
+                    silent_chunks = 0
+
+                # Stop if enough silence detected (but only after 0.5s of audio)
+                if silent_chunks >= silence_chunks_needed and i > 10:
+                    logger.info("Silence detected, stopping recording")
+                    break
+
+            # Close stream
+            stream.stop_stream()
+            stream.close()
+
+            # Convert to WAV format
+            wav_data = self._to_wav(b''.join(frames))
+
+            logger.info(f"Recorded {len(frames)} chunks ({len(wav_data)} bytes)")
+
+            return wav_data
+
+        except Exception as e:
+            logger.error(f"Recording failed: {e}", exc_info=True)
+            return None
+
+    def play(self, wav_data: bytes):
+        """
+        Play WAV audio data.
+
+        Args:
+            wav_data: WAV format audio data
+        """
+        if not self.audio:
+            logger.error("Audio not initialized")
+            return
+
+        try:
+            # Parse WAV file
+            wav_file = io.BytesIO(wav_data)
+            wf = wave.open(wav_file, 'rb')
+
+            # Open stream
+            stream = self.audio.open(
+                format=self.audio.get_format_from_width(wf.getsampwidth()),
+                channels=wf.getnchannels(),
+                rate=wf.getframerate(),
+                output=True
+            )
+
+            # Play audio
+            data = wf.readframes(self.chunk_size)
+            while data:
+                stream.write(data)
+                data = wf.readframes(self.chunk_size)
+
+            # Close stream
+            stream.stop_stream()
+            stream.close()
+            wf.close()
+
+        except Exception as e:
+            logger.error(f"Playback failed: {e}", exc_info=True)
+
+    def _calculate_rms(self, data: bytes) -> float:
+        """
+        Calculate RMS (Root Mean Square) value of audio data.
+
+        Args:
+            data: Raw audio bytes
+
+        Returns:
+            RMS value
+        """
+        try:
+            # Convert bytes to numpy array
+            audio_data = np.frombuffer(data, dtype=np.int16)
+            # Calculate RMS
+            rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
+            return float(rms)
+        except Exception as e:
+            logger.debug(f"RMS calculation failed: {e}")
+            return 0.0
+
+    def _to_wav(self, raw_data: bytes) -> bytes:
+        """
+        Convert raw audio to WAV format.
+
+        Args:
+            raw_data: Raw audio bytes
+
+        Returns:
+            WAV format audio
+        """
+        try:
+            wav_buffer = io.BytesIO()
+
+            with wave.open(wav_buffer, 'wb') as wf:
+                wf.setnchannels(self.channels)
+                wf.setsampwidth(self.sample_width)
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(raw_data)
+
+            return wav_buffer.getvalue()
+
+        except Exception as e:
+            logger.error(f"WAV conversion failed: {e}")
+            return b''
+
+    def cleanup(self):
+        """Clean up audio resources."""
+        if self.audio:
+            try:
+                self.audio.terminate()
+                logger.info("Audio handler cleaned up")
+            except Exception as e:
+                logger.error(f"Cleanup failed: {e}")

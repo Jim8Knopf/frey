@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""
+Voice Pipeline - Handles the complete voice interaction flow.
+Wake word detection → STT → LLM → Command execution → TTS
+"""
+
+import asyncio
+import logging
+import struct
+import wave
+import io
+from pathlib import Path
+
+from wyoming_client import WyomingSTTClient, WyomingTTSClient, WyomingWakeWordClient
+from ollama_client import OllamaClient
+from audio_handler import AudioHandler
+
+logger = logging.getLogger(__name__)
+
+
+class VoicePipeline:
+    """Manages the complete voice interaction pipeline."""
+
+    def __init__(self, config, command_handler):
+        """
+        Initialize the voice pipeline.
+
+        Args:
+            config: Configuration dictionary
+            command_handler: SystemCommandHandler instance
+        """
+        self.config = config
+        self.command_handler = command_handler
+        self.running = False
+
+        # Initialize clients
+        self.stt_client = WyomingSTTClient(
+            config['whisper_host'],
+            config['whisper_port']
+        )
+        self.tts_client = WyomingTTSClient(
+            config['piper_host'],
+            config['piper_port'],
+            config['piper_voice']
+        )
+        self.wake_word_client = WyomingWakeWordClient(
+            config['openwakeword_host'],
+            config['openwakeword_port']
+        )
+        self.ollama_client = OllamaClient(
+            config['ollama_host'],
+            config['ollama_port'],
+            config['ollama_model']
+        )
+
+        # Audio handler for recording and playback
+        self.audio = AudioHandler(
+            sample_rate=config['sample_rate'],
+            channels=config['channels'],
+            sample_width=config['sample_width']
+        )
+
+    async def start(self):
+        """Start the voice pipeline."""
+        self.running = True
+        logger.info("Voice pipeline started. Listening for wake word...")
+
+        try:
+            while self.running:
+                try:
+                    # Wait for wake word
+                    if await self.detect_wake_word():
+                        logger.info("🎯 Wake word detected!")
+                        await self.speak("Yes, how can I help?")
+
+                        # Record user command
+                        audio_data = await self.record_command()
+
+                        if audio_data:
+                            # Process the command
+                            await self.process_command(audio_data)
+                        else:
+                            logger.warning("No audio recorded")
+
+                    # Small delay to prevent CPU spinning
+                    await asyncio.sleep(0.1)
+
+                except Exception as e:
+                    logger.error(f"Error in pipeline loop: {e}", exc_info=True)
+                    await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            logger.info("Pipeline cancelled")
+
+    async def stop(self):
+        """Stop the voice pipeline."""
+        logger.info("Stopping voice pipeline...")
+        self.running = False
+        self.audio.cleanup()
+
+    async def detect_wake_word(self):
+        """
+        Detect wake word using OpenWakeWord.
+
+        Returns:
+            bool: True if wake word detected
+        """
+        try:
+            # Record a short audio chunk for wake word detection
+            chunk_duration = 0.1  # 100ms chunks
+            audio_chunk = self.audio.record_chunk(chunk_duration)
+
+            if audio_chunk:
+                # Send to wake word detector
+                detected = await self.wake_word_client.detect(audio_chunk)
+                return detected
+
+        except Exception as e:
+            logger.debug(f"Wake word detection error: {e}")
+
+        return False
+
+    async def record_command(self):
+        """
+        Record user command with automatic silence detection.
+
+        Returns:
+            bytes: Audio data in WAV format, or None if recording failed
+        """
+        logger.info("🎤 Recording command...")
+
+        try:
+            # Record with silence detection
+            audio_data = self.audio.record_with_silence_detection(
+                max_duration=10.0,  # Maximum 10 seconds
+                silence_duration=1.5  # Stop after 1.5s of silence
+            )
+
+            if audio_data and len(audio_data) > 1000:
+                logger.info(f"Recorded {len(audio_data)} bytes")
+                return audio_data
+            else:
+                logger.warning("Recording too short or empty")
+                return None
+
+        except Exception as e:
+            logger.error(f"Recording failed: {e}", exc_info=True)
+            return None
+
+    async def process_command(self, audio_data):
+        """
+        Process a voice command through the complete pipeline.
+
+        Args:
+            audio_data: Raw audio data
+        """
+        try:
+            # Step 1: Speech-to-Text
+            logger.info("📝 Transcribing...")
+            text = await self.stt_client.transcribe(audio_data)
+
+            if not text or text.strip() == "":
+                logger.warning("No transcription received")
+                await self.speak("I didn't catch that. Could you repeat?")
+                return
+
+            logger.info(f"Transcribed: '{text}'")
+
+            # Step 2: Process with LLM
+            logger.info("🤖 Processing with LLM...")
+            response = await self.ollama_client.process_command(
+                text,
+                self.command_handler
+            )
+
+            logger.info(f"Response: '{response}'")
+
+            # Step 3: Speak response
+            await self.speak(response)
+
+        except Exception as e:
+            logger.error(f"Command processing failed: {e}", exc_info=True)
+            await self.speak("Sorry, I encountered an error processing your request.")
+
+    async def speak(self, text):
+        """
+        Convert text to speech and play it.
+
+        Args:
+            text: Text to speak
+        """
+        try:
+            logger.info(f"🔊 Speaking: '{text}'")
+
+            # Get audio from TTS
+            audio_data = await self.tts_client.synthesize(text)
+
+            if audio_data:
+                # Play the audio
+                self.audio.play(audio_data)
+            else:
+                logger.error("TTS returned no audio")
+
+        except Exception as e:
+            logger.error(f"Speech synthesis failed: {e}", exc_info=True)

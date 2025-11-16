@@ -239,17 +239,49 @@ automation:
       port: 5678
 
 # ================================
-# VOICE ASSISTANT
+# VOICE ASSISTANT - LOCAL SPEECH ASSISTANT
 # ================================
 voice_assistant:
-  deploy: true
-  wake_word: "frey"
-  ollama_model: "llama3:latest"
-  piper_voice: "en_US-lessac-medium"
-  piper_voices:
-    - "en_US-lessac-medium"
-    - "en_AU-southern-female"
-    - "de_DE-thorsten-medium"
+  deploy: true  # Enable voice assistant functionality
+
+  # Wake word configuration
+  # Available wake words: ok_nabu, hey_jarvis, alexa, hey_mycroft, hey_rhasspy
+  # Note: Custom wake words can be trained and placed in custom_models directory
+  wake_word: "ok_nabu"  # Default wake word (closest to "Alexa" experience)
+  openwakeword_version: "latest"
+  openwakeword_port: 10400
+
+  # LLM Configuration for command understanding
+  # Recommended models for Raspberry Pi 5 16GB:
+  # - llama3.2:3b (RECOMMENDED - fastest, good quality, ~2GB RAM)
+  # - phi3:mini (Very fast, efficient, ~2.3GB RAM)
+  # - qwen2.5:3b (Good multilingual support, ~2GB RAM)
+  # - llama3.2:1b (Fastest but lower quality, ~1GB RAM)
+  # Avoid larger models (7B+) as they will be very slow on Pi 5
+  ollama_model: "llama3.2:3b"
+
+  # Text-to-Speech voice configuration (Piper voices)
+  piper_voice: "en_US-lessac-medium"  # Default voice
+  piper_voices:  # Additional voices to download
+    - "en_US-lessac-medium"    # Clear American English (medium quality)
+    - "en_AU-southern-female"  # Australian English
+    - "de_DE-thorsten-medium"  # German
+
+  # Audio configuration
+  audio:
+    sample_rate: 16000  # 16kHz for Whisper
+    sample_width: 2     # 16-bit audio
+    channels: 1         # Mono
+    silence_threshold: 500  # Silence detection threshold
+    silence_duration: 1.5   # Seconds of silence before stopping recording
+
+  # System control capabilities
+  capabilities:
+    docker_control: true      # Allow starting/stopping Docker containers
+    service_status: true      # Allow checking service status
+    system_info: true         # Allow querying system information
+    media_control: false      # Future: Control Jellyfin playback
+    home_automation: false    # Future: Control Home Assistant devices
 
 
 monitoring:

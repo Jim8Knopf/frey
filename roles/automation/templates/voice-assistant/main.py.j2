@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""
+Frey Voice Assistant - Local Speech Assistant
+Main orchestrator for the voice pipeline.
+"""
+
+import os
+import sys
+import time
+import logging
+import asyncio
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Import assistant modules
+try:
+    from voice_pipeline import VoicePipeline
+    from system_commands import SystemCommandHandler
+except ImportError as e:
+    logger.error(f"Failed to import required modules: {e}")
+    logger.info("Installing dependencies...")
+    os.system("pip3 install --no-cache-dir -r /app/requirements.txt")
+    logger.info("Dependencies installed. Please restart the container.")
+    sys.exit(1)
+
+
+class FreyAssistant:
+    """Main voice assistant orchestrator."""
+
+    def __init__(self):
+        """Initialize the Frey assistant."""
+        logger.info("=" * 60)
+        logger.info("Frey Voice Assistant Starting...")
+        logger.info("=" * 60)
+
+        # Load configuration from environment
+        self.config = {
+            'whisper_host': os.getenv('WHISPER_HOST', 'wyoming-whisper'),
+            'whisper_port': int(os.getenv('WHISPER_PORT', '10300')),
+            'piper_host': os.getenv('PIPER_HOST', 'piper'),
+            'piper_port': int(os.getenv('PIPER_PORT', '10200')),
+            'openwakeword_host': os.getenv('OPENWAKEWORD_HOST', 'openwakeword'),
+            'openwakeword_port': int(os.getenv('OPENWAKEWORD_PORT', '10400')),
+            'ollama_host': os.getenv('OLLAMA_HOST', 'ollama'),
+            'ollama_port': int(os.getenv('OLLAMA_PORT', '11434')),
+            'wake_word': os.getenv('WAKE_WORD', 'ok_nabu'),
+            'ollama_model': os.getenv('OLLAMA_MODEL', 'llama3.2:3b'),
+            'piper_voice': os.getenv('PIPER_VOICE', 'en_US-lessac-medium'),
+            'sample_rate': int(os.getenv('SAMPLE_RATE', '16000')),
+            'sample_width': int(os.getenv('SAMPLE_WIDTH', '2')),
+            'channels': int(os.getenv('CHANNELS', '1')),
+            'docker_socket': os.getenv('DOCKER_SOCKET', '/var/run/docker.sock'),
+            'frey_domain': os.getenv('FREY_DOMAIN', 'frey'),
+        }
+
+        logger.info("Configuration loaded:")
+        for key, value in self.config.items():
+            if 'socket' not in key.lower():
+                logger.info(f"  {key}: {value}")
+
+        # Initialize components
+        self.voice_pipeline = None
+        self.command_handler = None
+        self.running = False
+
+    async def initialize(self):
+        """Initialize all components."""
+        try:
+            logger.info("Initializing system command handler...")
+            self.command_handler = SystemCommandHandler(
+                docker_socket=self.config['docker_socket'],
+                frey_domain=self.config['frey_domain']
+            )
+
+            logger.info("Initializing voice pipeline...")
+            self.voice_pipeline = VoicePipeline(
+                config=self.config,
+                command_handler=self.command_handler
+            )
+
+            # Wait for services to be ready
+            await self.wait_for_services()
+
+            logger.info("Initialization complete!")
+            return True
+
+        except Exception as e:
+            logger.error(f"Initialization failed: {e}", exc_info=True)
+            return False
+
+    async def wait_for_services(self):
+        """Wait for all required services to be available."""
+        logger.info("Waiting for services to be ready...")
+
+        services = [
+            ('Whisper', self.config['whisper_host'], self.config['whisper_port']),
+            ('Piper', self.config['piper_host'], self.config['piper_port']),
+            ('OpenWakeWord', self.config['openwakeword_host'], self.config['openwakeword_port']),
+            ('Ollama', self.config['ollama_host'], self.config['ollama_port']),
+        ]
+
+        max_retries = 30
+        retry_delay = 2
+
+        for service_name, host, port in services:
+            for attempt in range(max_retries):
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(host, port),
+                        timeout=5.0
+                    )
+                    writer.close()
+                    await writer.wait_closed()
+                    logger.info(f"✓ {service_name} is ready")
+                    break
+                except (ConnectionRefusedError, asyncio.TimeoutError, OSError):
+                    if attempt < max_retries - 1:
+                        logger.debug(f"  Waiting for {service_name}... ({attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logger.warning(f"⚠ {service_name} not responding, will continue anyway")
+
+    async def run(self):
+        """Main run loop."""
+        if not await self.initialize():
+            logger.error("Failed to initialize. Exiting.")
+            return
+
+        self.running = True
+        logger.info("=" * 60)
+        logger.info(f"🎤 Frey Assistant is ready!")
+        logger.info(f"Wake word: '{self.config['wake_word']}'")
+        logger.info(f"Model: {self.config['ollama_model']}")
+        logger.info("=" * 60)
+
+        try:
+            await self.voice_pipeline.start()
+        except KeyboardInterrupt:
+            logger.info("\nShutdown requested...")
+        except Exception as e:
+            logger.error(f"Fatal error: {e}", exc_info=True)
+        finally:
+            await self.shutdown()
+
+    async def shutdown(self):
+        """Clean shutdown."""
+        logger.info("Shutting down...")
+        self.running = False
+        if self.voice_pipeline:
+            await self.voice_pipeline.stop()
+        logger.info("Goodbye!")
+
+
+def main():
+    """Entry point."""
+    try:
+        assistant = FreyAssistant()
+        asyncio.run(assistant.run())
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
