@@ -1,448 +1,379 @@
-# Frey Voice Assistant
+# Frey Voice Assistant (Home Assistant Assist)
 
-A local, privacy-focused voice assistant for managing your Frey server via voice commands. Think of it as your own self-hosted Alexa for system administration.
+A local, privacy-focused voice assistant using Home Assistant's built-in Assist feature. Control your Frey server with voice commands - no cloud services needed.
 
 ## Overview
 
-The Frey Voice Assistant provides a complete voice interaction pipeline running entirely on your Raspberry Pi 5:
+The Frey voice assistant leverages **Home Assistant Assist**, the native voice assistant framework built into Home Assistant. This provides:
 
-- **Wake Word Detection**: Say "OK Nabu" to activate
-- **Speech-to-Text**: Powered by Whisper (highly accurate)
-- **Natural Language Understanding**: Powered by Llama 3.2 3B via Ollama
-- **System Control**: Start/stop Docker services, check system status
-- **Text-to-Speech**: Natural voice responses via Piper TTS
+- **Wake Word Detection**: Via OpenWakeWord ("OK Nabu", "Hey Jarvis", etc.)
+- **Speech-to-Text**: Whisper (highly accurate, fully local)
+- **Conversation Agent**: Ollama with Llama 3.2 3B (natural language understanding)
+- **Text-to-Speech**: Piper (natural voice responses)
+- **System Control**: Docker container management, service status, system info
 
-**Everything runs locally** - no cloud services, no data leaving your network.
+**Everything runs locally** on your Raspberry Pi - no cloud, no external APIs, completely private.
+
+## Why Home Assistant Assist?
+
+Instead of building a custom voice assistant from scratch, we use Home Assistant's battle-tested voice pipeline because it:
+
+✅ **Built-in and maintained** - No custom code to maintain
+✅ **Mobile app support** - Control Frey from your phone anywhere
+✅ **ESP32 satellites** - Add voice control hardware throughout your home
+✅ **Rich integrations** - n8n workflows, automations, dashboards
+✅ **Community support** - Thousands of users, extensive documentation
+✅ **Mature and stable** - Years of development and testing
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Voice Pipeline                           │
+│                  Home Assistant Assist                       │
 │                                                              │
-│  1. Wake Word    →  2. Listen    →  3. Transcribe           │
-│  (OpenWakeWord)     (PyAudio)       (Whisper)                │
-│                                                              │
-│  ↓                                                           │
-│                                                              │
-│  4. Understand   →  5. Execute   →  6. Respond              │
-│  (Llama 3.2)        (Commands)      (Piper TTS)             │
+│  Wake Word → STT (Whisper) → Conversation (Ollama) →        │
+│  TTS (Piper) → Action (Shell Commands / Automations)        │
 └─────────────────────────────────────────────────────────────┘
+                           │
+                           ├─→ Wyoming Services (Whisper, Piper, OpenWakeWord)
+                           ├─→ Ollama (Local LLM)
+                           └─→ Docker API (Container Control)
 ```
 
 ### Components
 
-1. **OpenWakeWord** - Listens for "OK Nabu" wake word
-2. **Whisper** - Converts speech to text (STT)
-3. **Ollama (Llama 3.2 3B)** - Understands intent and generates responses
-4. **System Command Handler** - Executes Docker and system commands
-5. **Piper TTS** - Converts responses to natural speech
+All components are already deployed:
+
+1. **Home Assistant** - Voice assistant orchestrator
+2. **Wyoming Whisper** - Speech-to-text (STT)
+3. **Wyoming Piper** - Text-to-speech (TTS)
+4. **OpenWakeWord** - Wake word detection
+5. **Ollama** - Local LLM for natural conversation
 
 ## Configuration
 
-### Enable Voice Assistant
-
-The voice assistant is configured in `group_vars/all/main.yml`:
-
-```yaml
-voice_assistant:
-  deploy: true  # Set to false to disable
-
-  # Wake word (available: ok_nabu, hey_jarvis, alexa, hey_mycroft)
-  wake_word: "ok_nabu"
-
-  # LLM model for Raspberry Pi 5 (16GB RAM)
-  # Recommended: llama3.2:3b (fast, good quality)
-  # Alternatives: phi3:mini, qwen2.5:3b, llama3.2:1b
-  ollama_model: "llama3.2:3b"
-
-  # Text-to-Speech voice
-  piper_voice: "en_US-lessac-medium"
-
-  # System capabilities
-  capabilities:
-    docker_control: true      # Allow starting/stopping containers
-    service_status: true      # Allow checking service status
-    system_info: true         # Allow system information queries
-    media_control: false      # Future: Jellyfin control
-    home_automation: false    # Future: Home Assistant integration
-```
-
-### Model Recommendations for Raspberry Pi 5
-
-| Model | Size | Speed | Quality | RAM Usage |
-|-------|------|-------|---------|-----------|
-| **llama3.2:3b** ✅ | 3B | Fast | Excellent | ~2GB |
-| phi3:mini | 3.8B | Very Fast | Good | ~2.3GB |
-| qwen2.5:3b | 3B | Fast | Good | ~2GB |
-| llama3.2:1b | 1B | Very Fast | Fair | ~1GB |
-
-**Avoid 7B+ models** - they will be very slow on the Pi 5.
-
-### Wake Word Options
-
-Available wake words:
-- `ok_nabu` (Default - best general option)
-- `hey_jarvis` (Iron Man style)
-- `alexa` (Amazon Alexa style)
-- `hey_mycroft` (Mycroft AI style)
-- `hey_rhasspy` (Rhasspy assistant style)
-
-You can also train custom wake words by placing models in `/opt/frey/appdata/openwakeword/custom_models/`.
-
-## Deployment
-
-### Initial Setup
-
-1. **Configure** the voice assistant in `group_vars/all/main.yml` (see above)
-
-2. **Deploy** using Ansible:
-   ```bash
-   ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
-   ```
-
-3. **Verify** services are running:
-   ```bash
-   docker ps | grep -E "voice-assistant|openwakeword|piper|whisper|ollama"
-   ```
-
-4. **Check logs**:
-   ```bash
-   docker logs -f voice-assistant
-   ```
-
-### Model Pulling
-
-The Ollama model is automatically pulled during deployment. To manually pull or change models:
+### 1. Deploy the Stack
 
 ```bash
-# Pull a specific model
-docker exec ollama ollama pull llama3.2:3b
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
+```
 
-# List available models
-docker exec ollama ollama list
+This deploys all required services and pulls the Ollama model (~2GB).
 
-# Remove a model
-docker exec ollama ollama rm llama3.2:3b
+### 2. Configure Home Assistant
+
+Access Home Assistant at `https://homeassistant.{{ network.domain_name }}`
+
+#### Step 2a: Add Wyoming Integrations
+
+1. Go to **Settings → Devices & Services**
+2. Click **Add Integration**, search for **"Wyoming Protocol"**
+3. Add each Wyoming service:
+
+| Service | Host | Port | Purpose |
+|---------|------|------|---------|
+| Whisper | `wyoming-whisper` | 10300 | Speech-to-Text |
+| Piper | `piper` | 10200 | Text-to-Speech |
+| OpenWakeWord | `openwakeword` | 10400 | Wake Word |
+
+#### Step 2b: Add Ollama Integration
+
+1. Go to **Settings → Devices & Services**
+2. Click **Add Integration**, search for **"Ollama"** (or **"LLM" / "Conversation"**)
+3. Configure:
+   - **Host**: `ollama` (or `http://ollama:11434`)
+   - **Model**: `llama3.2:3b`
+
+#### Step 2c: Create Voice Assistant
+
+1. Go to **Settings → Voice assistants**
+2. Click **"Add Assistant"**
+3. Configure:
+   - **Name**: Frey Assistant
+   - **Conversation agent**: Ollama (llama3.2:3b)
+   - **Speech-to-Text**: Whisper
+   - **Text-to-Speech**: Piper
+   - **Wake word**: ok_nabu (OpenWakeWord)
+
+#### Step 2d: Enable Shell Commands
+
+1. SSH to your Frey server
+2. Edit Home Assistant configuration:
+   ```bash
+   nano /opt/frey/appdata/homeassistant/configuration.yaml
+   ```
+3. Add this line:
+   ```yaml
+   shell_command: !include voice_assistant_config.yaml
+   ```
+4. Restart Home Assistant:
+   ```bash
+   docker restart homeassistant
+   ```
+
+### 3. Create Automations for Voice Commands
+
+In Home Assistant, go to **Settings → Automations & Scenes → Create Automation**
+
+#### Example: Start Jellyfin via Voice
+
+```yaml
+alias: "Voice: Start Jellyfin"
+trigger:
+  - platform: conversation
+    command:
+      - "start jellyfin"
+      - "turn on jellyfin"
+action:
+  - service: shell_command.docker_start_jellyfin
+  - service: tts.speak
+    target:
+      entity_id: tts.piper
+    data:
+      message: "Starting Jellyfin now"
+```
+
+#### Example: Check Running Services
+
+```yaml
+alias: "Voice: List Services"
+trigger:
+  - platform: conversation
+    command:
+      - "what services are running"
+      - "list running services"
+action:
+  - service: shell_command.docker_ps
+  - service: tts.speak
+    target:
+      entity_id: tts.piper
+    data:
+      message: "Let me check the running services"
 ```
 
 ## Usage
 
-### Basic Voice Commands
+### Voice Commands
+
+Once configured, you can say:
 
 **Service Control:**
-- "Start Jellyfin"
-- "Stop Sonarr"
-- "Restart Radarr"
+- "OK Nabu, start Jellyfin"
+- "OK Nabu, stop Sonarr"
+- "OK Nabu, restart Radarr"
 
 **Service Status:**
-- "Is Jellyfin running?"
-- "What services are running?"
-- "Check status of Portainer"
+- "OK Nabu, what services are running?"
+- "OK Nabu, is Jellyfin running?"
 
-**System Information:**
-- "What's the CPU usage?"
-- "How much memory is available?"
-- "What's the disk usage?"
+**General Questions:**
+- "OK Nabu, what can you do?"
+- "OK Nabu, what time is it?"
+- Any general questions (answered by Ollama)
 
-**Conversation:**
-- "What can you do?"
-- "Tell me about yourself"
-- "What time is it?"
+### Mobile App
 
-### Example Interactions
+1. Install **Home Assistant Companion** app (iOS/Android)
+2. Log in to your Frey instance
+3. Go to app **Settings → Assist**
+4. Enable voice control
+5. Use the mic button or say the wake word
 
+Now you can control Frey from anywhere!
+
+## Model Configuration
+
+### Current Setup (Raspberry Pi 5 16GB)
+
+```yaml
+# group_vars/all/main.yml
+voice_assistant:
+  ollama_model: "llama3.2:3b"  # ~2GB RAM, fast, excellent quality
+  wake_word: "ok_nabu"
 ```
-You: "OK Nabu"
-Frey: "Yes, how can I help?"
 
-You: "Start Jellyfin"
-Frey: "Starting Jellyfin now. Jellyfin has been started."
+### Alternative Models
 
-You: "What's the CPU usage?"
-Frey: "CPU usage is 15.3%. Memory usage is 4.2GB of 16GB. Disk usage is 45%."
+| Model | RAM | Speed | Quality | Use Case |
+|-------|-----|-------|---------|----------|
+| **llama3.2:3b** ✅ | ~2GB | Fast | Excellent | Default (best balance) |
+| phi3:mini | ~2.3GB | Very Fast | Good | Faster responses |
+| qwen2.5:3b | ~2GB | Fast | Good | Multilingual support |
+| llama3.2:1b | ~1GB | Very Fast | Fair | Low RAM / Max speed |
 
-You: "Is Sonarr running?"
-Frey: "Sonarr is running."
+**Change model:**
+```bash
+# Edit configuration
+nano /home/user/frey/group_vars/all/main.yml
+
+# Change ollama_model, then redeploy
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
 ```
 
-## Service Aliases
+### Alternative Wake Words
 
-The voice assistant understands various service names:
+Available wake words in OpenWakeWord:
+- `ok_nabu` (default)
+- `hey_jarvis` (Iron Man style)
+- `alexa` (Amazon Alexa style)
+- `hey_mycroft`
+- `hey_rhasspy`
 
-| You Say | Service Name |
-|---------|-------------|
-| "Jellyfin" / "Jelly Fin" | jellyfin |
-| "Sonar" / "Sonarr" | sonarr |
-| "Radar" / "Radarr" | radarr |
-| "Bazaar" / "Bazarr" | bazarr |
-| "Audiobook Shelf" | audiobookshelf |
-| "Torrent" / "qBittorrent" | qbittorrent |
-| "Home Assistant" | homeassistant |
-| "Traffic" / "Traefik" | traefik |
+Change in configuration and redeploy.
+
+## Advanced Features
+
+### n8n Workflow Integration
+
+Trigger complex n8n workflows via voice:
+
+1. Create n8n workflow with webhook trigger
+2. Create Home Assistant automation that calls webhook
+3. Use voice command to trigger automation
+
+Example:
+```yaml
+alias: "Voice: Backup Media"
+trigger:
+  - platform: conversation
+    command: "backup all media"
+action:
+  - service: rest_command.trigger_n8n_backup
+    data:
+      workflow: "media_backup"
+```
+
+### ESP32 Hardware Satellites
+
+Add dedicated voice hardware throughout your home:
+
+1. Flash ESP32 with ESPHome
+2. Add Wyoming satellite integration
+3. Place microphone/speaker in any room
+4. Say wake word from anywhere - control Frey
+
+See [ESPHome Voice Assistant docs](https://esphome.io/components/voice_assistant.html)
+
+### Custom Intents
+
+Train Home Assistant to understand custom commands:
+
+1. Go to **Settings → Voice assistants → Your assistant**
+2. Click **"Manage intents"**
+3. Add custom sentences and actions
+
+Example: "Download latest episode of [show name]" → Trigger Sonarr
 
 ## Troubleshooting
 
-### Voice Assistant Not Starting
+### Wyoming Services Not Found
 
-**Check logs:**
+**Verify containers are running:**
 ```bash
-docker logs voice-assistant
+docker ps | grep -E "wyoming|openwakeword|piper"
 ```
 
-**Common issues:**
-- Audio devices not accessible → Check container has `/dev/snd` access
-- Services not ready → Wait 30-60s after stack starts
-- Python dependencies missing → Container will auto-install on first run
+**Check service connectivity:**
+```bash
+# From Home Assistant container
+docker exec homeassistant nc -zv wyoming-whisper 10300
+docker exec homeassistant nc -zv piper 10200
+docker exec homeassistant nc -zv openwakeword 10400
+```
+
+### Ollama Integration Fails
+
+**Check Ollama is running:**
+```bash
+docker logs ollama
+```
+
+**Verify model is pulled:**
+```bash
+docker exec ollama ollama list
+```
+
+**Test Ollama manually:**
+```bash
+docker exec ollama ollama run llama3.2:3b "Hello, are you working?"
+```
 
 ### Wake Word Not Detecting
 
-**Verify OpenWakeWord is running:**
+**Check OpenWakeWord logs:**
 ```bash
 docker logs openwakeword
 ```
 
-**Test audio input:**
-```bash
-docker exec -it voice-assistant python3 -c "import pyaudio; p = pyaudio.PyAudio(); print(f'Audio devices: {p.get_device_count()}')"
-```
-
 **Try different wake word:**
-Edit `group_vars/all/main.yml` and change `wake_word` to `hey_jarvis` or `alexa`.
-
-### Speech Recognition Poor Quality
-
-**Upgrade Whisper model:**
-Edit `group_vars/all/main.yml`:
-```yaml
-homeassistant:
-  services:
-    wyoming_whisper:
-      model: "base-int8"  # Change from tiny-int8
-```
-
-**Note:** Larger models are more accurate but slower.
-
-### LLM Responses Too Slow
-
-**Switch to faster model:**
 ```yaml
 voice_assistant:
-  ollama_model: "llama3.2:1b"  # Faster, slightly lower quality
+  wake_word: "hey_jarvis"
 ```
 
-Or use phi3:mini for best speed/quality balance.
+**Test with Home Assistant mobile app first** - if that works, issue is with microphone hardware.
 
-### Command Not Executing
+### Shell Commands Not Working
 
-**Check Docker socket access:**
+**Check shell_command configuration:**
 ```bash
-docker exec voice-assistant ls -la /var/run/docker.sock
+cat /opt/frey/appdata/homeassistant/configuration.yaml | grep shell_command
 ```
 
-**Verify command handler:**
+**Verify Docker socket access:**
 ```bash
-docker logs voice-assistant | grep "Docker client initialized"
+docker exec homeassistant docker ps
 ```
 
-**Check service name:**
-Use `docker ps` to verify exact container names.
+If error: Add Docker socket to Home Assistant container volumes.
 
-## Advanced Configuration
+### Voice Response Too Slow
 
-### Custom Wake Words
-
-1. Train your custom wake word using OpenWakeWord trainer
-2. Place the `.tflite` model file in `/opt/frey/appdata/openwakeword/custom_models/`
-3. Update configuration:
-   ```yaml
-   voice_assistant:
-     wake_word: "your_custom_word"
-   ```
-
-### Audio Configuration
-
-Adjust audio settings in `group_vars/all/main.yml`:
-
+**Use faster model:**
 ```yaml
 voice_assistant:
-  audio:
-    sample_rate: 16000          # Audio quality (Hz)
-    silence_threshold: 500      # Sensitivity (lower = more sensitive)
-    silence_duration: 1.5       # Seconds of silence before stopping
+  ollama_model: "llama3.2:1b"  # 3x faster than 3b
 ```
 
-### Adding New Capabilities
-
-Edit `/opt/frey/appdata/voice-assistant/system_commands.py` to add custom commands.
-
-Example - Add weather command:
-```python
-def get_weather(self) -> str:
-    """Get current weather."""
-    # Your weather API integration here
-    return "The weather is sunny, 22 degrees."
-```
-
-## Security Considerations
-
-### Protected Services
-
-The voice assistant **cannot** stop these critical services:
-- voice-assistant (itself)
-- ollama
-- piper
-- wyoming-whisper
-- openwakeword
-
-This prevents accidental self-shutdown.
-
-### Docker Socket Access
-
-The assistant has **read-only** access to Docker socket for security. It can:
-- ✅ List containers
-- ✅ Start/stop containers
-- ✅ Check container status
-- ❌ Remove containers
-- ❌ Modify Docker daemon
-- ❌ Access host filesystem (except /dev/snd)
-
-### Privacy
-
-All processing happens **locally**:
-- ✅ No cloud API calls
-- ✅ No data sent to external services
-- ✅ Voice recordings not stored
-- ✅ Fully offline capable
-
-## Performance Tuning
-
-### Raspberry Pi 5 Optimization
-
-**For 16GB RAM:**
-- Use `llama3.2:3b` (recommended)
-- Whisper: `tiny-int8` or `base-int8`
-- Can run multiple Piper voices
-
-**For 8GB RAM:**
-- Use `llama3.2:1b` or `phi3:mini`
-- Whisper: `tiny-int8` only
-- Single Piper voice recommended
-
-**For 4GB RAM:**
-- Voice assistant not recommended
-- Consider Home Assistant voice pipeline instead
-
-### CPU Usage
-
-Monitor CPU usage:
-```bash
-docker stats voice-assistant ollama piper wyoming-whisper
-```
-
-If CPU is consistently >80%:
-1. Switch to smaller model (`llama3.2:1b`)
-2. Reduce Whisper model size (`tiny-int8`)
-3. Increase silence detection threshold (fewer false triggers)
-
-## Integration
-
-### Home Assistant
-
-The voice assistant can be integrated with Home Assistant for smart home control (future feature).
-
-Enable in configuration:
+**Or switch to Phi-3:**
 ```yaml
 voice_assistant:
-  capabilities:
-    home_automation: true
+  ollama_model: "phi3:mini"  # Good speed/quality balance
 ```
-
-### n8n Workflows
-
-Trigger n8n workflows via voice:
-```yaml
-voice_assistant:
-  capabilities:
-    workflow_trigger: true
-```
-
-## Roadmap
-
-Planned features:
-- [ ] Home Assistant device control
-- [ ] Jellyfin media playback control
-- [ ] n8n workflow triggers
-- [ ] Multi-user voice profiles
-- [ ] Spotify/Music control
-- [ ] Calendar integration
-- [ ] Reminder/Timer functionality
-
-## Architecture Details
-
-### Voice Pipeline Flow
-
-1. **Continuous Wake Word Monitoring**
-   - 100ms audio chunks sent to OpenWakeWord
-   - ~5-10ms latency per check
-   - Low CPU usage when idle
-
-2. **Activation & Recording**
-   - Wake word detected → Play acknowledgment
-   - Start recording with silence detection
-   - Max 10 seconds, auto-stop after 1.5s silence
-
-3. **Speech-to-Text**
-   - Send WAV audio to Whisper
-   - Transcription typically 2-5 seconds
-   - Returns text string
-
-4. **Intent Recognition**
-   - Send transcribed text to Llama 3.2
-   - LLM analyzes intent and extracts parameters
-   - Returns structured command or conversational response
-   - Processing: 1-3 seconds on Pi 5
-
-5. **Command Execution**
-   - If system command → Execute via Docker API
-   - Return result to LLM for response generation
-
-6. **Text-to-Speech**
-   - Send response text to Piper
-   - Generate audio (typically <1 second)
-   - Play through speakers
-
-**Total latency:** ~5-12 seconds from speech to response
 
 ## File Locations
 
-- **Configuration:** `/home/user/frey/group_vars/all/main.yml`
-- **Docker Compose:** `/opt/frey/stacks/automation/docker-compose.yml`
-- **Python Code:** `/opt/frey/appdata/voice-assistant/`
-- **Ollama Models:** `/opt/frey/appdata/ollama/`
-- **Piper Voices:** `/opt/frey/appdata/piper/`
-- **Whisper Models:** `/opt/frey/appdata/wyoming-whisper/`
-- **Wake Word Models:** `/opt/frey/appdata/openwakeword/`
+- **Configuration**: `/opt/frey/appdata/homeassistant/configuration.yaml`
+- **Voice commands**: `/opt/frey/appdata/homeassistant/voice_assistant_config.yaml`
+- **Automations**: `/opt/frey/appdata/homeassistant/automations.yaml`
+- **Ollama models**: `/opt/frey/appdata/ollama/`
+- **Piper voices**: `/opt/frey/appdata/piper/`
+- **Whisper models**: `/opt/frey/appdata/wyoming-whisper/`
 
-## Contributing
+## Resources
 
-To improve the voice assistant:
+- [Home Assistant Assist Documentation](https://www.home-assistant.io/voice_control/)
+- [Wyoming Protocol](https://www.home-assistant.io/integrations/wyoming/)
+- [Ollama Integration](https://www.home-assistant.io/integrations/ollama/)
+- [OpenWakeWord Models](https://github.com/dscripka/openWakeWord)
+- [ESPHome Voice Assistant](https://esphome.io/components/voice_assistant.html)
 
-1. **Enhance LLM prompts:** Edit `ollama_client.py.j2` system prompt
-2. **Add service aliases:** Edit `system_commands.py.j2` service_aliases dict
-3. **Improve wake word detection:** Adjust OpenWakeWord sensitivity
-4. **Add new capabilities:** Extend `SystemCommandHandler` class
+## Comparison: Home Assistant vs Custom Python
 
-## Support
+| Feature | Home Assistant Assist | Custom Python |
+|---------|----------------------|---------------|
+| Code to maintain | ✅ 0 lines | ❌ ~2000 lines |
+| Mobile app | ✅ Built-in | ❌ None |
+| Hardware satellites | ✅ ESP32 support | ❌ None |
+| Automations | ✅ Visual editor | ❌ Code only |
+| Maturity | ✅ Production-ready | ❌ Alpha quality |
+| Community | ✅ Huge ecosystem | ❌ Solo project |
 
-For issues or questions:
-- Check logs: `docker logs -f voice-assistant`
-- Review troubleshooting section above
-- Check Frey GitHub issues: https://github.com/Jim8Knopf/frey/issues
+**Home Assistant is the right choice for this use case.**
 
 ## Credits
 
-Built with:
+- [Home Assistant](https://www.home-assistant.io/) - Open source home automation
 - [Ollama](https://ollama.ai/) - Local LLM runtime
 - [Whisper](https://github.com/openai/whisper) - Speech recognition
 - [Piper](https://github.com/rhasspy/piper) - Text-to-speech

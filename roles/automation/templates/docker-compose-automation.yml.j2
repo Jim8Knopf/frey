@@ -173,12 +173,13 @@ services:
       - "traefik.enable=false"  # Internal service only
   {% endif %}
 
-  {% if voice_assistant.deploy | default(false) -%}
+  {% if voice_assistant.enabled | default(false) -%}
   # ==============================================================================
-  # VOICE ASSISTANT - LOCAL SPEECH ASSISTANT
+  # VOICE ASSISTANT - OPENWAKEWORD (Wake Word Detection)
   # ==============================================================================
+  # Home Assistant connects to this service via Wyoming protocol for wake word detection
+  # Configure in Home Assistant: Settings → Devices & Services → Add Integration → Wyoming Protocol
 
-  # OpenWakeWord - Wake word detection
   openwakeword:
     image: "rhasspy/wyoming-openwakeword:{{ voice_assistant.openwakeword_version | default('latest') }}"
     container_name: openwakeword
@@ -193,52 +194,6 @@ services:
       --custom-model-dir /custom_models
     networks:
       automation_network:
-    labels:
-      - "traefik.enable=false"  # Internal service only
-
-  # Voice Assistant Orchestrator - Main voice pipeline service
-  voice-assistant:
-    image: "python:3.11-slim"
-    container_name: voice-assistant
-    restart: unless-stopped
-    privileged: true  # Required for audio device access
-    devices:
-      - /dev/snd:/dev/snd  # Audio devices
-    volumes:
-      - "{{ storage.appdata_dir }}/voice-assistant:/app"
-      - "/var/run/docker.sock:/var/run/docker.sock:ro"  # Docker API access for system control
-      - /etc/localtime:/etc/localtime:ro
-    working_dir: /app
-    command: /bin/bash /app/entrypoint.sh
-    environment:
-      - TZ={{ network.timezone | default('UTC') }}
-      - PYTHONUNBUFFERED=1
-      # Service endpoints
-      - WHISPER_HOST=wyoming-whisper
-      - WHISPER_PORT=10300
-      - PIPER_HOST=piper
-      - PIPER_PORT=10200
-      - OPENWAKEWORD_HOST=openwakeword
-      - OPENWAKEWORD_PORT=10400
-      - OLLAMA_HOST=ollama
-      - OLLAMA_PORT=11434
-      # Configuration
-      - WAKE_WORD={{ voice_assistant.wake_word | default('ok_nabu') }}
-      - OLLAMA_MODEL={{ voice_assistant.ollama_model | default('llama3.2:3b') }}
-      - PIPER_VOICE={{ voice_assistant.piper_voice | default('en_US-lessac-medium') }}
-      - SAMPLE_RATE=16000
-      - SAMPLE_WIDTH=2
-      - CHANNELS=1
-      # System control settings
-      - DOCKER_SOCKET=/var/run/docker.sock
-      - FREY_DOMAIN={{ network.domain_name }}
-    networks:
-      automation_network:
-    depends_on:
-      - wyoming-whisper
-      - piper
-      - openwakeword
-      - ollama
     labels:
       - "traefik.enable=false"  # Internal service only
   {% endif %}

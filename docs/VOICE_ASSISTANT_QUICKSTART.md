@@ -1,348 +1,266 @@
-# Voice Assistant Quick Start Guide
+# Voice Assistant Quick Start
 
-Get your Frey voice assistant up and running in minutes!
+Get voice control working in 10 minutes using Home Assistant Assist.
 
 ## TL;DR
 
 ```bash
-# 1. Deploy the voice assistant
+# 1. Deploy services
 ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
 
-# 2. Check it's running
-docker logs -f voice-assistant
-
-# 3. Say "OK Nabu" and start talking!
+# 2. Configure in Home Assistant UI (3 clicks)
+# 3. Say "OK Nabu, what time is it?"
 ```
 
 ## Prerequisites
 
-✅ Raspberry Pi 5 with 16GB RAM (8GB minimum)
-✅ Microphone connected (USB or 3.5mm)
-✅ Speakers/headphones for audio output
-✅ Frey system already deployed
+✅ Raspberry Pi 5 (8GB+ recommended)
+✅ Frey system deployed
+✅ Home Assistant running
 
-## Quick Setup
-
-### 1. Enable Voice Assistant
-
-The voice assistant is **already enabled** by default in your configuration:
-
-```yaml
-# group_vars/all/main.yml
-voice_assistant:
-  deploy: true
-  wake_word: "ok_nabu"
-  ollama_model: "llama3.2:3b"
-```
-
-### 2. Deploy
-
-Run the automation playbook:
+## Step 1: Deploy Services (2 minutes)
 
 ```bash
 cd /home/user/frey
 ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
 ```
 
-This will:
-- ✅ Deploy OpenWakeWord, Whisper, Piper, and Voice Assistant
-- ✅ Pull the Llama 3.2 3B model (~2GB download)
-- ✅ Configure all services
-- ✅ Start the voice pipeline
+This deploys:
+- ✅ Whisper (Speech-to-Text)
+- ✅ Piper (Text-to-Speech)
+- ✅ OpenWakeWord (Wake word detection)
+- ✅ Ollama with Llama 3.2 3B model
 
-**First deployment takes 5-10 minutes** due to model download.
+**First deployment takes ~5 minutes** (downloads 2GB Ollama model)
 
-### 3. Verify Services
+## Step 2: Configure Home Assistant (5 minutes)
 
-Check all voice services are running:
+Access Home Assistant: `https://homeassistant.frey`
+
+### 2a. Add Wyoming Services
+
+1. **Settings → Devices & Services**
+2. **Add Integration** → Search **"Wyoming Protocol"**
+3. Add these 3 services:
+
+| Name | Host | Port |
+|------|------|------|
+| Whisper | `wyoming-whisper` | `10300` |
+| Piper | `piper` | `10200` |
+| OpenWakeWord | `openwakeword` | `10400` |
+
+### 2b. Add Ollama
+
+1. **Settings → Devices & Services**
+2. **Add Integration** → Search **"Ollama"** (or "Extended OpenAI" / "LLM")
+3. Configure:
+   - Host: `http://ollama:11434`
+   - Model: `llama3.2:3b`
+
+### 2c. Create Voice Assistant
+
+1. **Settings → Voice assistants**
+2. **Add Assistant**
+3. Configure:
+   - **Speech-to-Text**: Whisper
+   - **Text-to-Speech**: Piper
+   - **Conversation agent**: Ollama
+   - **Wake word**: ok_nabu
+
+### 2d. Enable Shell Commands
 
 ```bash
-docker ps | grep -E "voice|piper|whisper|openwakeword|ollama"
+# SSH to server
+ssh user@frey.local
+
+# Edit Home Assistant config
+nano /opt/frey/appdata/homeassistant/configuration.yaml
 ```
 
-You should see:
-- ✅ voice-assistant
-- ✅ openwakeword
-- ✅ piper
-- ✅ wyoming-whisper
-- ✅ ollama
+Add this line:
+```yaml
+shell_command: !include voice_assistant_config.yaml
+```
 
-### 4. Test Audio
-
-**Test microphone:**
+Restart:
 ```bash
-docker exec -it voice-assistant arecord -l
+docker restart homeassistant
 ```
 
-**Test speakers:**
-```bash
-docker exec -it voice-assistant aplay -l
-```
+## Step 3: Test It!
 
-### 5. Monitor Logs
+### On Desktop/Laptop
 
-Watch the assistant start:
+1. Open Home Assistant
+2. Click the mic icon (top right)
+3. Say: **"What time is it?"**
+4. Listen to response!
 
-```bash
-docker logs -f voice-assistant
-```
+### With Wake Word (requires microphone)
 
-Look for:
-```
-====================================
-Frey Voice Assistant
-====================================
-✓ Dependencies installed
-✓ Audio devices found
-🎤 Frey Assistant is ready!
-Wake word: 'ok_nabu'
-Model: llama3.2:3b
-====================================
-```
+1. Say: **"OK Nabu"**
+2. Wait for chime
+3. Say: **"What time is it?"**
+4. Listen to response!
 
-## First Conversation
+### On Mobile
 
-### Wake the Assistant
+1. Install **Home Assistant Companion** app
+2. Login to `homeassistant.frey`
+3. App **Settings → Assist → Enable**
+4. Use mic button to talk
 
-Say clearly: **"OK Nabu"**
+## Voice Commands
 
-You should hear: *"Yes, how can I help?"*
-
-### Try These Commands
-
-**Check services:**
-- "What services are running?"
-- "Is Jellyfin running?"
-
-**Control services:**
-- "Start Sonarr"
-- "Stop Radarr"
-
-**System info:**
-- "What's the CPU usage?"
-- "How much memory is free?"
+Try these after setup:
 
 **General:**
-- "What can you do?"
-- "What time is it?"
+- "OK Nabu, what can you do?"
+- "OK Nabu, what time is it?"
+- "OK Nabu, tell me a joke"
+
+**Service Control** (requires automations - see below):
+- "OK Nabu, start Jellyfin"
+- "OK Nabu, restart Sonarr"
+
+## Adding Service Control (Optional)
+
+To control Docker containers, create automations:
+
+### Via UI
+
+1. **Settings → Automations → Create Automation**
+2. Choose **"Start from scratch"**
+3. Configure:
+   - **Trigger**: Sentence
+     - Sentence: "start jellyfin"
+   - **Action**: Shell command
+     - Command: `docker_start_jellyfin`
+
+### Via YAML
+
+Create `automations.yaml`:
+
+```yaml
+- alias: "Voice: Start Jellyfin"
+  trigger:
+    - platform: conversation
+      command:
+        - "start jellyfin"
+        - "turn on jellyfin"
+  action:
+    - service: shell_command.docker_start_jellyfin
+    - service: tts.speak
+      target:
+        entity_id: tts.piper
+      data:
+        message: "Starting Jellyfin now"
+
+- alias: "Voice: Stop Jellyfin"
+  trigger:
+    - platform: conversation
+      command:
+        - "stop jellyfin"
+        - "turn off jellyfin"
+  action:
+    - service: shell_command.docker_stop_jellyfin
+    - service: tts.speak
+      target:
+        entity_id: tts.piper
+      data:
+        message: "Stopping Jellyfin"
+```
+
+Repeat for other services (Sonarr, Radarr, etc.)
 
 ## Troubleshooting
 
-### Wake Word Not Detected
+### "Wyoming service not found"
 
-**Check audio input:**
+**Check containers:**
 ```bash
-# Test microphone is detected
-docker exec -it voice-assistant python3 -c "
-import pyaudio
-p = pyaudio.PyAudio()
-print(f'Audio devices: {p.get_device_count()}')
-for i in range(p.get_device_count()):
-    info = p.get_device_info_by_index(i)
-    print(f'{i}: {info[\"name\"]} (inputs: {info[\"maxInputChannels\"]})')
-"
+docker ps | grep -E "wyoming|piper|openwakeword"
+```
+
+**Should see:**
+- wyoming-whisper
+- piper
+- openwakeword
+
+If missing, redeploy:
+```bash
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
+```
+
+### "Ollama not responding"
+
+**Check Ollama:**
+```bash
+docker logs ollama
+docker exec ollama ollama list
+```
+
+**Should show:** `llama3.2:3b`
+
+**If missing, pull manually:**
+```bash
+docker exec ollama ollama pull llama3.2:3b
+```
+
+### "Wake word not working"
+
+**Try mobile app first** - if that works, problem is microphone hardware.
+
+**Check OpenWakeWord:**
+```bash
+docker logs openwakeword
 ```
 
 **Try different wake word:**
 ```yaml
 # group_vars/all/main.yml
 voice_assistant:
-  wake_word: "hey_jarvis"  # or "alexa"
-```
-
-Then redeploy:
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
-```
-
-### Service Not Starting
-
-**Check logs:**
-```bash
-docker logs voice-assistant
-```
-
-**Common fixes:**
-
-1. **Missing audio devices:**
-   - Ensure microphone is plugged in
-   - Check `/dev/snd` exists: `ls -la /dev/snd/`
-
-2. **Dependencies not installed:**
-   - Wait for first-run installation (see logs)
-   - Or restart container: `docker restart voice-assistant`
-
-3. **Ollama model not pulled:**
-   - Check: `docker exec ollama ollama list`
-   - Pull manually: `docker exec ollama ollama pull llama3.2:3b`
-
-### Slow Responses
-
-**Switch to faster model:**
-```yaml
-voice_assistant:
-  ollama_model: "llama3.2:1b"  # Faster, slightly less accurate
-```
-
-**Or use Phi-3:**
-```yaml
-voice_assistant:
-  ollama_model: "phi3:mini"  # Best speed/quality balance
-```
-
-### Poor Recognition
-
-**Upgrade Whisper model:**
-```yaml
-homeassistant:
-  services:
-    wyoming_whisper:
-      model: "base-int8"  # Better quality, slower
-```
-
-## Advanced Configuration
-
-### Change Wake Word
-
-Available options:
-- `ok_nabu` (default)
-- `hey_jarvis`
-- `alexa`
-- `hey_mycroft`
-- `hey_rhasspy`
-
-Edit `group_vars/all/main.yml`:
-```yaml
-voice_assistant:
   wake_word: "hey_jarvis"
 ```
 
-### Change Voice
+Redeploy after changing.
 
-Available voices:
-- `en_US-lessac-medium` (default, clear American)
-- `en_AU-southern-female` (Australian)
-- `de_DE-thorsten-medium` (German)
+### "Too slow"
 
-Edit `group_vars/all/main.yml`:
+**Use faster model:**
 ```yaml
 voice_assistant:
-  piper_voice: "en_AU-southern-female"
+  ollama_model: "llama3.2:1b"  # 3x faster
 ```
 
-### Adjust Sensitivity
-
-Make it more/less sensitive to sound:
-
+Or:
 ```yaml
 voice_assistant:
-  audio:
-    silence_threshold: 300  # Lower = more sensitive (default: 500)
-    silence_duration: 2.0   # Longer pause before stopping (default: 1.5)
+  ollama_model: "phi3:mini"  # Good balance
 ```
-
-## Useful Commands
-
-### Check Service Status
-```bash
-# All voice services
-docker ps | grep -E "voice|piper|whisper|wake"
-
-# Just the assistant
-docker ps | grep voice-assistant
-
-# Check if running
-docker inspect voice-assistant --format='{{.State.Status}}'
-```
-
-### View Logs
-```bash
-# Live logs
-docker logs -f voice-assistant
-
-# Last 50 lines
-docker logs --tail 50 voice-assistant
-
-# With timestamps
-docker logs -f --timestamps voice-assistant
-```
-
-### Restart Services
-```bash
-# Restart just the assistant
-docker restart voice-assistant
-
-# Restart all automation services
-docker compose -f /opt/frey/stacks/automation/docker-compose.yml restart
-```
-
-### Manage Ollama Models
-```bash
-# List installed models
-docker exec ollama ollama list
-
-# Pull a model
-docker exec ollama ollama pull llama3.2:1b
-
-# Remove a model
-docker exec ollama ollama rm llama3.2:3b
-
-# Check model info
-docker exec ollama ollama show llama3.2:3b
-```
-
-### Update Voice Assistant Code
-```bash
-# Re-run just the voice assistant deployment
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
-
-# Then restart
-docker restart voice-assistant
-```
-
-## Performance Tips
-
-### For Raspberry Pi 5 (16GB)
-✅ Use `llama3.2:3b` - optimal balance
-✅ Whisper `tiny-int8` or `base-int8`
-✅ Multiple Piper voices OK
-
-### For Raspberry Pi 5 (8GB)
-⚠️ Use `llama3.2:1b` or `phi3:mini`
-⚠️ Whisper `tiny-int8` only
-⚠️ Single Piper voice
-
-### For Raspberry Pi 4 or 5 (4GB)
-❌ Voice assistant not recommended
-❌ Use Home Assistant voice pipeline instead
 
 ## Next Steps
 
-1. **Read full documentation:** `docs/VOICE_ASSISTANT.md`
-2. **Customize commands:** Edit `/opt/frey/appdata/voice-assistant/system_commands.py`
-3. **Train custom wake word:** Place model in `/opt/frey/appdata/openwakeword/custom_models/`
-4. **Enable more features:**
-   ```yaml
-   voice_assistant:
-     capabilities:
-       home_automation: true  # Control Home Assistant devices
-       media_control: true    # Control Jellyfin playback
-   ```
+1. **Mobile app** - Control from anywhere
+2. **Automations** - Add more voice commands
+3. **ESP32 satellites** - Add hardware voice assistants
+4. **n8n integration** - Trigger complex workflows
+5. **Custom intents** - Train custom commands
 
-## Support
+## Full Documentation
 
-**Logs show errors?** Check `/docs/VOICE_ASSISTANT.md` troubleshooting section
-
-**Feature requests?** Open an issue on GitHub
-
-**Questions?** Check the full documentation first!
+See `docs/VOICE_ASSISTANT.md` for:
+- Advanced configuration
+- Custom automations
+- ESP32 hardware satellites
+- n8n workflow integration
+- Troubleshooting guide
 
 ## Remember
 
-- Wake word: **"OK Nabu"** (or your configured word)
-- Be clear and speak at normal volume
-- Wait for "Yes, how can I help?" before speaking
-- Pause briefly before ending your command
-- Check logs if something doesn't work: `docker logs -f voice-assistant`
+- **Wake word**: "OK Nabu" (configurable)
+- **First time?** Use mobile app mic button
+- **Not working?** Check logs: `docker logs homeassistant`
+- **Mobile app** = easiest way to test
 
-**Enjoy your local voice assistant! 🎤**
+🎤 **You now have a local voice assistant!** No cloud, fully private, yours to control.

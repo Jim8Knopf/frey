@@ -1,0 +1,128 @@
+# ==================================================================================
+# FREY VOICE ASSISTANT CONFIGURATION FOR HOME ASSISTANT
+# ==================================================================================
+# This file provides shell commands and intents for Home Assistant voice control
+# Include this in your configuration.yaml:
+#   shell_command: !include voice_assistant_config.yaml
+#
+# After deployment, configure in Home Assistant UI:
+# 1. Settings → Devices & Services → Add Integration → "Wyoming Protocol"
+#    - Add Whisper (STT): wyoming-whisper:10300
+#    - Add Piper (TTS): piper:10200
+#    - Add OpenWakeWord: openwakeword:10400
+# 2. Settings → Devices & Services → Add Integration → "Ollama"
+#    - Host: ollama:11434
+#    - Model: {{ voice_assistant.ollama_model }}
+# 3. Settings → Voice assistants → Create new assistant
+#    - Choose Wyoming services for STT/TTS
+#    - Choose Ollama as conversation agent
+# ==================================================================================
+
+# Shell commands for Docker container control
+shell_command:
+  # Start Docker containers
+  docker_start_jellyfin: "docker start jellyfin"
+  docker_start_sonarr: "docker start sonarr"
+  docker_start_radarr: "docker start radarr"
+  docker_start_bazarr: "docker start bazarr"
+  docker_start_lidarr: "docker start lidarr"
+  docker_start_prowlarr: "docker start prowlarr"
+  docker_start_qbittorrent: "docker start qbittorrent"
+  docker_start_audiobookshelf: "docker start audiobookshelf"
+  docker_start_n8n: "docker start n8n"
+  docker_start_portainer: "docker start portainer"
+  docker_start_grafana: "docker start grafana"
+
+  # Stop Docker containers
+  docker_stop_jellyfin: "docker stop jellyfin"
+  docker_stop_sonarr: "docker stop sonarr"
+  docker_stop_radarr: "docker stop radarr"
+  docker_stop_bazarr: "docker stop bazarr"
+  docker_stop_lidarr: "docker stop lidarr"
+  docker_stop_prowlarr: "docker stop prowlarr"
+  docker_stop_qbittorrent: "docker stop qbittorrent"
+  docker_stop_audiobookshelf: "docker stop audiobookshelf"
+  docker_stop_n8n: "docker stop n8n"
+  docker_stop_portainer: "docker stop portainer"
+  docker_stop_grafana: "docker stop grafana"
+
+  # Restart Docker containers
+  docker_restart_jellyfin: "docker restart jellyfin"
+  docker_restart_sonarr: "docker restart sonarr"
+  docker_restart_radarr: "docker restart radarr"
+  docker_restart_bazarr: "docker restart bazarr"
+
+  # System information
+  docker_ps: "docker ps --format 'table {{`{{.Names}}`}}\t{{`{{.Status}}`}}'"
+  system_info: "uptime && free -h && df -h /opt/frey"
+
+# ==================================================================================
+# CONVERSATION AGENT PROMPTS (Configure in Ollama integration)
+# ==================================================================================
+# System prompt for Ollama conversation agent:
+#
+# You are Frey, a helpful voice assistant for managing a home server.
+# You can control Docker services, check system status, and answer questions.
+#
+# Available services: Jellyfin, Sonarr, Radarr, Bazarr, Lidarr, Prowlarr,
+# qBittorrent, Audiobookshelf, Home Assistant, n8n, Portainer, Grafana
+#
+# When users ask to:
+# - Start a service: Respond with intent to call service: shell_command.docker_start_<service>
+# - Stop a service: Respond with intent to call service: shell_command.docker_stop_<service>
+# - Check status: Respond with intent to call service: shell_command.docker_ps
+#
+# Be concise since responses are spoken aloud.
+# ==================================================================================
+
+# ==================================================================================
+# AUTOMATION EXAMPLES
+# ==================================================================================
+# Copy these to your automations.yaml or create via UI
+#
+# Example: Voice command to start Jellyfin
+# automation:
+#   - alias: "Voice: Start Jellyfin"
+#     trigger:
+#       - platform: conversation
+#         command:
+#           - "start jellyfin"
+#           - "turn on jellyfin"
+#     action:
+#       - service: shell_command.docker_start_jellyfin
+#       - service: tts.speak
+#         data:
+#           message: "Starting Jellyfin now"
+#
+# Example: Voice command to check running services
+# automation:
+#   - alias: "Voice: List running services"
+#     trigger:
+#       - platform: conversation
+#         command:
+#           - "what services are running"
+#           - "list running services"
+#     action:
+#       - service: shell_command.docker_ps
+#       - service: tts.speak
+#         data:
+#           message: "Here are the running services"
+# ==================================================================================
+
+# ==================================================================================
+# ASSISTANT CONFIGURATION
+# ==================================================================================
+# Recommended settings for Home Assistant voice pipeline:
+#
+# Assist Pipeline:
+#   - Name: "Frey Voice Assistant"
+#   - Speech-to-Text: Wyoming Whisper (wyoming-whisper:10300)
+#   - Text-to-Speech: Wyoming Piper (piper:10200)
+#   - Wake word: Wyoming OpenWakeWord (openwakeword:10400)
+#     - Wake word: {{ voice_assistant.wake_word }}
+#   - Conversation agent: Ollama (ollama:11434)
+#     - Model: {{ voice_assistant.ollama_model }}
+#
+# Mobile App: Enable "Assist" in app settings to use voice on phone
+# ESP32 satellites: Use ESPHome Wyoming integration for hardware wake word devices
+# ==================================================================================
