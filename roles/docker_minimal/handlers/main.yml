@@ -1,0 +1,21 @@
+---
+- name: Restart docker
+  ansible.builtin.service:
+    name: docker
+    state: restarted
+  register: docker_restart
+  failed_when: false
+
+- name: Verify docker restarted successfully
+  ansible.builtin.command: docker ps
+  register: docker_status
+  retries: 3
+  delay: 5
+  until: docker_status.rc == 0
+  changed_when: false
+  when: docker_restart is changed
+
+- name: Warn if docker restart failed
+  ansible.builtin.debug:
+    msg: "WARNING: Docker service failed to restart properly. Manual intervention may be required."
+  when: docker_restart is changed and docker_status.rc != 0

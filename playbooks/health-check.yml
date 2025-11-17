@@ -1,0 +1,270 @@
+---
+# ==============================================================================
+# FREY HEALTH CHECK PLAYBOOK
+# ==============================================================================
+# Purpose: Comprehensive health and status verification for the Frey stack
+#
+# This playbook checks the health of all deployed services including:
+#   - Docker daemon functionality
+#   - All Docker Compose stacks
+#   - Critical system services (hostapd, dnsmasq, etc.)
+#   - Network connectivity
+#   - Service accessibility
+#
+# Usage:
+#   Full health check:  ansible-playbook -i inventory/hosts.yml playbooks/health-check.yml
+#   Specific stack:     ansible-playbook -i inventory/hosts.yml playbooks/health-check.yml --tags media
+#
+# Tags available: docker, stacks, services, network
+# ==============================================================================
+
+- name: Frey System Health Check
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all/main.yml
+
+  tasks:
+    # ==========================================================================
+    # Docker Health Checks
+    # ==========================================================================
+    - name: Check Docker daemon is running
+      ansible.builtin.command: docker info
+      register: docker_health
+      failed_when: false
+      changed_when: false
+      tags: [always, docker]
+
+    - name: Display Docker daemon status
+      ansible.builtin.debug:
+        msg: "{{ 'Docker daemon: HEALTHY' if docker_health.rc == 0 else 'Docker daemon: FAILED' }}"
+      tags: [always, docker]
+
+    - name: Get Docker version info
+      ansible.builtin.command: docker version --format 'Server version {{`{{.Server.Version}}`}}'
+      register: docker_version
+      changed_when: false
+      failed_when: false
+      when: docker_health.rc == 0
+      tags: [always, docker]
+
+    - name: Display Docker version
+      ansible.builtin.debug:
+        msg: "{{ docker_version.stdout }}"
+      when: docker_health.rc == 0 and docker_version.stdout is defined
+      tags: [always, docker]
+
+    # ==========================================================================
+    # Docker Compose Stack Health Checks
+    # ==========================================================================
+    - name: Find all compose stack directories
+      ansible.builtin.find:
+        paths: "{{ storage.stacks }}"
+        file_type: directory
+      register: stack_dirs
+      tags: [always, stacks]
+
+    - name: Check status of each compose stack
+      ansible.builtin.shell: |
+        if [ -f "{{ item.path }}/docker-compose.yml" ]; then
+          echo "=== $(basename {{ item.path }}) ==="
+          docker compose -f "{{ item.path }}/docker-compose.yml" ps --format json 2>&1
+        fi
+      loop: "{{ stack_dirs.files }}"
+      register: stack_status
+      changed_when: false
+      failed_when: false
+      tags: [always, stacks]
+
+    - name: Parse and display stack health
+      ansible.builtin.debug:
+        msg: |
+          Stack: {{ item.item.path | basename }}
+          Status: {{ 'RUNNING' if item.rc == 0 else 'ERROR' }}
+          {% if item.rc == 0 and item.stdout %}
+          Containers: {{ (item.stdout | from_json | length) if item.stdout else 0 }}
+          {% endif %}
+      loop: "{{ stack_status.results }}"
+      when: "'===' in item.stdout"
+      tags: [always, stacks]
+
+    # ==========================================================================
+    # Individual Stack Checks (with tags)
+    # ==========================================================================
+    - name: Check infrastructure stack
+      ansible.builtin.command:
+        cmd: docker compose -f {{ storage.stacks }}/infrastructure/docker-compose.yml ps --format json
+      register: infrastructure_check
+      changed_when: false
+      failed_when: false
+      when: features.infrastructure | default(false)
+      tags: [stacks, infrastructure]
+
+    - name: Report infrastructure stack status
+      ansible.builtin.debug:
+        msg: "Infrastructure stack: {{ (infrastructure_check.stdout | from_json | length) }} containers running"
+      when: features.infrastructure | default(false) and infrastructure_check.rc == 0
+      tags: [stacks, infrastructure]
+
+    - name: Check media stack
+      ansible.builtin.command:
+        cmd: docker compose -f {{ storage.stacks }}/media/docker-compose.yml ps --format json
+      register: media_check
+      changed_when: false
+      failed_when: false
+      when: features.media | default(false)
+      tags: [stacks, media]
+
+    - name: Report media stack status
+      ansible.builtin.debug:
+        msg: "Media stack: {{ (media_check.stdout | from_json | length) }} containers running"
+      when: features.media | default(false) and media_check.rc == 0
+      tags: [stacks, media]
+
+    - name: Check monitoring stack
+      ansible.builtin.command:
+        cmd: docker compose -f {{ storage.stacks }}/monitoring/docker-compose.yml ps --format json
+      register: monitoring_check
+      changed_when: false
+      failed_when: false
+      when: features.monitoring | default(false)
+      tags: [stacks, monitoring]
+
+    - name: Report monitoring stack status
+      ansible.builtin.debug:
+        msg: "Monitoring stack: {{ (monitoring_check.stdout | from_json | length) }} containers running"
+      when: features.monitoring | default(false) and monitoring_check.rc == 0
+      tags: [stacks, monitoring]
+
+    - name: Check automation stack
+      ansible.builtin.command:
+        cmd: docker compose -f {{ storage.stacks }}/automation/docker-compose.yml ps --format json
+      register: automation_check
+      changed_when: false
+      failed_when: false
+      when: features.automation | default(false)
+      tags: [stacks, automation]
+
+    - name: Report automation stack status
+      ansible.builtin.debug:
+        msg: "Automation stack: {{ (automation_check.stdout | from_json | length) }} containers running"
+      when: features.automation | default(false) and automation_check.rc == 0
+      tags: [stacks, automation]
+
+    # ==========================================================================
+    # System Service Health Checks
+    # ==========================================================================
+    - name: Check critical system services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+      register: service_check
+      failed_when: false
+      loop:
+        - docker
+        - hostapd
+        - dnsmasq
+      tags: [always, services]
+
+    - name: Display system service status
+      ansible.builtin.debug:
+        msg: |
+          Service Health Summary:
+          {% for service in service_check.results %}
+            - {{ service.item }}: {{ service.status.ActiveState | default('unknown') }}{% if service.status.ActiveState == 'active' %} ({{ service.status.SubState }}){% endif %}
+
+          {% endfor %}
+      tags: [always, services]
+
+    # ==========================================================================
+    # Network Health Checks
+    # ==========================================================================
+    - name: Check internet connectivity
+      ansible.builtin.command: ping -c 2 8.8.8.8
+      register: internet_check
+      failed_when: false
+      changed_when: false
+      tags: [always, network]
+
+    - name: Display internet connectivity status
+      ansible.builtin.debug:
+        msg: "{{ 'Internet: CONNECTED' if internet_check.rc == 0 else 'Internet: DISCONNECTED' }}"
+      tags: [always, network]
+
+    - name: Check WiFi AP interface status
+      ansible.builtin.command: ip addr show {{ network.wifi.interface }}
+      register: wifi_interface
+      failed_when: false
+      changed_when: false
+      when: features.wifi_access_point | default(false)
+      tags: [network, wifi]
+
+    - name: Display WiFi AP interface status
+      ansible.builtin.debug:
+        msg: "{{ 'WiFi AP Interface: UP' if 'UP' in wifi_interface.stdout else 'WiFi AP Interface: DOWN' }}"
+      when: features.wifi_access_point | default(false)
+      tags: [network, wifi]
+
+    - name: Check DHCP leases for WiFi AP clients
+      ansible.builtin.command: cat /var/lib/misc/dnsmasq.leases
+      register: dhcp_leases
+      failed_when: false
+      changed_when: false
+      when: features.wifi_access_point | default(false)
+      tags: [network, wifi]
+
+    - name: Display WiFi AP client count
+      ansible.builtin.debug:
+        msg: "WiFi AP Clients: {{ dhcp_leases.stdout_lines | length }} connected"
+      when: features.wifi_access_point | default(false) and dhcp_leases.rc == 0
+      tags: [network, wifi]
+
+    # ==========================================================================
+    # Container Resource Usage
+    # ==========================================================================
+    - name: Get container resource statistics
+      ansible.builtin.command: docker stats --no-stream --format "table {{`{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}`}}"
+      register: container_stats
+      changed_when: false
+      failed_when: false
+      when: docker_health.rc == 0
+      tags: [docker, resources]
+
+    - name: Display container resource usage
+      ansible.builtin.debug:
+        msg: |
+          Container Resource Usage:
+          {{ container_stats.stdout }}
+      when: docker_health.rc == 0 and container_stats.stdout is defined
+      tags: [docker, resources]
+
+    # ==========================================================================
+    # Health Summary
+    # ==========================================================================
+    - name: Generate health summary
+      ansible.builtin.set_fact:
+        health_summary:
+          docker: "{{ 'OK' if docker_health.rc == 0 else 'FAILED' }}"
+          internet: "{{ 'OK' if internet_check.rc == 0 else 'DISCONNECTED' }}"
+          stacks_checked: "{{ stack_status.results | length }}"
+          wifi_ap: "{{ 'OK' if (features.wifi_access_point | default(false)) and (wifi_interface.rc == 0) else 'N/A' }}"
+      tags: [always]
+
+    - name: Display comprehensive health summary
+      ansible.builtin.debug:
+        msg: |
+          ================================================================
+          FREY SYSTEM HEALTH SUMMARY
+          ================================================================
+          Docker Daemon:       {{ health_summary.docker }}
+          Internet:            {{ health_summary.internet }}
+          Stacks Checked:      {{ health_summary.stacks_checked }}
+          WiFi Access Point:   {{ health_summary.wifi_ap }}
+
+          Run with specific tags for detailed checks:
+            --tags docker     - Docker daemon and container details
+            --tags stacks     - All compose stack status
+            --tags services   - System service status
+            --tags network    - Network connectivity checks
+            --tags resources  - Container resource usage
+          ================================================================
+      tags: [always]

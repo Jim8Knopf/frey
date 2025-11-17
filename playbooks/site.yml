@@ -80,13 +80,24 @@
     # --------------------------------------------------------------------------
     # Ensures we have latest package information before installing anything
     # cache_valid_time: 3600 = Only update if cache is older than 1 hour
+    # Retries up to 3 times with 10s delay to handle transient network issues
+    # Only fails if we have internet connectivity but still can't update cache
     # --------------------------------------------------------------------------
-    - name: Update package cache
+    - name: Update package cache with retry
       apt:
         update_cache: yes
         cache_valid_time: 3600
-      ignore_errors: true
+      register: apt_update
+      retries: 3
+      delay: 10
+      until: apt_update is succeeded
+      failed_when: apt_update.failed and internet_connection.rc == 0
       tags: always
+
+    - name: Warn if package cache update failed without internet
+      ansible.builtin.debug:
+        msg: "WARNING: Package cache update failed (no internet connectivity). Deployment may use cached packages."
+      when: apt_update.failed and internet_connection.rc != 0
 
 
   # ==============================================================================

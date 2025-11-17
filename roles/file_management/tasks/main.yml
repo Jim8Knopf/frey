@@ -1,4 +1,38 @@
 ---
+- name: Assert required file management variables
+  ansible.builtin.assert:
+    that:
+      - file_management is defined
+      - storage.base_dir is defined
+      - storage.stacks is defined
+      - media_user is defined
+      - file_management.services is defined
+    msg: "Required file management variables are not defined. Check group_vars/all/main.yml"
+    quiet: false
+
+- name: Pre-pull all enabled file management images
+  community.docker.docker_image:
+    name: "{{ item.image }}"
+    source: pull
+    state: present
+    timeout: 300
+  loop: "{{ file_management.services.values() | selectattr('enabled', 'equalto', true) | list }}"
+  loop_control:
+    label: "{{ item.image }}"
+  register: image_pull_results
+  retries: 2
+  delay: 10
+  failed_when: false
+
+- name: Set failed pulls fact for file management
+  ansible.builtin.set_fact:
+    filetools_failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item.image') | list }}"
+
+- name: Report failed file management image pulls
+  ansible.builtin.debug:
+    msg: "Warning: Failed to pull the following images: {{ filetools_failed_pulls }}. Will retry during compose."
+  when: filetools_failed_pulls | length > 0
+
 - name: Create file management stack directory
   ansible.builtin.file:
     path: "{{ storage.stacks }}/filetools"
@@ -15,8 +49,52 @@
     group: "{{ media_user }}"
     mode: '0644'
 
-- name: Start file management containers using compose
-  community.docker.docker_compose_v2:
-    project_src: "{{ storage.stacks }}/filetools"
-    state: present
+- name: Validate file management compose syntax
+  ansible.builtin.command:
+    cmd: docker compose -f {{ storage.stacks }}/filetools/docker-compose.yml config --quiet
+  register: compose_validation
+  failed_when: compose_validation.rc != 0
+  changed_when: false
+
+- name: Deploy file management stack with error handling
+  block:
+    - name: Start file management containers using compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/filetools"
+        state: present
+        remove_orphans: true
+        timeout: 300
+      register: compose_result
+      retries: 2
+      delay: 30
+
+  rescue:
+    - name: Gather file management stack failure logs
+      ansible.builtin.command:
+        cmd: docker compose -f {{ storage.stacks }}/filetools/docker-compose.yml logs --tail=50
+      register: failure_logs
+      failed_when: false
+
+    - name: Display file management deployment failure context
+      ansible.builtin.debug:
+        msg: |
+          File management stack deployment failed.
+          Recent logs:
+          {{ failure_logs.stdout }}
+
+    - name: Fail with context
+      ansible.builtin.fail:
+        msg: "File management stack deployment failed. See logs above."
+
+- name: Verify file management containers are running
+  ansible.builtin.command:
+    cmd: docker compose -f {{ storage.stacks }}/filetools/docker-compose.yml ps --filter "status=running" --format json
+  register: running_containers
+  changed_when: false
+  failed_when: false
+
+- name: Report file management container status
+  ansible.builtin.debug:
+    msg: "{{ (running_containers.stdout | from_json | length) }} file management containers are running"
+  when: running_containers.rc == 0
 

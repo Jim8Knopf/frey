@@ -1,8 +1,23 @@
 ---
+- name: Assert required monitoring variables
+  ansible.builtin.assert:
+    that:
+      - monitoring is defined
+      - storage.base_dir is defined
+      - storage.stacks is defined
+      - storage.appdata_dir is defined
+      - monitoring.user.name is defined
+      - monitoring.user.uid is defined
+      - monitoring.group.name is defined
+      - monitoring.group.gid is defined
+      - monitoring.services is defined
+    msg: "Required monitoring variables are not defined. Check group_vars/all/main.yml"
+    quiet: false
+
 - name: Setup media stack user
   include_tasks: "templates/create_user.yml"
   vars:
-    stack: "monitoring" 
+    stack: "monitoring"
     folders: [logs, prometheus, grafana, loki, promtail, uptime-kuma, speedtest]
 
 - name: Ensure logs directory exists for promtail
@@ -92,6 +107,29 @@
     group: "{{ monitoring.group.name }}"
     mode: '0644'
 
+- name: Pre-pull all enabled monitoring stack images
+  community.docker.docker_image:
+    name: "{{ item.image }}"
+    source: pull
+    state: present
+    timeout: 300
+  loop: "{{ monitoring.services.values() | selectattr('enabled', 'equalto', true) | list }}"
+  loop_control:
+    label: "{{ item.image }}"
+  register: image_pull_results
+  retries: 2
+  delay: 10
+  failed_when: false
+
+- name: Set failed pulls fact for monitoring
+  ansible.builtin.set_fact:
+    monitoring_failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item.image') | list }}"
+
+- name: Report failed monitoring image pulls
+  ansible.builtin.debug:
+    msg: "Warning: Failed to pull the following images: {{ monitoring_failed_pulls }}. Will retry during compose."
+  when: monitoring_failed_pulls | length > 0
+
 - name: Deploy monitoring stack compose file
   ansible.builtin.template:
     src: docker-compose-monitoring.yml.j2
@@ -143,10 +181,42 @@
     group: "{{ monitoring.group.name }}"
     mode: '0644'
 
-- name: Start monitoring stack using compose
-  community.docker.docker_compose_v2:
-    project_src: "{{ storage.stacks }}/monitoring"
-    state: present
+- name: Validate monitoring compose syntax
+  ansible.builtin.command:
+    cmd: docker compose -f {{ storage.stacks }}/monitoring/docker-compose.yml config --quiet
+  register: compose_validation
+  failed_when: compose_validation.rc != 0
+  changed_when: false
+
+- name: Deploy monitoring stack with error handling
+  block:
+    - name: Start monitoring stack using compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/monitoring"
+        state: present
+        remove_orphans: true
+        timeout: 300
+      register: compose_result
+      retries: 2
+      delay: 30
+
+  rescue:
+    - name: Gather monitoring stack failure logs
+      ansible.builtin.command:
+        cmd: docker compose -f {{ storage.stacks }}/monitoring/docker-compose.yml logs --tail=50
+      register: failure_logs
+      failed_when: false
+
+    - name: Display monitoring deployment failure context
+      ansible.builtin.debug:
+        msg: |
+          Monitoring stack deployment failed.
+          Recent logs:
+          {{ failure_logs.stdout }}
+
+    - name: Fail with context
+      ansible.builtin.fail:
+        msg: "Monitoring stack deployment failed. See logs above."
 
 - name: Ensure monitoring appdata ownership matches container users (fix UID/GID mismatches)
   become: true
@@ -172,3 +242,16 @@
     done
   args:
     executable: /bin/bash
+  failed_when: false
+
+- name: Verify monitoring containers are running
+  ansible.builtin.command:
+    cmd: docker compose -f {{ storage.stacks }}/monitoring/docker-compose.yml ps --filter "status=running" --format json
+  register: running_containers
+  changed_when: false
+  failed_when: false
+
+- name: Report monitoring container status
+  ansible.builtin.debug:
+    msg: "{{ (running_containers.stdout | from_json | length) }} monitoring containers are running"
+  when: running_containers.rc == 0

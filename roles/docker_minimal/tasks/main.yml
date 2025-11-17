@@ -1,6 +1,6 @@
 ---
 # Minimal Docker installer (Debian-family). Keep it intentionally small.
-- name: Install prerequisites
+- name: Install prerequisites with retry
   apt:
     name:
       - ca-certificates
@@ -9,6 +9,10 @@
       - lsb-release
     state: present
     update_cache: yes
+  register: prereq_install
+  retries: 3
+  delay: 10
+  until: prereq_install is succeeded
 
 - name: Ensure /etc/apt/keyrings exists
   file:
@@ -27,12 +31,22 @@
       set_fact:
         docker_key_path: "{{ docker_asc.stat.exists | ternary('/etc/apt/keyrings/docker.asc','/etc/apt/keyrings/docker.gpg') }}"
 
-    - name: Download Docker GPG key
+    - name: Download Docker GPG key with retry
       get_url:
         url: "https://download.docker.com/linux/{{ (ansible_distribution | lower == 'debian') | ternary('debian','ubuntu') }}/gpg"
         dest: "{{ docker_key_path }}"
         mode: '0644'
+      register: gpg_download
+      retries: 3
+      delay: 10
+      until: gpg_download is succeeded
   run_once: false
+
+- name: Verify Docker GPG key was downloaded
+  ansible.builtin.stat:
+    path: "{{ docker_key_path }}"
+  register: gpg_key_check
+  failed_when: not gpg_key_check.stat.exists or gpg_key_check.stat.size < 100
 
 - name: Add Docker apt repository
   apt_repository:
@@ -41,17 +55,36 @@
     filename: docker
   when: ansible_os_family == 'Debian'
 
-- name: Install Docker packages
+- name: Install Docker packages with retry
   apt:
     name: "{{ docker_minimal_packages }}"
     state: present
     update_cache: yes
+  register: docker_install
+  retries: 3
+  delay: 10
+  until: docker_install is succeeded
 
 - name: Ensure docker service is running and enabled
   service:
     name: docker
     state: started
     enabled: yes
+  register: docker_service
+
+- name: Wait for Docker socket to be available
+  ansible.builtin.wait_for:
+    path: /var/run/docker.sock
+    state: present
+    timeout: 60
+
+- name: Verify Docker is functional
+  ansible.builtin.command: docker ps
+  register: docker_test
+  retries: 3
+  delay: 5
+  until: docker_test.rc == 0
+  changed_when: false
 
 - name: Ensure /etc/docker exists
   file:
@@ -59,12 +92,26 @@
     state: directory
     mode: '0755'
 
+- name: Validate Docker daemon configuration
+  block:
+    - name: Check daemon options are valid JSON
+      ansible.builtin.set_fact:
+        daemon_json_valid: "{{ docker_minimal_daemon_options | to_nice_json | from_json is mapping }}"
+      when: docker_minimal_daemon_options | length > 0
+      failed_when: not daemon_json_valid
+  rescue:
+    - name: Fail with invalid daemon configuration
+      ansible.builtin.fail:
+        msg: "docker_minimal_daemon_options contains invalid JSON structure"
+  when: docker_minimal_daemon_options | length > 0
+
 - name: Configure Docker daemon options if provided
   copy:
     content: "{{ docker_minimal_daemon_options | to_nice_json }}"
     dest: /etc/docker/daemon.json
     mode: '0644'
   when: docker_minimal_daemon_options | length > 0
+  notify: Restart docker
 
 - name: Add users to docker group
   user:
@@ -72,4 +119,13 @@
     groups: docker
     append: yes
   loop: "{{ docker_minimal_docker_users }}"
+  when: docker_minimal_docker_users | length > 0
+  register: user_group_add
+
+- name: Verify users were added to docker group
+  ansible.builtin.command: "id {{ item }}"
+  loop: "{{ docker_minimal_docker_users }}"
+  register: user_verify
+  changed_when: false
+  failed_when: "'docker' not in user_verify.stdout"
   when: docker_minimal_docker_users | length > 0

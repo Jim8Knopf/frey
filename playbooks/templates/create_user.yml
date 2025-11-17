@@ -1,9 +1,43 @@
 ---
+- name: Check if GID {{ vars[stack].group.gid }} is already in use
+  ansible.builtin.shell: "getent group {{ vars[stack].group.gid }} || echo 'available'"
+  register: gid_check
+  changed_when: false
+  failed_when: false
+
+- name: Fail if GID is in use by different group
+  ansible.builtin.fail:
+    msg: "GID {{ vars[stack].group.gid }} is already used by {{ gid_check.stdout.split(':')[0] }}"
+  when:
+    - "'available' not in gid_check.stdout"
+    - "vars[stack].group.name not in gid_check.stdout"
+
 - name: Create the {{stack}} group
   ansible.builtin.group:
     name: "{{ vars[stack].group.name }}"
     gid: "{{ vars[stack].group.gid }}"
     state: present
+  register: group_create
+
+- name: Verify group was created
+  ansible.builtin.getent:
+    database: group
+    key: "{{ vars[stack].group.name }}"
+  register: group_verify
+  failed_when: group_verify.ansible_facts.getent_group[vars[stack].group.name] is not defined
+
+- name: Check if UID {{ vars[stack].user.uid }} is already in use
+  ansible.builtin.shell: "getent passwd {{ vars[stack].user.uid }} || echo 'available'"
+  register: uid_check
+  changed_when: false
+  failed_when: false
+
+- name: Fail if UID is in use by different user
+  ansible.builtin.fail:
+    msg: "UID {{ vars[stack].user.uid }} is already used by {{ uid_check.stdout.split(':')[0] }}"
+  when:
+    - "'available' not in uid_check.stdout"
+    - "vars[stack].user.name not in uid_check.stdout"
 
 - name: Create the {{stack}}_management user
   ansible.builtin.user:
@@ -11,6 +45,15 @@
     uid: "{{ vars[stack].user.uid }}"
     group: "{{ vars[stack].group.name }}"
     state: present
+  register: user_create
+
+- name: Verify user was created correctly
+  ansible.builtin.command: "id {{ vars[stack].user.name }}"
+  register: user_verify
+  changed_when: false
+  failed_when: |
+    vars[stack].user.uid | string not in user_verify.stdout or
+    vars[stack].group.name not in user_verify.stdout
 
 
 - name: Create docker stacks directory
@@ -25,8 +68,8 @@
   ansible.builtin.file:
     path: "{{ vars[stack].dir }}/{{ item }}"
     state: directory
-    owner: "{{ vars[stack].user.uid }}"
-    group: "{{ vars[stack].user.groups }}"
+    owner: "{{ vars[stack].user.name }}"
+    group: "{{ vars[stack].group.name }}"
     mode: '0755'
   loop: "{{ folders }}"
   when: folders is defined
