@@ -1,0 +1,60 @@
+# Multi-Model AI Configuration
+# Optimized for different use cases
+
+voice_assistant:
+  enabled: true
+  wake_word: "ok_nabu"
+  openwakeword_version: "latest"
+  openwakeword_port: 10400
+
+  # Fast voice model (real-time responses)
+  voice_model:
+    name: "llama3.2:3b"
+    purpose: "Quick voice commands and system control"
+    response_time: "1-2 seconds"
+
+  # Knowledge RAG model (factual accuracy)
+  knowledge_model:
+    enabled: true
+    name: "llama3.2:3b"  # Same model, but with RAG context
+    purpose: "Travel guides and factual information with low hallucination"
+    response_time: "3-5 seconds"
+    embedding_model: "nomic-embed-text"  # For vector embeddings
+
+  # Deep reasoning model (overnight complex tasks)
+  reasoning_model:
+    enabled: true
+    name: "qwen2.5:14b"  # Larger model for complex reasoning
+    purpose: "Multi-step planning, research, complex analysis"
+    response_time: "minutes to hours"
+    chain_of_thought: true
+
+  # RAG (Retrieval Augmented Generation) Configuration
+  rag:
+    enabled: true
+    vector_db: "chromadb"
+    vector_db_port: 8000
+    embedding_model: "nomic-embed-text"
+    chunk_size: 1000
+    chunk_overlap: 200
+    top_k_results: 5  # Number of relevant chunks to retrieve
+
+    # Document collections
+    collections:
+      travel_guides:
+        enabled: true
+        description: "Travel guides and destination information"
+        path: "{{ storage.appdata_dir }}/knowledge/travel_guides"
+      manuals:
+        enabled: false
+        description: "Technical manuals and documentation"
+        path: "{{ storage.appdata_dir }}/knowledge/manuals"
+
+  # Task Queue for overnight processing
+  task_queue:
+    enabled: true
+    backend: "n8n"  # Use n8n for workflow orchestration
+    schedule:
+      quiet_hours_start: "23:00"  # Start overnight tasks at 11 PM
+      quiet_hours_end: "07:00"    # Finish by 7 AM
+    max_concurrent_tasks: 2  # Don't overload the Pi

@@ -1,0 +1,97 @@
+# AI Models Stack - Multi-Model Architecture
+# Fast voice, accurate knowledge (RAG), deep reasoning
+
+services:
+{% if voice_assistant.enabled | default(false) %}
+
+  # ============================================================================
+  # CHROMADB - Vector Database for RAG
+  # ============================================================================
+  {% if voice_assistant.knowledge_model.enabled | default(false) -%}
+  chromadb:
+    image: "chromadb/chroma:latest"
+    container_name: chromadb
+    restart: unless-stopped
+    ports:
+      - "{{ voice_assistant.rag.vector_db_port | default(8000) }}:8000"
+    volumes:
+      - "{{ storage.appdata_dir }}/chromadb:/chroma/chroma"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    networks:
+      automation_network:
+    labels:
+      - "traefik.enable=false"  # Internal service only
+  {% endif %}
+
+  # ============================================================================
+  # RAG SERVICE - Document Retrieval & Knowledge Base
+  # ============================================================================
+  {% if voice_assistant.knowledge_model.enabled | default(false) -%}
+  rag-service:
+    image: "python:3.11-slim"
+    container_name: rag-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"  # API port for RAG queries
+    volumes:
+      - "{{ storage.appdata_dir }}/rag-service:/app"
+      - "{{ storage.appdata_dir }}/knowledge:/knowledge:ro"  # Read-only access to documents
+    working_dir: /app
+    command: python3 -u rag_server.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - OLLAMA_HOST=ollama
+      - OLLAMA_PORT=11434
+      - EMBEDDING_MODEL={{ voice_assistant.rag.embedding_model | default('nomic-embed-text') }}
+      - LLM_MODEL={{ voice_assistant.knowledge_model.name | default('llama3.2:3b') }}
+      - CHUNK_SIZE={{ voice_assistant.rag.chunk_size | default(1000) }}
+      - CHUNK_OVERLAP={{ voice_assistant.rag.chunk_overlap | default(200) }}
+      - TOP_K={{ voice_assistant.rag.top_k_results | default(5) }}
+    networks:
+      automation_network:
+    depends_on:
+      - chromadb
+      - ollama
+    labels:
+      - "traefik.enable=false"  # Internal service only
+  {% endif %}
+
+  # ============================================================================
+  # DOCUMENT INGESTION - Process and index documents
+  # ============================================================================
+  {% if voice_assistant.knowledge_model.enabled | default(false) -%}
+  doc-ingestion:
+    image: "python:3.11-slim"
+    container_name: doc-ingestion
+    restart: "no"  # Run on-demand only
+    profiles: ["ingestion"]  # Only run when explicitly called
+    volumes:
+      - "{{ storage.appdata_dir }}/rag-service:/app"
+      - "{{ storage.appdata_dir }}/knowledge:/knowledge:ro"
+    working_dir: /app
+    command: python3 -u ingest_documents.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - OLLAMA_HOST=ollama
+      - OLLAMA_PORT=11434
+      - EMBEDDING_MODEL={{ voice_assistant.rag.embedding_model | default('nomic-embed-text') }}
+      - KNOWLEDGE_PATH=/knowledge
+    networks:
+      automation_network:
+    depends_on:
+      - chromadb
+      - ollama
+  {% endif %}
+
+{% endif %}
+
+networks:
+  automation_network:
+    external: true
+    name: automation_network
