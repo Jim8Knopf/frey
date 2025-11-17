@@ -1,5 +1,9 @@
 # AI System Quick Start Guide
 
+## Overview
+
+The Frey AI system is **fully automated via Infrastructure as Code** - no manual configuration needed!
+
 ## Quick Setup (5 Minutes)
 
 ### 1. Enable AI Features
@@ -17,11 +21,20 @@ task_scheduler:
   enabled: true
 ```
 
-### 2. Deploy
+### 2. Deploy (Automated IaC)
 
 ```bash
 ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
 ```
+
+**What this does automatically:**
+- ✅ Deploys all Docker containers (Home Assistant, Ollama, Whisper, Piper, OpenWakeWord)
+- ✅ Configures Home Assistant with complete voice pipeline
+- ✅ Sets up Ollama conversation agent with function calling
+- ✅ Pulls all required AI models (llama3.2:3b, nomic-embed-text, qwen2.5:14b)
+- ✅ Deploys RAG service and task scheduler
+- ✅ Configures shell commands and scripts
+- ✅ **Everything ready to use - no manual UI configuration!**
 
 ### 3. Load Your Documents
 
@@ -115,6 +128,7 @@ date
 
 ## Full Documentation
 
+- **IaC setup guide**: [VOICE_ASSISTANT_IAC.md](VOICE_ASSISTANT_IAC.md) ⭐ **Start here for automated setup**
 - Architecture details: [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md)
 - Voice assistant setup: [VOICE_ASSISTANT.md](VOICE_ASSISTANT.md)
 - Voice assistant quickstart: [VOICE_ASSISTANT_QUICKSTART.md](VOICE_ASSISTANT_QUICKSTART.md)

@@ -53,13 +53,67 @@
         group: root
         mode: '0755'
 
-    - name: Deploy Home Assistant voice configuration
+    - name: Create Home Assistant packages directory
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/homeassistant/packages"
+        state: directory
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0755'
+
+    - name: Deploy Home Assistant main configuration
       ansible.builtin.template:
-        src: homeassistant-voice-config.yaml.j2
-        dest: "{{ storage.appdata_dir }}/homeassistant/voice_assistant_config.yaml"
+        src: homeassistant/configuration.yaml.j2
+        dest: "{{ storage.appdata_dir }}/homeassistant/configuration.yaml"
         owner: "{{ automation.user.name }}"
         group: "{{ automation.group.name }}"
         mode: '0644'
+      notify: Restart Home Assistant
+
+    - name: Deploy Home Assistant automations file
+      ansible.builtin.template:
+        src: homeassistant/automations.yaml.j2
+        dest: "{{ storage.appdata_dir }}/homeassistant/automations.yaml"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+        force: no  # Don't overwrite if user has added automations via UI
+
+    - name: Deploy Home Assistant scripts file
+      ansible.builtin.template:
+        src: homeassistant/scripts.yaml.j2
+        dest: "{{ storage.appdata_dir }}/homeassistant/scripts.yaml"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+        force: no  # Don't overwrite if user has added scripts via UI
+
+    - name: Deploy Home Assistant scenes file
+      ansible.builtin.template:
+        src: homeassistant/scenes.yaml.j2
+        dest: "{{ storage.appdata_dir }}/homeassistant/scenes.yaml"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+        force: no  # Don't overwrite if user has added scenes via UI
+
+    - name: Deploy Home Assistant secrets file
+      ansible.builtin.template:
+        src: homeassistant/secrets.yaml.j2
+        dest: "{{ storage.appdata_dir }}/homeassistant/secrets.yaml"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0600'
+        force: no  # Don't overwrite existing secrets
+
+    - name: Deploy Frey Voice Assistant package
+      ansible.builtin.template:
+        src: homeassistant/packages/frey_voice.yaml.j2
+        dest: "{{ storage.appdata_dir }}/homeassistant/packages/frey_voice.yaml"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+      notify: Restart Home Assistant
 
 - name: Start automation stack containers using compose
   community.docker.docker_compose_v2:

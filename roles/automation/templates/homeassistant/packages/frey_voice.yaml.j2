@@ -1,0 +1,238 @@
+# ==================================================================================
+# FREY VOICE ASSISTANT PACKAGE
+# ==================================================================================
+# Complete voice assistant configuration deployed via Ansible
+# Includes: Ollama conversation agent, shell commands, intent scripts, voice pipeline
+
+# ==================================================================================
+# SHELL COMMANDS - System Control via Voice
+# ==================================================================================
+shell_command:
+  # Docker container management (calls frey-docker-control.sh)
+  frey_docker: "/usr/local/bin/frey-docker-control {{ '{{' }} action {{ '}}' }} {{ '{{' }} service {{ '}}' }}"
+
+  # System information
+  frey_system_info: "echo 'System Status:' && uptime && echo '' && free -h && echo '' && df -h /opt/frey"
+  frey_list_services: "/usr/local/bin/frey-docker-control list"
+
+{% if rag.enabled | default(false) %}
+  # RAG knowledge base query (for travel guides and documents)
+  frey_query_knowledge: "curl -s -X POST http://rag-service:8001/query -H 'Content-Type: application/json' -d '{\"query\": \"{{ '{{' }} query {{ '}}' }}\", \"collection\": \"{{ '{{' }} collection | default('travel_guides') {{ '}}' }}\"}' | jq -r '.answer'"
+{% endif %}
+
+# ==================================================================================
+# OLLAMA CONVERSATION INTEGRATION
+# ==================================================================================
+# Uses Ollama for natural language understanding and function calling
+conversation:
+  - platform: ollama
+    url: "http://ollama:11434"
+    model: "{{ voice_assistant.ollama_model }}"
+    prompt: |
+      You are Frey, a helpful voice assistant for managing a home server.
+
+      You can control Docker services using the frey_docker service with two parameters:
+      - action: start, stop, restart, or status
+      - service: ANY container name or partial match
+
+      The system automatically discovers all containers, so users can control:
+      - Any media service (jellyfin, sonarr, radarr, bazarr, lidarr, prowlarr, qbittorrent, audiobookshelf, jellyseerr)
+      - Infrastructure (portainer, traefik, dockge, authentik, adguardhome)
+      - Automation (homeassistant, n8n, ollama)
+      - Monitoring (grafana, prometheus, uptime-kuma)
+      - Or ANY other container they have running
+
+      You can also:
+      - Get system info: call frey_system_info service (no parameters)
+      - List all services: call frey_list_services service (no parameters)
+{% if rag.enabled | default(false) %}
+      - Query knowledge base: call frey_query_knowledge service (parameters: query, collection)
+
+      For knowledge base queries, use the RAG system for factual questions about:
+      - Travel destinations, guides, and recommendations
+      - Any documents that were ingested into the knowledge base
+      This provides accurate answers with low hallucination by retrieving from actual documents.
+{% endif %}
+
+      The system uses fuzzy matching for container names.
+
+      Examples of how to respond:
+      - User: "Start Jellyfin" → Call service: script.frey_docker_start with service="jellyfin"
+      - User: "Is Sonarr running?" → Call service: script.frey_docker_status with service="sonarr"
+      - User: "What services are running?" → Call service: script.frey_list_services
+{% if rag.enabled | default(false) %}
+      - User: "What are the best restaurants in Tokyo?" → Call service: script.frey_query_knowledge with query="best restaurants in Tokyo"
+{% endif %}
+
+      Always respond conversationally and confirm actions taken.
+      Keep responses concise since they will be spoken aloud.
+
+      Protected services (cannot be stopped):
+      - homeassistant, ollama, piper, wyoming-whisper, openwakeword, traefik
+      If user tries to stop these, explain they're critical and can't be stopped via voice.
+    options:
+      temperature: 0.7
+      top_p: 0.9
+      num_ctx: 4096
+
+# ==================================================================================
+# SCRIPTS - Function Calling Interface
+# ==================================================================================
+# These scripts bridge between Ollama's conversation agent and shell commands
+# Ollama calls these scripts, which then execute the shell commands
+
+script:
+  # Docker start
+  frey_docker_start:
+    alias: "Start Docker Container"
+    fields:
+      service:
+        description: "Service/container name to start"
+        example: "jellyfin"
+    sequence:
+      - service: shell_command.frey_docker
+        data:
+          action: "start"
+          service: "{{ '{{' }} service {{ '}}' }}"
+
+  # Docker stop
+  frey_docker_stop:
+    alias: "Stop Docker Container"
+    fields:
+      service:
+        description: "Service/container name to stop"
+        example: "sonarr"
+    sequence:
+      - service: shell_command.frey_docker
+        data:
+          action: "stop"
+          service: "{{ '{{' }} service {{ '}}' }}"
+
+  # Docker restart
+  frey_docker_restart:
+    alias: "Restart Docker Container"
+    fields:
+      service:
+        description: "Service/container name to restart"
+        example: "radarr"
+    sequence:
+      - service: shell_command.frey_docker
+        data:
+          action: "restart"
+          service: "{{ '{{' }} service {{ '}}' }}"
+
+  # Docker status
+  frey_docker_status:
+    alias: "Check Docker Container Status"
+    fields:
+      service:
+        description: "Service/container name to check"
+        example: "jellyfin"
+    sequence:
+      - service: shell_command.frey_docker
+        data:
+          action: "status"
+          service: "{{ '{{' }} service {{ '}}' }}"
+
+  # List services
+  frey_list_services:
+    alias: "List All Docker Containers"
+    sequence:
+      - service: shell_command.frey_list_services
+
+  # System info
+  frey_system_info:
+    alias: "Get System Information"
+    sequence:
+      - service: shell_command.frey_system_info
+
+{% if rag.enabled | default(false) %}
+  # Query knowledge base
+  frey_query_knowledge:
+    alias: "Query RAG Knowledge Base"
+    fields:
+      query:
+        description: "Question to answer from knowledge base"
+        example: "What are the best restaurants in Tokyo?"
+      collection:
+        description: "Collection name (optional)"
+        example: "travel_guides"
+        default: "travel_guides"
+    sequence:
+      - service: shell_command.frey_query_knowledge
+        data:
+          query: "{{ '{{' }} query {{ '}}' }}"
+          collection: "{{ '{{' }} collection {{ '}}' }}"
+{% endif %}
+
+# ==================================================================================
+# ASSIST PIPELINE CONFIGURATION
+# ==================================================================================
+# Defines the complete voice pipeline: wake word → STT → conversation → TTS
+
+assist_pipeline:
+  - name: "Frey Voice Assistant"
+    language: "en"
+    conversation_engine: "ollama"
+    conversation_language: "en"
+    stt_engine: "wyoming_whisper"
+    stt_language: "en"
+    tts_engine: "piper"
+    tts_language: "en-US"
+    tts_voice: "{{ homeassistant.services.piper.default_voice | default('en_US-lessac-medium') }}"
+    wake_word_entity: "wake_word.openwakeword_{{ voice_assistant.wake_word }}"
+    wake_word_id: "{{ voice_assistant.wake_word }}"
+
+# ==================================================================================
+# WAKE WORD CONFIGURATION
+# ==================================================================================
+# OpenWakeWord integration via Wyoming Protocol
+
+wyoming:
+  - name: "OpenWakeWord"
+    uri: "tcp://openwakeword:{{ voice_assistant.openwakeword_port }}"
+    type: "wake_word"
+
+# ==================================================================================
+# STT (Speech-to-Text) CONFIGURATION
+# ==================================================================================
+# Whisper integration via Wyoming Protocol
+
+stt:
+  - platform: wyoming
+    name: "Wyoming Whisper"
+    uri: "tcp://wyoming-whisper:{{ homeassistant.services.wyoming_whisper.port | default(10300) }}"
+
+# ==================================================================================
+# TTS (Text-to-Speech) CONFIGURATION
+# ==================================================================================
+# Piper integration via Wyoming Protocol
+
+tts:
+  - platform: wyoming
+    name: "Piper"
+    uri: "tcp://piper:{{ homeassistant.services.piper.port | default(10200) }}"
+    voice: "{{ homeassistant.services.piper.default_voice | default('en_US-lessac-medium') }}"
+
+# ==================================================================================
+# AUTOMATIONS (Optional)
+# ==================================================================================
+# Add any voice-related automations here
+
+automation frey_voice:
+  # Example: Log when voice commands are processed
+  - id: frey_voice_command_logger
+    alias: "Log Frey Voice Commands"
+    trigger:
+      - platform: event
+        event_type: script_started
+        event_data:
+          domain: script
+    condition:
+      - condition: template
+        value_template: "{{ '{{' }} 'frey_' in trigger.event.data.service {{ '}}' }}"
+    action:
+      - service: system_log.write
+        data:
+          message: "Voice command executed: {{ '{{' }} trigger.event.data.service {{ '}}' }}"
+          level: info

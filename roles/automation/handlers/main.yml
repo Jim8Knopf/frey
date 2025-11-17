@@ -1,2 +1,9 @@
 ---
 # automation handlers
+
+- name: Restart Home Assistant
+  community.docker.docker_container:
+    name: homeassistant
+    state: started
+    restart: true
+  when: features.homeassistant | default(false)
