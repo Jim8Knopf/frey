@@ -97,39 +97,6 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/n8n:/home/node/.n8n"
 
-  siyuan:
-    image: {{ automation.services.siyuan.image }}
-    container_name: siyuan
-    user: "{{ automation.user.uid }}:{{ automation.group.gid }}"
-    restart: unless-stopped
-    networks:
-      - proxy
-      - localdns
-      - automation_network
-    ports:
-      - "{{ automation.services.siyuan.port }}:6806"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=proxy"
-      - "traefik.http.routers.siyuan.rule=Host(`notes.frey`)"
-      - "traefik.http.routers.siyuan.entrypoints=web,websecure"
-      - "traefik.http.services.siyuan.loadbalancer.server.port=6806"
-      # Enable HTTPS redirect
-      - "traefik.http.routers.siyuan.tls=true"
-      - "traefik.http.routers.siyuan-http.rule=Host(`notes.frey`)"
-      - "traefik.http.routers.siyuan-http.entrypoints=web"
-      - "traefik.http.routers.siyuan-http.middlewares=https-redirect"
-      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
-    environment:
-      - TZ={{ network.timezone }}
-      # SiYuan access authorization mode: 0=read-write without auth (local network safe)
-      - SIYUAN_ACCESS_AUTH_CODE=
-    command:
-      - "--workspace=/siyuan/workspace"
-      - "--accessAuthCode="
-    volumes:
-      - "{{ storage.appdata_dir }}/siyuan/workspace:/siyuan/workspace"
-
 {% if features.homeassistant | default(false) %}
   # ==============================================================================
   # HOME ASSISTANT - HOME AUTOMATION PLATFORM

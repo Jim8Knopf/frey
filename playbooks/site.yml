@@ -11,6 +11,7 @@
 #   - Monitoring (Grafana, Prometheus, Loki, Uptime Kuma, Speedtest Tracker)
 #   - Photos (Immich with face recognition and mobile sync)
 #   - Cookbook (Mealie recipe manager)
+#   - Notes (SiYuan knowledge management with MCP API)
 #   - WiFi AP (FreyHub access point with automatic roaming)
 #
 # Deployment is controlled via feature toggles in group_vars/all/main.yml
@@ -22,7 +23,7 @@
 #   Dry run:             ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check
 #
 # Tags available: wifi, security, docker, infrastructure, monitoring, media,
-#                 automation, homeassistant, voice, photos, immich, cookbook, backup
+#                 automation, homeassistant, voice, photos, immich, cookbook, notes, backup
 # ==============================================================================
 
 - name: Deploy Enhanced Raspberry Pi 5 Off-Grid Media & AI Hub
@@ -515,6 +516,37 @@
     - role: cookbook
       tags: [cookbook, services]
       when: features.cookbook
+
+    # --------------------------------------------------------------------------
+    # Notes Stack (SiYuan)
+    # --------------------------------------------------------------------------
+    # Deploys: Personal knowledge management and note-taking system
+    #
+    # Services:
+    #   - SiYuan (Note-Taking):
+    #       Block-based editor (Notion-like)
+    #       Bidirectional links and graph view
+    #       Markdown storage (future-proof)
+    #       REST API for MCP/LLM integration
+    #       Perfect for DnD world-building and complex notes
+    #       Port 6806, URL: http://notes.frey
+    #
+    # Features:
+    #   - Privacy-first, self-hosted
+    #   - Block-based editing
+    #   - Graph visualization
+    #   - Templates and organization
+    #   - Full-text search
+    #   - Voice assistant integration ready
+    #
+    # User/Group: notes_manager (uid: 74695)
+    # Configuration: notes.services.* in main.yml
+    # Storage: /opt/frey/appdata/siyuan/workspace
+    # API Documentation: http://notes.frey/api/doc
+    # --------------------------------------------------------------------------
+    - role: notes
+      tags: [notes, services]
+      when: features.notes
 
     # --------------------------------------------------------------------------
     # Backup Stack (Future Enhancement)

@@ -17,6 +17,7 @@ features:
   bluetooth_audio: true  # Bluetooth headphones/speakers with auto-connection
   backup: false  # Automated backup system
   cookbook: true
+  notes: true  # SiYuan note-taking and knowledge management
   power_monitoring: false  # Deprecated - use system.power_monitoring.enabled instead
   voice_assistant: false  # Deprecated - integrated into homeassistant role
 
@@ -161,8 +162,7 @@ security:
     (features.automation | ternary([
       automation.services.ollama.port,
       automation.services.openwebui.port,
-      automation.services.n8n.port,
-      automation.services.siyuan.port
+      automation.services.n8n.port
     ], [])) +
     (features.immich | ternary([
       ports.photos_home.immich
@@ -185,6 +185,9 @@ security:
     ], [])) +
     (features.cookbook | ternary([
       cookbook.services.mealie.port
+    ], [])) +
+    (features.notes | ternary([
+      notes.services.siyuan.port
     ], [])) +
     (features.voice_assistant | ternary([
       ports.voice_assistant.piper
@@ -239,10 +242,6 @@ automation:
       enabled: true
       image: "n8nio/n8n:latest"
       port: 5678
-    siyuan:
-      enabled: true
-      image: "b3log/siyuan:latest"
-      port: 6806
 
 # ================================
 # VOICE ASSISTANT
@@ -864,6 +863,26 @@ cookbook:
       # Features
       enable_meal_planner: true
       recipe_scraping: true
+
+# ===================================================================
+# NOTES - SIYUAN PERSONAL KNOWLEDGE MANAGEMENT
+# ===================================================================
+notes:
+  group:
+    name: notes
+    gid: 74695
+  user:
+    name: notes_manager
+    uid: 74695
+    groups: "{{ notes.group.name }}"
+  dir: "{{ storage.base_dir }}/notes"
+
+  services:
+    siyuan:
+      enabled: true
+      version: "latest"
+      image: "b3log/siyuan:{{ notes.services.siyuan.version }}"
+      port: 6806
 
 # ===================================================================
 # HOME ASSISTANT - HOME AUTOMATION PLATFORM

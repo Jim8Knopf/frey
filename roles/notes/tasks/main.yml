@@ -1,0 +1,127 @@
+---
+# ==============================================================================
+# NOTES ROLE - SIYUAN PERSONAL KNOWLEDGE MANAGEMENT
+# ==============================================================================
+# Deploys SiYuan note-taking system with REST API for MCP/LLM integration
+#
+# SERVICES:
+# - siyuan: Block-based note editor with graph view and markdown storage
+#
+# FEATURES:
+# - Privacy-first, self-hosted knowledge management
+# - Block-based editing (Notion-like)
+# - Bidirectional links and graph visualization
+# - Markdown storage (future-proof)
+# - REST API for voice assistant/MCP integration
+# - Perfect for DnD world-building and complex notes
+# ==============================================================================
+
+- name: Setup notes stack user and directories
+  include_tasks: "../playbooks/templates/create_user.yml"
+  vars:
+    stack: "notes"
+    folders: [siyuan]
+
+- name: Pre-pull SiYuan image
+  community.docker.docker_image:
+    name: "{{ notes.services.siyuan.image }}"
+    source: pull
+    state: present
+    timeout: 300
+  register: image_pull
+  retries: 2
+  delay: 10
+  failed_when: false
+  tags:
+    - images
+
+- name: Report failed image pull
+  ansible.builtin.debug:
+    msg: "WARNING: Failed to pull SiYuan image. Will retry during compose."
+  when: image_pull.failed | default(false)
+
+- name: Deploy notes stack compose file
+  ansible.builtin.template:
+    src: docker-compose-notes.yml.j2
+    dest: "{{ storage.stacks }}/notes/docker-compose.yml"
+    owner: "{{ notes.user.name }}"
+    group: "{{ notes.group.name }}"
+    mode: '0644'
+
+- name: Validate Docker Compose file syntax
+  ansible.builtin.command:
+    cmd: docker compose -f {{ storage.stacks }}/notes/docker-compose.yml config
+  register: compose_config
+  changed_when: false
+  failed_when: compose_config.rc != 0
+
+- name: Start notes stack containers using compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks }}/notes"
+    state: present
+  register: compose_result
+
+- name: Wait for SiYuan port to accept connections
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ notes.services.siyuan.port | int }}"
+    timeout: 120
+    delay: 5
+    state: started
+  register: siyuan_port_wait
+
+- name: Display SiYuan deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ✅ SiYuan Notes Deployed Successfully
+
+      📝 WEB ACCESS:
+         - Via Traefik: https://notes.{{ network.domain_name }}
+         - Direct: http://{{ network.wifi.ip }}:{{ notes.services.siyuan.port }}
+
+      🤖 API ACCESS (for MCP/Voice Assistant):
+         - API Base: http://notes.{{ network.domain_name }}/api
+         - API Docs: http://notes.{{ network.domain_name }}/api/doc
+
+      📚 KEY API ENDPOINTS:
+         - List notebooks: POST /api/notebook/lsNotebooks
+         - Create note: POST /api/filetree/createDocWithMd
+         - Search notes: POST /api/search/fullTextSearchBlock
+         - Get block: POST /api/block/getBlockKramdown
+
+      🎯 PERFECT FOR:
+         - DnD world-building (NPCs, locations, lore)
+         - Personal knowledge base
+         - Interconnected notes with graph view
+         - Voice assistant note creation
+         - Block-based organization
+
+      🔑 FIRST-TIME SETUP:
+         1. Access https://notes.{{ network.domain_name }}
+         2. Create your first notebook
+         3. Start adding notes with [[wiki-style links]]
+         4. Explore graph view to visualize connections
+
+      💡 FEATURES:
+         - Block-based editing (every paragraph is a block)
+         - Bidirectional links [[like this]]
+         - Graph visualization
+         - Templates for NPCs, locations, quests
+         - Markdown export
+         - Full-text search
+
+      🔗 VOICE ASSISTANT INTEGRATION:
+         Example voice commands (via MCP server):
+         - "Create a note about the Red Dragon"
+         - "Search my DnD notes for Waterdeep"
+         - "Add to my campaign notes: [content]"
+
+      📦 STORAGE:
+         - Workspace: {{ storage.appdata_dir }}/siyuan/workspace
+         - All notes stored as markdown blocks
+         - Easy to backup and migrate
+
+      🔧 MANAGEMENT:
+         - Logs: docker compose -C {{ storage.stacks }}/notes logs -f
+         - Restart: docker compose -C {{ storage.stacks }}/notes restart
+         - Update: docker compose -C {{ storage.stacks }}/notes pull && up -d

@@ -1,0 +1,44 @@
+services:
+  siyuan:
+    image: {{ notes.services.siyuan.image }}
+    container_name: siyuan
+    user: "{{ notes.user.uid }}:{{ notes.group.gid }}"
+    restart: unless-stopped
+    networks:
+      - proxy
+      - localdns
+      - notes_network
+    ports:
+      - "{{ notes.services.siyuan.port }}:6806"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.siyuan.rule=Host(`notes.{{ network.domain_name }}`)"
+      - "traefik.http.routers.siyuan.entrypoints=web,websecure"
+      - "traefik.http.services.siyuan.loadbalancer.server.port=6806"
+      # Enable HTTPS redirect
+      - "traefik.http.routers.siyuan.tls=true"
+      - "traefik.http.routers.siyuan-http.rule=Host(`notes.{{ network.domain_name }}`)"
+      - "traefik.http.routers.siyuan-http.entrypoints=web"
+      - "traefik.http.routers.siyuan-http.middlewares=https-redirect"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+    environment:
+      - TZ={{ network.timezone }}
+      # SiYuan access authorization mode: no auth for local network
+      - SIYUAN_ACCESS_AUTH_CODE=
+    command:
+      - "--workspace=/siyuan/workspace"
+      - "--accessAuthCode="
+    volumes:
+      - "{{ storage.appdata_dir }}/siyuan/workspace:/siyuan/workspace"
+
+networks:
+  proxy:
+    external: true
+  localdns:
+    external: true
+  notes_network:
+    name: notes_network
+    ipam:
+      config:
+        - subnet: 10.20.3.0/24
