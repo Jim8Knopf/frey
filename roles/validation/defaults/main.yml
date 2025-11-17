@@ -1,0 +1,20 @@
+---
+# Validation role default variables
+
+# Common weak passwords to check against
+validation_common_weak_passwords:
+  - "password"
+  - "12345678"
+  - "password123"
+  - "admin123"
+  - "qwerty123"
+  - "letmein"
+  - "welcome"
+  - "raspberry"
+  - "raspberrypi"
+  - "changeme"
+  - "default"
+
+# Validation settings
+validation_strict_mode: false  # Set to true to fail on warnings
+validation_skip_secrets: false  # Set to true to skip secrets validation (not recommended)

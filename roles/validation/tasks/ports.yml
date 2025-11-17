@@ -1,0 +1,160 @@
+---
+# Port conflict detection validation tasks
+
+- name: Build list of all configured ports
+  ansible.builtin.set_fact:
+    all_ports: []
+
+- name: Collect infrastructure service ports
+  when: features.infrastructure | default(false)
+  block:
+    - name: Add Traefik ports
+      when: infrastructure.services.traefik.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'traefik-web', 'port': 80}, {'service': 'traefik-websecure', 'port': 443}, {'service': 'traefik-dashboard', 'port': infrastructure.services.traefik.port | default(8082)}] }}"
+
+    - name: Add Portainer port
+      when: infrastructure.services.portainer.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'portainer', 'port': infrastructure.services.portainer.port | default(9000)}] }}"
+
+    - name: Add Dockge port
+      when: infrastructure.services.dockge.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'dockge', 'port': infrastructure.services.dockge.port | default(5001)}] }}"
+
+- name: Collect media service ports
+  when: features.media | default(false)
+  block:
+    - name: Add Jellyfin port
+      when: media.services.jellyfin.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'jellyfin', 'port': media.services.jellyfin.port | default(8096)}] }}"
+
+    - name: Add Sonarr port
+      when: media.services.sonarr.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'sonarr', 'port': media.services.sonarr.port | default(8989)}] }}"
+
+    - name: Add Radarr port
+      when: media.services.radarr.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'radarr', 'port': media.services.radarr.port | default(7878)}] }}"
+
+    - name: Add Prowlarr port
+      when: media.services.prowlarr.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'prowlarr', 'port': media.services.prowlarr.port | default(9696)}] }}"
+
+    - name: Add Bazarr port
+      when: media.services.bazarr.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'bazarr', 'port': media.services.bazarr.port | default(6767)}] }}"
+
+    - name: Add Readarr port
+      when: media.services.readarr.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'readarr', 'port': media.services.readarr.port | default(8787)}] }}"
+
+    - name: Add Lidarr port
+      when: media.services.lidarr.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'lidarr', 'port': media.services.lidarr.port | default(8686)}] }}"
+
+    - name: Add qBittorrent port
+      when: media.services.qbittorrent.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'qbittorrent', 'port': media.services.qbittorrent.port | default(8090)}] }}"
+
+    - name: Add NZBGet port
+      when: media.services.nzbget.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'nzbget', 'port': media.services.nzbget.port | default(6789)}] }}"
+
+- name: Collect monitoring service ports
+  when: features.monitoring | default(false)
+  block:
+    - name: Add Grafana port
+      when: monitoring.services.grafana.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'grafana', 'port': monitoring.services.grafana.port | default(3000)}] }}"
+
+    - name: Add Prometheus port
+      when: monitoring.services.prometheus.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'prometheus', 'port': monitoring.services.prometheus.port | default(9090)}] }}"
+
+    - name: Add Loki port
+      when: monitoring.services.loki.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'loki', 'port': monitoring.services.loki.port | default(3100)}] }}"
+
+- name: Collect automation service ports
+  when: features.automation | default(false)
+  block:
+    - name: Add Ollama port
+      when: automation.services.ollama.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'ollama', 'port': automation.services.ollama.port | default(11434)}] }}"
+
+    - name: Add Open WebUI port
+      when: automation.services.open_webui.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'open-webui', 'port': automation.services.open_webui.port | default(8080)}] }}"
+
+    - name: Add n8n port
+      when: automation.services.n8n.enabled | default(false)
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'n8n', 'port': automation.services.n8n.port | default(5678)}] }}"
+
+- name: Collect landing page port
+  when: features.landing_page | default(false)
+  block:
+    - name: Add landing page port
+      ansible.builtin.set_fact:
+        all_ports: "{{ all_ports + [{'service': 'landing-page', 'port': landing_page.port | default(8081)}] }}"
+
+- name: Check for port conflicts
+  when: all_ports | length > 0
+  block:
+    - name: Extract port numbers
+      ansible.builtin.set_fact:
+        port_numbers: "{{ all_ports | map(attribute='port') | list }}"
+
+    - name: Find duplicate ports
+      ansible.builtin.set_fact:
+        duplicate_ports: "{{ port_numbers | select('in', port_numbers | unique | reject('in', port_numbers | difference(port_numbers | unique)) | list) | list }}"
+
+    - name: Get services using duplicate ports
+      when: duplicate_ports | length > 0
+      ansible.builtin.set_fact:
+        conflicting_services: "{{ all_ports | selectattr('port', 'in', duplicate_ports) | list }}"
+
+    - name: Assert no port conflicts exist
+      ansible.builtin.assert:
+        that:
+          - duplicate_ports | length == 0
+        fail_msg: |
+          PORT CONFLICT DETECTED!
+          The following services are configured to use the same port(s):
+          {% for port in duplicate_ports | unique %}
+          Port {{ port }}:
+          {% for svc in all_ports | selectattr('port', 'equalto', port) | list %}
+            - {{ svc.service }}
+          {% endfor %}
+          {% endfor %}
+          Please reconfigure the services to use unique ports.
+        success_msg: "✓ No port conflicts detected among {{ all_ports | length }} configured services"
+
+- name: Validate firewall ports are integers
+  when: security.firewall_tcp_ports is defined
+  block:
+    - name: Check all firewall ports are valid integers
+      ansible.builtin.assert:
+        that:
+          - item | int > 0
+          - item | int < 65536
+        fail_msg: "Invalid firewall port: {{ item }}. Ports must be between 1 and 65535."
+        success_msg: "✓ Firewall port {{ item }} is valid"
+      loop: "{{ security.firewall_tcp_ports }}"
+      when: security.firewall_tcp_ports | length > 0

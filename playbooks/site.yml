@@ -21,7 +21,7 @@
 #   Specific stack:      ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media
 #   Dry run:             ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check
 #
-# Tags available: wifi, security, docker, infrastructure, monitoring, media,
+# Tags available: validation, wifi, security, docker, infrastructure, monitoring, media,
 #                 automation, homeassistant, voice, photos, immich, cookbook, backup
 # ==============================================================================
 
@@ -104,6 +104,32 @@
   # ==============================================================================
 
   roles:
+    # ==========================================================================
+    # VALIDATION LAYER - Configuration Validation
+    # ==========================================================================
+
+    # --------------------------------------------------------------------------
+    # Input Validation (Configuration Safety Checks)
+    # --------------------------------------------------------------------------
+    # Validates: Configuration before deployment to prevent misconfigurations
+    #
+    # Checks:
+    #   - Network configuration (subnet overlaps, CIDR format, DHCP ranges)
+    #   - Port conflicts across all enabled services
+    #   - Feature dependencies (e.g., landing page requires infrastructure)
+    #   - Storage paths are absolute and valid
+    #   - Secrets and credentials meet security requirements
+    #   - User/Group ID uniqueness and valid ranges
+    #
+    # Validation failures halt deployment before any changes are made
+    # Run validation only: --tags validation
+    # Skip validation (not recommended): --skip-tags validation
+    #
+    # Documentation: roles/validation/README.md
+    # --------------------------------------------------------------------------
+    - role: validation
+      tags: [validation, always]
+
     # ==========================================================================
     # NETWORK LAYER - WiFi Access Point & Security
     # ==========================================================================

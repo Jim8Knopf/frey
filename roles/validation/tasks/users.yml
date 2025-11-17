@@ -1,0 +1,209 @@
+---
+# User and group ID validation tasks
+
+- name: Build list of all UIDs and GIDs
+  ansible.builtin.set_fact:
+    all_uids: []
+    all_gids: []
+    all_users: []
+    all_groups: []
+
+- name: Collect infrastructure user/group IDs
+  when: features.infrastructure | default(false)
+  block:
+    - name: Add infrastructure UIDs and GIDs
+      ansible.builtin.set_fact:
+        all_uids: "{{ all_uids + [{'stack': 'infrastructure', 'user': infrastructure.user.name, 'uid': infrastructure.user.uid}] }}"
+        all_gids: "{{ all_gids + [{'stack': 'infrastructure', 'group': infrastructure.group.name, 'gid': infrastructure.group.gid}] }}"
+        all_users: "{{ all_users + [infrastructure.user.name] }}"
+        all_groups: "{{ all_groups + [infrastructure.group.name] }}"
+
+    - name: Validate infrastructure UID is in valid range
+      ansible.builtin.assert:
+        that:
+          - infrastructure.user.uid is defined
+          - infrastructure.user.uid | int >= 1000
+          - infrastructure.user.uid | int < 65534
+        fail_msg: "infrastructure user UID {{ infrastructure.user.uid }} is outside valid range (1000-65533)"
+        success_msg: "✓ infrastructure UID is valid: {{ infrastructure.user.uid }}"
+
+    - name: Validate infrastructure GID is in valid range
+      ansible.builtin.assert:
+        that:
+          - infrastructure.group.gid is defined
+          - infrastructure.group.gid | int >= 1000
+          - infrastructure.group.gid | int < 65534
+        fail_msg: "infrastructure group GID {{ infrastructure.group.gid }} is outside valid range (1000-65533)"
+        success_msg: "✓ infrastructure GID is valid: {{ infrastructure.group.gid }}"
+
+- name: Collect media user/group IDs
+  when: features.media | default(false)
+  block:
+    - name: Add media UIDs and GIDs
+      ansible.builtin.set_fact:
+        all_uids: "{{ all_uids + [{'stack': 'media', 'user': media.user.name, 'uid': media.user.uid}] }}"
+        all_gids: "{{ all_gids + [{'stack': 'media', 'group': media.group.name, 'gid': media.group.gid}] }}"
+        all_users: "{{ all_users + [media.user.name] }}"
+        all_groups: "{{ all_groups + [media.group.name] }}"
+
+    - name: Validate media UID is in valid range
+      ansible.builtin.assert:
+        that:
+          - media.user.uid is defined
+          - media.user.uid | int >= 1000
+          - media.user.uid | int < 65534
+        fail_msg: "media user UID {{ media.user.uid }} is outside valid range (1000-65533)"
+        success_msg: "✓ media UID is valid: {{ media.user.uid }}"
+
+    - name: Validate media GID is in valid range
+      ansible.builtin.assert:
+        that:
+          - media.group.gid is defined
+          - media.group.gid | int >= 1000
+          - media.group.gid | int < 65534
+        fail_msg: "media group GID {{ media.group.gid }} is outside valid range (1000-65533)"
+        success_msg: "✓ media GID is valid: {{ media.group.gid }}"
+
+- name: Collect monitoring user/group IDs
+  when: features.monitoring | default(false)
+  block:
+    - name: Add monitoring UIDs and GIDs
+      ansible.builtin.set_fact:
+        all_uids: "{{ all_uids + [{'stack': 'monitoring', 'user': monitoring.user.name, 'uid': monitoring.user.uid}] }}"
+        all_gids: "{{ all_gids + [{'stack': 'monitoring', 'group': monitoring.group.name, 'gid': monitoring.group.gid}] }}"
+        all_users: "{{ all_users + [monitoring.user.name] }}"
+        all_groups: "{{ all_groups + [monitoring.group.name] }}"
+
+    - name: Validate monitoring UID is in valid range
+      ansible.builtin.assert:
+        that:
+          - monitoring.user.uid is defined
+          - monitoring.user.uid | int >= 1000
+          - monitoring.user.uid | int < 65534
+        fail_msg: "monitoring user UID {{ monitoring.user.uid }} is outside valid range (1000-65533)"
+        success_msg: "✓ monitoring UID is valid: {{ monitoring.user.uid }}"
+
+    - name: Validate monitoring GID is in valid range
+      ansible.builtin.assert:
+        that:
+          - monitoring.group.gid is defined
+          - monitoring.group.gid | int >= 1000
+          - monitoring.group.gid | int < 65534
+        fail_msg: "monitoring group GID {{ monitoring.group.gid }} is outside valid range (1000-65533)"
+        success_msg: "✓ monitoring GID is valid: {{ monitoring.group.gid }}"
+
+- name: Collect automation user/group IDs
+  when: features.automation | default(false)
+  block:
+    - name: Add automation UIDs and GIDs
+      ansible.builtin.set_fact:
+        all_uids: "{{ all_uids + [{'stack': 'automation', 'user': automation.user.name, 'uid': automation.user.uid}] }}"
+        all_gids: "{{ all_gids + [{'stack': 'automation', 'group': automation.group.name, 'gid': automation.group.gid}] }}"
+        all_users: "{{ all_users + [automation.user.name] }}"
+        all_groups: "{{ all_groups + [automation.group.name] }}"
+
+    - name: Validate automation UID is in valid range
+      ansible.builtin.assert:
+        that:
+          - automation.user.uid is defined
+          - automation.user.uid | int >= 1000
+          - automation.user.uid | int < 65534
+        fail_msg: "automation user UID {{ automation.user.uid }} is outside valid range (1000-65533)"
+        success_msg: "✓ automation UID is valid: {{ automation.user.uid }}"
+
+    - name: Validate automation GID is in valid range
+      ansible.builtin.assert:
+        that:
+          - automation.group.gid is defined
+          - automation.group.gid | int >= 1000
+          - automation.group.gid | int < 65534
+        fail_msg: "automation group GID {{ automation.group.gid }} is outside valid range (1000-65533)"
+        success_msg: "✓ automation GID is valid: {{ automation.group.gid }}"
+
+- name: Check for UID conflicts
+  when: all_uids | length > 0
+  block:
+    - name: Extract UID numbers
+      ansible.builtin.set_fact:
+        uid_numbers: "{{ all_uids | map(attribute='uid') | list }}"
+
+    - name: Find duplicate UIDs
+      ansible.builtin.set_fact:
+        duplicate_uids: "{{ uid_numbers | select('in', uid_numbers | select('in', uid_numbers | groupby('uid') | selectattr('1', 'length', 'gt', 1) | map(attribute='0') | list) | list }}"
+
+    - name: Get users with duplicate UIDs
+      when: duplicate_uids | default([]) | length > 0
+      ansible.builtin.set_fact:
+        conflicting_users: "{{ all_uids | selectattr('uid', 'in', duplicate_uids) | list }}"
+
+    - name: Assert no UID conflicts
+      ansible.builtin.assert:
+        that:
+          - uid_numbers | unique | length == uid_numbers | length
+        fail_msg: |
+          UID CONFLICT DETECTED!
+          The following users have duplicate UIDs:
+          {% for uid in all_uids %}
+          - {{ uid.stack }}: {{ uid.user }} (UID: {{ uid.uid }})
+          {% endfor %}
+
+          Duplicate UIDs found: {{ uid_numbers | select('in', uid_numbers | difference(uid_numbers | unique)) | unique | list }}
+
+          Each user must have a unique UID to prevent permission conflicts.
+        success_msg: "✓ No UID conflicts detected among {{ all_uids | length }} users"
+
+- name: Check for GID conflicts
+  when: all_gids | length > 0
+  block:
+    - name: Extract GID numbers
+      ansible.builtin.set_fact:
+        gid_numbers: "{{ all_gids | map(attribute='gid') | list }}"
+
+    - name: Assert no GID conflicts
+      ansible.builtin.assert:
+        that:
+          - gid_numbers | unique | length == gid_numbers | length
+        fail_msg: |
+          GID CONFLICT DETECTED!
+          The following groups have duplicate GIDs:
+          {% for gid in all_gids %}
+          - {{ gid.stack }}: {{ gid.group }} (GID: {{ gid.gid }})
+          {% endfor %}
+
+          Duplicate GIDs found: {{ gid_numbers | select('in', gid_numbers | difference(gid_numbers | unique)) | unique | list }}
+
+          Each group must have a unique GID to prevent permission conflicts.
+        success_msg: "✓ No GID conflicts detected among {{ all_gids | length }} groups"
+
+- name: Validate username conventions
+  block:
+    - name: Check usernames follow naming conventions
+      ansible.builtin.assert:
+        that:
+          - item is match('^[a-z_][a-z0-9_-]*$')
+          - item | length <= 32
+        fail_msg: "Username '{{ item }}' does not follow Linux naming conventions (lowercase, alphanumeric, underscores, hyphens, max 32 chars)"
+        success_msg: "✓ Username '{{ item }}' follows conventions"
+      loop: "{{ all_users }}"
+      when: all_users | length > 0
+
+- name: Validate group names conventions
+  block:
+    - name: Check group names follow naming conventions
+      ansible.builtin.assert:
+        that:
+          - item is match('^[a-z_][a-z0-9_-]*$')
+          - item | length <= 32
+        fail_msg: "Group name '{{ item }}' does not follow Linux naming conventions (lowercase, alphanumeric, underscores, hyphens, max 32 chars)"
+        success_msg: "✓ Group name '{{ item }}' follows conventions"
+      loop: "{{ all_groups }}"
+      when: all_groups | length > 0
+
+- name: Summary of user/group configuration
+  when: all_uids | length > 0
+  ansible.builtin.debug:
+    msg: |
+      User/Group Configuration Summary:
+      {% for uid in all_uids %}
+      - {{ uid.stack }}: User {{ uid.user }} ({{ uid.uid }}), Group {{ all_gids[loop.index0].group }} ({{ all_gids[loop.index0].gid }})
+      {% endfor %}

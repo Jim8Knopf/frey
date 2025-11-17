@@ -1,0 +1,115 @@
+---
+# Network configuration validation tasks
+
+- name: Validate WiFi AP network configuration
+  when: features.wifi_access_point | default(false)
+  block:
+    - name: Validate WiFi interface is specified
+      ansible.builtin.assert:
+        that:
+          - network.wifi.interface is defined
+          - network.wifi.interface | length > 0
+          - network.wifi.interface != ''
+        fail_msg: "WiFi interface must be specified when WiFi AP is enabled"
+        success_msg: "✓ WiFi interface is specified: {{ network.wifi.interface }}"
+
+    - name: Validate WiFi AP subnet is in valid CIDR format
+      ansible.builtin.assert:
+        that:
+          - network.wifi.subnet is defined
+          - network.wifi.subnet is match('^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$')
+        fail_msg: "WiFi AP subnet must be in valid CIDR format (e.g., 10.20.0.0/24)"
+        success_msg: "✓ WiFi AP subnet format is valid: {{ network.wifi.subnet }}"
+
+    - name: Validate WiFi AP IP address
+      ansible.builtin.assert:
+        that:
+          - network.wifi.ap_ip is defined
+          - network.wifi.ap_ip is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+        fail_msg: "WiFi AP IP address must be valid IPv4 address"
+        success_msg: "✓ WiFi AP IP is valid: {{ network.wifi.ap_ip }}"
+
+    - name: Validate DHCP range is within subnet
+      ansible.builtin.assert:
+        that:
+          - network.wifi.dhcp_range_start is defined
+          - network.wifi.dhcp_range_end is defined
+          - network.wifi.dhcp_range_start is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+          - network.wifi.dhcp_range_end is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+        fail_msg: "DHCP range must be valid IPv4 addresses"
+        success_msg: "✓ DHCP range is valid: {{ network.wifi.dhcp_range_start }} - {{ network.wifi.dhcp_range_end }}"
+
+    - name: Validate WiFi SSID is specified
+      ansible.builtin.assert:
+        that:
+          - network.wifi.ssid is defined
+          - network.wifi.ssid | length > 0
+          - network.wifi.ssid | length <= 32
+        fail_msg: "WiFi SSID must be between 1 and 32 characters"
+        success_msg: "✓ WiFi SSID is valid: {{ network.wifi.ssid }}"
+
+    - name: Validate WiFi password strength
+      ansible.builtin.assert:
+        that:
+          - network.wifi.password is defined
+          - network.wifi.password | length >= 8
+          - network.wifi.password | length <= 63
+        fail_msg: "WiFi password must be between 8 and 63 characters"
+        success_msg: "✓ WiFi password meets minimum requirements"
+
+    - name: Validate WiFi hardware mode
+      ansible.builtin.assert:
+        that:
+          - network.wifi.hw_mode is defined
+          - network.wifi.hw_mode in ['a', 'b', 'g', 'auto']
+        fail_msg: "WiFi hardware mode must be one of: a, b, g, auto"
+        success_msg: "✓ WiFi hardware mode is valid: {{ network.wifi.hw_mode }}"
+
+- name: Validate media network configuration
+  when: features.media | default(false)
+  block:
+    - name: Validate media network subnet format
+      ansible.builtin.assert:
+        that:
+          - media.network.subnet is defined
+          - media.network.subnet is match('^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$')
+        fail_msg: "Media network subnet must be in valid CIDR format"
+        success_msg: "✓ Media network subnet format is valid: {{ media.network.subnet }}"
+
+- name: Check for subnet overlaps between WiFi AP and media network
+  when:
+    - features.wifi_access_point | default(false)
+    - features.media | default(false)
+  block:
+    - name: Extract network prefixes for comparison
+      ansible.builtin.set_fact:
+        wifi_network_prefix: "{{ network.wifi.subnet | split('/') | first | split('.') | first(3) | join('.') }}"
+        media_network_prefix: "{{ media.network.subnet | split('/') | first | split('.') | first(3) | join('.') }}"
+
+    - name: Warn if WiFi and media subnets overlap
+      ansible.builtin.assert:
+        that:
+          - wifi_network_prefix != media_network_prefix
+        fail_msg: |
+          CRITICAL: Network subnet overlap detected!
+          WiFi AP subnet: {{ network.wifi.subnet }}
+          Media network subnet: {{ media.network.subnet }}
+          These subnets must not overlap to prevent routing conflicts.
+        success_msg: "✓ No subnet overlap detected between WiFi AP and media network"
+
+- name: Validate domain name
+  ansible.builtin.assert:
+    that:
+      - network.domain_name is defined
+      - network.domain_name | length > 0
+      - network.domain_name is match('^[a-zA-Z0-9.-]+$')
+    fail_msg: "Domain name must be specified and contain only alphanumeric characters, dots, and hyphens"
+    success_msg: "✓ Domain name is valid: {{ network.domain_name }}"
+
+- name: Validate timezone
+  ansible.builtin.assert:
+    that:
+      - network.timezone is defined
+      - network.timezone | length > 0
+    fail_msg: "Timezone must be specified"
+    success_msg: "✓ Timezone is specified: {{ network.timezone }}"

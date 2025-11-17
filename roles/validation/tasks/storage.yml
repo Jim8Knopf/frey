@@ -1,0 +1,159 @@
+---
+# Storage and file path validation tasks
+
+- name: Validate base storage paths are absolute
+  block:
+    - name: Validate base directory is absolute path
+      ansible.builtin.assert:
+        that:
+          - storage.base_dir is defined
+          - storage.base_dir | length > 0
+          - storage.base_dir is match('^/')
+        fail_msg: "storage.base_dir must be an absolute path starting with /"
+        success_msg: "✓ Base directory is valid: {{ storage.base_dir }}"
+
+    - name: Validate appdata directory is absolute path
+      ansible.builtin.assert:
+        that:
+          - storage.appdata_dir is defined
+          - storage.appdata_dir | length > 0
+          - storage.appdata_dir is match('^/')
+        fail_msg: "storage.appdata_dir must be an absolute path starting with /"
+        success_msg: "✓ Appdata directory is valid: {{ storage.appdata_dir }}"
+
+    - name: Validate stacks directory is absolute path
+      ansible.builtin.assert:
+        that:
+          - storage.stacks is defined
+          - storage.stacks | length > 0
+          - storage.stacks is match('^/')
+        fail_msg: "storage.stacks must be an absolute path starting with /"
+        success_msg: "✓ Stacks directory is valid: {{ storage.stacks }}"
+
+- name: Validate media storage paths
+  when: features.media | default(false)
+  block:
+    - name: Validate media base directory
+      ansible.builtin.assert:
+        that:
+          - media.base_dir is defined
+          - media.base_dir | length > 0
+          - media.base_dir is match('^/')
+        fail_msg: "media.base_dir must be an absolute path starting with /"
+        success_msg: "✓ Media base directory is valid: {{ media.base_dir }}"
+
+    - name: Validate downloads directory
+      ansible.builtin.assert:
+        that:
+          - media.downloads is defined
+          - media.downloads | length > 0
+          - media.downloads is match('^/')
+        fail_msg: "media.downloads must be an absolute path starting with /"
+        success_msg: "✓ Downloads directory is valid: {{ media.downloads }}"
+
+    - name: Validate media type directories
+      ansible.builtin.assert:
+        that:
+          - media[item] is defined
+          - media[item] | length > 0
+          - media[item] is match('^/')
+        fail_msg: "media.{{ item }} must be an absolute path starting with /"
+        success_msg: "✓ media.{{ item }} is valid: {{ media[item] }}"
+      loop:
+        - movies
+        - tv
+        - music
+        - audiobooks
+        - podcasts
+      when: media[item] is defined
+
+- name: Validate monitoring storage paths
+  when: features.monitoring | default(false)
+  block:
+    - name: Validate Prometheus data directory
+      when: monitoring.services.prometheus.enabled | default(false)
+      ansible.builtin.assert:
+        that:
+          - monitoring.prometheus_data is defined
+          - monitoring.prometheus_data | length > 0
+          - monitoring.prometheus_data is match('^/')
+        fail_msg: "monitoring.prometheus_data must be an absolute path starting with /"
+        success_msg: "✓ Prometheus data directory is valid: {{ monitoring.prometheus_data }}"
+      when: monitoring.prometheus_data is defined
+
+    - name: Validate Grafana data directory
+      when: monitoring.services.grafana.enabled | default(false)
+      ansible.builtin.assert:
+        that:
+          - monitoring.grafana_data is defined
+          - monitoring.grafana_data | length > 0
+          - monitoring.grafana_data is match('^/')
+        fail_msg: "monitoring.grafana_data must be an absolute path starting with /"
+        success_msg: "✓ Grafana data directory is valid: {{ monitoring.grafana_data }}"
+      when: monitoring.grafana_data is defined
+
+- name: Validate automation storage paths
+  when: features.automation | default(false)
+  block:
+    - name: Validate Ollama models directory
+      when: automation.services.ollama.enabled | default(false)
+      ansible.builtin.assert:
+        that:
+          - automation.ollama_models is defined
+          - automation.ollama_models | length > 0
+          - automation.ollama_models is match('^/')
+        fail_msg: "automation.ollama_models must be an absolute path starting with /"
+        success_msg: "✓ Ollama models directory is valid: {{ automation.ollama_models }}"
+      when: automation.ollama_models is defined
+
+    - name: Validate n8n data directory
+      when: automation.services.n8n.enabled | default(false)
+      ansible.builtin.assert:
+        that:
+          - automation.n8n_data is defined
+          - automation.n8n_data | length > 0
+          - automation.n8n_data is match('^/')
+        fail_msg: "automation.n8n_data must be an absolute path starting with /"
+        success_msg: "✓ n8n data directory is valid: {{ automation.n8n_data }}"
+      when: automation.n8n_data is defined
+
+- name: Warn about potential storage space requirements
+  when: features.media | default(false)
+  block:
+    - name: Display storage space warning
+      ansible.builtin.debug:
+        msg: |
+          STORAGE RECOMMENDATION:
+          Media services require significant storage space:
+          - Movies: Recommended minimum 500GB
+          - TV Shows: Recommended minimum 500GB
+          - Music: Recommended minimum 100GB
+          - Ensure {{ media.base_dir }} has sufficient space
+          - Monitor disk usage regularly with monitoring stack
+
+- name: Validate no relative paths in configuration
+  block:
+    - name: Check for suspicious relative path patterns
+      ansible.builtin.assert:
+        that:
+          - storage.base_dir is not match('^\\./')
+          - storage.appdata_dir is not match('^\\./')
+          - storage.stacks is not match('^\\./')
+        fail_msg: |
+          CONFIGURATION ERROR: Relative paths detected in storage configuration.
+          All paths must be absolute (starting with /).
+          Relative paths like ./directory are not allowed.
+        success_msg: "✓ No relative paths detected in storage configuration"
+
+- name: Validate path hierarchy makes sense
+  block:
+    - name: Check appdata is under base_dir or independent
+      ansible.builtin.debug:
+        msg: "Storage structure: base={{ storage.base_dir }}, appdata={{ storage.appdata_dir }}, stacks={{ storage.stacks }}"
+
+    - name: Warn if paths are too deeply nested
+      when: storage.base_dir | regex_replace('[^/]', '') | length > 5
+      ansible.builtin.debug:
+        msg: |
+          WARNING: Base directory is deeply nested ({{ storage.base_dir }})
+          Consider using a shallower directory structure for better performance

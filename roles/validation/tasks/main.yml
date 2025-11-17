@@ -1,0 +1,47 @@
+---
+# Main validation tasks
+# This role validates configuration before deployment to prevent misconfigurations
+
+- name: Display validation start message
+  ansible.builtin.debug:
+    msg: "Starting Frey configuration validation..."
+
+- name: Include network validation
+  ansible.builtin.include_tasks: network.yml
+  tags:
+    - validation
+    - network
+
+- name: Include port conflict validation
+  ansible.builtin.include_tasks: ports.yml
+  tags:
+    - validation
+    - ports
+
+- name: Include feature dependency validation
+  ansible.builtin.include_tasks: features.yml
+  tags:
+    - validation
+    - features
+
+- name: Include storage path validation
+  ansible.builtin.include_tasks: storage.yml
+  tags:
+    - validation
+    - storage
+
+- name: Include secrets validation
+  ansible.builtin.include_tasks: secrets.yml
+  tags:
+    - validation
+    - secrets
+
+- name: Include user/group validation
+  ansible.builtin.include_tasks: users.yml
+  tags:
+    - validation
+    - users
+
+- name: Display validation success message
+  ansible.builtin.debug:
+    msg: "✓ All configuration validations passed successfully!"

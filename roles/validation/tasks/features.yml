@@ -1,0 +1,193 @@
+---
+# Feature dependency validation tasks
+
+- name: Validate feature flags are boolean
+  block:
+    - name: Check infrastructure feature flag
+      ansible.builtin.assert:
+        that:
+          - features.infrastructure is defined
+          - features.infrastructure is boolean
+        fail_msg: "features.infrastructure must be a boolean value (true/false)"
+        success_msg: "✓ features.infrastructure is valid"
+
+    - name: Check media feature flag
+      ansible.builtin.assert:
+        that:
+          - features.media is defined
+          - features.media is boolean
+        fail_msg: "features.media must be a boolean value (true/false)"
+        success_msg: "✓ features.media is valid"
+
+    - name: Check monitoring feature flag
+      ansible.builtin.assert:
+        that:
+          - features.monitoring is defined
+          - features.monitoring is boolean
+        fail_msg: "features.monitoring must be a boolean value (true/false)"
+        success_msg: "✓ features.monitoring is valid"
+
+    - name: Check automation feature flag
+      ansible.builtin.assert:
+        that:
+          - features.automation is defined
+          - features.automation is boolean
+        fail_msg: "features.automation must be a boolean value (true/false)"
+        success_msg: "✓ features.automation is valid"
+
+    - name: Check security feature flag
+      ansible.builtin.assert:
+        that:
+          - features.security is defined
+          - features.security is boolean
+        fail_msg: "features.security must be a boolean value (true/false)"
+        success_msg: "✓ features.security is valid"
+
+- name: Validate landing page requires infrastructure
+  when: features.landing_page | default(false)
+  block:
+    - name: Check infrastructure is enabled for landing page
+      ansible.builtin.assert:
+        that:
+          - features.infrastructure | default(false)
+        fail_msg: |
+          DEPENDENCY ERROR: Landing page requires infrastructure feature to be enabled.
+          Landing page depends on Traefik reverse proxy from the infrastructure stack.
+          Please set features.infrastructure: true in your configuration.
+        success_msg: "✓ Landing page dependency satisfied (infrastructure enabled)"
+
+- name: Validate media stack dependencies
+  when: features.media | default(false)
+  block:
+    - name: Check at least one download client is enabled
+      when:
+        - media.services.sonarr.enabled | default(false) or
+          media.services.radarr.enabled | default(false) or
+          media.services.lidarr.enabled | default(false) or
+          media.services.readarr.enabled | default(false)
+      ansible.builtin.assert:
+        that:
+          - media.services.qbittorrent.enabled | default(false) or
+            media.services.nzbget.enabled | default(false)
+        fail_msg: |
+          DEPENDENCY WARNING: *arr services require at least one download client.
+          You have enabled Sonarr/Radarr/Lidarr/Readarr but no download client.
+          Please enable either qBittorrent or NZBGet.
+        success_msg: "✓ At least one download client is enabled for *arr services"
+
+    - name: Check Prowlarr is recommended for *arr services
+      when:
+        - media.services.sonarr.enabled | default(false) or
+          media.services.radarr.enabled | default(false) or
+          media.services.lidarr.enabled | default(false) or
+          media.services.readarr.enabled | default(false)
+        - not (media.services.prowlarr.enabled | default(false))
+      ansible.builtin.debug:
+        msg: |
+          RECOMMENDATION: Prowlarr is recommended for managing indexers across *arr services.
+          Consider enabling media.services.prowlarr.enabled: true
+
+- name: Validate monitoring stack dependencies
+  when: features.monitoring | default(false)
+  block:
+    - name: Check Grafana has data sources when enabled
+      when: monitoring.services.grafana.enabled | default(false)
+      ansible.builtin.assert:
+        that:
+          - monitoring.services.prometheus.enabled | default(false) or
+            monitoring.services.loki.enabled | default(false)
+        fail_msg: |
+          DEPENDENCY WARNING: Grafana requires at least one data source.
+          Please enable Prometheus or Loki to provide data for Grafana dashboards.
+        success_msg: "✓ Grafana has at least one data source available"
+
+- name: Validate automation stack dependencies
+  when: features.automation | default(false)
+  block:
+    - name: Check Open WebUI requires Ollama
+      when: automation.services.open_webui.enabled | default(false)
+      ansible.builtin.assert:
+        that:
+          - automation.services.ollama.enabled | default(false)
+        fail_msg: |
+          DEPENDENCY ERROR: Open WebUI requires Ollama to be enabled.
+          Open WebUI is a frontend for Ollama and cannot function without it.
+          Please set automation.services.ollama.enabled: true
+        success_msg: "✓ Open WebUI dependency satisfied (Ollama enabled)"
+
+- name: Validate WiFi AP dependencies
+  when: features.wifi_access_point | default(false)
+  block:
+    - name: Check required WiFi AP packages configuration
+      ansible.builtin.assert:
+        that:
+          - network.wifi is defined
+          - network.wifi.interface is defined
+          - network.wifi.ssid is defined
+          - network.wifi.password is defined
+        fail_msg: |
+          CONFIGURATION ERROR: WiFi Access Point requires complete configuration.
+          Missing required fields in network.wifi configuration.
+          Required: interface, ssid, password
+        success_msg: "✓ WiFi Access Point configuration is complete"
+
+- name: Validate service enabled flags are boolean
+  block:
+    - name: Check infrastructure service flags
+      when: features.infrastructure | default(false)
+      ansible.builtin.assert:
+        that:
+          - infrastructure.services[item].enabled is boolean
+        fail_msg: "infrastructure.services.{{ item }}.enabled must be boolean"
+        success_msg: "✓ infrastructure.services.{{ item }}.enabled is valid"
+      loop:
+        - traefik
+        - portainer
+        - dockge
+      when: infrastructure.services[item] is defined
+
+    - name: Check media service flags
+      when: features.media | default(false)
+      ansible.builtin.assert:
+        that:
+          - media.services[item].enabled is boolean
+        fail_msg: "media.services.{{ item }}.enabled must be boolean"
+        success_msg: "✓ media.services.{{ item }}.enabled is valid"
+      loop:
+        - jellyfin
+        - sonarr
+        - radarr
+        - prowlarr
+        - bazarr
+        - readarr
+        - lidarr
+        - qbittorrent
+        - nzbget
+      when: media.services[item] is defined
+
+    - name: Check monitoring service flags
+      when: features.monitoring | default(false)
+      ansible.builtin.assert:
+        that:
+          - monitoring.services[item].enabled is boolean
+        fail_msg: "monitoring.services.{{ item }}.enabled must be boolean"
+        success_msg: "✓ monitoring.services.{{ item }}.enabled is valid"
+      loop:
+        - grafana
+        - prometheus
+        - loki
+        - promtail
+      when: monitoring.services[item] is defined
+
+    - name: Check automation service flags
+      when: features.automation | default(false)
+      ansible.builtin.assert:
+        that:
+          - automation.services[item].enabled is boolean
+        fail_msg: "automation.services.{{ item }}.enabled must be boolean"
+        success_msg: "✓ automation.services.{{ item }}.enabled is valid"
+      loop:
+        - ollama
+        - open_webui
+        - n8n
+      when: automation.services[item] is defined
