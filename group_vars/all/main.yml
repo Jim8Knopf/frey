@@ -24,8 +24,6 @@ features:
   bluetooth_audio: true  # Bluetooth headphones/speakers with auto-connection
   backup: false  # Automated backup system
   cookbook: true
-  power_monitoring: false  # Deprecated - use system.power_monitoring.enabled instead
-  voice_assistant: false  # Deprecated - integrated into homeassistant role
 
 # ================================
 # GLOBAL CONFIGURATION
@@ -169,9 +167,6 @@ security:
     ], [])) +
     (features.cookbook | ternary([
       cookbook.services.mealie.port
-    ], [])) +
-    (features.voice_assistant | ternary([
-      ports.voice_assistant.piper
     ], []))
     }}"
 
@@ -205,26 +200,3 @@ optimization:
   german_content:
     locale: de_DE.UTF-8
     enable_indexers: true
-
-# ==============================================================================
-# POWER MANAGEMENT (DEPRECATED)
-# ==============================================================================
-# DEPRECATED: Use system.power_monitoring.* instead (defined in system role)
-power:
-  low_threshold: 11.8
-  critical_threshold: 11.0
-  enable_graceful_shutdown: false
-
-# ==============================================================================
-# VOICE ASSISTANT (DEPRECATED)
-# ==============================================================================
-# DEPRECATED: Voice assistant functionality is now integrated into homeassistant role
-voice_assistant:
-  deploy: true
-  wake_word: "frey"
-  ollama_model: "llama3:latest"
-  piper_voice: "en_US-lessac-medium"
-  piper_voices:
-    - "en_US-lessac-medium"
-    - "en_AU-southern-female"
-    - "de_DE-thorsten-medium"
