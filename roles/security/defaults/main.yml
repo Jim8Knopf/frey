@@ -17,6 +17,15 @@
 enable_ufw: true                 # Use UFW (Uncomplicated Firewall) for all rules
 enable_fail2ban: true           # Enable fail2ban for brute-force protection
 
+# Security configuration
+security:
+  fail2ban:
+    enable: true
+  ufw:
+    enable: true
+  ssh_port: 22
+  # Note: firewall_tcp_ports is computed dynamically in group_vars based on enabled features
+
 # ------------------------------------------------------------------------------
 # NETWORK SECURITY CONFIGURATION
 # ------------------------------------------------------------------------------

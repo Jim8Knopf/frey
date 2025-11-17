@@ -1,5 +1,18 @@
 ---
-# Default variables for system role
+# ==============================================================================
+# SYSTEM ROLE - DEFAULT VARIABLES
+# ==============================================================================
 
 system_power_monitoring_default_enabled: false
 system_ssd_optimization_default_enabled: false
+
+system:
+  power_monitoring:
+    enabled: false  # Enable for 12V battery-powered setups
+    low_threshold: 11.8
+    critical_threshold: 11.0
+    enable_graceful_shutdown: false
+
+  ssd_optimization:
+    enabled: false  # Enable if running on SSD
+    trim: true

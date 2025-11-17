@@ -1,6 +1,7 @@
 ---
-# Media Services Configuration
-# Following the network architecture guide at roles/wifi_access_point/network-architecture-guide.md
+# ==============================================================================
+# MEDIA ROLE - DEFAULT VARIABLES
+# ==============================================================================
 
 # Network Architecture:
 # - All web services are accessed through Traefik (proxy network)
@@ -37,176 +38,151 @@ media:
   services:
     audiobookshelf:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "ghcr.io/advplyr/audiobookshelf"
-      container_name: "audiobookshelf"
-      port: 13378    # Container's internal port for Traefik 
-      ports: 
-        - 13378:80
+      port: 80  # Internal container port for Traefik routing
+      ports:
+        - 13378:80  # External:Internal port mapping
       volumes:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
         - "{{ media.dir }}/podcasts:/podcasts"
+        # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+        - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/etc/ssl/certs/step-ca.crt:ro"
+      environment:
+        # Ensure Node trusts Step-CA when calling https://auth.frey
+        - "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/step-ca.crt"
+      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # NOTE: Audiobookshelf OIDC CANNOT be configured via environment variables
+      # Must be configured manually via web UI: Settings → Authentication → OpenID Connect
+      # Use these values when configuring in UI:
+      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/audiobookshelf/"
+      oidc_client_id: "audiobookshelf"
+      # Client secret is in secrets.yml: audiobookshelf_oidc_client_secret
+      oidc_button_text: "Login with Authentik"
+      oidc_auto_register: true
+      oidc_auto_launch: false
 
     jellyfin:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/jellyfin"
-      container_name: "jellyfin"
-      port: 8096   # Container's internal port for Traefik
+      port: 8096
       volumes:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
         - "{{ media.dir }}/movies:/data/movies"
-        - "{{ media.dir }}/music:/data/music"
+      # LDAP Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
+      # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
+      # Uses internal Docker service name for reliable communication across networks
+      # NOTE: Configuration is managed via XML file (plugin doesn't support env vars)
+      ldap_server: "ak-outpost-jellyfin-ldap-outpost"
+      ldap_port: 3389                # Authentik LDAP outpost uses non-standard port 3389 (not 389)
+      ldap_use_ssl: false            # No SSL for internal Docker network communication
+      ldap_use_starttls: false       # No STARTTLS needed
+      ldap_skip_ssl_verify: false    # N/A when SSL disabled
+      ldap_base_dn: "dc=ldap,dc=goauthentik,dc=io"
+      # Authentik LDAP outpost uses uid as the RDN for users; DN must use uid
+      ldap_bind_user: "uid=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
+      ldap_search_filter: "(uid=*)"  # Rely on Authentik provider search_group to restrict users
+      ldap_admin_base_dn: ""         # Same as ldap_base_dn (empty uses default)
+      ldap_admin_filter: "(memberOf=cn=jellyfin_admins,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
+      # User creation and library access settings
+      ldap_create_users: true        # Auto-create Jellyfin users on first LDAP login
+      ldap_enable_all_folders: true  # Grant LDAP users access to all media libraries
+      # LDAP attribute mappings (standard Authentik LDAP schema)
+      ldap_search_attributes: "uid, cn, mail, displayName"
+      ldap_uid_attribute: "uid"
+      ldap_username_attribute: "uid"
+      ldap_password_attribute: "userPassword"
+      ldap_allow_pass_change: false  # Users change passwords in Authentik, not Jellyfin
 
     jellyseerr:
       enabled: true
-      verion: "latest"
-      image: "fallenbagel/jellyseerr"
-      container_name: "jellyseerr"
-      port: 5055   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/jellyseerr:/app/config"
-      environment:
-        - JELLYFIN_TYPE=jellyfin
-        - JELLYFIN_URL=http://jellyfin:{{ media.services.jellyfin.port }}
+      version: "latest"
+      port: 5055
 
     qbittorrent:
       enabled: true
-      verion: "latest"
-      image: "lscr.io/linuxserver/qbittorrent"
-      container_name: "qbittorrent"
-      listen_port: 51234
-      port: 8080   # Container's internal port for Traefik
-      ports: 
-        - "{{ media.vpn.port }}:{{ media.vpn.port }}"  # VPN port
+      version: "latest"
+      port: 8080
+      ports:
         - "8080:8080"    # Web UI
-        - "{{ media.services.qbittorrent.listen_port | default(51234) }}:{{ media.services.qbittorrent.listen_port | default(51234) }}/tcp"    # Torrent Port
-        - "{{ media.services.qbittorrent.listen_port | default(51234) }}:{{ media.services.qbittorrent.listen_port | default(51234) }}/udp"    # Torrent Port
-      volumes:
-        - "{{ storage.appdata_dir }}/qbittorrent:/config"
-        - "{{ media.downloads }}:/downloads"
-      environment:
-        - "WEBUI_PORT=8080"
-        
+        - "51234:51234/tcp"    # Torrent Port
+        - "51234:51234/udp"    # Torrent Port
+
     nzbget:
       enabled: true
-      verion: "latest"
-      image: "lscr.io/linuxserver/nzbget"
-      container_name: "nzbget"
-      port: 6789   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/nzbget:/config"
-        - "{{ media.downloads }}:/downloads"
-        - /data:/data
-        - /etc/localtime:/etc/localtime:ro
-        - ./nzbget:/config      #TODO
+      version: "latest"
+      port: 6789
 
     prowlarr:
       enabled: true
-      verion: "latest"
-      image: "lscr.io/linuxserver/prowlarr"
-      container_name: "prowlarr"
-      port: 9696   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/prowlarr:/config"
+      version: "latest"
+      port: 9696
 
     flaresolverr:
       enabled: true
-      verion: "latest"
-      image: "ghcr.io/flaresolverr/flaresolverr"
-      container_name: "flaresolverr"
-      port: 8191   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/prowlarr:/config"
-      environment:
-        - LOG_LEVEL=${LOG_LEVEL:-info}
-        - LOG_HTML=${LOG_HTML:-false}
-        - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
+      version: "latest"
+      port: 8191
 
     sonarr:
       enabled: true
-      verion: "latest"
-      image: "lscr.io/linuxserver/sonarr"
-      container_name: "sonarr"
-      port: 8989   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/sonarr:/config"
-        - "{{ media.downloads }}:/downloads"
-        - "{{ media.dir }}/tv:/tv"
+      version: "latest"
+      port: 8989
 
     radarr:
       enabled: true
-      verion: "latest"
-      image: "lscr.io/linuxserver/radarr"
-      container_name: "radarr"
-      port: 7878   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/radarr:/config"
-        - "{{ media.downloads }}:/downloads"
-        - "{{ media.dir }}/movies:/movies"
+      version: "latest"
+      port: 7878
 
     bazarr:
       enabled: true
-      verion: "latest"
-      image: "lscr.io/linuxserver/bazarr"
-      container_name: "bazarr"
-      port: 6767   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/bazarr:/config"
-        - "{{ media.dir }}/movies:/movies"
-        - "{{ media.dir }}/tv:/tv"
+      version: "latest"
+      port: 6767
 
     lidarr:
       enabled: true
-      verion: "latest"
-      image: "lscr.io/linuxserver/lidarr"
-      container_name: "lidarr"
-      port: 8686   # Container's internal port for Traefik
-      volumes:
-        - "{{ storage.appdata_dir }}/lidarr:/config"
-        - "{{ media.downloads }}:/downloads"
-        - "{{ media.dir }}/music:/music"
+      version: "latest"
+      port: 8686
 
     audiobookrequest:
       enabled: true
-      verion: "latest"
-      image: "markbeep/audiobookrequest"
-      container_name: "audiobookrequest"
+      version: "latest"
       port: 5432
-      volumes:
-        - ./config:/config
-      environment:
-        - "ABR_APP__PORT={{ media.services.audiobookrequest.port }}"
-        - "ABR_APP__OPENAPI_ENABLED=true"
 
     jellystat:
       enabled: false
-      verion: "latest"
-      image: "cyfershep/jellystat"
-      container_name: "jellystat"
+      version: "latest"
       port: 8086
-      volumes:
-        - "{{ storage.appdata_dir }}/jellystat/config.json:/app/config/config.json"
 
     jellystat_db:
       enabled: "{{ media.services.jellystat.enabled }}" # Jellystat dependency
       version: 15
       image: "postgres"
-      container_name: "jellystat-db"
-      volumes:
-        - "{{ storage.appdata_dir }}/jellystat/db:/var/lib/postgresql/data"
       environment:
         - "POSTGRES_DB=jellystat"
-        - "POSTGRES_USER={{ media.services.jellystat.postgres.user }}"
-        - "POSTGRES_PASSWORD={{ media.services.jellystat.postgres.password }}"
+        - "POSTGRES_USER=jellystat"
+        - "POSTGRES_PASSWORD=jellystat"
 
     ytdl-sub:
       enabled: false
-      verion: "latest"
-      image: "ghcr.io/jmbannon/ytdl-sub"
-      container_name: "ytdl-sub"
-      volumes:
-        - "{{ storage.appdata_dir }}/ytdl-sub:/config"
-        - "{{ media.downloads }}:/downloads"
+      version: "latest"
+
+    mopidy:
+      enabled: false  # DISABLED: No ARM64-compatible image available
+      # TODO: Build custom ARM64 Mopidy image or use alternative music player
+      # For now, use Jellyfin directly for music playback
+      version: "latest"
+      image: "wernight/mopidy"  # Note: Only supports AMD64
+      port: 6680  # Required for pre-pull task (web interface port)
+      mpd_port: 6600  # MPD protocol for Home Assistant integration
+      http_port: 6680  # Web interface
+
+    audiobook_bridge:
+      enabled: true  # Enable for local audiobook playback with progress sync
+      version: "3.11-slim"
+      image: "python"
+      port: 0  # No port exposed (internal service only)
+      sync_interval: 5  # Progress sync interval in seconds

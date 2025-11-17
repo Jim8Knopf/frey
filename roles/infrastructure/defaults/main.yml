@@ -1,5 +1,9 @@
 ---
-# Infrastructure role default variables
+# ==============================================================================
+# INFRASTRUCTURE ROLE - DEFAULT VARIABLES
+# ==============================================================================
+
+deploy_infrastructure: true
 
 # Network Architecture (as defined in roles/wifi_access_point/network-architecture-guide.md)
 infrastructure_networks:
@@ -18,4 +22,57 @@ infrastructure_networks:
     subnet: "10.20.3.0/24"  # As specified in architecture guide
     description: "Network for infrastructure services"
 
-deploy_infrastructure: true
+# ==============================================================================
+# INFRASTRUCTURE STACK CONFIGURATION
+# ==============================================================================
+infrastructure:
+  group:
+    name: infrastructure
+    gid: 46372
+  user:
+    name: infrastructure_manager
+    uid: 46372
+    groups: "{{ infrastructure.group.name }}"
+  dir: "{{ storage.base_dir }}/infrastructure"
+  services:
+    traefik:
+      enabled: true
+      version: "latest"
+      ports:
+        http: 80
+        https: 443
+        dashboard: 8082
+      config:
+        acme_email: "{{ admin_email }}"  # Using admin email for Let's Encrypt notifications
+    portainer:
+      enabled: true
+      version: "latest"
+      ports:
+        http: 9000
+    dockge:
+      enabled: true
+      version: "1"
+      ports:
+        http: 5001
+    authentik:
+      enabled: true  # Enable after initial infrastructure setup
+      version: "2025.2.4"  # Pinned version for reproducible deployments
+      port: 9300  # Changed from 9000 to avoid conflict with Portainer
+      port_https: 9446
+      postgres_version: "16-alpine"
+      redis_version: "alpine"
+      # Blueprint re-apply control:
+      # - Set to a list of filenames to re-apply specific blueprints
+      #   e.g., ['11-oidc-audiobookshelf.yaml', '10-oidc-immich.yaml']
+      # - Or set to 'all' to re-apply every blueprint file
+      reapply_blueprints: [
+        '11-oidc-audiobookshelf.yaml',
+        '14-oidc-mealie.yaml',
+        '15-oidc-dashy.yaml'
+      ]
+    step_ca:
+      enabled: true  # Enable when ready to implement ACME-based certificate management
+      version: "latest"
+      port: 9336  # External port mapping (maps to internal 9443)
+      # After enabling, run: docker exec -it step-ca step ca init
+      # Then configure ACME provisioner: docker exec -it step-ca step ca provisioner add acme --type ACME

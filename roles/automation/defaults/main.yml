@@ -1,6 +1,33 @@
 ---
+# ==============================================================================
+# AUTOMATION ROLE - DEFAULT VARIABLES
+# ==============================================================================
+
 deploy_automation: false
 
 automation:
-  ollama:
-    gpu_enabled: false
+  watchtower_interval: 86400 #?
+  backup_retention_days: 7  #?
+  group:
+    name: automation
+    gid: 2886
+  user:
+    name: automation_manager
+    uid: 463288672
+    groups: "{{ automation.group.name }}"
+  dir: "{{ storage.base_dir }}/automation"
+
+  services:
+    ollama:
+      enabled: true
+      image: "ollama/ollama:latest"
+      port: 11434
+      gpu_enabled: false
+    openwebui:
+      enabled: true
+      image: "ghcr.io/open-webui/open-webui:main"
+      port: 3002
+    n8n:
+      enabled: true
+      image: "n8nio/n8n:latest"
+      port: 5678
