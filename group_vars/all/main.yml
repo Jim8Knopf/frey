@@ -127,6 +127,7 @@ network:
     # Automation + smart home
     - name: homeassistant
     - name: n8n
+    - name: notes  # SiYuan note-taking
 
 
 # ==============================================================================
@@ -158,9 +159,10 @@ security:
       media.services.jellystat.port
     ], [])) +
     (features.automation | ternary([
-      automation.ollama.port,
-      automation.openwebui.port,
-      automation.n8n.port
+      automation.services.ollama.port,
+      automation.services.openwebui.port,
+      automation.services.n8n.port,
+      automation.services.siyuan.port
     ], [])) +
     (features.immich | ternary([
       ports.photos_home.immich
@@ -237,6 +239,10 @@ automation:
       enabled: true
       image: "n8nio/n8n:latest"
       port: 5678
+    siyuan:
+      enabled: true
+      image: "b3log/siyuan:latest"
+      port: 6806
 
 # ================================
 # VOICE ASSISTANT
@@ -581,6 +587,11 @@ landing_page:
           url: "https://n8n.{{ network.domain_name }}"
           icon: "fas fa-code-branch"
           groups: ["n8n_admins"]
+        - title: "Notes"
+          description: "SiYuan personal knowledge management and note-taking."
+          url: "https://notes.{{ network.domain_name }}"
+          icon: "fas fa-book"
+          groups: ["siyuan_users"]
   # Dashy source overrides applied inside the container (relative to /app)
   source_overrides:
     - src/utils/OidcAuth.js
