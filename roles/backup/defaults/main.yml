@@ -1,5 +1,15 @@
 ---
-# Default variables for backup role
+# ==============================================================================
+# BACKUP ROLE - DEFAULT VARIABLES
+# ==============================================================================
 
 backup_default_enabled: false
 backup_default_retention_days: 7
+
+backup:
+  enabled: false  # Enable after initial setup
+  schedule:
+    minute: "0"
+    hour: "3"  # 3 AM daily
+  retention_days: 7
+  backup_dir: "{{ storage.base_dir }}/backups"
