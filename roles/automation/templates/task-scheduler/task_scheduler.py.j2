@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""
+Task Scheduler - Overnight Complex Task Processing
+Loads larger reasoning model during quiet hours for complex tasks
+"""
+
+import os
+import json
+import logging
+import asyncio
+from datetime import datetime, time
+from pathlib import Path
+from typing import Optional, Dict, Any
+import httpx
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration from environment
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "ollama")
+OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
+PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "llama3.2:3b")
+REASONING_MODEL = os.getenv("REASONING_MODEL", "qwen2.5:14b")
+QUEUE_PATH = Path(os.getenv("QUEUE_PATH", "/queue"))
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "1"))
+
+# Parse quiet hours
+def parse_time(time_str: str) -> time:
+    """Parse HH:MM time string"""
+    hour, minute = map(int, time_str.split(":"))
+    return time(hour, minute)
+
+QUIET_HOURS_START = parse_time(os.getenv("QUIET_HOURS_START", "23:00"))
+QUIET_HOURS_END = parse_time(os.getenv("QUIET_HOURS_END", "07:00"))
+
+# Ollama client
+ollama_client = httpx.AsyncClient(
+    base_url=f"http://{OLLAMA_HOST}:{OLLAMA_PORT}",
+    timeout=httpx.Timeout(600.0)  # 10 min timeout for complex tasks
+)
+
+
+def is_quiet_hours() -> bool:
+    """Check if current time is within quiet hours"""
+    now = datetime.now().time()
+
+    # Handle overnight ranges (e.g., 23:00 - 07:00)
+    if QUIET_HOURS_START > QUIET_HOURS_END:
+        return now >= QUIET_HOURS_START or now < QUIET_HOURS_END
+    else:
+        return QUIET_HOURS_START <= now < QUIET_HOURS_END
+
+
+async def load_model(model_name: str) -> bool:
+    """Ensure model is loaded in Ollama"""
+    try:
+        logger.info(f"Loading model: {model_name}")
+        response = await ollama_client.post(
+            "/api/pull",
+            json={"name": model_name},
+            timeout=300.0
+        )
+        logger.info(f"Model {model_name} ready")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to load model {model_name}: {e}")
+        return False
+
+
+async def unload_all_models():
+    """Unload all models from memory"""
+    try:
+        # Setting keep_alive to 0 unloads the model
+        logger.info("Unloading all models from memory")
+        await ollama_client.post(
+            "/api/generate",
+            json={
+                "model": REASONING_MODEL,
+                "prompt": "",
+                "keep_alive": 0
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Error unloading models: {e}")
+
+
+async def process_with_reasoning_model(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Process a complex task with the reasoning model"""
+    try:
+        prompt = task.get("prompt", "")
+        task_type = task.get("type", "general")
+
+        logger.info(f"Processing task type={task_type} with reasoning model")
+
+        response = await ollama_client.post(
+            "/api/generate",
+            json={
+                "model": REASONING_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "num_ctx": 8192,  # Larger context for complex reasoning
+                }
+            }
+        )
+
+        result = response.json()
+
+        return {
+            "status": "completed",
+            "result": result.get("response", ""),
+            "model": REASONING_MODEL,
+            "completed_at": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Task processing error: {e}", exc_info=True)
+        return {
+            "status": "failed",
+            "error": str(e),
+            "completed_at": datetime.now().isoformat()
+        }
+
+
+async def process_queue():
+    """Process pending tasks from the queue"""
+    # Ensure queue directory exists
+    QUEUE_PATH.mkdir(parents=True, exist_ok=True)
+
+    # Find pending tasks
+    pending_tasks = sorted(QUEUE_PATH.glob("pending_*.json"))
+
+    if not pending_tasks:
+        logger.debug("No pending tasks in queue")
+        return
+
+    logger.info(f"Found {len(pending_tasks)} pending task(s)")
+
+    # Load reasoning model
+    if not await load_model(REASONING_MODEL):
+        logger.error("Failed to load reasoning model, skipping tasks")
+        return
+
+    # Process tasks (limited by max concurrent)
+    for task_file in pending_tasks[:MAX_CONCURRENT_TASKS]:
+        try:
+            # Read task
+            with open(task_file) as f:
+                task = json.load(f)
+
+            logger.info(f"Processing task: {task_file.name}")
+
+            # Process task
+            result = await process_with_reasoning_model(task)
+
+            # Save result
+            task["result"] = result
+            result_file = QUEUE_PATH / task_file.name.replace("pending_", "completed_")
+            with open(result_file, "w") as f:
+                json.dump(task, f, indent=2)
+
+            # Remove pending file
+            task_file.unlink()
+
+            logger.info(f"Task completed: {result_file.name}")
+
+        except Exception as e:
+            logger.error(f"Error processing {task_file}: {e}", exc_info=True)
+            # Move to failed
+            try:
+                failed_file = QUEUE_PATH / task_file.name.replace("pending_", "failed_")
+                task_file.rename(failed_file)
+            except:
+                pass
+
+    # Unload reasoning model to free memory
+    await unload_all_models()
+
+
+async def main_loop():
+    """Main scheduler loop"""
+    logger.info("Task Scheduler starting...")
+    logger.info(f"Quiet hours: {QUIET_HOURS_START} - {QUIET_HOURS_END}")
+    logger.info(f"Primary model: {PRIMARY_MODEL}")
+    logger.info(f"Reasoning model: {REASONING_MODEL}")
+    logger.info(f"Queue path: {QUEUE_PATH}")
+
+    while True:
+        try:
+            if is_quiet_hours():
+                logger.info("Quiet hours - processing task queue")
+                await process_queue()
+                # Check every 5 minutes during quiet hours
+                await asyncio.sleep(300)
+            else:
+                logger.debug("Not quiet hours - sleeping")
+                # Check every 30 minutes outside quiet hours
+                await asyncio.sleep(1800)
+
+        except Exception as e:
+            logger.error(f"Main loop error: {e}", exc_info=True)
+            await asyncio.sleep(60)
+
+
+if __name__ == "__main__":
+    asyncio.run(main_loop())

@@ -1,60 +1,146 @@
-# Multi-Model AI Configuration
-# Optimized for different use cases
+# ================================
+# AI MODELS - SMART LOADING ARCHITECTURE
+# ================================
+# Memory-efficient approach: Ollama auto-loads/unloads models as needed
+# Only ONE model in RAM at a time, swapped based on task type
 
-voice_assistant:
-  enabled: true
-  wake_word: "ok_nabu"
-  openwakeword_version: "latest"
-  openwakeword_port: 10400
-
-  # Fast voice model (real-time responses)
-  voice_model:
+ai_models:
+  # ============================================================================
+  # PRIMARY MODEL (Always Available)
+  # ============================================================================
+  primary:
     name: "llama3.2:3b"
-    purpose: "Quick voice commands and system control"
-    response_time: "1-2 seconds"
+    size: "~2.2GB RAM"
+    use_cases:
+      - "Real-time voice commands (1-2s response)"
+      - "RAG queries with travel guides (3-5s response)"
+      - "General conversation"
+    keep_alive: "10m"  # Stay in RAM for 10 minutes after last use
 
-  # Knowledge RAG model (factual accuracy)
-  knowledge_model:
+  # ============================================================================
+  # REASONING MODEL (On-Demand, Overnight)
+  # ============================================================================
+  reasoning:
     enabled: true
-    name: "llama3.2:3b"  # Same model, but with RAG context
-    purpose: "Travel guides and factual information with low hallucination"
-    response_time: "3-5 seconds"
-    embedding_model: "nomic-embed-text"  # For vector embeddings
+    name: "qwen2.5:14b"
+    size: "~8GB RAM"
+    use_cases:
+      - "Complex multi-step reasoning"
+      - "Research and analysis tasks"
+      - "Long-form content generation"
+    schedule:
+      # Only runs during quiet hours to avoid disrupting voice assistant
+      quiet_hours_start: "23:00"  # 11 PM
+      quiet_hours_end: "07:00"    # 7 AM
+    keep_alive: "0"  # Unload immediately after task completes
 
-  # Deep reasoning model (overnight complex tasks)
-  reasoning_model:
-    enabled: true
-    name: "qwen2.5:14b"  # Larger model for complex reasoning
-    purpose: "Multi-step planning, research, complex analysis"
-    response_time: "minutes to hours"
-    chain_of_thought: true
+  # ============================================================================
+  # EMBEDDING MODEL (Always Available, Tiny)
+  # ============================================================================
+  embedding:
+    name: "nomic-embed-text"
+    size: "~140MB RAM"
+    use_cases:
+      - "Document search in RAG"
+      - "Semantic similarity"
+    keep_alive: "30m"
 
-  # RAG (Retrieval Augmented Generation) Configuration
-  rag:
-    enabled: true
-    vector_db: "chromadb"
-    vector_db_port: 8000
-    embedding_model: "nomic-embed-text"
+  # ============================================================================
+  # OLLAMA CONFIGURATION (Smart Memory Management)
+  # ============================================================================
+  ollama:
+    num_parallel: 1  # Only 1 model in RAM at a time (critical for memory)
+    max_loaded_models: 1  # Enforce single model loading
+
+    # Model swapping behavior
+    auto_unload: true  # Unload idle models automatically
+
+    # Memory settings
+    gpu_layers: 0  # CPU only on Pi 5
+    num_thread: 8  # Use all CPU cores
+
+    # Context settings
+    num_ctx: 4096  # Context window (primary model)
+    num_ctx_reasoning: 8192  # Larger context for reasoning tasks
+
+# ================================
+# RAG (RETRIEVAL AUGMENTED GENERATION)
+# ================================
+rag:
+  enabled: true
+
+  # Vector Database
+  vector_db:
+    type: "chromadb"
+    port: 8000
+    persist_directory: "{{ storage.appdata_dir }}/chromadb"
+
+  # RAG Service
+  service:
+    port: 8001
+    model: "{{ ai_models.primary.name }}"  # Uses same model as voice!
+    embedding_model: "{{ ai_models.embedding.name }}"
+
+  # Document Processing
+  documents:
     chunk_size: 1000
     chunk_overlap: 200
-    top_k_results: 5  # Number of relevant chunks to retrieve
+    top_k_results: 5  # Number of chunks to retrieve
 
-    # Document collections
-    collections:
-      travel_guides:
-        enabled: true
-        description: "Travel guides and destination information"
-        path: "{{ storage.appdata_dir }}/knowledge/travel_guides"
-      manuals:
-        enabled: false
-        description: "Technical manuals and documentation"
-        path: "{{ storage.appdata_dir }}/knowledge/manuals"
+  # Collections (document categories)
+  collections:
+    travel_guides:
+      enabled: true
+      path: "{{ storage.appdata_dir }}/knowledge/travel_guides"
+      description: "Travel guides and destination information"
 
-  # Task Queue for overnight processing
-  task_queue:
-    enabled: true
-    backend: "n8n"  # Use n8n for workflow orchestration
-    schedule:
-      quiet_hours_start: "23:00"  # Start overnight tasks at 11 PM
-      quiet_hours_end: "07:00"    # Finish by 7 AM
-    max_concurrent_tasks: 2  # Don't overload the Pi
+    manuals:
+      enabled: false
+      path: "{{ storage.appdata_dir }}/knowledge/manuals"
+      description: "Technical documentation and manuals"
+
+# ================================
+# TASK SCHEDULER (Overnight Processing)
+# ================================
+task_scheduler:
+  enabled: true
+
+  # When to run complex tasks
+  schedule:
+    quiet_hours_start: "23:00"
+    quiet_hours_end: "07:00"
+
+  # Task queue
+  queue:
+    backend: "filesystem"  # Simple file-based queue
+    path: "{{ storage.appdata_dir }}/task-queue"
+
+  # Resource limits during overnight processing
+  limits:
+    max_concurrent_tasks: 1  # One complex task at a time
+    max_task_duration: "6h"  # Kill tasks after 6 hours
+
+# ================================
+# MEMORY BUDGET
+# ================================
+# This configuration ensures we stay within 16GB total:
+#
+# DAYTIME (Voice + RAG active):
+#   - llama3.2:3b: ~2.2GB
+#   - nomic-embed-text: ~140MB
+#   - ChromaDB: ~200MB
+#   - RAG service: ~100MB
+#   - Other services: ~3GB
+#   - System: ~1GB
+#   TOTAL: ~6.6GB ✓
+#
+# NIGHTTIME (Reasoning active):
+#   - qwen2.5:14b: ~8GB
+#   - ChromaDB: ~200MB
+#   - Other services: ~3GB
+#   - System: ~1GB
+#   TOTAL: ~12.2GB ✓
+#
+# Voice assistant is unavailable during overnight processing,
+# but that's acceptable since no one is using it at night.
+# ================================

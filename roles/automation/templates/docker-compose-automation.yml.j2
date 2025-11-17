@@ -14,6 +14,15 @@ services:
       - automation_network
     ports:
       - "{{ automation.services.ollama.port }}:11434"
+    environment:
+      # Smart memory management - only load one model at a time
+      - OLLAMA_NUM_PARALLEL={{ ai_models.ollama.num_parallel | default(1) }}
+      - OLLAMA_MAX_LOADED_MODELS={{ ai_models.ollama.max_loaded_models | default(1) }}
+      - OLLAMA_KEEP_ALIVE=10m  # Keep model in RAM for 10 min after last use
+      # CPU settings for Raspberry Pi 5
+      - OLLAMA_NUM_THREAD={{ ai_models.ollama.num_thread | default(8) }}
+      # Context window
+      - OLLAMA_NUM_CTX={{ ai_models.ollama.num_ctx | default(4096) }}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"

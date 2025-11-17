@@ -20,6 +20,11 @@ shell_command:
   frey_system_info: "echo 'System Status:' && uptime && echo '' && free -h && echo '' && df -h /opt/frey"
   frey_list_services: "/usr/local/bin/frey-docker-control list"
 
+{% if rag.enabled | default(false) %}
+  # RAG knowledge base query (for travel guides and documents)
+  frey_query_knowledge: "curl -s -X POST http://rag-service:8001/query -H 'Content-Type: application/json' -d '{\"query\": \"{{ query }}\", \"collection\": \"{{ collection | default('travel_guides') }}\"}' | jq -r '.answer'"
+{% endif %}
+
 # ==================================================================================
 # OLLAMA CONVERSATION AGENT CONFIGURATION
 # ==================================================================================
@@ -43,6 +48,9 @@ shell_command:
 # You can also:
 # - Get system info: frey_system_info (no parameters)
 # - List all services: frey_list_services (no parameters)
+{% if rag.enabled | default(false) %}
+# - Query knowledge base: frey_query_knowledge (parameters: query, collection)
+{% endif %}
 #
 # The system uses fuzzy matching, so these all work:
 # - "jellyfin" or "jelly" → matches jellyfin container
@@ -84,6 +92,17 @@ shell_command:
 # Description: Get system information (uptime, memory, disk usage)
 # Parameters: None
 #
+{% if rag.enabled | default(false) %}
+# Function 4: frey_query_knowledge
+# Description: Query the RAG knowledge base for accurate information from documents
+# Parameters:
+#   - query (required, string): The question to answer from the knowledge base
+#   - collection (optional, string): Collection name (default: travel_guides)
+# Note: Use this for factual questions about travel destinations, guides, or any
+#       knowledge that was ingested into the RAG system. This provides accurate
+#       answers with low hallucination by retrieving from actual documents.
+#
+{% endif %}
 # With function calling enabled, the LLM will automatically:
 # 1. Understand your voice command
 # 2. Choose the right function to call
@@ -128,5 +147,13 @@ shell_command:
 #   "How much disk space is left?"
 #   "What's the memory usage?"
 #
+{% if rag.enabled | default(false) %}
+# Knowledge Base Queries (RAG):
+#   "What are the best restaurants in Tokyo?"
+#   "Tell me about things to do in Paris"
+#   "What should I know about visiting Iceland?"
+#   "Where should I stay in Barcelona?"
+#
+{% endif %}
 # The LLM handles variations, synonyms, and natural phrasing automatically.
 # ==================================================================================

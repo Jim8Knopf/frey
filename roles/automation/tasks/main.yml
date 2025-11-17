@@ -3,7 +3,7 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "automation"
-    folders: [ollama, n8n, open-webui, homeassistant, piper, wyoming-whisper, openwakeword]
+    folders: [ollama, n8n, open-webui, homeassistant, piper, wyoming-whisper, openwakeword, chromadb, rag-service, task-scheduler, knowledge, task-queue]
     checkVar: [storage.base_dir, automation.user.name]
 
 - name: Combine automation and homeassistant services for pre-pulling
@@ -66,11 +66,101 @@
     project_src: "{{ storage.stacks }}/automation"
     state: present
 
-- name: Pull Ollama model for voice assistant
+- name: Pull Ollama models
   when: voice_assistant.enabled | default(false)
-  community.docker.docker_container_exec:
-    container: ollama
-    command: "ollama pull {{ voice_assistant.ollama_model }}"
-  register: model_pull
-  failed_when: false
-  changed_when: "'success' in model_pull.stdout | default('')"
+  block:
+    - name: Pull primary model (voice + RAG)
+      community.docker.docker_container_exec:
+        container: ollama
+        command: "ollama pull {{ ai_models.primary.name | default('llama3.2:3b') }}"
+      register: primary_model_pull
+      failed_when: false
+      changed_when: "'success' in primary_model_pull.stdout | default('')"
+
+    - name: Pull embedding model (for RAG)
+      when: rag.enabled | default(false)
+      community.docker.docker_container_exec:
+        container: ollama
+        command: "ollama pull {{ ai_models.embedding.name | default('nomic-embed-text') }}"
+      register: embedding_model_pull
+      failed_when: false
+      changed_when: "'success' in embedding_model_pull.stdout | default('')"
+
+    - name: Pull reasoning model (for overnight tasks)
+      when: ai_models.reasoning.enabled | default(false)
+      community.docker.docker_container_exec:
+        container: ollama
+        command: "ollama pull {{ ai_models.reasoning.name | default('qwen2.5:14b') }}"
+      register: reasoning_model_pull
+      failed_when: false
+      changed_when: "'success' in reasoning_model_pull.stdout | default('')"
+
+- name: Deploy RAG service files
+  when: rag.enabled | default(false)
+  block:
+    - name: Deploy RAG service requirements
+      ansible.builtin.template:
+        src: rag-service/requirements.txt.j2
+        dest: "{{ storage.appdata_dir }}/rag-service/requirements.txt"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Deploy RAG server script
+      ansible.builtin.template:
+        src: rag-service/rag_server.py.j2
+        dest: "{{ storage.appdata_dir }}/rag-service/rag_server.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0755'
+
+    - name: Deploy document ingestion script
+      ansible.builtin.template:
+        src: rag-service/ingest_documents.py.j2
+        dest: "{{ storage.appdata_dir }}/rag-service/ingest_documents.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0755'
+
+- name: Deploy task scheduler files
+  when: task_scheduler.enabled | default(false)
+  block:
+    - name: Deploy task scheduler requirements
+      ansible.builtin.template:
+        src: task-scheduler/requirements.txt.j2
+        dest: "{{ storage.appdata_dir }}/task-scheduler/requirements.txt"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+
+    - name: Deploy task scheduler script
+      ansible.builtin.template:
+        src: task-scheduler/task_scheduler.py.j2
+        dest: "{{ storage.appdata_dir }}/task-scheduler/task_scheduler.py"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0755'
+
+- name: Create AI models stack directory
+  when: rag.enabled | default(false) or task_scheduler.enabled | default(false)
+  ansible.builtin.file:
+    path: "{{ storage.stacks }}/ai-models"
+    state: directory
+    owner: "{{ automation.user.name }}"
+    group: "{{ automation.group.name }}"
+    mode: '0755'
+
+- name: Deploy AI models stack compose file
+  when: rag.enabled | default(false) or task_scheduler.enabled | default(false)
+  ansible.builtin.template:
+    src: docker-compose-ai-models.yml.j2
+    dest: "{{ storage.stacks }}/ai-models/docker-compose.yml"
+    owner: "{{ automation.user.name }}"
+    group: "{{ automation.group.name }}"
+    mode: '0644'
+
+- name: Start AI models stack
+  when: rag.enabled | default(false) or task_scheduler.enabled | default(false)
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks }}/ai-models"
+    state: present
