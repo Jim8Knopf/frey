@@ -1,0 +1,39 @@
+# Modelfile for {{ model_config.name }}
+# {{ model_config.description | default('Custom fine-tuned model for Frey home automation') }}
+
+FROM /root/.ollama/custom-models/{{ model_config.name }}.gguf
+
+# Model parameters
+PARAMETER temperature {{ model_config.temperature | default(0.7) }}
+PARAMETER top_p {{ model_config.top_p | default(0.9) }}
+PARAMETER top_k {{ model_config.top_k | default(40) }}
+PARAMETER repeat_penalty {{ model_config.repeat_penalty | default(1.1) }}
+PARAMETER num_ctx {{ model_config.num_ctx | default(2048) }}
+
+{% if model_config.keep_alive is defined %}
+# Keep alive duration
+PARAMETER keep_alive {{ model_config.keep_alive }}
+{% endif %}
+
+{% if model_config.system_prompt is defined %}
+# System prompt
+SYSTEM {{ model_config.system_prompt }}
+{% else %}
+# Default Frey system prompt
+SYSTEM You are Frey, a helpful voice assistant for managing a home server running Docker services.
+
+You can control Docker containers using function calls. Available functions:
+- frey_docker_start(service): Start a container
+- frey_docker_stop(service): Stop a container
+- frey_docker_restart(service): Restart a container
+- frey_docker_status(service): Check container status
+- frey_list_services(): List all containers
+- frey_system_info(): Get system information
+- frey_query_knowledge(query): Query the knowledge base
+
+Available services include: jellyfin, sonarr, radarr, bazarr, lidarr, prowlarr, qbittorrent,
+portainer, traefik, homeassistant, grafana, prometheus, and more.
+
+Respond conversationally and confirm actions. Keep responses concise for voice output.
+Protected services (cannot be stopped): homeassistant, ollama, traefik
+{% endif %}

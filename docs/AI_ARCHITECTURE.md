@@ -442,6 +442,47 @@ With smart loading:
 - **Control**: You own the models and data
 - **Learning**: Great for understanding AI systems
 
+## Model Customization
+
+### Fine-Tuning for Better Performance
+
+Want even better performance? You can fine-tune larger models (7B-13B) using Unsloth on a GPU machine, then deploy them quantized to the Pi.
+
+**The approach:**
+1. Fine-tune llama 3.1 8B on GPU with your specific commands
+2. Export as GGUF with Q4_K_M quantization (~4.5GB)
+3. Deploy to Pi via Ansible
+4. Get specialized performance that outperforms stock 3B models
+
+**Benefits:**
+- ✅ Bigger model (8B) fits in Pi RAM when quantized
+- ✅ Specialized for your exact use case
+- ✅ Better function calling accuracy
+- ✅ More consistent responses
+- ✅ One-time fine-tuning cost: $0.15-$0.50 (GPU rental)
+
+**See**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) for complete guide
+
+### Using Custom Models
+
+Configure custom fine-tuned models in `group_vars/all/main.yml`:
+
+```yaml
+# Simple approach
+voice_assistant:
+  ollama_model: "frey-assistant:q4"  # Your fine-tuned model
+
+# Advanced approach (auto-deploy)
+custom_models:
+  - name: "frey-assistant:q4"
+    gguf_path: "~/frey-finetuned/gguf/frey-assistant-q4_k_m.gguf"
+    description: "Fine-tuned Llama 3.1 8B"
+    temperature: 0.7
+    num_ctx: 2048
+```
+
+Then deploy with Ansible - the custom model will be automatically imported into Ollama.
+
 ## Future Enhancements
 
 Possible improvements:

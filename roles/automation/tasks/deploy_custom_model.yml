@@ -1,0 +1,80 @@
+---
+# Deploy custom fine-tuned models to Ollama
+# This task file handles uploading and importing custom GGUF models
+
+- name: Check if custom model is configured
+  ansible.builtin.set_fact:
+    has_custom_model: "{{ custom_models is defined and custom_models | length > 0 }}"
+
+- name: Deploy custom models
+  when: has_custom_model
+  block:
+    - name: Create custom models directory
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/ollama/custom-models"
+        state: directory
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0755'
+
+    - name: Copy custom model GGUF files
+      ansible.builtin.copy:
+        src: "{{ item.gguf_path }}"
+        dest: "{{ storage.appdata_dir }}/ollama/custom-models/{{ item.name }}.gguf"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+      loop: "{{ custom_models }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.gguf_path is defined
+
+    - name: Create Modelfile for custom models
+      ansible.builtin.template:
+        src: ollama-modelfile.j2
+        dest: "{{ storage.appdata_dir }}/ollama/custom-models/{{ item.name }}.Modelfile"
+        owner: "{{ automation.user.name }}"
+        group: "{{ automation.group.name }}"
+        mode: '0644'
+      loop: "{{ custom_models }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        model_config: "{{ item }}"
+
+    - name: Import custom models into Ollama
+      community.docker.docker_container_exec:
+        container: ollama
+        command: >
+          ollama create {{ item.name }}
+          -f /root/.ollama/custom-models/{{ item.name }}.Modelfile
+      loop: "{{ custom_models }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: model_import
+      failed_when: false
+      changed_when: "'success' in model_import.stdout | default('')"
+
+    - name: Verify custom models are available
+      community.docker.docker_container_exec:
+        container: ollama
+        command: ollama list
+      register: ollama_models
+      changed_when: false
+
+    - name: Display available models
+      ansible.builtin.debug:
+        msg: "{{ ollama_models.stdout_lines }}"
+
+- name: Custom model deployment summary
+  when: has_custom_model
+  ansible.builtin.debug:
+    msg: |
+      Custom models deployed:
+      {% for model in custom_models %}
+      - {{ model.name }}: {{ model.description | default('Custom fine-tuned model') }}
+      {% endfor %}
+
+      To use your custom model, update group_vars/all/main.yml:
+        voice_assistant:
+          ollama_model: "{{ custom_models[0].name }}"

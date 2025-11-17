@@ -126,9 +126,37 @@ docker logs task-scheduler
 date
 ```
 
+## Advanced: Fine-Tune Your Own Model
+
+Want even better performance? Fine-tune a larger model (7B-13B) on a GPU machine, then deploy it quantized to your Pi!
+
+**Why fine-tune?**
+- ✅ Use bigger models (8B) that still fit in Pi RAM when quantized
+- ✅ Specialize for your exact commands and services
+- ✅ Better accuracy than stock 3B models
+- ✅ One-time cost: $0.15-$0.50 (GPU rental)
+
+**Quick example:**
+```bash
+# On GPU machine
+python3 scripts/finetune/finetune_frey_model.py \
+  --model llama-3.1-8b \
+  --dataset my_commands.jsonl \
+  --quantization q4_k_m
+
+# Transfer to Pi
+scp frey-finetuned/gguf/*.gguf pi@frey.local:~/
+
+# Import and use
+docker exec ollama ollama create frey-assistant:q4 -f ~/Modelfile
+```
+
+**See**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) for complete guide
+
 ## Full Documentation
 
 - **IaC setup guide**: [VOICE_ASSISTANT_IAC.md](VOICE_ASSISTANT_IAC.md) ⭐ **Start here for automated setup**
+- **Fine-tuning guide**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Advanced: Custom models**
 - Architecture details: [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md)
 - Voice assistant setup: [VOICE_ASSISTANT.md](VOICE_ASSISTANT.md)
 - Voice assistant quickstart: [VOICE_ASSISTANT_QUICKSTART.md](VOICE_ASSISTANT_QUICKSTART.md)

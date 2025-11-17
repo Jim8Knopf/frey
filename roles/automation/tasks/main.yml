@@ -218,3 +218,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ storage.stacks }}/ai-models"
     state: present
+# Deploy custom fine-tuned models
+- name: Deploy custom fine-tuned models
+  include_tasks: deploy_custom_model.yml
+  when: custom_models is defined and custom_models | length > 0
