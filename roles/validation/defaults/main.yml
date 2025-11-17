@@ -1,0 +1,15 @@
+---
+# Default variables for validation role
+
+# Minimum disk space required (in GB)
+validation_min_disk_space_gb: 10
+
+# Skip specific validation checks (set to true to skip)
+skip_network_validation: false
+skip_storage_validation: false
+skip_port_validation: false
+skip_secrets_validation: false
+skip_features_validation: false
+
+# Validation verbosity level (0=normal, 1=verbose)
+validation_verbosity: 0

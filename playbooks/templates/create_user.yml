@@ -1,4 +1,16 @@
 ---
+# Validate required variables before creating user/group
+- name: Validate required variables for {{ stack }} stack
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item, default='__undefined__') != '__undefined__'
+    fail_msg: "Required variable '{{ item }}' is not defined for {{ stack }} stack. Check group_vars/all/main.yml"
+    success_msg: "✓ Variable {{ item }} is defined"
+  loop: "{{ checkVar }}"
+  when:
+    - checkVar is defined
+    - checkVar | length > 0
+
 - name: Create the {{stack}} group
   ansible.builtin.group:
     name: "{{ vars[stack].group.name }}"

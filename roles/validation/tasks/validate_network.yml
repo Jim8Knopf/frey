@@ -1,0 +1,107 @@
+---
+# Validate network configuration including WiFi AP, IP addresses, and DNS
+
+- name: Validation | Validate WiFi access point required variables
+  ansible.builtin.assert:
+    that:
+      - network.wifi is defined
+      - network.wifi.interface is defined
+      - network.wifi.ssid is defined
+      - network.wifi.password is defined
+      - network.wifi.ip is defined
+      - network.wifi.dhcp_range_start is defined
+      - network.wifi.dhcp_range_end is defined
+      - network.wifi.country_code is defined
+    fail_msg: "WiFi access point configuration is incomplete. Check network.wifi.* variables"
+    success_msg: "✓ WiFi AP required variables are defined"
+
+- name: Validation | Validate WiFi interface name format
+  ansible.builtin.assert:
+    that:
+      - network.wifi.interface is match('^(wlan[0-9]+|wlp[0-9]+s[0-9]+)$')
+    fail_msg: "WiFi interface '{{ network.wifi.interface }}' doesn't match expected pattern (wlan0, wlan1, wlp2s0, etc.)"
+    success_msg: "✓ WiFi interface name is valid"
+
+- name: Validation | Validate SSID length
+  ansible.builtin.assert:
+    that:
+      - network.wifi.ssid | length >= 1
+      - network.wifi.ssid | length <= 32
+    fail_msg: "WiFi SSID must be between 1 and 32 characters. Current length: {{ network.wifi.ssid | length }}"
+    success_msg: "✓ WiFi SSID length is valid"
+
+- name: Validation | Validate WiFi password strength
+  ansible.builtin.assert:
+    that:
+      - network.wifi.password | length >= 8
+      - network.wifi.password | length <= 63
+    fail_msg: "WiFi password must be between 8 and 63 characters. Current length: {{ network.wifi.password | length }}"
+    success_msg: "✓ WiFi password length is valid"
+
+- name: Validation | Validate WiFi country code format
+  ansible.builtin.assert:
+    that:
+      - network.wifi.country_code is match('^[A-Z]{2}$')
+    fail_msg: "WiFi country_code must be a 2-letter uppercase code (e.g., US, GB, DE). Found: {{ network.wifi.country_code }}"
+    success_msg: "✓ WiFi country code is valid"
+
+- name: Validation | Validate IP address formats
+  ansible.builtin.assert:
+    that:
+      - network.wifi.ip is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+      - network.wifi.dhcp_range_start is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+      - network.wifi.dhcp_range_end is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+    fail_msg: "Invalid IP address format in WiFi configuration. Check wifi.ip, dhcp_range_start, and dhcp_range_end"
+    success_msg: "✓ IP address formats are valid"
+
+- name: Validation | Extract IP components for DHCP range validation
+  set_fact:
+    wifi_ip_parts: "{{ network.wifi.ip.split('.') }}"
+    dhcp_start_parts: "{{ network.wifi.dhcp_range_start.split('.') }}"
+    dhcp_end_parts: "{{ network.wifi.dhcp_range_end.split('.') }}"
+
+- name: Validation | Validate DHCP range is in same subnet
+  ansible.builtin.assert:
+    that:
+      - wifi_ip_parts[0:3] == dhcp_start_parts[0:3]
+      - wifi_ip_parts[0:3] == dhcp_end_parts[0:3]
+    fail_msg: "DHCP range must be in the same subnet as WiFi IP. WiFi: {{ network.wifi.ip }}, DHCP: {{ network.wifi.dhcp_range_start }}-{{ network.wifi.dhcp_range_end }}"
+    success_msg: "✓ DHCP range is in correct subnet"
+
+- name: Validation | Validate DHCP range order (start < end)
+  ansible.builtin.assert:
+    that:
+      - dhcp_start_parts[3] | int < dhcp_end_parts[3] | int
+    fail_msg: "DHCP start address ({{ network.wifi.dhcp_range_start }}) must be lower than end address ({{ network.wifi.dhcp_range_end }})"
+    success_msg: "✓ DHCP range order is valid"
+
+- name: Validation | Validate WiFi IP not in DHCP range
+  ansible.builtin.assert:
+    that:
+      - wifi_ip_parts[3] | int < dhcp_start_parts[3] | int or wifi_ip_parts[3] | int > dhcp_end_parts[3] | int
+    fail_msg: "WiFi gateway IP ({{ network.wifi.ip }}) should not be within DHCP range ({{ network.wifi.dhcp_range_start }}-{{ network.wifi.dhcp_range_end }})"
+    success_msg: "✓ WiFi gateway IP is outside DHCP range"
+
+- name: Validation | Validate DNS rewrites configuration
+  block:
+    - name: Validation | Check DNS rewrites is a list
+      ansible.builtin.assert:
+        that:
+          - network.dns_rewrites is defined
+          - network.dns_rewrites is sequence
+        fail_msg: "network.dns_rewrites must be a list"
+
+    - name: Validation | Validate each DNS rewrite entry has required fields
+      ansible.builtin.assert:
+        that:
+          - item.name is defined
+          - item.name is match('^[a-zA-Z0-9_-]+$')
+        fail_msg: "DNS rewrite entry missing 'name' or contains invalid characters: {{ item }}"
+        loop: "{{ network.dns_rewrites }}"
+        loop_control:
+          label: "{{ item.name | default('undefined') }}"
+  when: network.dns_rewrites is defined
+
+- name: Validation | Display network validation success
+  ansible.builtin.debug:
+    msg: "✓ Network configuration is valid"
