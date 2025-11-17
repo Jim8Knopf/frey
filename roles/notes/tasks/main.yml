@@ -20,7 +20,19 @@
   include_tasks: "../playbooks/templates/create_user.yml"
   vars:
     stack: "notes"
-    folders: [siyuan]
+    folders: [siyuan, siyuan-mcp]
+
+- name: Copy MCP server files
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ storage.appdata_dir }}/siyuan-mcp/{{ item | basename }}"
+    owner: "{{ notes.user.name }}"
+    group: "{{ notes.group.name }}"
+    mode: '0644'
+  loop:
+    - mcp_server.py
+    - requirements.txt
+  when: notes.mcp.enabled | default(false)
 
 - name: Pre-pull SiYuan image
   community.docker.docker_image:
@@ -73,55 +85,71 @@
 - name: Display SiYuan deployment summary
   ansible.builtin.debug:
     msg: |
-      ✅ SiYuan Notes Deployed Successfully
+      ✅ SiYuan Notes Stack Deployed Successfully
 
       📝 WEB ACCESS:
-         - Via Traefik: https://notes.{{ network.domain_name }}
+         - Main UI: https://notes.{{ network.domain_name }}
          - Direct: http://{{ network.wifi.ip }}:{{ notes.services.siyuan.port }}
 
-      🤖 API ACCESS (for MCP/Voice Assistant):
-         - API Base: http://notes.{{ network.domain_name }}/api
-         - API Docs: http://notes.{{ network.domain_name }}/api/doc
+      🤖 MCP SERVER (Voice Assistant / LLM Integration):
+         - Endpoint: http://{{ network.wifi.ip }}:{{ notes.services.mcp_server.port }}
+         - Tools: create_note, search_notes, append_to_note, list_notebooks, get_note
+         - Voice Commands: "Create a note about...", "Search my notes for..."
 
-      📚 KEY API ENDPOINTS:
-         - List notebooks: POST /api/notebook/lsNotebooks
-         - Create note: POST /api/filetree/createDocWithMd
-         - Search notes: POST /api/search/fullTextSearchBlock
-         - Get block: POST /api/block/getBlockKramdown
+      📱 MOBILE SYNC (WebDAV):
+         - WebDAV URL: https://sync.{{ network.domain_name }}
+         - Username: {{ notes.user.name }}
+         - Password: (from secrets.yml: siyuan_webdav_password)
+         - Mobile App: Download SiYuan app → Settings → Cloud Sync → WebDAV
 
-      🎯 PERFECT FOR:
-         - DnD world-building (NPCs, locations, lore)
-         - Personal knowledge base
-         - Interconnected notes with graph view
-         - Voice assistant note creation
-         - Block-based organization
+      🔐 AUTHENTIK SSO:
+         - Provider: {{ notes.auth.oidc_issuer_url }}
+         - Client ID: {{ notes.auth.oidc_client_id }}
+         - Setup: SiYuan UI → Settings → Account → OAuth
 
-      🔑 FIRST-TIME SETUP:
+      🤖 AI INTEGRATION:
+         - Ollama: {{ notes.ai.ollama_url }}
+         - Model: {{ notes.ai.model }}
+         - Features: Summarize, generate titles, expand ideas, find connections
+
+      📊 HEALTH MONITORING:
+         - Endpoint: http://siyuan:6806{{ notes.monitoring.health_endpoint }}
+         - Health check: Every 30s with Docker healthcheck
+
+      📚 SIYUAN API:
+         - Docs: https://notes.{{ network.domain_name }}/api/doc
+         - POST /api/notebook/lsNotebooks - List notebooks
+         - POST /api/filetree/createDocWithMd - Create note
+         - POST /api/search/fullTextSearchBlock - Search notes
+
+      🎯 QUICK START:
          1. Access https://notes.{{ network.domain_name }}
          2. Create your first notebook
-         3. Start adding notes with [[wiki-style links]]
-         4. Explore graph view to visualize connections
+         3. Add notes with [[wiki-style links]]
+         4. Voice: "Create a note about..."
+         5. Mobile: Setup WebDAV sync in SiYuan app
+         6. Explore graph view (click graph icon)
 
-      💡 FEATURES:
-         - Block-based editing (every paragraph is a block)
-         - Bidirectional links [[like this]]
-         - Graph visualization
-         - Templates for NPCs, locations, quests
-         - Markdown export
-         - Full-text search
-
-      🔗 VOICE ASSISTANT INTEGRATION:
-         Example voice commands (via MCP server):
-         - "Create a note about the Red Dragon"
-         - "Search my DnD notes for Waterdeep"
-         - "Add to my campaign notes: [content]"
+      💡 KEY FEATURES:
+         ✅ Block-based editing (Notion-like)
+         ✅ Bidirectional links & graph view
+         ✅ Voice assistant ready (MCP)
+         ✅ Mobile sync (WebDAV)
+         ✅ SSO support (Authentik)
+         ✅ AI-assisted features (Ollama)
+         ✅ Markdown storage (future-proof)
 
       📦 STORAGE:
          - Workspace: {{ storage.appdata_dir }}/siyuan/workspace
-         - All notes stored as markdown blocks
-         - Easy to backup and migrate
+         - MCP: {{ storage.appdata_dir }}/siyuan-mcp
+         - Stack: {{ storage.stacks }}/notes
 
       🔧 MANAGEMENT:
          - Logs: docker compose -C {{ storage.stacks }}/notes logs -f
          - Restart: docker compose -C {{ storage.stacks }}/notes restart
-         - Update: docker compose -C {{ storage.stacks }}/notes pull && up -d
+         - Backup: tar -czf backup.tar.gz {{ storage.appdata_dir }}/siyuan/workspace
+
+      🌐 URLS:
+         - Notes: https://notes.{{ network.domain_name }}
+         - Sync: https://sync.{{ network.domain_name }}
+         - MCP: http://{{ network.wifi.ip }}:{{ notes.services.mcp_server.port }}

@@ -1,4 +1,7 @@
 services:
+  # ==============================================================================
+  # SIYUAN - PERSONAL KNOWLEDGE MANAGEMENT
+  # ==============================================================================
   siyuan:
     image: {{ notes.services.siyuan.image }}
     container_name: siyuan
@@ -24,18 +27,103 @@ services:
       - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
     environment:
       - TZ={{ network.timezone }}
-      # SiYuan access authorization mode: no auth for local network
-      - SIYUAN_ACCESS_AUTH_CODE=
+{% if notes.auth.enabled | default(false) %}
+      # Authentik OIDC Configuration
+      # NOTE: Must be configured manually in SiYuan UI
+      # Settings → Account → OAuth
+      # Issuer: {{ notes.auth.oidc_issuer_url }}
+      # Client ID: {{ notes.auth.oidc_client_id }}
+      # Client Secret: (from secrets.yml: siyuan_oidc_client_secret)
+{% endif %}
+      # Access code (optional, for local network use)
+      - SIYUAN_ACCESS_AUTH_CODE={{ notes.auth.access_code | default('') }}
     command:
       - "--workspace=/siyuan/workspace"
+{% if notes.auth.access_code | default('') != '' %}
+      - "--accessAuthCode={{ notes.auth.access_code }}"
+{% else %}
       - "--accessAuthCode="
+{% endif %}
     volumes:
       - "{{ storage.appdata_dir }}/siyuan/workspace:/siyuan/workspace"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:6806/api/system/bootProgress || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+{% if notes.mcp.enabled | default(false) %}
+  # ==============================================================================
+  # MCP SERVER - MODEL CONTEXT PROTOCOL FOR VOICE ASSISTANT / LLM INTEGRATION
+  # ==============================================================================
+  siyuan-mcp:
+    image: {{ notes.services.mcp_server.image }}
+    container_name: siyuan-mcp
+    restart: unless-stopped
+    networks:
+      - notes_network
+      - automation_network
+      - localdns
+    ports:
+      - "{{ notes.services.mcp_server.port }}:6808"
+    environment:
+      - SIYUAN_API_URL=http://siyuan:6806
+      - MCP_PORT=6808
+{% if notes.ai.enabled | default(false) %}
+      - OLLAMA_URL={{ notes.ai.ollama_url }}
+      - OLLAMA_MODEL={{ notes.ai.model }}
+{% endif %}
+    volumes:
+      - "{{ storage.appdata_dir }}/siyuan-mcp:/app"
+    working_dir: /app
+    command: >
+      sh -c "
+      pip install -q -r /app/requirements.txt &&
+      python /app/mcp_server.py
+      "
+    depends_on:
+      - siyuan
+{% endif %}
+
+{% if notes.sync.webdav.enabled | default(false) %}
+  # ==============================================================================
+  # WEBDAV SERVER - MOBILE APP SYNC (iOS/Android SiYuan apps)
+  # ==============================================================================
+  siyuan-webdav:
+    image: {{ notes.services.webdav.image }}
+    container_name: siyuan-webdav
+    restart: unless-stopped
+    networks:
+      - proxy
+      - localdns
+    ports:
+      - "{{ notes.services.webdav.port }}:80"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.siyuan-webdav.rule=Host(`sync.{{ network.domain_name }}`)"
+      - "traefik.http.routers.siyuan-webdav.entrypoints=web,websecure"
+      - "traefik.http.services.siyuan-webdav.loadbalancer.server.port=80"
+      # Enable HTTPS redirect
+      - "traefik.http.routers.siyuan-webdav.tls=true"
+      - "traefik.http.routers.siyuan-webdav-http.rule=Host(`sync.{{ network.domain_name }}`)"
+      - "traefik.http.routers.siyuan-webdav-http.entrypoints=web"
+      - "traefik.http.routers.siyuan-webdav-http.middlewares=https-redirect"
+    environment:
+      - AUTH_TYPE=Basic
+      - USERNAME={{ notes.user.name }}
+      # Password from secrets.yml: siyuan_webdav_password
+      - PASSWORD=${SIYUAN_WEBDAV_PASSWORD:-changeme}
+    volumes:
+      - "{{ storage.appdata_dir }}/siyuan/workspace:/var/lib/dav"
+{% endif %}
 
 networks:
   proxy:
     external: true
   localdns:
+    external: true
+  automation_network:
     external: true
   notes_network:
     name: notes_network

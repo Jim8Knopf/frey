@@ -129,6 +129,7 @@ network:
     - name: homeassistant
     - name: n8n
     - name: notes  # SiYuan note-taking
+    - name: sync   # SiYuan WebDAV sync for mobile
 
 
 # ==============================================================================
@@ -187,7 +188,9 @@ security:
       cookbook.services.mealie.port
     ], [])) +
     (features.notes | ternary([
-      notes.services.siyuan.port
+      notes.services.siyuan.port,
+      notes.services.mcp_server.port,
+      notes.services.webdav.port
     ], [])) +
     (features.voice_assistant | ternary([
       ports.voice_assistant.piper
@@ -877,12 +880,63 @@ notes:
     groups: "{{ notes.group.name }}"
   dir: "{{ storage.base_dir }}/notes"
 
+  # Authentik SSO Configuration
+  auth:
+    enabled: true
+    oidc_client_id: "siyuan"
+    oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/siyuan/"
+    oidc_button_text: "Login with Authentik"
+    # Access code as fallback (optional, can be empty for local network)
+    access_code: ""  # Set in secrets.yml if needed
+
+  # Phone/Mobile Sync Configuration
+  sync:
+    webdav:
+      enabled: true
+      port: 6807
+      # Mobile apps can sync via WebDAV at http://notes.frey:6807
+
+  # AI Integration with Ollama
+  ai:
+    enabled: true
+    ollama_url: "http://ollama:11434"
+    model: "llama3:latest"
+    features:
+      - summarize_notes    # Summarize long notes
+      - generate_titles    # Auto-generate note titles
+      - expand_ideas       # Expand brief notes
+      - find_connections   # Suggest related notes
+
+  # MCP Server for Voice Assistant / LLM Integration
+  mcp:
+    enabled: true
+    port: 6808
+    # MCP server provides tools for voice assistant and other LLMs
+
+  # Health Monitoring
+  monitoring:
+    enabled: true
+    health_endpoint: "/api/system/bootProgress"
+    uptime_kuma: true
+
   services:
     siyuan:
       enabled: true
       version: "latest"
       image: "b3log/siyuan:{{ notes.services.siyuan.version }}"
       port: 6806
+
+    mcp_server:
+      enabled: "{{ notes.mcp.enabled }}"
+      version: "latest"
+      image: "python:3.11-slim"
+      port: "{{ notes.mcp.port }}"
+
+    webdav:
+      enabled: "{{ notes.sync.webdav.enabled }}"
+      version: "latest"
+      image: "bytemark/webdav"
+      port: "{{ notes.sync.webdav.port }}"
 
 # ===================================================================
 # HOME ASSISTANT - HOME AUTOMATION PLATFORM
