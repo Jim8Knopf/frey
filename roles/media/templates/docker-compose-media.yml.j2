@@ -43,7 +43,7 @@ services:
       restart: unless-stopped
   {% endif %}
 
-{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined and service_name not in ['mopidy', 'audiobook_bridge'] %}
+{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined and service_name not in ['mopidy', 'audiobook_bridge', 'tdarr_node', 'recyclarr', 'unpackerr'] %}
   {{ service_name }}:
     image: "{{ service_config.image }}:{{ service_config.version }}"
     container_name: {{ service_name }}
@@ -166,6 +166,86 @@ services:
       media_network: {}
     labels:
       - "traefik.enable=false"  # Internal service only
+  {% endif %}
+
+  {% if media.services.tdarr_node.enabled | default(false) -%}
+  # Tdarr Node - Additional distributed processing node for Tdarr server
+  tdarr-node:
+    image: "{{ media.services.tdarr_node.image }}:{{ media.services.tdarr_node.version }}"
+    container_name: tdarr-node
+    restart: unless-stopped
+    environment:
+{% for env_var in ([
+  'PUID=' ~ media.user.uid|string,
+  'PGID=' ~ media.group.gid|string,
+  'TZ=' ~ network.timezone
+] + (media.services.tdarr_node.environment | default([]))) %}
+      - {{ env_var }}
+{% endfor %}
+    volumes:
+{% for volume in media.services.tdarr_node.volumes %}
+      - {{ volume }}
+{% endfor %}
+    networks:
+      media_network: {}
+    depends_on:
+      - tdarr
+    labels:
+      - "traefik.enable=false"  # Internal service only
+  {% endif %}
+
+  {% if media.services.recyclarr.enabled | default(false) -%}
+  # Recyclarr - TRaSH guides sync for optimal quality profiles
+  recyclarr:
+    image: "{{ media.services.recyclarr.image }}:{{ media.services.recyclarr.version }}"
+    container_name: recyclarr
+    restart: unless-stopped
+    environment:
+{% for env_var in ([
+  'PUID=' ~ media.user.uid|string,
+  'PGID=' ~ media.group.gid|string,
+  'TZ=' ~ network.timezone
+] + (media.services.recyclarr.environment | default([]))) %}
+      - {{ env_var }}
+{% endfor %}
+    volumes:
+{% for volume in media.services.recyclarr.volumes %}
+      - {{ volume }}
+{% endfor %}
+    networks:
+      proxy: {}
+      localdns: {}
+      media_network: {}
+    labels:
+      - "traefik.enable=false"  # Scheduled task, no web UI
+  {% endif %}
+
+  {% if media.services.unpackerr.enabled | default(false) -%}
+  # Unpackerr - Automatic archive extraction for downloads
+  unpackerr:
+    image: "{{ media.services.unpackerr.image }}:{{ media.services.unpackerr.version }}"
+    container_name: unpackerr
+    restart: unless-stopped
+    environment:
+{% for env_var in ([
+  'PUID=' ~ media.user.uid|string,
+  'PGID=' ~ media.group.gid|string,
+  'TZ=' ~ network.timezone
+] + (media.services.unpackerr.environment | default([]))) %}
+      - {{ env_var }}
+{% endfor %}
+    volumes:
+{% for volume in media.services.unpackerr.volumes %}
+      - {{ volume }}
+{% endfor %}
+    networks:
+      media_network: {}
+    depends_on:
+      - sonarr
+      - radarr
+      - lidarr
+    labels:
+      - "traefik.enable=false"  # Background service, no web UI
   {% endif %}
 
   # See the 'qBittorrent Stalls with VPN Timeout' section for more information.

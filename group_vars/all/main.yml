@@ -124,6 +124,9 @@ network:
     - name: jellyseerr
     - name: lidarr
     - name: jellystat
+    # Media optimization services
+    - name: tdarr
+    - name: umlautarr
     # Automation + smart home
     - name: homeassistant
     - name: n8n
@@ -155,7 +158,9 @@ security:
       media.services.prowlarr.port,
       media.services.jellyseerr.port,
       media.services.lidarr.port,
-      media.services.jellystat.port
+      media.services.jellystat.port,
+      media.services.tdarr.port,
+      media.services.umlautarr.port
     ], [])) +
     (features.automation | ternary([
       automation.ollama.port,
@@ -526,6 +531,16 @@ landing_page:
           url: "https://prowlarr.{{ network.domain_name }}"
           icon: "fas fa-satellite-dish"
           groups: ["prowlarr_users"]
+        - title: "Tdarr"
+          description: "Media library transcoding and optimization automation."
+          url: "https://tdarr.{{ network.domain_name }}"
+          icon: "fas fa-film"
+          groups: ["tdarr_users"]
+        - title: "Umlautarr"
+          description: "Foreign character handling for indexer searches."
+          url: "https://umlautarr.{{ network.domain_name }}"
+          icon: "fas fa-language"
+          groups: ["umlautarr_users"]
     - name: "Monitoring & Diagnostics"
       icon: "fas fa-chart-line"
       description: "Observability, uptime, and diagnostics."
@@ -763,6 +778,95 @@ media:
       image: "python"
       port: 0  # No port exposed (internal service only)
       sync_interval: 5  # Progress sync interval in seconds
+
+    # ===================================================================
+    # MEDIA OPTIMIZATION SERVICES
+    # ===================================================================
+
+    tdarr:
+      enabled: true  # Distributed transcode automation for media optimization
+      version: "latest"
+      image: "ghcr.io/haveagitgat/tdarr"
+      port: 8265  # Web UI port
+      server_port: 8266  # Server port for node communication
+      volumes:
+        - "{{ storage.appdata_dir }}/tdarr/server:/app/server"
+        - "{{ storage.appdata_dir }}/tdarr/configs:/app/configs"
+        - "{{ storage.appdata_dir }}/tdarr/logs:/app/logs"
+        - "{{ media.dir }}:/media"
+        - "{{ storage.base_dir }}/tdarr/transcode_cache:/temp"
+      environment:
+        - "serverIP=0.0.0.0"
+        - "serverPort={{ media.services.tdarr.server_port }}"
+        - "webUIPort={{ media.services.tdarr.port }}"
+        - "internalNode=true"
+        - "inContainer=true"
+        - "nodeName=TdarrNode"
+      # Hardware acceleration options (uncomment for Pi 5 if needed)
+      # devices:
+      #   - /dev/dri:/dev/dri  # For hardware transcoding
+
+    tdarr_node:
+      enabled: "{{ media.services.tdarr.enabled }}"  # Additional node for distributed processing
+      version: "latest"
+      image: "ghcr.io/haveagitgat/tdarr_node"
+      port: 0  # No web UI, internal only
+      volumes:
+        - "{{ storage.appdata_dir }}/tdarr/configs:/app/configs"
+        - "{{ storage.appdata_dir }}/tdarr/logs:/app/logs"
+        - "{{ media.dir }}:/media"
+        - "{{ storage.base_dir }}/tdarr/transcode_cache:/temp"
+      environment:
+        - "serverIP=tdarr"
+        - "serverPort={{ media.services.tdarr.server_port }}"
+        - "nodeName=TdarrNode2"
+        - "inContainer=true"
+
+    umlautarr:
+      enabled: true  # Middleware for handling foreign characters in *arr apps
+      version: "latest"
+      image: "ghcr.io/pip-001/umlautarr"
+      port: 3000
+      volumes:
+        - "{{ storage.appdata_dir }}/umlautarr:/config"
+      environment:
+        - "LOG_LEVEL=info"
+      # Configuration notes:
+      # - Update indexer URLs in Prowlarr to point to http://umlautarr:3000
+      # - Umlautarr will proxy requests and handle character conversion
+
+    recyclarr:
+      enabled: true  # TRaSH guides sync for optimal quality profiles
+      version: "latest"
+      image: "ghcr.io/recyclarr/recyclarr"
+      port: 0  # No web UI, scheduled task only
+      volumes:
+        - "{{ storage.appdata_dir }}/recyclarr:/config"
+      environment:
+        - "CRON_SCHEDULE=@daily"  # Sync once per day
+        - "RECYCLARR_CREATE_CONFIG=true"
+      # Configuration notes:
+      # - Configure recyclarr.yml in {{ storage.appdata_dir }}/recyclarr
+      # - Point to Sonarr/Radarr instances with API keys
+
+    unpackerr:
+      enabled: true  # Automatic archive extraction for downloads
+      version: "latest"
+      image: "ghcr.io/unpackerr/unpackerr"
+      port: 0  # No web UI, background service
+      volumes:
+        - "{{ storage.appdata_dir }}/unpackerr:/config"
+        - "{{ media.downloads }}:/downloads"
+      environment:
+        - "UN_SONARR_0_URL=http://sonarr:{{ media.services.sonarr.port }}"
+        - "UN_SONARR_0_API_KEY={{ sonarr_api_key }}"
+        - "UN_RADARR_0_URL=http://radarr:{{ media.services.radarr.port }}"
+        - "UN_RADARR_0_API_KEY={{ radarr_api_key }}"
+        - "UN_LIDARR_0_URL=http://lidarr:{{ media.services.lidarr.port }}"
+        - "UN_LIDARR_0_API_KEY={{ lidarr_api_key }}"
+        - "UN_START_DELAY=1m"
+        - "UN_RETRY_DELAY=5m"
+        - "UN_DELETE_DELAY=5m"
 
 # ===================================================================
 # PHOTO MANAGEMENT - IMMICH STACK
