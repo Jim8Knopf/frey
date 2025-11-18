@@ -126,32 +126,28 @@ docker logs task-scheduler
 date
 ```
 
-## Advanced: Fine-Tune Your Own Model
+## Advanced: Fine-Tune Your Own Model (FREE!)
 
-Want even better performance? Fine-tune a larger model (7B-13B) on a GPU machine, then deploy it quantized to your Pi!
+Want a **talking car AI** like KITT? Fine-tune for **FREE** with Google Colab!
 
 **Why fine-tune?**
-- ✅ Use bigger models (8B) that still fit in Pi RAM when quantized
-- ✅ Specialize for your exact commands and services
-- ✅ Better accuracy than stock 3B models
-- ✅ One-time cost: $0.15-$0.50 (GPU rental)
+- ✅ **Completely FREE** (Google Colab GPU)
+- ✅ Add "talking car" personality
+- ✅ Specialize for YOUR exact commands
+- ✅ Use bigger models (8B) that fit in Pi RAM when quantized
+- ✅ Only takes 15-20 minutes
+- ✅ Better than stock 3B models
 
-**Quick example:**
-```bash
-# On GPU machine
-python3 scripts/finetune/finetune_frey_model.py \
-  --model llama-3.1-8b \
-  --dataset my_commands.jsonl \
-  --quantization q4_k_m
+**The easiest way (Google Colab - FREE):**
+1. Open Google Colab: https://colab.research.google.com
+2. Follow instructions in `scripts/finetune/README.md`
+3. Upload `frey_personality_dataset.jsonl` (or create your own)
+4. Run the cells and wait ~15 minutes
+5. Download GGUF file and deploy to Pi
 
-# Transfer to Pi
-scp frey-finetuned/gguf/*.gguf pi@frey.local:~/
-
-# Import and use
-docker exec ollama ollama create frey-assistant:q4 -f ~/Modelfile
-```
-
-**See**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) for complete guide
+**See**:
+- [scripts/finetune/README.md](../scripts/finetune/README.md) 🎯 **Quick start with Colab**
+- [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Complete technical guide**
 
 ## Full Documentation
 
