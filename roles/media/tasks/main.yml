@@ -97,6 +97,84 @@
     - media.services.jellyfin.enabled | default(false)
   notify: Restart Jellyfin
 
+# ==============================================================================
+# MEDIA OPTIMIZATION SERVICES CONFIGURATION
+# ==============================================================================
+# Deploy configuration files for Tdarr, Recyclarr, and Unpackerr
+
+- name: Ensure Tdarr directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  loop:
+    - "{{ storage.appdata_dir }}/tdarr/server"
+    - "{{ storage.appdata_dir }}/tdarr/configs"
+    - "{{ storage.appdata_dir }}/tdarr/logs"
+    - "{{ storage.base_dir }}/tdarr/transcode_cache"
+  when: media.services.tdarr.enabled | default(false)
+
+- name: Deploy Tdarr initial library configuration
+  ansible.builtin.template:
+    src: tdarr-libraries.json.j2
+    dest: "{{ storage.appdata_dir }}/tdarr/configs/libraries.json"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0644'
+    force: no  # Don't overwrite if exists (user may have customized)
+  when: media.services.tdarr.enabled | default(false)
+
+- name: Ensure Recyclarr directory exists
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/recyclarr"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when: media.services.recyclarr.enabled | default(false)
+
+- name: Deploy Recyclarr configuration
+  ansible.builtin.template:
+    src: recyclarr.yml.j2
+    dest: "{{ storage.appdata_dir }}/recyclarr/recyclarr.yml"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0644'
+    backup: yes
+  when: media.services.recyclarr.enabled | default(false)
+  notify: Sync Recyclarr
+
+- name: Ensure Unpackerr directory exists
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/unpackerr"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when: media.services.unpackerr.enabled | default(false)
+
+- name: Deploy Unpackerr configuration
+  ansible.builtin.template:
+    src: unpackerr.conf.j2
+    dest: "{{ storage.appdata_dir }}/unpackerr/unpackerr.conf"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0644'
+    backup: yes
+  when: media.services.unpackerr.enabled | default(false)
+  notify: Restart Unpackerr
+
+- name: Ensure Umlautarr directory exists
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/umlautarr"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when: media.services.umlautarr.enabled | default(false)
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2

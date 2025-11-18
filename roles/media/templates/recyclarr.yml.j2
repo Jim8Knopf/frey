@@ -1,0 +1,206 @@
+# Recyclarr Configuration
+# Automatically syncs TRaSH guides to Sonarr, Radarr, and other *arr applications
+# Documentation: https://recyclarr.dev/
+
+# ===================================================================
+# SONARR CONFIGURATION
+# ===================================================================
+{% if media.services.sonarr.enabled %}
+sonarr:
+  sonarr-main:
+    base_url: http://sonarr:{{ media.services.sonarr.port }}
+    api_key: {{ sonarr_api_key }}
+
+    # Quality definitions from TRaSH guides
+    quality_definition:
+      type: series
+
+    # Quality profiles
+    quality_profiles:
+      - name: HD-1080p
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: true
+          until_quality: Bluray-1080p
+          until_score: 10000
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-1080p
+            qualities:
+              - Bluray-1080p
+              - Bluray-1080p Remux
+          - name: WEB 1080p
+            qualities:
+              - WEBRip-1080p
+              - WEBDL-1080p
+          - name: HDTV-1080p
+
+      - name: HD-720p/1080p
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: true
+          until_quality: Bluray-1080p
+          until_score: 10000
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-1080p
+          - name: WEB 1080p
+          - name: Bluray-720p
+          - name: WEB 720p
+          - name: HDTV-1080p
+          - name: HDTV-720p
+
+    # Custom formats from TRaSH guides
+    custom_formats:
+      # Unwanted formats
+      - trash_ids:
+          - 85c61753df5da1fb2aab6f2a47426b09  # BR-DISK
+          - 9c11cd3f07101cdba90a2d81cf0e56b4  # LQ
+          - e2315f990da2e2cbfc9fa5b7a6fcfe48  # LQ (Release Title)
+          - 47435ece6b99a0b477caf360e79ba0bb  # x265 (HD)
+        quality_profiles:
+          - name: HD-1080p
+            score: -10000
+          - name: HD-720p/1080p
+            score: -10000
+
+      # Preferred formats
+      - trash_ids:
+          - 496f355514737f7d83bf7aa4d24f8169  # TrueHD Atmos
+          - 2f22d89048b01681dde8afe203bf2e95  # DTS X
+          - 417804f7f2c4308c1f4c5d380d4c4475  # ATMOS (undefined)
+          - 1af239278386be2919e1bcee0bde047e  # DD+ ATMOS
+          - 3cafb66171b47f226146a0770576870f  # TrueHD
+          - dcf3ec6938fa32445f590a4da84256cd  # DTS-HD MA
+        quality_profiles:
+          - name: HD-1080p
+            score: 500
+          - name: HD-720p/1080p
+            score: 500
+{% endif %}
+
+# ===================================================================
+# RADARR CONFIGURATION
+# ===================================================================
+{% if media.services.radarr.enabled %}
+radarr:
+  radarr-main:
+    base_url: http://radarr:{{ media.services.radarr.port }}
+    api_key: {{ radarr_api_key }}
+
+    # Quality definitions from TRaSH guides
+    quality_definition:
+      type: movie
+      preferred_ratio: 0.5
+
+    # Quality profiles
+    quality_profiles:
+      - name: HD-1080p
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: true
+          until_quality: Bluray-1080p
+          until_score: 10000
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-1080p
+            qualities:
+              - Bluray-1080p
+              - Bluray-1080p Remux
+          - name: WEB 1080p
+            qualities:
+              - WEBRip-1080p
+              - WEBDL-1080p
+          - name: Bluray-720p
+          - name: WEB 720p
+
+      - name: UHD-4K
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: true
+          until_quality: Bluray-2160p
+          until_score: 10000
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-2160p
+            qualities:
+              - Bluray-2160p
+              - Bluray-2160p Remux
+          - name: WEB 2160p
+            qualities:
+              - WEBRip-2160p
+              - WEBDL-2160p
+
+    # Custom formats from TRaSH guides
+    custom_formats:
+      # Movie versions
+      - trash_ids:
+          - 0f12c086e289cf966fa5948eac571f44  # Hybrid
+          - 570bc9ebecd92723d2d21500f4be314c  # Remaster
+          - eca37840c13c6ef2dd0262b141a5482f  # 4K Remaster
+          - e0c07d59beb37348e975a930d5e50319  # Criterion Collection
+          - 9d27d9d2181838f76dee150882bdc58c  # Masters of Cinema
+        quality_profiles:
+          - name: HD-1080p
+            score: 25
+          - name: UHD-4K
+            score: 25
+
+      # Unwanted formats
+      - trash_ids:
+          - ed38b889b31be83fda192888e2286d83  # BR-DISK
+          - 90a6f9a284dff5103f6346090e6280c8  # LQ
+          - dc98083864ea246d05a42df0d05f81cc  # x265 (HD)
+          - b8cd450cbfa689c0259a01d9e29ba3d6  # 3D
+        quality_profiles:
+          - name: HD-1080p
+            score: -10000
+          - name: UHD-4K
+            score: -10000
+
+      # HDR formats
+      - trash_ids:
+          - e23edd2482476e595fb990b12e7c609c  # DV HDR10
+          - 58d6a88f13e2db7f5059a41047876f00  # DV
+          - 55d53828b9d81cbe20b02efd00aa0efd  # DV HLG
+          - a3e19f8f627608af0211acd02bf89735  # DV SDR
+          - b974a6cd08c1066250f1f177d7aa1225  # HDR10+
+          - dfb86d5941bc9075d6af23b09c2aeecd  # HDR10
+          - e61e28db95d22bedcadf030b8f156d96  # HDR
+          - 2a4d9069cc1fe3242ff9bdaebed239bb  # HDR (undefined)
+          - 08d6d8834ad9ec87b1dc7ec8148e7a1f  # PQ
+          - 9364dd386c9b4a1100dde8264690add7  # HLG
+        quality_profiles:
+          - name: UHD-4K
+            score: 600
+
+      # Audio formats
+      - trash_ids:
+          - 496f355514737f7d83bf7aa4d24f8169  # TrueHD Atmos
+          - 2f22d89048b01681dde8afe203bf2e95  # DTS X
+          - 417804f7f2c4308c1f4c5d380d4c4475  # ATMOS (undefined)
+          - 1af239278386be2919e1bcee0bde047e  # DD+ ATMOS
+          - 3cafb66171b47f226146a0770576870f  # TrueHD
+          - dcf3ec6938fa32445f590a4da84256cd  # DTS-HD MA
+        quality_profiles:
+          - name: HD-1080p
+            score: 500
+          - name: UHD-4K
+            score: 500
+{% endif %}
+
+# ===================================================================
+# LIDARR CONFIGURATION (if enabled)
+# ===================================================================
+{% if media.services.lidarr.enabled %}
+# Lidarr configuration can be added here when TRaSH guides support it
+# Currently managed via Lidarr UI
+{% endif %}

@@ -858,15 +858,8 @@ media:
         - "{{ storage.appdata_dir }}/unpackerr:/config"
         - "{{ media.downloads }}:/downloads"
       environment:
-        - "UN_SONARR_0_URL=http://sonarr:{{ media.services.sonarr.port }}"
-        - "UN_SONARR_0_API_KEY={{ sonarr_api_key }}"
-        - "UN_RADARR_0_URL=http://radarr:{{ media.services.radarr.port }}"
-        - "UN_RADARR_0_API_KEY={{ radarr_api_key }}"
-        - "UN_LIDARR_0_URL=http://lidarr:{{ media.services.lidarr.port }}"
-        - "UN_LIDARR_0_API_KEY={{ lidarr_api_key }}"
-        - "UN_START_DELAY=1m"
-        - "UN_RETRY_DELAY=5m"
-        - "UN_DELETE_DELAY=5m"
+        - "UN_DEBUG=false"
+        # Configuration is managed via /config/unpackerr.conf template
 
 # ===================================================================
 # PHOTO MANAGEMENT - IMMICH STACK

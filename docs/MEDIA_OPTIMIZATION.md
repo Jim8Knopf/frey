@@ -11,6 +11,29 @@ The following services have been added to optimize your media library:
 3. **Recyclarr** - TRaSH guides synchronization
 4. **Unpackerr** - Automatic archive extraction
 
+### Infrastructure as Code Benefits
+
+This implementation follows **full Infrastructure as Code (IaC)** principles:
+
+**Automated Configuration**:
+- ✅ All service configurations deployed via Ansible templates
+- ✅ No manual file editing required on the server
+- ✅ Configuration versioned in Git alongside your code
+- ✅ Idempotent deployments (safe to re-run)
+- ✅ Automatic service restarts via Ansible handlers
+
+**Reproducible Deployments**:
+- ✅ Complete rebuild from configuration files
+- ✅ Disaster recovery through Git repository
+- ✅ Easy to test changes (dry-run mode)
+- ✅ Audit trail via Git commits
+
+**Configuration as Code**:
+- `group_vars/all/main.yml` - Service definitions and settings
+- `group_vars/all/secrets.yml` - Encrypted API keys (Ansible Vault)
+- `roles/media/templates/` - Configuration file templates
+- `roles/media/tasks/main.yml` - Deployment automation
+
 ## Services
 
 ### Tdarr
@@ -179,30 +202,93 @@ Check Unpackerr logs:
 docker logs unpackerr
 ```
 
-## Deployment
+## Infrastructure as Code (IaC) Approach
 
-Deploy all media optimization services:
+This implementation follows a fully automated Infrastructure as Code approach. All configurations are managed via Ansible templates and deployed automatically.
 
+### Automated Configuration Management
+
+**Configuration Files Deployed**:
+- **Recyclarr**: `/opt/frey/appdata/recyclarr/recyclarr.yml` (TRaSH guides sync)
+- **Unpackerr**: `/opt/frey/appdata/unpackerr/unpackerr.conf` (extraction settings)
+- **Tdarr**: `/opt/frey/appdata/tdarr/configs/libraries.json` (initial library setup)
+
+**Ansible Templates**:
+- `roles/media/templates/recyclarr.yml.j2` - TRaSH guides configuration
+- `roles/media/templates/unpackerr.conf.j2` - Archive extraction configuration
+- `roles/media/templates/tdarr-libraries.json.j2` - Tdarr library initialization
+
+**Deployment Tasks** (`roles/media/tasks/main.yml`):
+1. Create service directories with proper permissions
+2. Deploy configuration files from templates
+3. Validate Docker Compose syntax
+4. Start services with health checks
+5. Trigger handlers for configuration changes
+
+### Deployment
+
+**Full Stack Deployment**:
+```bash
+# Deploy all media services including optimization tools
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media
+```
+
+**Selective Deployment**:
+```bash
+# Deploy only the media stack
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags docker_compose_media
+
+# Check what would change (dry run)
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media --check --diff
+```
+
+**Configuration Updates**:
+When you update configurations in `group_vars/all/main.yml`, simply re-run the playbook:
 ```bash
 ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media
 ```
 
-Or deploy individually:
-
-```bash
-# Deploy only the media stack
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags docker_compose_media
-```
+Ansible will:
+- Update configuration files from templates
+- Restart affected services via handlers
+- Maintain service availability during updates
 
 ## Post-Deployment Configuration
 
-### 1. Get API Keys from *arr Services
+### 1. Add API Keys to Secrets Vault
 
-For each service (Sonarr, Radarr, Lidarr):
-1. Access the web UI (e.g., `https://sonarr.frey`)
-2. Go to Settings → General
-3. Copy the API Key
-4. Add to `group_vars/all/secrets.yml` (see Unpackerr setup above)
+The IaC setup requires API keys for *arr services to enable full automation.
+
+**Step-by-step**:
+
+1. **Get API keys** from each service:
+   - Access web UI (e.g., `https://sonarr.frey`)
+   - Navigate to Settings → General → Security
+   - Copy the API Key
+
+2. **Edit encrypted secrets file**:
+   ```bash
+   ansible-vault edit group_vars/all/secrets.yml --vault-password-file .vault_pass
+   ```
+
+3. **Add required keys** (see `docs/secrets.yml.example` for template):
+   ```yaml
+   # Media Stack API Keys
+   sonarr_api_key: "your-sonarr-api-key-32-chars"
+   radarr_api_key: "your-radarr-api-key-32-chars"
+   lidarr_api_key: "your-lidarr-api-key-32-chars"
+   ```
+
+4. **Re-deploy to apply**:
+   ```bash
+   ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media
+   ```
+
+**Required API Keys for Optimization Services**:
+- `sonarr_api_key` - For Recyclarr and Unpackerr
+- `radarr_api_key` - For Recyclarr and Unpackerr
+- `lidarr_api_key` - For Unpackerr
+- `audiobookshelf_api_token` - For audiobook-bridge (optional)
 
 ### 2. Configure Tdarr Workflows
 
@@ -225,18 +311,35 @@ For each service (Sonarr, Radarr, Lidarr):
    - Update the URL to proxy through Umlautarr
    - Test the indexer to ensure it works
 
-### 4. Set Up Recyclarr Configuration
+### 4. Verify Recyclarr Configuration
 
-1. SSH into your Raspberry Pi
-2. Edit the config file:
-   ```bash
-   sudo nano /opt/frey/appdata/recyclarr/recyclarr.yml
-   ```
-3. Add your Sonarr/Radarr API keys and desired quality profiles
-4. Test the configuration:
-   ```bash
-   docker exec recyclarr recyclarr sync
-   ```
+Recyclarr is automatically configured via IaC templates! The configuration at `/opt/frey/appdata/recyclarr/recyclarr.yml` is deployed from `roles/media/templates/recyclarr.yml.j2`.
+
+**Configuration includes**:
+- TRaSH guides quality definitions for Sonarr and Radarr
+- Custom formats for optimal release selection
+- HD-1080p and UHD-4K quality profiles
+- Automatic daily sync via cron
+
+**Manual sync** (if needed):
+```bash
+docker exec recyclarr recyclarr sync
+```
+
+**View logs**:
+```bash
+docker logs recyclarr
+```
+
+**Customize** (optional):
+If you need custom quality profiles, edit the template:
+```bash
+nano roles/media/templates/recyclarr.yml.j2
+```
+Then re-deploy:
+```bash
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media
+```
 
 ## Monitoring and Maintenance
 
