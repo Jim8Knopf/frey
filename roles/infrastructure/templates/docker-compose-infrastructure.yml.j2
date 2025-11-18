@@ -28,11 +28,17 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"  # Explicitly specify proxy network
+      # Dashboard router configuration
       - "traefik.http.routers.traefik.rule=Host(`traefik.{{ domain_name | default(network.domain_name | default('local')) }}`)"
       - "traefik.http.routers.traefik.entrypoints=websecure"
       - "traefik.http.routers.traefik.tls=true"
       - "traefik.http.routers.traefik.tls.certresolver=step-ca"
       - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+      # BasicAuth middleware for dashboard security
+      # Default credentials: admin / FreyAdmin123!
+      # Generate new password: echo "yourpassword" | openssl passwd -apr1 -stdin
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=admin:$$apr1$$I9PEgANu$$aCDoIOrg0SHle59Is9ugE/"
+      - "traefik.http.routers.traefik.middlewares=traefik-auth"
 
   portainer:
     image: portainer/portainer-ce:latest

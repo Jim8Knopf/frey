@@ -354,6 +354,14 @@ ansible-playbook -i inventory/hosts.yml playbooks/site.yml
 - **Isolated Networks** - Docker networks separate services
 - **User Isolation** - Each stack runs under dedicated user/group
 
+### Default Credentials
+
+**Traefik Dashboard** (https://traefik.frey)
+- Username: `admin`
+- Password: `FreyAdmin123!`
+- ⚠️ **Change immediately after first login**
+- Update password: Generate new hash with `echo "newpassword" | openssl passwd -apr1 -stdin` and update in `roles/infrastructure/templates/docker-compose-infrastructure.yml.j2`
+
 ---
 
 ## 📊 Monitoring & Observability
