@@ -231,10 +231,35 @@
     - localdns                  # For DNS resolution
     - infrastructure_network    # Service-specific network
 
-- name: Start infrastructure containers using compose
-  community.docker.docker_compose_v2:
-    project_src: "{{ storage.stacks }}/infrastructure"
-    state: present
+- name: Start infrastructure stack with graceful error handling
+  block:
+    - name: Start infrastructure containers using compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/infrastructure"
+        state: present
+        remove_orphans: true
+        timeout: 300
+      register: compose_result
+      retries: 2
+      delay: 30
+
+  rescue:
+    - name: Handle compose failure - gather logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/infrastructure/docker-compose.yml" logs --tail=50
+      register: compose_logs
+      failed_when: false
+
+    - name: Display compose error details
+      ansible.builtin.debug:
+        msg: |
+          Infrastructure stack deployment failed. Recent logs:
+          {{ compose_logs.stdout }}
+      when: compose_logs.stdout is defined
+
+    - name: Fail with helpful message
+      ansible.builtin.fail:
+        msg: "Infrastructure stack deployment failed. Check the logs above and ensure all required directories exist."
 
 - name: Restart Step CA after claim updates
   community.docker.docker_container:

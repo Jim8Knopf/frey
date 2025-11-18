@@ -143,10 +143,35 @@
     group: "{{ monitoring.group.name }}"
     mode: '0644'
 
-- name: Start monitoring stack using compose
-  community.docker.docker_compose_v2:
-    project_src: "{{ storage.stacks }}/monitoring"
-    state: present
+- name: Start monitoring stack with graceful error handling
+  block:
+    - name: Start monitoring stack containers using compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/monitoring"
+        state: present
+        remove_orphans: true
+        timeout: 300
+      register: compose_result
+      retries: 2
+      delay: 30
+
+  rescue:
+    - name: Handle compose failure - gather logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/monitoring/docker-compose.yml" logs --tail=50
+      register: compose_logs
+      failed_when: false
+
+    - name: Display compose error details
+      ansible.builtin.debug:
+        msg: |
+          Monitoring stack deployment failed. Recent logs:
+          {{ compose_logs.stdout }}
+      when: compose_logs.stdout is defined
+
+    - name: Fail with helpful message
+      ansible.builtin.fail:
+        msg: "Monitoring stack deployment failed. Check the logs above and ensure all required directories exist."
 
 - name: Ensure monitoring appdata ownership matches container users (fix UID/GID mismatches)
   become: true
