@@ -111,6 +111,13 @@ services:
       - "traefik.http.routers.{{service_name}}.tls=true"
       - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
+{% if service_name in ['sonarr', 'radarr', 'lidarr', 'readarr', 'prowlarr', 'bazarr', 'jellyseerr', 'qbittorrent'] %}
+      # Authelia forward authentication for SSO
+      - "traefik.http.routers.{{service_name}}.middlewares=authelia@docker"
+      - "traefik.http.middlewares.authelia.forwardauth.address=http://authelia:9091/api/verify?rd=https://auth.{{ network.domain_name }}"
+      - "traefik.http.middlewares.authelia.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.authelia.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Name,Remote-Email"
+{% endif %}
 {% endif %}
 
 {% endfor -%}
