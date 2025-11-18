@@ -25,8 +25,8 @@
   ansible.builtin.file:
     path: "{{ vars[stack].dir }}/{{ item }}"
     state: directory
-    owner: "{{ vars[stack].user.uid }}"
-    group: "{{ vars[stack].user.groups }}"
+    owner: "{{ vars[stack].user.name }}"
+    group: "{{ vars[stack].group.name }}"
     mode: '0755'
   loop: "{{ folders }}"
   when: folders is defined
