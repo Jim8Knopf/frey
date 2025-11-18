@@ -17,6 +17,40 @@
 # - Hardware acceleration on Pi 5
 # ==============================================================================
 
+# ------------------------------------------------------------------------------
+# DEPENDENCY CHECK: Shared PostgreSQL
+# ------------------------------------------------------------------------------
+# If shared_postgres is enabled, verify infrastructure stack is deployed first
+# ------------------------------------------------------------------------------
+- name: Check if shared PostgreSQL is required
+  ansible.builtin.set_fact:
+    requires_shared_postgres: "{{ infrastructure.services.shared_postgres.enabled | default(false) }}"
+
+- name: Verify shared PostgreSQL container exists (if required)
+  ansible.builtin.command: docker inspect shared_postgres
+  register: shared_postgres_check
+  failed_when: false
+  changed_when: false
+  when: requires_shared_postgres
+
+- name: Fail if shared PostgreSQL is required but not deployed
+  ansible.builtin.fail:
+    msg: |
+      ERROR: Shared PostgreSQL is enabled but not deployed!
+
+      The immich stack requires the shared PostgreSQL database from the infrastructure stack.
+
+      SOLUTION: Deploy infrastructure stack first:
+        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags infrastructure --ask-vault-pass
+
+      Or deploy both together:
+        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags infrastructure,immich --ask-vault-pass
+
+      See docs/POSTGRES_CONSOLIDATION.md for more information.
+  when:
+    - requires_shared_postgres
+    - shared_postgres_check.rc != 0
+
 - name: Setup photo management stack user and directories
   include_tasks: "../playbooks/templates/create_user.yml"
   vars:
