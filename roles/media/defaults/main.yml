@@ -32,7 +32,7 @@ media:
   services:
     audiobookshelf:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "ghcr.io/advplyr/audiobookshelf"
       container_name: "audiobookshelf"
       port: 13378    # Container's internal port for Traefik 
@@ -45,7 +45,7 @@ media:
 
     jellyfin:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/jellyfin"
       container_name: "jellyfin"
       port: 8096   # Container's internal port for Traefik
@@ -57,7 +57,7 @@ media:
 
     jellyseerr:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "fallenbagel/jellyseerr"
       container_name: "jellyseerr"
       port: 5055   # Container's internal port for Traefik
@@ -69,7 +69,7 @@ media:
 
     qbittorrent:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/qbittorrent"
       container_name: "qbittorrent"
       listen_port: 51234
@@ -87,7 +87,7 @@ media:
         
     nzbget:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/nzbget"
       container_name: "nzbget"
       port: 6789   # Container's internal port for Traefik
@@ -100,7 +100,7 @@ media:
 
     prowlarr:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/prowlarr"
       container_name: "prowlarr"
       port: 9696   # Container's internal port for Traefik
@@ -109,7 +109,7 @@ media:
 
     flaresolverr:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "ghcr.io/flaresolverr/flaresolverr"
       container_name: "flaresolverr"
       port: 8191   # Container's internal port for Traefik
@@ -122,7 +122,7 @@ media:
 
     sonarr:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/sonarr"
       container_name: "sonarr"
       port: 8989   # Container's internal port for Traefik
@@ -133,7 +133,7 @@ media:
 
     radarr:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/radarr"
       container_name: "radarr"
       port: 7878   # Container's internal port for Traefik
@@ -144,7 +144,7 @@ media:
 
     bazarr:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/bazarr"
       container_name: "bazarr"
       port: 6767   # Container's internal port for Traefik
@@ -155,7 +155,7 @@ media:
 
     lidarr:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "lscr.io/linuxserver/lidarr"
       container_name: "lidarr"
       port: 8686   # Container's internal port for Traefik
@@ -166,7 +166,7 @@ media:
 
     audiobookrequest:
       enabled: true
-      verion: "latest"
+      version: "latest"
       image: "markbeep/audiobookrequest"
       container_name: "audiobookrequest"
       port: 5432
@@ -178,7 +178,7 @@ media:
 
     jellystat:
       enabled: false
-      verion: "latest"
+      version: "latest"
       image: "cyfershep/jellystat"
       container_name: "jellystat"
       port: 8086
@@ -199,7 +199,7 @@ media:
 
     ytdl-sub:
       enabled: false
-      verion: "latest"
+      version: "latest"
       image: "ghcr.io/jmbannon/ytdl-sub"
       container_name: "ytdl-sub"
       volumes:
