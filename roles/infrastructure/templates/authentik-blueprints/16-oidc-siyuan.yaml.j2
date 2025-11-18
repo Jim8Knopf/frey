@@ -1,0 +1,88 @@
+version: 1
+metadata:
+  name: SiYuan Notes OAuth Provider
+  labels:
+    blueprints.goauthentik.io/system: "true"
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # ==============================================================================
+  # SIYUAN OAUTH2 PROVIDER - AUTOMATIC CONFIGURATION
+  # ==============================================================================
+  # Creates OAuth2/OIDC provider for SiYuan note-taking system
+  # Eliminates manual configuration in SiYuan UI
+  # ==============================================================================
+
+  # OAuth2 Provider Configuration
+  - model: authentik_providers_oauth2.oauth2provider
+    id: siyuan-provider
+    identifiers:
+      name: siyuan
+    attrs:
+      name: SiYuan Notes
+      client_type: confidential
+      client_id: !Env [SIYUAN_OAUTH_CLIENT_ID, siyuan]
+      client_secret: !Env [SIYUAN_OAUTH_CLIENT_SECRET]
+      redirect_uris: |
+        https://notes.!Env [DOMAIN_NAME, frey]/oauth/callback
+        http://notes.!Env [DOMAIN_NAME, frey]/oauth/callback
+        https://!Env [WIFI_IP, 10.20.0.1]:6806/oauth/callback
+        http://!Env [WIFI_IP, 10.20.0.1]:6806/oauth/callback
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      sub_mode: hashed_user_id
+      include_claims_in_id_token: true
+      issuer_mode: per_provider
+
+  # Application (connects provider to users)
+  - model: authentik_core.application
+    id: siyuan-application
+    identifiers:
+      slug: siyuan
+    attrs:
+      name: SiYuan Notes
+      slug: siyuan
+      provider: !KeyOf siyuan-provider
+      meta_icon: https://raw.githubusercontent.com/siyuan-note/siyuan/master/kernel/assets/icon.png
+      meta_description: Personal knowledge management and note-taking system
+      meta_launch_url: https://notes.!Env [DOMAIN_NAME, frey]
+      meta_publisher: B3log
+      policy_engine_mode: any
+      open_in_new_tab: true
+
+  # User Group for Access Control
+  - model: authentik_core.group
+    id: siyuan-users-group
+    identifiers:
+      name: siyuan_users
+    attrs:
+      name: siyuan_users
+      is_superuser: false
+      attributes:
+        description: Users who can access SiYuan Notes
+
+  # Bind Application to Group
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf siyuan-application
+      group: !KeyOf siyuan-users-group
+      order: 10
+    attrs:
+      target: !KeyOf siyuan-application
+      group: !KeyOf siyuan-users-group
+      enabled: true
+      order: 10
+      timeout: 30
+
+# ==============================================================================
+# ENVIRONMENT VARIABLES (from docker-compose or secrets)
+# ==============================================================================
+# SIYUAN_OAUTH_CLIENT_ID: OAuth client ID (default: siyuan)
+# SIYUAN_OAUTH_CLIENT_SECRET: OAuth client secret (auto-generated)
+# DOMAIN_NAME: Main domain (e.g., frey)
+# WIFI_IP: WiFi AP IP address (e.g., 10.20.0.1)
+# ==============================================================================

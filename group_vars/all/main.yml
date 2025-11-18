@@ -880,21 +880,21 @@ notes:
     groups: "{{ notes.group.name }}"
   dir: "{{ storage.base_dir }}/notes"
 
-  # Authentik SSO Configuration
+  # Authentik SSO Configuration (auto-configured via blueprint)
   auth:
     enabled: true
     oidc_client_id: "siyuan"
     oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/siyuan/"
     oidc_button_text: "Login with Authentik"
-    # Access code as fallback (optional, can be empty for local network)
-    access_code: ""  # Set in secrets.yml if needed
+    # Access code (auto-generated if not in secrets.yml)
+    access_code: ""
 
   # Phone/Mobile Sync Configuration
   sync:
     webdav:
       enabled: true
       port: 6807
-      # Mobile apps can sync via WebDAV at http://notes.frey:6807
+      # Auto-generated password if not in secrets.yml
 
   # AI Integration with Ollama
   ai:
@@ -902,16 +902,15 @@ notes:
     ollama_url: "http://ollama:11434"
     model: "llama3:latest"
     features:
-      - summarize_notes    # Summarize long notes
-      - generate_titles    # Auto-generate note titles
-      - expand_ideas       # Expand brief notes
-      - find_connections   # Suggest related notes
+      - summarize_notes
+      - generate_titles
+      - expand_ideas
+      - find_connections
 
   # MCP Server for Voice Assistant / LLM Integration
   mcp:
     enabled: true
     port: 6808
-    # MCP server provides tools for voice assistant and other LLMs
 
   # Health Monitoring
   monitoring:

@@ -1,0 +1,111 @@
+---
+# ==============================================================================
+# AUTO-CONFIGURE SIYUAN VIA API (IaC)
+# ==============================================================================
+# Automatically configures SiYuan OAuth settings via API
+# Eliminates manual configuration in SiYuan UI
+# ==============================================================================
+
+- name: Wait for SiYuan API to be ready
+  ansible.builtin.uri:
+    url: "http://{{ network.wifi.ip }}:{{ notes.services.siyuan.port }}/api/system/bootProgress"
+    method: POST
+    body_format: json
+    body: "{}"
+    status_code: 200
+    timeout: 10
+  register: siyuan_api_ready
+  until: siyuan_api_ready.status == 200
+  retries: 30
+  delay: 10
+  when: notes.auth.enabled | default(false)
+
+- name: Get current SiYuan configuration
+  ansible.builtin.uri:
+    url: "http://{{ network.wifi.ip }}:{{ notes.services.siyuan.port }}/api/setting/getConf"
+    method: POST
+    body_format: json
+    body: "{}"
+    status_code: 200
+  register: siyuan_config
+  when: notes.auth.enabled | default(false)
+
+- name: Configure SiYuan OAuth settings
+  ansible.builtin.uri:
+    url: "http://{{ network.wifi.ip }}:{{ notes.services.siyuan.port }}/api/setting/setConf"
+    method: POST
+    body_format: json
+    body:
+      notebook:
+        conf: "{{ siyuan_config.json.data.conf | combine({
+          'oauth': {
+            'enabled': true,
+            'provider': 'authentik',
+            'issuer': notes.auth.oidc_issuer_url,
+            'clientId': notes.auth.oidc_client_id,
+            'clientSecret': siyuan_oidc_client_secret,
+            'redirectUri': 'https://notes.' + network.domain_name + '/oauth/callback',
+            'scopes': ['openid', 'profile', 'email'],
+            'autoRedirect': false,
+            'buttonText': notes.auth.oidc_button_text
+          }
+        }, recursive=True) }}"
+    status_code: 200
+  register: siyuan_oauth_config
+  when: notes.auth.enabled | default(false)
+  no_log: true
+
+- name: Enable WebDAV in SiYuan (if enabled)
+  ansible.builtin.uri:
+    url: "http://{{ network.wifi.ip }}:{{ notes.services.siyuan.port }}/api/setting/setConf"
+    method: POST
+    body_format: json
+    body:
+      notebook:
+        conf: "{{ siyuan_config.json.data.conf | combine({
+          'sync': {
+            'enabled': true,
+            'provider': 'webdav',
+            'webdav': {
+              'endpoint': 'https://sync.' + network.domain_name,
+              'username': notes.user.name,
+              'password': siyuan_webdav_password,
+              'skipTlsVerify': false
+            }
+          }
+        }, recursive=True) }}"
+    status_code: 200
+  when: notes.sync.webdav.enabled | default(false)
+  no_log: true
+
+- name: Set SiYuan access code (if configured)
+  ansible.builtin.uri:
+    url: "http://{{ network.wifi.ip }}:{{ notes.services.siyuan.port }}/api/setting/setAccessAuthCode"
+    method: POST
+    body_format: json
+    body:
+      accessAuthCode: "{{ siyuan_access_code | default('') }}"
+    status_code: 200
+  when: siyuan_access_code is defined and siyuan_access_code != ''
+  no_log: true
+
+- name: Display SiYuan configuration summary
+  ansible.builtin.debug:
+    msg: |
+      ✅ SiYuan Auto-Configuration Complete
+
+      🔐 OAuth/OIDC:
+         - Provider: Authentik
+         - Issuer: {{ notes.auth.oidc_issuer_url }}
+         - Client ID: {{ notes.auth.oidc_client_id }}
+         - Status: {{ 'Configured automatically' if notes.auth.enabled else 'Disabled' }}
+
+      📱 WebDAV Sync:
+         - URL: https://sync.{{ network.domain_name }}
+         - Username: {{ notes.user.name }}
+         - Status: {{ 'Configured automatically' if notes.sync.webdav.enabled else 'Disabled' }}
+
+      💡 No manual steps required!
+         - OAuth is already configured
+         - Mobile apps can connect immediately
+         - All settings are Infrastructure as Code

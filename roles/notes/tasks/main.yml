@@ -1,21 +1,39 @@
 ---
 # ==============================================================================
-# NOTES ROLE - SIYUAN PERSONAL KNOWLEDGE MANAGEMENT
+# NOTES ROLE - SIYUAN PERSONAL KNOWLEDGE MANAGEMENT (Full IaC)
 # ==============================================================================
-# Deploys SiYuan note-taking system with REST API for MCP/LLM integration
+# Deploys SiYuan note-taking system with complete automation:
+# - Auto-generates all secrets (OAuth, WebDAV passwords)
+# - Auto-configures Authentik OAuth provider (via blueprints)
+# - Auto-configures SiYuan OAuth settings (via API)
+# - Zero manual steps required!
 #
 # SERVICES:
-# - siyuan: Block-based note editor with graph view and markdown storage
+# - siyuan: Block-based note editor with graph view
+# - siyuan-mcp: MCP server for voice assistant integration
+# - siyuan-webdav: WebDAV server for mobile sync
 #
 # FEATURES:
-# - Privacy-first, self-hosted knowledge management
-# - Block-based editing (Notion-like)
-# - Bidirectional links and graph visualization
-# - Markdown storage (future-proof)
-# - REST API for voice assistant/MCP integration
-# - Perfect for DnD world-building and complex notes
+# - ✅ Infrastructure as Code (IaC) - fully automated
+# - ✅ OAuth/OIDC with Authentik (auto-configured)
+# - ✅ Mobile sync via WebDAV (auto-configured)
+# - ✅ MCP server for voice assistant (auto-deployed)
+# - ✅ AI integration with Ollama
+# - ✅ Health monitoring
 # ==============================================================================
 
+# ==============================================================================
+# STEP 1: AUTO-GENERATE SECRETS (IaC)
+# ==============================================================================
+- name: Auto-generate secrets for SiYuan
+  include_tasks: configure_secrets.yml
+  tags:
+    - secrets
+    - iac
+
+# ==============================================================================
+# STEP 2: SETUP USER AND DIRECTORIES
+# ==============================================================================
 - name: Setup notes stack user and directories
   include_tasks: "../playbooks/templates/create_user.yml"
   vars:
@@ -52,6 +70,18 @@
     msg: "WARNING: Failed to pull SiYuan image. Will retry during compose."
   when: image_pull.failed | default(false)
 
+# ==============================================================================
+# STEP 3: DEPLOY CONFIGURATION FILES
+# ==============================================================================
+- name: Deploy .env file with auto-generated secrets
+  ansible.builtin.template:
+    src: .env.j2
+    dest: "{{ storage.stacks }}/notes/.env"
+    owner: "{{ notes.user.name }}"
+    group: "{{ notes.group.name }}"
+    mode: '0600'
+  no_log: true
+
 - name: Deploy notes stack compose file
   ansible.builtin.template:
     src: docker-compose-notes.yml.j2
@@ -82,6 +112,18 @@
     state: started
   register: siyuan_port_wait
 
+# ==============================================================================
+# STEP 3: AUTO-CONFIGURE SIYUAN VIA API (IaC)
+# ==============================================================================
+- name: Auto-configure SiYuan OAuth and WebDAV
+  include_tasks: configure_siyuan.yml
+  tags:
+    - configure
+    - iac
+
+# ==============================================================================
+# DEPLOYMENT SUMMARY
+# ==============================================================================
 - name: Display SiYuan deployment summary
   ansible.builtin.debug:
     msg: |
