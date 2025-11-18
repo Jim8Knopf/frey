@@ -5,62 +5,14 @@
   set_fact:
     all_configured_ports: []
 
-- name: Validation | Collect infrastructure service ports
-  set_fact:
-    all_configured_ports: "{{ all_configured_ports + [item.value.port | string] }}"
-  loop: "{{ infrastructure.services | dict2items }}"
-  when:
-    - features.infrastructure | default(false)
-    - item.value.enabled | default(false)
-    - item.value.port is defined
+- name: Validation | Collect ports from each stack dynamically
+  include_tasks: validate_ports_collect.yml
+  loop: "{{ validation_stacks }}"
   loop_control:
-    label: "{{ item.key }}: {{ item.value.port | default('N/A') }}"
+    loop_var: stack_config
+    label: "{{ stack_config.name }}"
 
-- name: Validation | Collect media service ports
-  set_fact:
-    all_configured_ports: "{{ all_configured_ports + [item.value.port | string] }}"
-  loop: "{{ media.services | dict2items }}"
-  when:
-    - features.media | default(false)
-    - item.value.enabled | default(false)
-    - item.value.port is defined
-  loop_control:
-    label: "{{ item.key }}: {{ item.value.port | default('N/A') }}"
-
-- name: Validation | Collect monitoring service ports
-  set_fact:
-    all_configured_ports: "{{ all_configured_ports + [item.value.port | string] }}"
-  loop: "{{ monitoring.services | dict2items }}"
-  when:
-    - features.monitoring | default(false)
-    - item.value.enabled | default(false)
-    - item.value.port is defined
-  loop_control:
-    label: "{{ item.key }}: {{ item.value.port | default('N/A') }}"
-
-- name: Validation | Collect automation service ports
-  set_fact:
-    all_configured_ports: "{{ all_configured_ports + [item.value.port | string] }}"
-  loop: "{{ automation.services | dict2items }}"
-  when:
-    - features.automation | default(false)
-    - item.value.enabled | default(false)
-    - item.value.port is defined
-  loop_control:
-    label: "{{ item.key }}: {{ item.value.port | default('N/A') }}"
-
-- name: Validation | Collect immich service ports
-  set_fact:
-    all_configured_ports: "{{ all_configured_ports + [item.value.port | string] }}"
-  loop: "{{ immich.services | dict2items }}"
-  when:
-    - features.immich | default(false)
-    - item.value.enabled | default(false)
-    - item.value.port is defined
-  loop_control:
-    label: "{{ item.key }}: {{ item.value.port | default('N/A') }}"
-
-- name: Validation | Add additional system ports
+- name: Validation | Add additional system ports (Traefik HTTP/HTTPS)
   set_fact:
     all_configured_ports: "{{ all_configured_ports + ['80', '443'] }}"
   when: features.infrastructure | default(false)

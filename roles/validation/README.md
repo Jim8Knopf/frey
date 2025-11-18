@@ -287,6 +287,82 @@ Potential additions to validation:
 - [ ] Memory requirements check
 - [ ] Network connectivity pre-tests
 
+## Adding New Stacks
+
+The validation role is designed to be **extensible and dynamic**. When you add a new stack to your Frey deployment, you only need to add one entry to make it automatically validated.
+
+### Steps to Add a New Stack
+
+1. **Add stack to validation list** in `roles/validation/defaults/main.yml`:
+
+```yaml
+validation_stacks:
+  # ... existing stacks ...
+  - name: my_new_stack           # Must match variable name in main.yml
+    feature_flag: my_new_stack   # Feature flag in features.* dict
+    has_services: true           # Does it have a .services dict?
+    has_user_group: true         # Does it have .user and .group config?
+```
+
+2. **That's it!** The validation role will automatically:
+   - ✓ Validate user/group configuration (if `has_user_group: true`)
+   - ✓ Collect and check ports for conflicts (if `has_services: true`)
+   - ✓ Count enabled services and warn if none active
+   - ✓ Include it in dependency checks
+
+### Example: Adding a "backup" Stack
+
+If you add a new backup stack to your configuration:
+
+```yaml
+# In group_vars/all/main.yml
+features:
+  backup: true
+
+backup:
+  user:
+    name: backup_manager
+    uid: 50000
+  group:
+    name: backup
+    gid: 50000
+  services:
+    duplicati:
+      enabled: true
+      port: 8200
+    restic:
+      enabled: true
+      port: 8201
+```
+
+Just add this to `validation_stacks`:
+
+```yaml
+- name: backup
+  feature_flag: backup
+  has_services: true
+  has_user_group: true
+```
+
+Now the validation will automatically:
+- Check that `backup.user.name`, `backup.user.uid`, `backup.group.name`, `backup.group.gid` are defined
+- Collect ports 8200 and 8201 for conflict detection
+- Warn if backup is enabled but no services are active
+- Validate the feature flag is boolean
+
+### Stack Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `name` | Variable name of the stack (e.g., `media`, `infrastructure`) | Required |
+| `feature_flag` | Feature flag name in `features.*` dict | Required |
+| `has_services` | Whether stack has a `.services` dictionary | `false` |
+| `has_user_group` | Whether stack has `.user` and `.group` config | `false` |
+
+**Notes:**
+- Set `has_user_group: false` for stacks with custom user naming (like Immich which uses `photos_manager`)
+- Set `has_services: false` for system-level stacks without service dictionaries
+
 ## Contributing
 
 To add new validation checks:
@@ -296,6 +372,29 @@ To add new validation checks:
 3. Include the task file in `roles/validation/tasks/main.yml`
 4. Add corresponding tags for selective execution
 5. Update this README with the new validation details
+
+### Best Practices for Dynamic Validation
+
+When adding validation, prefer **dynamic loops** over hardcoded checks:
+
+**❌ Bad (hardcoded, not extensible):**
+```yaml
+- name: Check infrastructure ports
+  set_fact:
+    ports: "{{ infrastructure.services | ... }}"
+- name: Check media ports
+  set_fact:
+    ports: "{{ media.services | ... }}"
+```
+
+**✅ Good (dynamic, extensible):**
+```yaml
+- name: Check all stack ports
+  include_tasks: collect_ports.yml
+  loop: "{{ validation_stacks }}"
+```
+
+This way, new stacks are automatically validated without modifying validation code.
 
 ## Related Documentation
 

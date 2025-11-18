@@ -35,26 +35,38 @@
     success_msg: "✓ Traefik is enabled"
   when: features.infrastructure | default(false)
 
-- name: Validation | Check service dependencies for media stack
+- name: Validation | Check if enabled stacks have at least one service active
   block:
-    - name: Validation | Count enabled media services
+    - name: Validation | Count enabled services in each stack
       set_fact:
-        enabled_media_services: "{{ media.services | dict2items | selectattr('value.enabled', 'equalto', true) | list | length }}"
+        enabled_services_count: "{{ vars[item.name].services | default({}) | dict2items | selectattr('value.enabled', 'equalto', true) | list | length }}"
+      loop: "{{ validation_stacks | selectattr('has_services', 'equalto', true) | list }}"
+      when:
+        - vars[item.name] is defined
+        - features[item.feature_flag] | default(false)
+      loop_control:
+        label: "{{ item.name }}"
+      register: service_counts
 
-    - name: Validation | Warn if media enabled but no services active
+    - name: Validation | Warn if stack enabled but no services active
       ansible.builtin.debug:
-        msg: "WARNING: Media feature is enabled but no media services are enabled"
-      when: enabled_media_services | int == 0
+        msg: "WARNING: {{ item.item.name }} feature is enabled but no services are enabled"
+      loop: "{{ service_counts.results | default([]) }}"
+      when:
+        - not item.skipped | default(false)
+        - item.ansible_facts.enabled_services_count | default(0) | int == 0
+      loop_control:
+        label: "{{ item.item.name | default('unknown') }}"
 
     - name: Validation | Validate download client for *arr services
       ansible.builtin.debug:
         msg: "INFO: *arr services (Sonarr/Radarr) are enabled. Ensure a download client (qBittorrent) is configured"
       when:
+        - features.media | default(false)
         - media.services.sonarr.enabled | default(false) or
           media.services.radarr.enabled | default(false) or
           media.services.lidarr.enabled | default(false) or
           media.services.readarr.enabled | default(false)
-  when: features.media | default(false)
 
 - name: Validation | Validate Authentik dependencies for LDAP/OAuth services
   block:
