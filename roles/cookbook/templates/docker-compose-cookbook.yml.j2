@@ -43,9 +43,8 @@ services:
       - mealie-postgres
     ports: {{ cookbook.services.mealie.ports | default(['9900:9000']) }}
     networks:
-      - cookbook
       - proxy
-      - localdns
+      - backend
     labels:
       # Traefik routing configuration
       - "traefik.enable=true"
@@ -76,7 +75,7 @@ services:
     volumes:
       - "{{ cookbook.services.mealie.db_data_location }}:/var/lib/postgresql/data"
     networks:
-      - cookbook
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 10s
@@ -84,10 +83,7 @@ services:
       retries: 5
 
 networks:
-  cookbook:
-    name: cookbook_network
-    external: true
   proxy:
     external: true
-  localdns:
+  backend:
     external: true

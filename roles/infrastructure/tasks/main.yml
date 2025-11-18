@@ -443,6 +443,15 @@
   changed_when: false
   register: infrastructure_compose_validation
   failed_when: infrastructure_compose_validation.rc != 0
+  
+- name: Create required Docker networks
+  community.docker.docker_network:
+    name: "{{ item }}"
+    state: present
+    driver: bridge
+  loop:
+    - proxy     # For Traefik routing
+    - backend   # Internal service communication
 
 - name: Start infrastructure stack with graceful error handling
   block:

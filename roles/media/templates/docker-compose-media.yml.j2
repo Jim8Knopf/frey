@@ -1,16 +1,9 @@
 networks:
-  # Required networks according to architecture guide
+  # Simplified network architecture
   proxy:
     external: true  # For Traefik routing
-  localdns:
-    external: true  # For DNS resolution
-{% if features.authentication | default(false) %}
-  auth_network:
-    external: true  # For LLDAP authentication (Jellyfin)
-{% endif %}
-  media_network:
-    external: true  # Created ahead of time so monitoring/qB exporter can join
-    name: "{{ media.network.name | default('media_network') }}"
+  backend:
+    external: true  # Internal service communication
 
 services:
   {% if media.vpn.enabled | default(false) -%}
@@ -23,8 +16,7 @@ services:
         - /dev/net/tun:/dev/net/tun # If running on an LXC see readme for more info.
       networks:
         proxy: {}        # Required for Traefik routing
-        localdns: {}     # Required for DNS resolution
-        media_network: {} # Service-specific network
+        backend: {}      # Internal service communication
       # Only expose VPN port, other services should go through Traefik
       ports:
         - "{{ media.vpn.port }}:{{ media.vpn.port }}" # VPN forwarded port
@@ -97,14 +89,7 @@ services:
 {% endif %}
     networks:
       proxy: {}        # Required for Traefik routing
-      localdns: {}     # Required for DNS resolution
-      media_network: {} # Service-specific network
-{% if service_name == 'jellyfin' and features.authentication | default(false) %}
-      auth_network: {}  # Required for LLDAP authentication
-{% endif %}
-{% if service_name == 'audiobookshelf' and features.authentication | default(false) %}
-      auth_network: {}  # Required for Authelia OIDC authentication
-{% endif %}
+      backend: {}      # Internal service communication
     ports:
 {% if service_config.ports is defined %}
 {% for port in service_config.ports %}
@@ -146,8 +131,7 @@ services:
       - /dev/snd:/dev/snd  # Audio output for local playback
     networks:
       proxy: {}
-      localdns: {}
-      media_network: {}
+      backend: {}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -179,7 +163,7 @@ services:
              pip install requests &&
              tail -f /dev/null"
     networks:
-      media_network: {}
+      backend: {}
     labels:
       - "traefik.enable=false"  # Internal service only
   {% endif %}

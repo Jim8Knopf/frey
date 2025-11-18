@@ -13,8 +13,7 @@ services:
       - FB_DATABASE=/database/filebrowser.db
       - FB_CONFIG_FILE=/config/settings.json
     networks:
-      file_management_network:
-      localdns:
+      backend:
 
   code-server:
     image: codercom/code-server:latest
@@ -29,20 +28,14 @@ services:
       - PASSWORD={{ default_code_server_password | default('codeserver123') }}
       - SUDO_PASSWORD={{ default_code_server_password | default('codeserver123') }}
     networks:
-      file_management_network:
-      localdns:
+      backend:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.code-server.rule=Host(`code-server.{{ domain_name }}`)"
       - "traefik.http.routers.code-server.entrypoints=web"
       - "traefik.http.services.code-server.loadbalancer.server.port=8443"
 
-# Add network definitions at the end
+# Network definitions
 networks:
-  file_management_network:
-    name: file_management_network
-    ipam:
-      config:
-        - subnet: 10.20.6.0/24
-  localdns:
+  backend:
     external: true

@@ -92,10 +92,8 @@
     state: present
     driver: bridge
   loop:
-    - photos_network
-    - proxy
-    - localdns
-    - infrastructure_network
+    - proxy     # For Traefik routing (created by infrastructure role, ensured here)
+    - backend   # Internal service communication (created by infrastructure role, ensured here)
   tags:
     - config
 
