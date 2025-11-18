@@ -1,0 +1,113 @@
+---
+# Authentication Stack Deployment (LLDAP + Authelia)
+
+- name: Include common user creation tasks
+  include_tasks: ../../templates/create_user.yml
+  vars:
+    stack: authentication
+    folders:
+      - lldap
+      - authelia
+    checkVar:
+      - authentication
+
+- name: Ensure auth_network Docker network exists
+  community.docker.docker_network:
+    name: auth_network
+    driver: bridge
+    state: present
+
+- name: Template Authelia configuration
+  template:
+    src: authelia-configuration.yml.j2
+    dest: "{{ storage.appdata_dir }}/authelia/configuration.yml"
+    owner: "{{ authentication.user.name }}"
+    group: "{{ authentication.group.name }}"
+    mode: '0600'
+  notify: Restart authelia
+
+- name: Template docker-compose file for authentication stack
+  template:
+    src: docker-compose-authentication.yml.j2
+    dest: "{{ authentication.dir }}/docker-compose.yml"
+    owner: "{{ authentication.user.name }}"
+    group: "{{ authentication.group.name }}"
+    mode: '0644'
+  register: auth_compose_template
+
+- name: Validate docker-compose syntax
+  command: docker compose -f {{ authentication.dir }}/docker-compose.yml config --quiet
+  changed_when: false
+  failed_when: false
+  register: auth_compose_validation
+
+- name: Display validation results
+  debug:
+    msg: "Docker Compose validation {{ 'passed' if auth_compose_validation.rc == 0 else 'failed' }}"
+
+- name: Deploy authentication stack
+  block:
+    - name: Pull Docker images for authentication stack
+      community.docker.docker_image:
+        name: "{{ item.image }}"
+        source: pull
+        state: present
+      loop:
+        - { image: "lldap/lldap:{{ authentication.services.lldap.version }}" }
+        - { image: "authelia/authelia:{{ authentication.services.authelia.version }}" }
+      retries: 3
+      delay: 10
+      register: auth_pull_result
+      until: auth_pull_result is not failed
+
+    - name: Deploy authentication stack with docker compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ authentication.dir }}"
+        state: present
+        pull: always
+      register: auth_deploy_result
+
+    - name: Display authentication stack deployment status
+      debug:
+        var: auth_deploy_result
+
+    - name: Wait for LLDAP to be healthy
+      command: docker inspect --format='{{`{{.State.Health.Status}}`}}' lldap
+      register: lldap_health
+      until: lldap_health.stdout == 'healthy'
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Wait for Authelia to be healthy
+      command: docker inspect --format='{{`{{.State.Health.Status}}`}}' authelia
+      register: authelia_health
+      until: authelia_health.stdout == 'healthy'
+      retries: 30
+      delay: 10
+      changed_when: false
+
+  rescue:
+    - name: Capture LLDAP container logs on failure
+      command: docker logs lldap --tail 100
+      register: lldap_logs
+      failed_when: false
+
+    - name: Capture Authelia container logs on failure
+      command: docker logs authelia --tail 100
+      register: authelia_logs
+      failed_when: false
+
+    - name: Display LLDAP logs
+      debug:
+        var: lldap_logs.stdout_lines
+      when: lldap_logs is defined
+
+    - name: Display Authelia logs
+      debug:
+        var: authelia_logs.stdout_lines
+      when: authelia_logs is defined
+
+    - name: Fail deployment
+      fail:
+        msg: "Authentication stack deployment failed. Check logs above."

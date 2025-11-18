@@ -1,0 +1,116 @@
+services:
+{% if authentication.services.lldap.enabled %}
+  # ==============================================================================
+  # LLDAP - Lightweight LDAP Server
+  # ==============================================================================
+  # Provides user directory and LDAP authentication
+  # Access: http://lldap.{{ network.domain_name }}:{{ authentication.services.lldap.port }}
+
+  lldap:
+    image: lldap/lldap:{{ authentication.services.lldap.version }}
+    container_name: lldap
+    restart: unless-stopped
+    environment:
+      # Base DN for LDAP directory
+      LLDAP_LDAP_BASE_DN: "{{ authentication.services.lldap.base_dn }}"
+
+      # Admin credentials
+      LLDAP_LDAP_USER_DN: "{{ authentication.services.lldap.admin_username }}"
+      LLDAP_LDAP_USER_PASS: "{{ lldap_admin_password }}"
+
+      # JWT secret for web UI authentication
+      LLDAP_JWT_SECRET: "{{ lldap_jwt_secret }}"
+
+      # Key seed for password hashing
+      LLDAP_KEY_SEED: "{{ lldap_key_seed }}"
+
+      # Timezone
+      TZ: "{{ network.timezone }}"
+    ports:
+      - "{{ authentication.services.lldap.port }}:17170"  # Web UI
+      - "{{ authentication.services.lldap.ldap_port }}:3890"  # LDAP
+    volumes:
+      - "{{ storage.appdata_dir }}/lldap:/data"
+    networks:
+      - proxy
+      - localdns
+      - auth_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.lldap.rule=Host(`lldap.{{ network.domain_name }}`)"
+      - "traefik.http.routers.lldap.entrypoints=websecure"
+      - "traefik.http.routers.lldap.tls=true"
+      - "traefik.http.routers.lldap.tls.certresolver=step-ca"
+      - "traefik.http.services.lldap.loadbalancer.server.port=17170"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 17170 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+{% endif %}
+
+{% if authentication.services.authelia.enabled %}
+  # ==============================================================================
+  # AUTHELIA - SSO & Authentication Portal
+  # ==============================================================================
+  # Provides OIDC/OAuth2 authentication for services
+  # Access: http://auth.{{ network.domain_name }}:{{ authentication.services.authelia.port }}
+
+  authelia:
+    image: authelia/authelia:{{ authentication.services.authelia.version }}
+    container_name: authelia
+    restart: unless-stopped
+    environment:
+      # Secrets (from secrets.yml)
+      AUTHELIA_JWT_SECRET: "{{ authelia_jwt_secret }}"
+      AUTHELIA_SESSION_SECRET: "{{ authelia_session_secret }}"
+      AUTHELIA_STORAGE_ENCRYPTION_KEY: "{{ authelia_storage_key }}"
+
+      # OIDC secrets
+      AUTHELIA_IDENTITY_PROVIDERS_OIDC_HMAC_SECRET: "{{ authelia_oidc_hmac_secret }}"
+      AUTHELIA_IDENTITY_PROVIDERS_OIDC_ISSUER_PRIVATE_KEY: "{{ authelia_oidc_private_key }}"
+
+      # Timezone
+      TZ: "{{ network.timezone }}"
+    ports:
+      - "{{ authentication.services.authelia.port }}:9091"
+    volumes:
+      - "{{ storage.appdata_dir }}/authelia/configuration.yml:/config/configuration.yml:ro"
+      - "{{ storage.appdata_dir }}/authelia:/config"
+    networks:
+      - proxy
+      - localdns
+      - auth_network
+    depends_on:
+      lldap:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.authelia.rule=Host(`auth.{{ network.domain_name }}`)"
+      - "traefik.http.routers.authelia.entrypoints=websecure"
+      - "traefik.http.routers.authelia.tls=true"
+      - "traefik.http.routers.authelia.tls.certresolver=step-ca"
+      - "traefik.http.services.authelia.loadbalancer.server.port=9091"
+      # HTTP router for internal access
+      - "traefik.http.routers.authelia-http.rule=Host(`auth.{{ network.domain_name }}`)"
+      - "traefik.http.routers.authelia-http.entrypoints=web"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9091/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+{% endif %}
+
+# Network definitions
+networks:
+  proxy:
+    external: true
+  localdns:
+    external: true
+  auth_network:
+    name: auth_network
+    driver: bridge
