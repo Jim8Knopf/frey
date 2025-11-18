@@ -1,20 +1,27 @@
 ---
 # Validate port assignments to prevent conflicts
 
-- name: Validation | Build list of all configured ports
+- name: Validation | Collect all ports from enabled services across all stacks
   set_fact:
-    all_configured_ports: []
-
-- name: Validation | Collect ports from each stack dynamically
-  include_tasks: validate_ports_collect.yml
-  loop: "{{ validation_stacks }}"
+    all_configured_ports: "{{ all_configured_ports | default([]) + [item.port | string] }}"
+  loop: |
+    {% set ports = [] -%}
+    {% for stack in validation_stacks -%}
+      {% if vars[stack.name] is defined and features[stack.feature_flag] | default(false) and stack.has_services | default(false) and vars[stack.name].services is defined -%}
+        {% for svc_name, svc_config in vars[stack.name].services.items() -%}
+          {% if svc_config.enabled | default(false) and svc_config.port is defined -%}
+            {% set _ = ports.append({'stack': stack.name, 'service': svc_name, 'port': svc_config.port}) -%}
+          {% endif -%}
+        {% endfor -%}
+      {% endif -%}
+    {% endfor -%}
+    {{ ports }}
   loop_control:
-    loop_var: stack_config
-    label: "{{ stack_config.name }}"
+    label: "{{ item.stack }}/{{ item.service }}: {{ item.port }}"
 
 - name: Validation | Add additional system ports (Traefik HTTP/HTTPS)
   set_fact:
-    all_configured_ports: "{{ all_configured_ports + ['80', '443'] }}"
+    all_configured_ports: "{{ all_configured_ports | default([]) + ['80', '443'] }}"
   when: features.infrastructure | default(false)
 
 - name: Validation | Display collected ports for debugging

@@ -218,19 +218,23 @@ FAILED! => {"msg": "CRITICAL: WiFi AP interface (wlan0) matches management inter
 
 ## Files
 
+The validation role is organized into **one file per validation category**. All standardized checks are consolidated; only truly unique logic is separated.
+
 ```
 roles/validation/
 ├── README.md                      # This file
-├── defaults/main.yml              # Default variables
+├── defaults/main.yml              # Default variables (validation_stacks list)
 └── tasks/
-    ├── main.yml                   # Orchestrates all validation
-    ├── validate_variables.yml     # Core variable validation
-    ├── validate_network.yml       # Network configuration validation
-    ├── validate_storage.yml       # Storage paths and disk space
-    ├── validate_ports.yml         # Port conflict detection
-    ├── validate_secrets.yml       # Required secrets validation
-    └── validate_features.yml      # Feature flags and dependencies
+    ├── main.yml                   # Orchestrates all validation checks
+    ├── validate_variables.yml     # Variable validation (all stacks)
+    ├── validate_network.yml       # Network/WiFi validation (stack-specific)
+    ├── validate_storage.yml       # Storage paths and disk space (generic)
+    ├── validate_ports.yml         # Port conflict detection (all stacks)
+    ├── validate_secrets.yml       # Required secrets validation (generic)
+    └── validate_features.yml      # Feature flags and dependencies (all stacks)
 ```
+
+**Design Principle**: Each file handles one validation category across **all stacks** using dynamic loops. Only `validate_network.yml` is WiFi-specific because WiFi AP configuration is unique. All other files are generic and extensible.
 
 ## Integration with Other Roles
 
@@ -385,16 +389,31 @@ When adding validation, prefer **dynamic loops** over hardcoded checks:
 - name: Check media ports
   set_fact:
     ports: "{{ media.services | ... }}"
+- name: Check monitoring ports
+  set_fact:
+    ports: "{{ monitoring.services | ... }}"
 ```
 
 **✅ Good (dynamic, extensible):**
 ```yaml
-- name: Check all stack ports
-  include_tasks: collect_ports.yml
-  loop: "{{ validation_stacks }}"
+- name: Collect all ports from enabled services across all stacks
+  set_fact:
+    all_configured_ports: "{{ all_configured_ports | default([]) + [item.port | string] }}"
+  loop: |
+    {% set ports = [] -%}
+    {% for stack in validation_stacks -%}
+      {% if vars[stack.name] is defined and features[stack.feature_flag] | default(false) -%}
+        {% for svc_name, svc_config in vars[stack.name].services.items() -%}
+          {% if svc_config.enabled | default(false) and svc_config.port is defined -%}
+            {% set _ = ports.append({'stack': stack.name, 'service': svc_name, 'port': svc_config.port}) -%}
+          {% endif -%}
+        {% endfor -%}
+      {% endif -%}
+    {% endfor -%}
+    {{ ports }}
 ```
 
-This way, new stacks are automatically validated without modifying validation code.
+This way, new stacks are automatically validated without modifying validation code. Use Jinja2 templating to build dynamic lists from `validation_stacks` configuration.
 
 ## Related Documentation
 
