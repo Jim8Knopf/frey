@@ -1,0 +1,65 @@
+#!/bin/bash
+# Shared PostgreSQL Database Initialization Script
+# This script creates separate databases and users for each service
+# Runs only on first container startup (when database is empty)
+
+set -e
+
+# Function to create database and user
+create_database() {
+    local db_name=$1
+    local db_user=$2
+    local db_password=$3
+
+    echo "Creating database: $db_name with user: $db_user"
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        -- Create user if not exists
+        DO \$\$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = '$db_user') THEN
+                CREATE USER $db_user WITH PASSWORD '$db_password';
+            END IF;
+        END
+        \$\$;
+
+        -- Create database if not exists
+        SELECT 'CREATE DATABASE $db_name OWNER $db_user'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$db_name')\gexec
+
+        -- Grant all privileges
+        GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;
+EOSQL
+
+    echo "Database $db_name created successfully"
+}
+
+# Create databases for each service
+echo "=== Initializing Shared PostgreSQL Databases ==="
+
+# Immich database (requires VectorChord extension)
+create_database "{{ immich.db_name | default('immich') }}" \
+                "{{ immich.db_user | default('immich') }}" \
+                "{{ immich_db_password }}"
+
+# Enable VectorChord extension for Immich
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "{{ immich.db_name | default('immich') }}" <<-EOSQL
+    -- Set search path for VectorChord
+    ALTER DATABASE {{ immich.db_name | default('immich') }} SET search_path TO "\$user", public, vectors;
+
+    -- Enable data checksums (as per Immich requirements)
+    -- Note: This is set at initdb time via POSTGRES_INITDB_ARGS
+EOSQL
+
+# Mealie database
+create_database "{{ cookbook.db_name | default('mealie') }}" \
+                "{{ cookbook.db_user | default('mealie') }}" \
+                "{{ mealie_db_password }}"
+
+# Authentik database
+create_database "{{ authentik_db_name | default('authentik') }}" \
+                "{{ authentik_db_user | default('authentik') }}" \
+                "{{ authentik_postgres_password }}"
+
+echo "=== Database Initialization Complete ==="
+echo "Created databases: immich, mealie, authentik"

@@ -3,8 +3,26 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "infrastructure"
-    folders: [traefik, traefik/certificates, portainer, authentik, authentik/database, authentik/redis, authentik/media, authentik/certs, authentik/custom-templates, authentik/blueprints, step-ca]
+    folders: [traefik, traefik/certificates, portainer, authentik, authentik/database, authentik/redis, authentik/media, authentik/certs, authentik/custom-templates, authentik/blueprints, step-ca, shared-postgres, shared-postgres/init, shared-postgres/data]
     checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, storage.stacks]
+
+- name: Deploy shared PostgreSQL initialization script
+  ansible.builtin.template:
+    src: init-shared-postgres.sh.j2
+    dest: "{{ storage.appdata_dir }}/shared-postgres/init/01-init-databases.sh"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0755'
+  when: infrastructure.services.shared_postgres.enabled | default(false)
+
+- name: Fix shared PostgreSQL data directory ownership for container
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/shared-postgres/data"
+    owner: 999  # postgres user inside container
+    group: 999  # postgres group inside container
+    mode: '0700'
+    state: directory
+  when: infrastructure.services.shared_postgres.enabled | default(false)
 
 - name: Fix Step CA directory ownership for container user
   ansible.builtin.file:

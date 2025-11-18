@@ -69,7 +69,11 @@ services:
     command: server
     environment:
       AUTHENTIK_REDIS__HOST: authentik-redis
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+      AUTHENTIK_POSTGRESQL__HOST: shared-postgres
+{% else %}
       AUTHENTIK_POSTGRESQL__HOST: authentik-db
+{% endif %}
       AUTHENTIK_POSTGRESQL__USER: {{ authentik_db_user | default('authentik') }}
       AUTHENTIK_POSTGRESQL__NAME: {{ authentik_db_name | default('authentik') }}
       AUTHENTIK_POSTGRESQL__PASSWORD: {{ authentik_postgres_password }}
@@ -101,8 +105,13 @@ services:
       localdns:
       infrastructure_network:
     depends_on:
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+      shared-postgres:
+        condition: service_healthy
+{% else %}
       authentik-db:
         condition: service_healthy
+{% endif %}
       authentik-redis:
         condition: service_healthy
     labels:
@@ -134,6 +143,7 @@ services:
       retries: 3
       start_period: 90s
 
+{% if not (infrastructure.services.shared_postgres.enabled | default(false)) %}
   authentik-db:
     image: postgres:{{ infrastructure.services.authentik.postgres_version | default('16-alpine') }}
     container_name: authentik_postgres
@@ -152,6 +162,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+{% endif %}
 
   authentik-redis:
     image: redis:{{ infrastructure.services.authentik.redis_version | default('alpine') }}
@@ -175,7 +186,11 @@ services:
     command: worker
     environment:
       AUTHENTIK_REDIS__HOST: authentik-redis
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+      AUTHENTIK_POSTGRESQL__HOST: shared-postgres
+{% else %}
       AUTHENTIK_POSTGRESQL__HOST: authentik-db
+{% endif %}
       AUTHENTIK_POSTGRESQL__USER: {{ authentik_db_user | default('authentik') }}
       AUTHENTIK_POSTGRESQL__NAME: {{ authentik_db_name | default('authentik') }}
       AUTHENTIK_POSTGRESQL__PASSWORD: {{ authentik_postgres_password }}
@@ -192,8 +207,13 @@ services:
     networks:
       - infrastructure_network
     depends_on:
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+      shared-postgres:
+        condition: service_healthy
+{% else %}
       authentik-db:
         condition: service_healthy
+{% endif %}
       authentik-redis:
         condition: service_healthy
 {% endif %}
@@ -255,6 +275,62 @@ services:
       start_period: 20s
 {% endif %}
 
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+  # ==============================================================================
+  # SHARED POSTGRESQL - CONSOLIDATED DATABASE SERVER
+  # ==============================================================================
+  # Provides centralized PostgreSQL for all services (Immich, Mealie, Authentik)
+  # Uses Immich's specialized build with VectorChord extension
+  shared-postgres:
+    image: {{ infrastructure.services.shared_postgres.image }}
+    container_name: shared_postgres
+    restart: unless-stopped
+    environment:
+      # Main PostgreSQL credentials (for admin access)
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: {{ shared_postgres_admin_password }}
+      POSTGRES_DB: postgres
+      # Initialize with data checksums (required by Immich)
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      - "{{ infrastructure.services.shared_postgres.data_dir }}:/var/lib/postgresql/data"
+      # Mount init script to create all databases and users
+      - "{{ storage.appdata_dir }}/shared-postgres/init:/docker-entrypoint-initdb.d:ro"
+    networks:
+      infrastructure_network:
+        aliases:
+          - postgres
+          - database
+          - authentik-db
+          - mealie-postgres
+      photos_network:  # For Immich access
+        aliases:
+          - database
+      cookbook:  # For Mealie access
+        aliases:
+          - mealie-postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=vchord.so"
+      - "-c"
+      - 'search_path="$$user", public, vectors'
+      - "-c"
+      - "logging_collector={{ infrastructure.services.shared_postgres.logging_collector }}"
+      - "-c"
+      - "max_wal_size={{ infrastructure.services.shared_postgres.max_wal_size }}"
+      - "-c"
+      - "shared_buffers={{ infrastructure.services.shared_postgres.shared_buffers }}"
+      - "-c"
+      - "wal_compression={{ infrastructure.services.shared_postgres.wal_compression }}"
+{% endif %}
+
 # Network definitions as per architecture guide
 networks:
   proxy:
@@ -263,3 +339,9 @@ networks:
     external: true           # For DNS resolution
   infrastructure_network:    # Service-specific network
     external: true           # For DNS resolution
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+  photos_network:            # For Immich database access
+    external: true
+  cookbook:                  # For Mealie database access
+    external: true
+{% endif %}

@@ -51,7 +51,9 @@ services:
       - "{{ immich.services.immich.port }}:2283"
     depends_on:
       - redis
+{% if not (infrastructure.services.shared_postgres.enabled | default(false)) %}
       - database
+{% endif %}
     restart: unless-stopped
     networks:
       - photos_network
@@ -117,11 +119,13 @@ services:
       timeout: 10s
       retries: 3
 
+{% if not (infrastructure.services.shared_postgres.enabled | default(false)) %}
   # ==============================================================================
-  # POSTGRESQL DATABASE - Metadata Storage (2025 VectorChord Update)
+  # POSTGRESQL DATABASE - Metadata Storage (Standalone)
   # ==============================================================================
+  # NOTE: This service is only used when shared PostgreSQL is disabled
   # Stores photo metadata, user accounts, albums, and AI embeddings
-  # NOTE: 2025 uses VectorChord instead of pgvecto.rs for better performance
+  # 2025 uses VectorChord instead of pgvecto.rs for better performance
   database:
     container_name: immich_postgres
     image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
@@ -143,6 +147,7 @@ services:
       retries: 5
       start_period: 30s
     command: ["postgres", "-c", "shared_preload_libraries=vchord.so", "-c", 'search_path="$$user", public, vectors', "-c", "logging_collector=on", "-c", "max_wal_size=2GB", "-c", "shared_buffers=512MB", "-c", "wal_compression=on"]
+{% endif %}
 
 
 # ==============================================================================

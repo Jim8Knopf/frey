@@ -39,13 +39,20 @@ services:
       # Force OpenSSL-based stacks (httpx, authlib) to trust Step-CA as well
       - SSL_CERT_FILE=/etc/ssl/certs/step-ca.crt
       - SSL_CERT_DIR=/etc/ssl/certs
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+    # When using shared PostgreSQL, no local dependency
+{% else %}
     depends_on:
       - mealie-postgres
+{% endif %}
     ports: {{ cookbook.services.mealie.ports | default(['9900:9000']) }}
     networks:
       - cookbook
       - proxy
       - localdns
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+      - infrastructure_network  # For access to shared PostgreSQL
+{% endif %}
     labels:
       # Traefik routing configuration
       - "traefik.enable=true"
@@ -62,9 +69,11 @@ services:
     # Healthcheck disabled - curl not available in container
     # Container health can be monitored via logs and direct API access
 
+{% if not (infrastructure.services.shared_postgres.enabled | default(false)) %}
   # ==============================================================================
-  # POSTGRESQL DATABASE - Mealie Data
+  # POSTGRESQL DATABASE - Mealie Data (Standalone)
   # ==============================================================================
+  # NOTE: This service is only used when shared PostgreSQL is disabled
   mealie-postgres:
     container_name: mealie_postgres
     image: postgres:15-alpine
@@ -82,6 +91,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+{% endif %}
 
 networks:
   cookbook:
@@ -91,3 +101,7 @@ networks:
     external: true
   localdns:
     external: true
+{% if infrastructure.services.shared_postgres.enabled | default(false) %}
+  infrastructure_network:  # For access to shared PostgreSQL
+    external: true
+{% endif %}

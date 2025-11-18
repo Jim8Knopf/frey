@@ -11,7 +11,7 @@ This is the structured and prioritized TODO checklist for the Frey project.
 |- [ ] Encrypt all secrets with Ansible Vault | Hardcoded passwords and API keys are a security risk.                                    | ⬜️     |
 |- [ ] Fix Deprecation Warnings              | Outdated modules may cause future errors.                                                | ⬜️     |
 |- [ ] Remove hardcoded passwords            | Security vulnerability.                                                                  | ⬜️     |
-|- [ ] **Create a separate `db` role**       | To manage PostgreSQL independently from services (start/stop/backup/update).          | ⬜️     |
+|- [x] **Consolidate PostgreSQL databases**  | Single PostgreSQL instance with separate databases (completed - see docs/POSTGRES_CONSOLIDATION.md). | ✅     |
 
 ---
 
@@ -23,9 +23,8 @@ This is the structured and prioritized TODO checklist for the Frey project.
 |- [ ] Complete Traefik integration          | Ensure all services are accessible via Traefik with HTTPS.                               | ⬜️     |
 |- [ ] Move variables to roles               | Make roles self-contained and reduce global variable clutter.                            | ⬜️     |
 |- [ ] Add post-deployment health checks     | Prevent silent failures after deployment.                                                | ⬜️     |
-|- [ ] Clarify DB strategy                   | Use a **single PostgreSQL instance** with separate schemas for each service.            | ⬜️     |
-|- [ ] **Implement `db` role tasks**         | Create tasks for starting/stopping PostgreSQL, creating schemas, and managing backups.  | ⬜️     |
-|- [ ] **Add `db_backup.yml` playbook**      | Automate PostgreSQL backups with rotation and remote storage.                          | ⬜️     |
+|- [x] Clarify DB strategy                   | Single PostgreSQL instance with separate databases implemented (see docs/POSTGRES_CONSOLIDATION.md). | ✅     |
+|- [ ] **Add `db_backup.yml` playbook**      | Automate PostgreSQL backups with rotation and remote storage (see backup strategy in docs).          | ⬜️     |
 |- [ ] **Implement shared `media` user/group** | Create a single `media` user/group (UID/GID 1000) for all media services.               | ⬜️     |
 |- [ ] **Set permissions for media directory** | Ensure all services can read/write media files using the shared `media` user/group.   | ⬜️     |
 
@@ -78,15 +77,16 @@ This is the structured and prioritized TODO checklist for the Frey project.
 
 ## 📝 Database Implementation Details
 
-### **Single PostgreSQL Instance with Separate Schemas**
-- **Why?** Saves resources on Raspberry Pi 5 while allowing independent management of services.
-- **How?**
-  1. Create a **dedicated `db` role** in `roles/db/` with tasks for:
-     - Starting/stopping PostgreSQL container.
-     - Creating schemas and users for each service (Jellyfin, Sonarr, Radarr, etc.).
-     - Managing backups and restores.
-  2. Add a **separate playbook `db.yml`** for DB-specific operations (backup, update, etc.).
-  3. Add a **separate playbook `db_backup.yml`** for automated backups with rotation.
+### **✅ Single PostgreSQL Instance with Separate Databases (COMPLETED)**
+- **Status:** Implemented in infrastructure role
+- **Documentation:** See `docs/POSTGRES_CONSOLIDATION.md` for full details
+- **Implementation:**
+  1. ✅ Single shared PostgreSQL container (`shared_postgres`) in infrastructure role
+  2. ✅ Separate databases for Immich, Mealie, and Authentik
+  3. ✅ Initialization script creates all databases and users on first startup
+  4. ✅ Uses Immich's PostgreSQL image with VectorChord extension
+  5. ⬜️ **TODO:** Add automated backup playbook (`db_backup.yml`)
+- **Benefits:** Saves ~200-300MB RAM, simplifies backups, easier maintenance
 
 ---
 

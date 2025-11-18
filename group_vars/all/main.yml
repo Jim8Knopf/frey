@@ -376,6 +376,17 @@ infrastructure:
       port: 9336  # External port mapping (maps to internal 9443)
       # After enabling, run: docker exec -it step-ca step ca init
       # Then configure ACME provisioner: docker exec -it step-ca step ca provisioner add acme --type ACME
+    shared_postgres:
+      enabled: true  # Consolidated PostgreSQL for all services
+      version: "14-vectorchord0.4.3-pgvectors0.2.0"  # Immich specialized build with VectorChord
+      image: "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0"
+      port: 5432  # PostgreSQL default port
+      data_dir: "{{ storage.appdata_dir }}/shared-postgres/data"
+      # Performance tuning (from Immich config)
+      shared_buffers: "512MB"
+      max_wal_size: "2GB"
+      wal_compression: "on"
+      logging_collector: "on"
 
 landing_page:
   enabled: true
@@ -776,6 +787,10 @@ immich:
     uid: 74686
     groups: "{{ immich.group.name }}"
   dir: "{{ storage.base_dir }}/photos"
+
+  # Database credentials
+  db_user: immich
+  db_name: immich
 
   services:
     immich:
