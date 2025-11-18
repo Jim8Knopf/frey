@@ -1,0 +1,72 @@
+{
+  "libraries": [
+{% if media.services.jellyfin.enabled %}
+    {
+      "name": "Movies",
+      "folder": "/media/movies",
+      "folderToFolderConversion": false,
+      "scanButtons": {
+        "dbScan": {
+          "displayName": "New/Modified Files",
+          "enabled": true
+        },
+        "healthCheck": {
+          "displayName": "Health Check Files",
+          "enabled": true
+        }
+      },
+      "pluginButtons": [],
+      "options": {
+        "priorityQueueOrder": "bottom",
+        "scanInterval": 6,
+        "scanOnAppLaunch": true,
+        "scanOnFileChange": true,
+        "scanOnDayChangeOnly": false,
+        "scanCron": "",
+        "holdPattern": "",
+        "foldersToIgnore": [],
+        "fileScanner": {
+          "maxDepth": 5,
+          "maxTotalFiles": 500000,
+          "scannedFolderPath": "/media/movies"
+        },
+        "pluginPipeline": []
+      },
+      "created_at": "{{ ansible_date_time.iso8601 }}"
+    },
+    {
+      "name": "TV Shows",
+      "folder": "/media/tv",
+      "folderToFolderConversion": false,
+      "scanButtons": {
+        "dbScan": {
+          "displayName": "New/Modified Files",
+          "enabled": true
+        },
+        "healthCheck": {
+          "displayName": "Health Check Files",
+          "enabled": true
+        }
+      },
+      "pluginButtons": [],
+      "options": {
+        "priorityQueueOrder": "bottom",
+        "scanInterval": 6,
+        "scanOnAppLaunch": true,
+        "scanOnFileChange": true,
+        "scanOnDayChangeOnly": false,
+        "scanCron": "",
+        "holdPattern": "",
+        "foldersToIgnore": [],
+        "fileScanner": {
+          "maxDepth": 5,
+          "maxTotalFiles": 500000,
+          "scannedFolderPath": "/media/tv"
+        },
+        "pluginPipeline": []
+      },
+      "created_at": "{{ ansible_date_time.iso8601 }}"
+    }
+{% endif %}
+  ]
+}

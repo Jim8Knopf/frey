@@ -41,3 +41,26 @@
     name: jellyfin
     state: started
     restart: true
+
+# Media Optimization Services Handlers
+
+- name: Restart Tdarr
+  community.docker.docker_container:
+    name: tdarr
+    state: started
+    restart: true
+  when: media.services.tdarr.enabled | default(false)
+
+- name: Sync Recyclarr
+  community.docker.docker_container_exec:
+    container: recyclarr
+    command: recyclarr sync
+  ignore_errors: true
+  when: media.services.recyclarr.enabled | default(false)
+
+- name: Restart Unpackerr
+  community.docker.docker_container:
+    name: unpackerr
+    state: started
+    restart: true
+  when: media.services.unpackerr.enabled | default(false)

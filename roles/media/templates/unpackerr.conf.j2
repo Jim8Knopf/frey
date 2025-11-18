@@ -1,0 +1,150 @@
+# Unpackerr Configuration
+# Automatically extracts downloaded archives for Sonarr, Radarr, and Lidarr
+# Documentation: https://github.com/Unpackerr/unpackerr
+
+[global]
+# Debug mode (true/false)
+debug = false
+
+# How often to poll download clients for changes (default: 2m)
+interval = "2m"
+
+# How long an item must be queued before extraction starts (default: 1m)
+start_delay = "1m"
+
+# How long to wait before retrying a failed extraction (default: 5m)
+retry_delay = "5m"
+
+# Maximum number of extraction attempts (default: 3)
+max_retries = 3
+
+# How long to wait after extraction before deleting archives (default: 5m)
+delete_delay = "5m"
+
+# Delete original files after successful extraction (true/false)
+delete_orig = true
+
+# Delete files after import to *arr app (true/false)
+delete_files = false
+
+# Parallel extractions (default: 1)
+parallel = 2
+
+# File modes (permissions)
+file_mode = "0644"
+dir_mode = "0755"
+
+# Log file (container logs to stdout, so this is optional)
+# log_file = "/config/unpackerr.log"
+
+# Log files to keep (0 = infinite)
+log_files = 10
+
+# Log file size in megabytes
+log_file_mb = 10
+
+# ===================================================================
+# SONARR CONFIGURATION
+# ===================================================================
+{% if media.services.sonarr.enabled %}
+[[sonarr]]
+url = "http://sonarr:{{ media.services.sonarr.port }}"
+api_key = "{{ sonarr_api_key }}"
+
+# Paths to check for extraction (optional, auto-detected from Sonarr)
+# paths = ["/downloads"]
+
+# Sonarr protocols to process (torrent, usenet, or both)
+protocols = "torrent"
+
+# How long Sonarr must be importing before we start checking (default: 0s)
+timeout = "10s"
+
+# Delete archives after successful extraction and import
+delete_orig = true
+
+# Delete files after import
+delete_files = false
+
+# Syncthing integration (optional)
+syncthing = false
+{% endif %}
+
+# ===================================================================
+# RADARR CONFIGURATION
+# ===================================================================
+{% if media.services.radarr.enabled %}
+[[radarr]]
+url = "http://radarr:{{ media.services.radarr.port }}"
+api_key = "{{ radarr_api_key }}"
+
+# Paths to check for extraction (optional, auto-detected from Radarr)
+# paths = ["/downloads"]
+
+# Radarr protocols to process (torrent, usenet, or both)
+protocols = "torrent"
+
+# How long Radarr must be importing before we start checking (default: 0s)
+timeout = "10s"
+
+# Delete archives after successful extraction and import
+delete_orig = true
+
+# Delete files after import
+delete_files = false
+
+# Syncthing integration (optional)
+syncthing = false
+{% endif %}
+
+# ===================================================================
+# LIDARR CONFIGURATION
+# ===================================================================
+{% if media.services.lidarr.enabled %}
+[[lidarr]]
+url = "http://lidarr:{{ media.services.lidarr.port }}"
+api_key = "{{ lidarr_api_key }}"
+
+# Paths to check for extraction (optional, auto-detected from Lidarr)
+# paths = ["/downloads"]
+
+# Lidarr protocols to process (torrent, usenet, or both)
+protocols = "torrent"
+
+# How long Lidarr must be importing before we start checking (default: 0s)
+timeout = "10s"
+
+# Delete archives after successful extraction and import
+delete_orig = true
+
+# Delete files after import
+delete_files = false
+
+# Syncthing integration (optional)
+syncthing = false
+{% endif %}
+
+# ===================================================================
+# READARR CONFIGURATION (if enabled in the future)
+# ===================================================================
+# [[readarr]]
+# url = "http://readarr:8787"
+# api_key = ""
+# protocols = "torrent"
+# timeout = "10s"
+# delete_orig = true
+# delete_files = false
+
+# ===================================================================
+# WEBHOOK CONFIGURATION (optional)
+# ===================================================================
+# [[webhook]]
+# url = "http://homeassistant:8123/api/webhook/unpackerr"
+# name = "Home Assistant"
+# nickname = "Unpackerr"
+# channel = ""
+# timeout = "10s"
+# silent = false
+# ignore_ssl = false
+# exclude = []
+# events = [0, 1]  # 0 = all events, 1 = extraction start, 2 = extraction finish, 3 = extraction error
