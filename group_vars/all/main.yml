@@ -75,12 +75,33 @@ network:
     interface: "wlan1"             # WiFi interface for AP mode
     client_interface: "wlan0"      # Client interface for roaming
     client_interface_ip: "192.168.0.252" #TODO Client interface IP (for authentik)
+    nm_transition_delay: 5         # Seconds to wait during NetworkManager→dhcpcd transition (on fresh installs)
     roaming:
-      enabled: true
+      enabled: true  # Enable wpa_supplicant with known_networks and priorities
+      daemon_enabled: false  # Disable roaming daemon (was causing connection instability)
       client_interface: "wlan0"  # Interface for connecting to public WiFi
       mqtt_topic: "frey/wifi/roaming"
-      known_networks: "{{ wifi_ap.known_networks }}"  # From secrets.yml
-    
+      known_networks: "{{ network.wifi.roaming.known_networks }}"  # From secrets.yml
+
+    # WiFi power management
+    power_management:
+      disable_power_save: true
+      extra_interfaces: []
+    virtual_ap:
+      enabled: false  # Using physical adapters (wlan0/wlan1), not virtual interfaces
+      source_interface: "{{ network.wifi.client_interface }}"
+      ensure_interval: 10
+
+    # Connectivity monitor - DISABLED to prevent connection cycling
+    connectivity_monitor:
+      enabled: false  # DISABLED: Was causing disconnections by restarting services
+      ping_target: null
+      ping_count: 3
+      failure_threshold: 1
+      interval_seconds: 60
+      restart_dhcpcd: true
+      restart_wpa_supplicant: true
+
     # WiFi radio settings
     # Set hw_mode to 'auto' to prefer 5GHz when supported, else fall back to 2.4GHz
     hw_mode: auto                  # auto: prefer 5GHz (a) if supported; else 2.4GHz (g)
@@ -393,7 +414,7 @@ infrastructure:
         http: 5001
     authentik:
       enabled: true  # Enable after initial infrastructure setup
-      version: "2025.2.4"  # Pinned version for reproducible deployments
+      version: "2024.12.3"  # Temporary downgrade to fix migration issue
       port: 9300  # Changed from 9000 to avoid conflict with Portainer
       port_https: 9446
       postgres_version: "16-alpine"
@@ -650,8 +671,8 @@ media:
 
   network:
     name: "media_network"
-    subnet: "10.20.0.0/24" # TODO probably unnessecarry 
-    gateway: "10.20.0.1"
+    # No explicit subnet needed - Docker auto-assigns IPs
+    # Services use DNS names for communication, not IPs
 
   vpn:
     enabled: false

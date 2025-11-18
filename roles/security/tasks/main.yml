@@ -263,6 +263,23 @@
     - ufw
     - ssh_safety
 
+- name: Allow SSH from WiFi AP network (management access)
+  community.general.ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+    from_ip: "{{ network_security.wifi_ap_network }}"
+    comment: "WIFI_AP: SSH access for Pi management"
+  when:
+    - enable_ufw | default(true)
+    - network.wifi is defined
+    - features.wifi_access_point | default(false)
+  tags:
+    - firewall
+    - ufw
+    - wifi_ap
+    - ssh_safety
+
 # ==============================================================================
 # AUTO-ROLLBACK SAFETY MECHANISM
 # ==============================================================================

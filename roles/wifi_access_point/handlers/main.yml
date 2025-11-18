@@ -31,7 +31,7 @@
 
 # iptables handlers moved to security role
 
-- name: Reload systemd
+- name: reload systemd
   ansible.builtin.systemd:
     daemon_reload: yes
 

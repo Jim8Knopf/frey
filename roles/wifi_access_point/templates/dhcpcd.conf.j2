@@ -61,6 +61,16 @@ metric 100
 # This prevents dhcpcd from interfering with the roaming service.
 nohook wpa_supplicant
 
+# WAIT FOR CARRIER (WiFi association) BEFORE DHCP
+# Prevents dhcpcd from requesting DHCP before WiFi is connected
+# waitip 4 = wait for both carrier and IPv4 address
+waitip 4
+
+# DISABLE LINK-LOCAL FALLBACK
+# Don't fall back to 169.254.x.x if DHCP fails
+# We want to know immediately if WiFi/DHCP is broken
+noipv4ll
+
 # ------------------------------------------------------------------------------
 # ACCESS POINT INTERFACE CONFIGURATION (WiFi AP)
 # ------------------------------------------------------------------------------

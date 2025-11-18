@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep Frey AP interface {{ network.wifi.interface }} alive
+
+[Timer]
+OnBootSec=10
+OnUnitActiveSec={{ network.wifi.virtual_ap.ensure_interval | default(15) }}
+Unit=frey-ensure-ap-interface.service
+
+[Install]
+WantedBy=timers.target

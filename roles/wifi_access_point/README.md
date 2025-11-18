@@ -33,6 +33,7 @@ Safety and deployment rules (important — read before running)
 1. Do not change the interface you use for SSH/web management.
    - The play now checks `ansible_default_ipv4.interface` against `network.wifi.interface` and will fail unless `force_apply: true` is set.
    - If you only have a single WiFi adapter, do this work from physical console or wired network.
+   - The play also refuses to run if `network.wifi.interface == network.wifi.client_interface` to prevent hostapd and wpa_supplicant from fighting over the same NIC. Set `force_apply: true` if you intentionally share one adapter (not recommended).
 
 2. Prefer a separate adapter for AP (recommended: `wlan1`).
 
@@ -240,6 +241,23 @@ wifi:
   ignore_broadcast_ssid: 0
 ```
 
+### Reliability Controls
+
+```yaml
+network:
+  wifi:
+    power_management:
+      disable_power_save: true        # Leave at true to keep radios awake
+      extra_interfaces: []            # Append USB WiFi dongles if needed
+    connectivity_monitor:
+      enabled: true                   # Installs ping watchdog + timer
+      ping_target: null               # Null = auto use default gateway, else set IP
+      ping_count: 3                   # Packets per run
+      failure_threshold: 1            # Consecutive failures before action
+      restart_wpa_supplicant: true    # Bounce wpa_supplicant-<client>
+      restart_dhcpcd: true            # Restart dhcpcd for fresh DHCP lease
+```
+
 ### DNS Configuration
 
 ```yaml
@@ -332,6 +350,14 @@ Installs `hostapd` (creates AP), `dnsmasq` (DHCP/DNS), and utilities.
 - Clients get `.frey` domain resolution
 - Services are accessible via friendly names
 - Upstream DNS defaults to Cloudflare/Google with automatic fallback to whatever the uplink network hands out (handles hotel/captive WiFi)
+
+### 7. WiFi Power Management Safeguards
+- `network.wifi.power_management.disable_power_save: true` (default) installs a systemd unit that permanently turns off WiFi power saving on every managed interface (AP + client and any extras in `extra_interfaces`).
+- Prevents the kernel from throttling the radios which previously caused uplink brownouts (`iwconfig` would still show the SSID but internet traffic stalled).
+
+### 8. Connectivity Watchdog
+- `network.wifi.connectivity_monitor.enabled: true` drops an `/usr/local/bin/frey-wifi-healthcheck` script plus a timer that pings the upstream via `network.wifi.client_interface` (default target = detected gateway, falling back to 1.1.1.1).
+- After `failure_threshold` consecutive misses (default 1) it forces the client NIC down/up, flushes any stale 169.254 addresses, issues a `wpa_cli reconnect`, and finally restarts `wpa_supplicant-<client>` and `dhcpcd` (both toggles configurable) to self-heal the roaming uplink while keeping the AP online.
 
 ## Troubleshooting
 

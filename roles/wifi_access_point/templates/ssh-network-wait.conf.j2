@@ -1,0 +1,37 @@
+# ==============================================================================
+# SSH SERVICE OVERRIDE - Network Dependency Management
+# ==============================================================================
+# Ensures SSH starts AFTER network interfaces are configured, but does NOT
+# require internet connectivity (network-online.target).
+#
+# KEY DESIGN:
+# - Waits for dhcpcd to configure interfaces (wlan0 DHCP + wlan1 static)
+# - Allows SSH to start even if upstream internet is unavailable
+# - Tolerates partial network failure (wlan0 down, wlan1 still works)
+#
+# CRITICAL FOR FREY:
+# - Prevents SSH starting before wlan1 has its static IP (10.20.0.1)
+# - Prevents SSH lockout when wlan0 DHCP fails
+# - Ensures at least ONE interface is ready for SSH binding
+# ==============================================================================
+
+[Unit]
+# Basic network must be ready (interfaces exist)
+After=network.target
+
+# Wait for dhcpcd to attempt interface configuration
+After=dhcpcd.service
+
+# Prefer dhcpcd runs first, but don't fail if it fails entirely
+Wants=dhcpcd.service
+
+# DO NOT require network-online.target (may never come if offline)
+# We only need at least ONE interface with an IP, not internet connectivity
+
+[Service]
+# Wait for at least one interface to have a routable IP address
+# This ensures SSH can bind successfully even if some interfaces failed
+# Timeout: 30 seconds (allows slow DHCP, but won't hang boot forever)
+ExecStartPre=/bin/bash -c 'for i in {1..30}; do if ip addr show | grep -q "inet.*scope global"; then exit 0; fi; sleep 1; done; echo "WARNING: No global IP found, SSH may not be accessible"; exit 0'
+
+# Normal SSH start follows

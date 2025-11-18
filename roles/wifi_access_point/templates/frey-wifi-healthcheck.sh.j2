@@ -43,12 +43,17 @@ if command -v wpa_cli >/dev/null 2>&1; then
   wpa_cli -i "$INTERFACE" reconnect >/dev/null 2>&1 || true
 fi
 
-{% if network.wifi.connectivity_monitor.restart_wpa_supplicant | default(true) %}
-SERVICE_NAME="wpa_supplicant-{{ network.wifi.client_interface }}.service"
-if systemctl list-unit-files "$SERVICE_NAME" >/dev/null 2>&1; then
-  systemctl restart "$SERVICE_NAME" || true
+# Only restart services if dhcpcd is active (safety check for NetworkManager systems)
+if systemctl is-active --quiet dhcpcd; then
+  {% if network.wifi.connectivity_monitor.restart_wpa_supplicant | default(true) %}
+  SERVICE_NAME="wpa_supplicant-{{ network.wifi.client_interface }}.service"
+  if systemctl list-unit-files "$SERVICE_NAME" >/dev/null 2>&1; then
+    systemctl restart "$SERVICE_NAME" || true
+  fi
+  {% endif %}
+  {% if network.wifi.connectivity_monitor.restart_dhcpcd | default(true) %}
+  systemctl restart dhcpcd || true
+  {% endif %}
+else
+  logger -t "$LOGGER_TAG" "Skipping service restart - dhcpcd not active (NetworkManager may be in use)"
 fi
-{% endif %}
-{% if network.wifi.connectivity_monitor.restart_dhcpcd | default(true) %}
-systemctl restart dhcpcd || true
-{% endif %}

@@ -32,9 +32,10 @@ network_security:
   trusted_networks:
     - "192.168.0.0/24"          # Home network - full access to all services
     - "10.20.30.0/24"           # Secondary management network (if needed)
-    - "10.20.0.0/24"            # WiFi AP network - CRITICAL for SSH access to Pi
+    - "10.139.57.149/24"        # CMF hotspot network
     # Note: Current upstream network will be auto-detected and added at runtime
-    # Note: WiFi AP clients still blocked from direct container ports (see protected_ports)
+    # Note: WiFi AP network (10.20.0.0/24) gets restricted access via protected_ports
+    # Note: SSH access from WiFi AP is explicitly allowed via dedicated firewall rule
 
   # TRUSTED DEVICES - Never Banned by Fail2ban
   # ------------------------------------------------------------------------------

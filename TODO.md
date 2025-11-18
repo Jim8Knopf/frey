@@ -161,3 +161,6 @@ note tool for whatever:
 - logseq
 - tana
 - obsidian 
+
+
+dialog neds to be instled somwher. is dependency for wifi tui

@@ -11,6 +11,7 @@
 [Unit]
 # Wait for dhcpcd to assign IP addresses (including wlan1's static 10.20.0.1)
 After=dhcpcd.service
+BindsTo=dhcpcd.service
 
 # Don't require network-online.target (may never be satisfied offline)
 # We only need wlan1's static IP, not internet connectivity
@@ -18,11 +19,36 @@ Requires=
 
 # Ensure hostapd is running (wlan1 must be in AP mode)
 After=hostapd.service
+Requires=hostapd.service
+BindsTo=hostapd.service
+
+# Prevent timer conflicts during deployment
+Conflicts=frey-ensure-ap-interface.timer
 
 [Service]
 # Restart on failure (handles temporary issues during boot)
 Restart=on-failure
 RestartSec=5s
 
-# Give more time for wlan1 IP to be assigned
-ExecStartPre=/bin/sleep 2
+# Wait for AP interface to be ready (UP, IP assigned, hostapd active)
+# Timeout: 30 seconds (60 iterations × 0.5s)
+ExecStartPre=/bin/bash -c '\
+  echo "Waiting for {{ network.wifi.interface }} to be ready..."; \
+  for i in {1..60}; do \
+    if ! ip link show {{ network.wifi.interface }} | grep -q "state UP"; then \
+      sleep 0.5; \
+      continue; \
+    fi; \
+    if ! ip addr show {{ network.wifi.interface }} | grep -q "{{ network.wifi.ip }}"; then \
+      sleep 0.5; \
+      continue; \
+    fi; \
+    if ! systemctl is-active --quiet hostapd; then \
+      sleep 0.5; \
+      continue; \
+    fi; \
+    echo "{{ network.wifi.interface }} is ready (UP, IP assigned, hostapd active)"; \
+    exit 0; \
+  done; \
+  echo "ERROR: {{ network.wifi.interface }} not ready after 30 seconds"; \
+  exit 1'
