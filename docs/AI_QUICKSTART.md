@@ -146,11 +146,13 @@ Want a **talking car AI** like KITT? Fine-tune for **FREE** with Google Colab!
 5. Download GGUF file and deploy to Pi
 
 **See**:
+- [GETTING_STARTED_FINETUNING.md](GETTING_STARTED_FINETUNING.md) 📖 **Complete step-by-step walkthrough**
 - [scripts/finetune/README.md](../scripts/finetune/README.md) 🎯 **Quick start with Colab**
 - [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Complete technical guide**
 
 ## Full Documentation
 
+- **Getting started**: [GETTING_STARTED_FINETUNING.md](GETTING_STARTED_FINETUNING.md) 📖 **Complete walkthrough**
 - **IaC setup guide**: [VOICE_ASSISTANT_IAC.md](VOICE_ASSISTANT_IAC.md) ⭐ **Start here for automated setup**
 - **Fine-tuning guide**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Advanced: Custom models**
 - Architecture details: [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md)
