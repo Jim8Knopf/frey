@@ -1,0 +1,86 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+version: 1
+metadata:
+  name: Frey Hub - Traefik Dashboard Proxy Provider
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # Proxy Provider for Traefik Dashboard (Forward Auth)
+  - model: authentik_providers_proxy.proxyprovider
+    id: traefik-proxy-provider
+    identifiers:
+      name: traefik-proxy-provider
+    attrs:
+      name: traefik-proxy-provider
+      authentication_flow: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      mode: forward_single
+      # External host that Traefik dashboard is accessible at
+      external_host: https://traefik.{{ network.domain_name }}
+      # Token validity
+      access_token_validity: hours=8
+      # Skip path regex - health checks and public paths (none for dashboard)
+      skip_path_regex: ""
+      # Intercept header authentication
+      intercept_header_auth: true
+      # Basic auth settings
+      basic_auth_enabled: false
+      basic_auth_password_attribute: ""
+      basic_auth_user_attribute: ""
+
+  # Application for Traefik Dashboard
+  - model: authentik_core.application
+    id: traefik-application
+    identifiers:
+      slug: traefik
+    attrs:
+      name: Traefik Dashboard
+      slug: traefik
+      provider: !KeyOf traefik-proxy-provider
+      policy_engine_mode: any
+      meta_launch_url: https://traefik.{{ network.domain_name }}
+      meta_description: Reverse proxy dashboard and routing configuration
+      meta_publisher: Frey Hub
+      meta_icon: https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/traefik.png
+
+  # Policy binding to restrict access to traefik_admins group
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf traefik-application
+      order: 10
+    attrs:
+      policy: !Find [authentik_policies_expression.expressionpolicy, [name, "traefik-admin-access"]]
+      target: !KeyOf traefik-application
+      enabled: true
+      order: 10
+      timeout: 30
+
+  # Expression policy for group-based access control
+  - model: authentik_policies_expression.expressionpolicy
+    identifiers:
+      name: "traefik-admin-access"
+    attrs:
+      name: "traefik-admin-access"
+      expression: |
+        # Allow access only to traefik_admins or frey_admins groups
+        return ak_is_group_member(request.user, name="traefik_admins") or ak_is_group_member(request.user, name="frey_admins")
+      execution_logging: true
+
+  # Outpost for Traefik Forward Auth (using embedded outpost)
+  - model: authentik_outposts.outpost
+    identifiers:
+      name: "traefik-outpost"
+    attrs:
+      name: "traefik-outpost"
+      type: proxy
+      service_connection: !Find [authentik_outposts.dockerserviceconnection, [name, "Local Docker Connection"]]
+      _config:
+        authentik_host: "https://auth.{{ network.domain_name }}"
+        authentik_host_insecure: false
+        docker_network: "proxy"
+        docker_map_ports: false
+        log_level: info
+        object_naming_template: "ak-outpost-%(name)s"
+      providers:
+        - !KeyOf traefik-proxy-provider

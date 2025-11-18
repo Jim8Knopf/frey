@@ -354,9 +354,17 @@ ansible-playbook -i inventory/hosts.yml playbooks/site.yml
 - **Isolated Networks** - Docker networks separate services
 - **User Isolation** - Each stack runs under dedicated user/group
 
-### Default Credentials
+### Authentication
 
 **Traefik Dashboard** (https://traefik.frey)
+
+**With Authentik SSO (Recommended):**
+- Access controlled via Authentik Single Sign-On
+- Requires membership in `traefik_admins` or `frey_admins` group
+- Automatic authentication using your Authentik credentials
+- Enabled when `infrastructure.services.authentik.enabled: true`
+
+**Fallback BasicAuth (when Authentik is disabled):**
 - Username: `admin`
 - Password: `FreyAdmin123!`
 - ⚠️ **Change immediately after first login**
