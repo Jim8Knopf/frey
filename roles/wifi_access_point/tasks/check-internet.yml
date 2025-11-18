@@ -8,7 +8,7 @@
         timeout: 5
         status_code: 200
       register: internet_check
-      ignore_errors: true
+      failed_when: false  # Internet might not be available; this is expected and handled below
       changed_when: false
 
     - name: Set internet_available fact based on result

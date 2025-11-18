@@ -58,7 +58,7 @@
         patterns: '*.list'
         file_type: file
       register: apt_source_files
-      ignore_errors: true
+      failed_when: false  # Directory might not exist; this is acceptable
 
     - name: Check which apt source files reference download.docker.com
       shell: "grep -l 'download.docker.com' {{ item.path }} || true"
@@ -85,7 +85,7 @@
       apt:
         update_cache: yes
         cache_valid_time: 3600
-      ignore_errors: true
+      failed_when: false  # Continue deployment even if apt update fails (e.g., no internet)
       tags: always
 
 
