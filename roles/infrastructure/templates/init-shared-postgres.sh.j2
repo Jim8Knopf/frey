@@ -61,5 +61,16 @@ create_database "{{ authentik_db_name | default('authentik') }}" \
                 "{{ authentik_db_user | default('authentik') }}" \
                 "{{ authentik_postgres_password }}"
 
+{% if media.services.jellystat.enabled | default(false) %}
+# Jellystat database (optional - only if enabled)
+create_database "jellystat" \
+                "jellystat" \
+                "{{ jellystat_db_password }}"
+{% endif %}
+
 echo "=== Database Initialization Complete ==="
+{% if media.services.jellystat.enabled | default(false) %}
+echo "Created databases: immich, mealie, authentik, jellystat"
+{% else %}
 echo "Created databases: immich, mealie, authentik"
+{% endif %}

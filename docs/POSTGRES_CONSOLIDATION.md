@@ -14,6 +14,7 @@ This guide documents the consolidation of multiple PostgreSQL instances into a s
 - **1 shared PostgreSQL container**:
   - `shared_postgres` (PostgreSQL 14 with VectorChord extension)
   - Contains 3 separate databases: `authentik`, `mealie`, `immich`
+  - Optional: `jellystat` database (auto-created when enabled)
   - Uses Immich's specialized build to support VectorChord for vector search
 
 ## Benefits
@@ -37,7 +38,8 @@ This guide documents the consolidation of multiple PostgreSQL instances into a s
 ### Database Initialization
 The init script (`roles/infrastructure/templates/init-shared-postgres.sh.j2`) creates:
 - 3 databases: `authentik`, `mealie`, `immich`
-- 3 users with respective passwords from `secrets.yml`
+- Optional: `jellystat` database (auto-created when `media.services.jellystat.enabled: true`)
+- Separate users with respective passwords from `secrets.yml`
 - VectorChord extension configured for Immich database
 
 ### Service Configuration Updates
@@ -70,6 +72,9 @@ shared_postgres_admin_password: "GENERATE_STRONG_PASSWORD_HERE"
 authentik_postgres_password: "..."
 mealie_db_password: "..."
 immich_db_password: "..."
+
+# Optional: Jellystat password (only if enabling Jellystat)
+jellystat_db_password: "GENERATE_STRONG_PASSWORD_HERE"
 ```
 
 Generate a strong password for `shared_postgres_admin_password`:
@@ -247,6 +252,7 @@ Expected output should show:
 - `authentik` database owned by `authentik` user
 - `mealie` database owned by `mealie` user
 - `immich` database owned by `immich` user
+- `jellystat` database owned by `jellystat` user (if enabled)
 
 ### Test Database Connections
 
@@ -413,13 +419,42 @@ This consolidation touched the following files:
 - `group_vars/all/main.yml` (added shared_postgres config, immich db credentials)
 - `group_vars/all/secrets.yml` (needs `shared_postgres_admin_password`)
 
+## Jellystat Support
+
+The shared PostgreSQL is ready to support Jellystat (Jellyfin statistics) when you enable it:
+
+### Enabling Jellystat
+
+1. **Enable the service** in `group_vars/all/main.yml`:
+   ```yaml
+   media:
+     services:
+       jellystat:
+         enabled: true
+   ```
+
+2. **Add password to secrets**:
+   ```bash
+   ansible-vault edit group_vars/all/secrets.yml
+   ```
+   Add:
+   ```yaml
+   jellystat_db_password: "YOUR_STRONG_PASSWORD_HERE"
+   ```
+
+3. **Deploy**:
+   ```bash
+   ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags infrastructure,media --ask-vault-pass
+   ```
+
+The `jellystat` database will be automatically created on the next infrastructure deployment!
+
 ## Future Enhancements
 
 1. **Automated Migration Playbook**: Create an Ansible playbook that handles the entire migration automatically
 2. **Health Monitoring**: Add PostgreSQL exporter for Prometheus/Grafana monitoring
 3. **Connection Pooling**: Consider adding PgBouncer for connection pooling if needed
 4. **Read Replicas**: For high availability, consider PostgreSQL replication
-5. **Jellystat Integration**: If enabled, add Jellystat database to shared instance
 
 ## References
 
