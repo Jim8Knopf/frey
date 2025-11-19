@@ -554,6 +554,38 @@ print("\nFile size:")
 
 ---
 
+## Part 3.5: Test in LM Studio First (OPTIONAL - Recommended)
+
+**Why test before deploying to Pi?**
+- ✅ Interactive chat interface for testing
+- ✅ Catch issues before deployment
+- ✅ Compare with stock models side-by-side
+- ✅ Refine without touching the Pi
+
+### Quick Testing Workflow
+
+1. **Download LM Studio**: https://lmstudio.ai/ (free, works on Windows/Mac/Linux)
+2. **Extract your model**: Unzip `frey-custom-model.zip`
+3. **Load in LM Studio**:
+   - Click "Load Model" → "Load from file"
+   - Select `frey-assistant-q4_k_m.gguf`
+4. **Test commands**:
+   - "Start Jellyfin"
+   - "What's the system status?"
+   - "Thanks Frey"
+5. **Verify**:
+   - ✅ Function calls formatted correctly
+   - ✅ Personality sounds right
+   - ✅ Handles your common commands
+
+**If issues found**: Go back to Part 2, update dataset, retrain on Colab (FREE!), test again.
+
+**If satisfied**: Continue to Part 4 to deploy!
+
+**Detailed guide**: See [LM_STUDIO_TESTING.md](LM_STUDIO_TESTING.md) for complete testing workflow.
+
+---
+
 ## Part 4: Deploy to Raspberry Pi (10 minutes)
 
 ### Step 1: Transfer Files

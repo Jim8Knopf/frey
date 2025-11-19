@@ -148,6 +148,7 @@ Want a **talking car AI** like KITT? Fine-tune for **FREE** with Google Colab!
 **See**:
 - [GETTING_STARTED_FINETUNING.md](GETTING_STARTED_FINETUNING.md) 📖 **Complete step-by-step walkthrough**
 - [scripts/finetune/README.md](../scripts/finetune/README.md) 🎯 **Quick start with Colab**
+- [LM_STUDIO_TESTING.md](LM_STUDIO_TESTING.md) 🖥️ **Test models on your desktop before deploying**
 - [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Complete technical guide**
 
 ## Full Documentation
