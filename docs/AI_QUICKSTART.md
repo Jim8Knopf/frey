@@ -166,6 +166,8 @@ Once you have the basic system running, check out:
 
 - **Getting started**: [GETTING_STARTED_FINETUNING.md](GETTING_STARTED_FINETUNING.md) 📖 **Complete walkthrough**
 - **Recommendations**: [RECOMMENDATIONS.md](RECOMMENDATIONS.md) 💡 **Level up your assistant**
+- **Bilingual support**: [BILINGUAL_GUIDE.md](BILINGUAL_GUIDE.md) 🌍 **Multi-language voice assistant**
+- **Adding features**: [ADDING_FEATURES_AFTER_FINETUNING.md](ADDING_FEATURES_AFTER_FINETUNING.md) 🔧 **Iterative improvement**
 - **IaC setup guide**: [VOICE_ASSISTANT_IAC.md](VOICE_ASSISTANT_IAC.md) ⭐ **Start here for automated setup**
 - **Fine-tuning guide**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Advanced: Custom models**
 - **LM Studio testing**: [LM_STUDIO_TESTING.md](LM_STUDIO_TESTING.md) 🖥️ **Test on desktop before deploying**
