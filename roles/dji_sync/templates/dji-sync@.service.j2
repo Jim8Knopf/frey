@@ -1,0 +1,27 @@
+# ==============================================================================
+# DJI SYNC SYSTEMD SERVICE TEMPLATE
+# ==============================================================================
+# Instantiated service for each USB device (e.g., dji-sync@sdb1.service)
+# Triggered automatically by udev rules when DJI device is connected
+# ==============================================================================
+
+[Unit]
+Description=DJI Drone Photo Sync to Immich for %I
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dji-sync.sh /dev/%I
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# Timeout (sync can take a while for large photo sets)
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

@@ -492,6 +492,34 @@
       when: features.immich
 
     # --------------------------------------------------------------------------
+    # DJI Drone Auto-Sync (USB to Immich)
+    # --------------------------------------------------------------------------
+    # Deploys: Automatic photo sync from DJI drones to Immich
+    #
+    # Features:
+    #   - USB auto-detection via udev rules
+    #   - Auto-mount DJI controller/drone storage
+    #   - Immich CLI upload (photos/videos to albums)
+    #   - Duplicate detection (skip already uploaded files)
+    #   - MQTT notifications for Home Assistant
+    #   - Automatic unmount after sync
+    #
+    # How it works:
+    #   1. Connect DJI controller or drone via USB
+    #   2. systemd service triggered automatically
+    #   3. Photos uploaded to Immich
+    #   4. Notification sent when complete
+    #   5. Device safely unmounted
+    #
+    # Configuration: dji_sync.* in main.yml
+    # Requires: Immich API key (generate in Immich web UI)
+    # Logs: /var/log/dji-sync/ and journalctl -u dji-sync@*
+    # --------------------------------------------------------------------------
+    - role: dji_sync
+      tags: [photos, dji_sync, immich]
+      when: features.immich and (dji_sync.enabled | default(false))
+
+    # --------------------------------------------------------------------------
     # Cookbook Stack (Mealie)
     # --------------------------------------------------------------------------
     # Deploys: Recipe manager and meal planner

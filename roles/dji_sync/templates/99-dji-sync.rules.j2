@@ -1,0 +1,36 @@
+# ==============================================================================
+# UDEV RULES FOR DJI DRONE AUTO-SYNC
+# ==============================================================================
+# Automatically triggers sync when DJI devices are connected via USB
+#
+# SUPPORTED DEVICES:
+# - DJI controllers (RC 2, RC-N2, RC Pro)
+# - DJI drones in USB storage mode
+# - Any USB mass storage device (can be filtered by vendor ID)
+#
+# HOW IT WORKS:
+# 1. Device connected → udev detects it
+# 2. systemd service triggered with device name
+# 3. Script mounts, syncs to Immich, and unmounts
+# ==============================================================================
+
+# Trigger on USB mass storage devices (SD cards, controllers, drones)
+# ACTION=="add": Triggered when device is connected
+# KERNEL=="sd[a-z][0-9]": Matches partitions like sda1, sdb1, etc.
+# ENV{ID_FS_USAGE}=="filesystem": Only trigger for mountable filesystems
+# SUBSYSTEM=="block": Block devices (storage)
+
+# Generic rule for all USB storage (works with any DJI device)
+ACTION=="add", KERNEL=="sd[a-z][0-9]", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="dji-sync@%k.service"
+
+# Optional: Specific rule for DJI devices only (uncomment and adjust vendor ID if needed)
+# To find your device's vendor ID: lsusb (look for DJI-related entries)
+# Common DJI vendor IDs: 2ca3 (DJI), 0x2ca3
+# ACTION=="add", KERNEL=="sd[a-z][0-9]", SUBSYSTEM=="block", \
+#   ATTRS{idVendor}=="2ca3", ENV{ID_FS_USAGE}=="filesystem", \
+#   TAG+="systemd", ENV{SYSTEMD_WANTS}+="dji-sync@%k.service"
+
+# Remove action (cleanup)
+ACTION=="remove", KERNEL=="sd[a-z][0-9]", SUBSYSTEM=="block", \
+  RUN+="/bin/systemctl stop dji-sync@%k.service"

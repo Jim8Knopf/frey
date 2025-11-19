@@ -1,0 +1,13 @@
+---
+# ==============================================================================
+# DJI SYNC HANDLERS
+# ==============================================================================
+
+- name: systemd daemon-reload
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: reload udev rules
+  ansible.builtin.command:
+    cmd: udevadm control --reload-rules && udevadm trigger
+  changed_when: false

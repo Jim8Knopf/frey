@@ -1,0 +1,198 @@
+#!/bin/bash
+# ==============================================================================
+# DJI DRONE AUTO-SYNC SCRIPT
+# ==============================================================================
+# Automatically syncs photos from DJI drones to Immich when connected via USB
+#
+# USAGE:
+#   Automatic: Triggered by udev rule when USB device connected
+#   Manual: bash /usr/local/bin/dji-sync.sh /dev/sdb1
+#
+# CONFIGURATION:
+#   Managed by Ansible in group_vars/all/main.yml (dji_sync section)
+# ==============================================================================
+
+set -euo pipefail
+
+# Configuration (templated by Ansible)
+IMMICH_SERVER="{{ dji_sync.immich.server_url }}"
+MOUNT_BASE="{{ dji_sync.mount.base_dir }}"
+LOG_DIR="{{ dji_sync.log.dir }}"
+TARGET_ALBUM="{{ dji_sync.sync.target_album }}"
+SKIP_DUPLICATES="{{ dji_sync.sync.skip_duplicates | lower }}"
+DELETE_AFTER_SYNC="{{ dji_sync.sync.delete_after_sync | lower }}"
+AUTO_UNMOUNT="{{ dji_sync.mount.auto_unmount | lower }}"
+UNMOUNT_DELAY="{{ dji_sync.mount.unmount_delay }}"
+
+# Source folders to sync
+SOURCE_FOLDERS=({% for folder in dji_sync.sync.source_folders %}"{{ folder }}" {% endfor %})
+
+# Logging setup
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="${LOG_DIR}/sync_${TIMESTAMP}.log"
+mkdir -p "${LOG_DIR}"
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"
+}
+
+error() {
+    log "ERROR: $*"
+    send_notification "error" "$*"
+    exit 1
+}
+
+send_notification() {
+    local type="$1"
+    local message="$2"
+
+{% if dji_sync.notifications.enabled %}
+    # MQTT notification (Home Assistant integration)
+    if command -v mosquitto_pub &> /dev/null; then
+        mosquitto_pub -h localhost -t "{{ dji_sync.notifications.mqtt_topic }}/status" \
+            -m "{\"type\": \"${type}\", \"message\": \"${message}\", \"timestamp\": \"$(date -Iseconds)\"}" || true
+    fi
+
+    # System notification
+    if command -v notify-send &> /dev/null; then
+        notify-send "DJI Sync" "${message}" || true
+    fi
+{% endif %}
+
+    log "NOTIFICATION: ${type} - ${message}"
+}
+
+# Validate device argument
+if [ $# -ne 1 ]; then
+    error "Usage: $0 /dev/sdXY"
+fi
+
+DEVICE="$1"
+DEVICE_NAME=$(basename "${DEVICE}")
+MOUNT_POINT="${MOUNT_BASE}/${DEVICE_NAME}"
+
+log "=========================================="
+log "DJI Auto-Sync Started"
+log "Device: ${DEVICE}"
+log "Mount Point: ${MOUNT_POINT}"
+log "=========================================="
+
+# Check if device exists
+if [ ! -b "${DEVICE}" ]; then
+    error "Device ${DEVICE} not found"
+fi
+
+# Create mount point
+mkdir -p "${MOUNT_POINT}"
+
+# Mount device
+log "Mounting ${DEVICE} to ${MOUNT_POINT}..."
+if ! mount "${DEVICE}" "${MOUNT_POINT}"; then
+    error "Failed to mount ${DEVICE}"
+fi
+
+send_notification "info" "DJI device connected, starting sync..."
+
+# Verify Immich CLI is installed
+if ! command -v immich &> /dev/null; then
+    error "Immich CLI not found. Install with: npm install -g @immich/cli"
+fi
+
+# Function to sync a folder
+sync_folder() {
+    local folder="$1"
+    local source_path="${MOUNT_POINT}/${folder}"
+
+    if [ ! -d "${source_path}" ]; then
+        log "Folder not found, skipping: ${source_path}"
+        return 0
+    fi
+
+    log "Syncing folder: ${source_path}"
+
+    # Count files
+    local file_count=0
+{% for ext in dji_sync.sync.include_extensions %}
+    file_count=$((file_count + $(find "${source_path}" -type f -iname "{{ ext }}" 2>/dev/null | wc -l)))
+{% endfor %}
+
+    if [ "${file_count}" -eq 0 ]; then
+        log "No photos/videos found in ${folder}"
+        return 0
+    fi
+
+    log "Found ${file_count} files to sync"
+
+    # Build Immich upload command
+    local upload_cmd="immich upload \"${source_path}\" --recursive --server \"${IMMICH_SERVER}\""
+
+    # Add album if specified
+    if [ -n "${TARGET_ALBUM}" ]; then
+        upload_cmd+=" --album \"${TARGET_ALBUM}\""
+    fi
+
+    # Add skip hash flag if enabled
+    if [ "${SKIP_DUPLICATES}" = "true" ]; then
+        upload_cmd+=" --skip-hash"
+    fi
+
+    # Add file extensions filter
+    upload_cmd+=" --include-extensions {% for ext in dji_sync.sync.include_extensions %}{{ ext }}{% if not loop.last %},{% endif %}{% endfor %}"
+
+    # Execute upload
+    log "Executing: ${upload_cmd}"
+    if eval "${upload_cmd}" 2>&1 | tee -a "${LOG_FILE}"; then
+        log "Successfully synced ${file_count} files from ${folder}"
+
+        # Delete after sync if enabled
+        if [ "${DELETE_AFTER_SYNC}" = "true" ]; then
+            log "Deleting files from device (delete_after_sync=true)..."
+{% for ext in dji_sync.sync.include_extensions %}
+            find "${source_path}" -type f -iname "{{ ext }}" -delete
+{% endfor %}
+            log "Files deleted from ${folder}"
+        fi
+    else
+        log "Warning: Upload failed for ${folder}"
+        return 1
+    fi
+}
+
+# Sync all configured folders
+SYNC_SUCCESS=true
+for folder in "${SOURCE_FOLDERS[@]}"; do
+    if ! sync_folder "${folder}"; then
+        SYNC_SUCCESS=false
+    fi
+done
+
+# Cleanup
+log "Sync complete, cleaning up..."
+
+if [ "${AUTO_UNMOUNT}" = "true" ]; then
+    log "Waiting ${UNMOUNT_DELAY} seconds before unmounting..."
+    sleep "${UNMOUNT_DELAY}"
+
+    log "Unmounting ${MOUNT_POINT}..."
+    if umount "${MOUNT_POINT}"; then
+        log "Successfully unmounted ${DEVICE}"
+        rmdir "${MOUNT_POINT}" 2>/dev/null || true
+        send_notification "success" "DJI sync complete! Device can be safely removed."
+    else
+        error "Failed to unmount ${DEVICE}. Please unmount manually."
+    fi
+else
+    log "Auto-unmount disabled. Device remains mounted at ${MOUNT_POINT}"
+    send_notification "success" "DJI sync complete! Remember to unmount manually."
+fi
+
+# Final status
+if [ "${SYNC_SUCCESS}" = "true" ]; then
+    log "=========================================="
+    log "DJI Auto-Sync Completed Successfully"
+    log "Log file: ${LOG_FILE}"
+    log "=========================================="
+    exit 0
+else
+    error "Some folders failed to sync. Check logs for details."
+fi

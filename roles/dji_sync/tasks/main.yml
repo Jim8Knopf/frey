@@ -1,0 +1,137 @@
+---
+# ==============================================================================
+# DJI DRONE AUTO-SYNC ROLE - Main Tasks
+# ==============================================================================
+# Deploys USB auto-sync system for DJI drones to Immich
+# ==============================================================================
+
+- name: Install dependencies for DJI sync
+  ansible.builtin.apt:
+    name:
+      - nodejs
+      - npm
+      - usbmount
+      - udisks2
+      - inotify-tools
+      - jq
+    state: present
+    update_cache: yes
+  tags:
+    - packages
+
+- name: Install Immich CLI globally
+  community.general.npm:
+    name: "@immich/cli"
+    global: yes
+    state: present
+  tags:
+    - immich-cli
+
+- name: Create DJI sync mount directory
+  ansible.builtin.file:
+    path: "{{ dji_sync.mount.base_dir }}"
+    state: directory
+    mode: '0755'
+  tags:
+    - directories
+
+- name: Create DJI sync log directory
+  ansible.builtin.file:
+    path: "{{ dji_sync.log.dir }}"
+    state: directory
+    mode: '0755'
+  tags:
+    - directories
+
+- name: Deploy DJI sync script
+  ansible.builtin.template:
+    src: dji-sync.sh.j2
+    dest: /usr/local/bin/dji-sync.sh
+    mode: '0755'
+    owner: root
+    group: root
+  tags:
+    - scripts
+
+- name: Deploy Immich CLI authentication config
+  ansible.builtin.template:
+    src: immich-auth.json.j2
+    dest: /root/.config/immich/auth.json
+    mode: '0600'
+    owner: root
+    group: root
+  tags:
+    - config
+
+- name: Create Immich CLI config directory
+  ansible.builtin.file:
+    path: /root/.config/immich
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  tags:
+    - config
+
+- name: Deploy systemd service for DJI sync
+  ansible.builtin.template:
+    src: dji-sync@.service.j2
+    dest: /etc/systemd/system/dji-sync@.service
+    mode: '0644'
+  notify: systemd daemon-reload
+  tags:
+    - systemd
+
+- name: Deploy udev rule for DJI device detection
+  ansible.builtin.template:
+    src: 99-dji-sync.rules.j2
+    dest: /etc/udev/rules.d/99-dji-sync.rules
+    mode: '0644'
+  notify: reload udev rules
+  tags:
+    - udev
+
+- name: Enable and start systemd service
+  ansible.builtin.systemd:
+    name: dji-sync@.service
+    enabled: yes
+    daemon_reload: yes
+  tags:
+    - systemd
+
+- name: Display DJI sync setup summary
+  ansible.builtin.debug:
+    msg: |
+      ✅ DJI Drone Auto-Sync to Immich Configured Successfully
+
+      📱 HOW TO USE:
+         1. Connect DJI controller or drone to Pi via USB
+         2. Wait 10-30 seconds for auto-mount and sync
+         3. LED/notification confirms when sync is complete
+         4. Safely disconnect device
+
+      🔧 IMMICH API KEY SETUP:
+         ⚠️  IMPORTANT: Generate an API key in Immich web UI
+         1. Go to http://immich.{{ network.domain_name }}
+         2. User Settings → Account Settings → API Keys
+         3. Click "New API Key" and copy the key
+         4. Add to secrets.yml: dji_sync_immich_api_key: "YOUR_KEY_HERE"
+         5. Re-run: ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags dji_sync
+
+      📂 MOUNT LOCATION:
+         - {{ dji_sync.mount.base_dir }}
+
+      📊 SYNC SETTINGS:
+         - Target Album: {{ dji_sync.sync.target_album }}
+         - Skip Duplicates: {{ dji_sync.sync.skip_duplicates }}
+         - Delete After Sync: {{ dji_sync.sync.delete_after_sync }}
+
+      📝 LOGS:
+         - Location: {{ dji_sync.log.dir }}
+         - View latest: journalctl -u dji-sync@* -f
+         - Sync history: ls -lh {{ dji_sync.log.dir }}
+
+      🔍 TROUBLESHOOTING:
+         - Check USB detection: lsusb
+         - Manual test: bash /usr/local/bin/dji-sync.sh /dev/sdb1
+         - View logs: journalctl -u dji-sync@sdb1 -n 50

@@ -1,0 +1,73 @@
+---
+# ==============================================================================
+# DJI DRONE PHOTO AUTO-SYNC - Default Configuration
+# ==============================================================================
+# Automatically syncs photos from DJI drones to Immich when connected via USB
+#
+# SUPPORTED DEVICES:
+# - DJI Mini 4 Pro (controller or drone via USB)
+# - DJI RC 2 / RC-N2 controllers
+# - Any DJI drone with USB storage access
+#
+# HOW IT WORKS:
+# 1. Connect DJI controller/drone to Pi via USB
+# 2. systemd/udev detects device and auto-mounts
+# 3. Sync script uploads new photos to Immich via CLI
+# 4. Notification sent when complete
+# 5. Device safely unmounted
+# ==============================================================================
+
+dji_sync:
+  enabled: true
+
+  # Immich server configuration
+  immich:
+    server_url: "http://{{ network.wifi.ip }}:{{ immich.services.immich.port }}"
+    # API key must be generated in Immich web UI:
+    # User Settings → Account Settings → API Keys → New API Key
+    api_key: "{{ dji_sync_immich_api_key }}"  # From secrets.yml
+
+  # USB mount configuration
+  mount:
+    base_dir: "/media/dji-sync"
+    auto_unmount: true
+    unmount_delay: 30  # Seconds to wait after sync before unmounting
+
+  # Sync behavior
+  sync:
+    # Folders to sync from DJI device (relative to mount point)
+    source_folders:
+      - "DCIM"  # DJI standard photo/video folder
+      - "PANORAMA"  # Panoramic photos
+
+    # File filters
+    include_extensions:
+      - "*.JPG"
+      - "*.jpg"
+      - "*.JPEG"
+      - "*.DNG"  # RAW photos
+      - "*.MP4"  # Videos
+      - "*.MOV"
+
+    # Skip already uploaded files (uses hash comparison)
+    skip_duplicates: true
+
+    # Delete from drone after successful upload
+    delete_after_sync: false
+
+    # Immich album to upload into (optional, creates if doesn't exist)
+    target_album: "DJI Drone Photos"
+
+  # Notifications (requires n8n or ntfy integration)
+  notifications:
+    enabled: true
+    on_connect: true
+    on_complete: true
+    on_error: true
+    # MQTT topic for Home Assistant integration
+    mqtt_topic: "frey/dji/sync"
+
+  # Logging
+  log:
+    dir: "/var/log/dji-sync"
+    retain_days: 7

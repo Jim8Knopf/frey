@@ -801,6 +801,89 @@ immich:
       oidc_signing_algorithm: "RS256"
 
 # ===================================================================
+# DJI DRONE AUTO-SYNC TO IMMICH
+# ===================================================================
+# Automatically syncs photos from DJI drones to Immich when connected via USB
+#
+# SUPPORTED DEVICES:
+# - DJI Mini 4 Pro (controller or drone via USB)
+# - DJI RC 2 / RC-N2 controllers
+# - Any DJI drone with USB storage access
+#
+# SETUP REQUIREMENTS:
+# 1. Generate Immich API key in web UI:
+#    - Go to http://immich.{{ network.domain_name }}
+#    - User Settings → Account Settings → API Keys → New API Key
+# 2. Add API key to secrets.yml: dji_sync_immich_api_key: "YOUR_KEY_HERE"
+# 3. Deploy: ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags dji_sync
+#
+# HOW IT WORKS:
+# 1. Connect DJI controller/drone to Pi via USB
+# 2. udev rule detects device and triggers systemd service
+# 3. Script mounts device, uploads photos to Immich via CLI
+# 4. MQTT notification sent (Home Assistant integration)
+# 5. Device safely unmounted after sync
+#
+# LOGS & TROUBLESHOOTING:
+# - View logs: journalctl -u dji-sync@* -f
+# - Sync history: ls -lh /var/log/dji-sync/
+# - Manual test: sudo bash /usr/local/bin/dji-sync.sh /dev/sdb1
+# ===================================================================
+dji_sync:
+  enabled: false  # Set to true to enable DJI auto-sync
+
+  # Immich server configuration
+  immich:
+    server_url: "http://{{ network.wifi.ip }}:{{ immich.services.immich.port }}"
+    # API key from secrets.yml (generate in Immich web UI)
+    api_key: "{{ dji_sync_immich_api_key }}"
+
+  # USB mount configuration
+  mount:
+    base_dir: "/media/dji-sync"
+    auto_unmount: true
+    unmount_delay: 30  # Seconds to wait after sync before unmounting
+
+  # Sync behavior
+  sync:
+    # Folders to sync from DJI device (relative to mount point)
+    source_folders:
+      - "DCIM"  # DJI standard photo/video folder
+      - "PANORAMA"  # Panoramic photos
+
+    # File filters
+    include_extensions:
+      - "*.JPG"
+      - "*.jpg"
+      - "*.JPEG"
+      - "*.DNG"  # RAW photos
+      - "*.MP4"  # Videos
+      - "*.MOV"
+
+    # Skip already uploaded files (uses hash comparison)
+    skip_duplicates: true
+
+    # Delete from drone after successful upload (⚠️ CAUTION!)
+    delete_after_sync: false
+
+    # Immich album to upload into (creates if doesn't exist)
+    target_album: "DJI Drone Photos"
+
+  # Notifications (Home Assistant integration)
+  notifications:
+    enabled: true
+    on_connect: true
+    on_complete: true
+    on_error: true
+    # MQTT topic for Home Assistant
+    mqtt_topic: "frey/dji/sync"
+
+  # Logging
+  log:
+    dir: "/var/log/dji-sync"
+    retain_days: 7
+
+# ===================================================================
 # COOKBOOK - MEALIE RECIPE MANAGER
 # ===================================================================
 cookbook:
