@@ -156,6 +156,8 @@ Want a **talking car AI** like KITT? Fine-tune for **FREE** with Google Colab!
 - **Getting started**: [GETTING_STARTED_FINETUNING.md](GETTING_STARTED_FINETUNING.md) 📖 **Complete walkthrough**
 - **IaC setup guide**: [VOICE_ASSISTANT_IAC.md](VOICE_ASSISTANT_IAC.md) ⭐ **Start here for automated setup**
 - **Fine-tuning guide**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Advanced: Custom models**
+- **LM Studio testing**: [LM_STUDIO_TESTING.md](LM_STUDIO_TESTING.md) 🖥️ **Test on desktop before deploying**
+- **Inference engine comparison**: [LLM_INFERENCE_COMPARISON.md](LLM_INFERENCE_COMPARISON.md) ⚙️ **Ollama vs alternatives**
 - Architecture details: [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md)
 - Voice assistant setup: [VOICE_ASSISTANT.md](VOICE_ASSISTANT.md)
 - Voice assistant quickstart: [VOICE_ASSISTANT_QUICKSTART.md](VOICE_ASSISTANT_QUICKSTART.md)
