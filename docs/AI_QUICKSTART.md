@@ -151,9 +151,21 @@ Want a **talking car AI** like KITT? Fine-tune for **FREE** with Google Colab!
 - [LM_STUDIO_TESTING.md](LM_STUDIO_TESTING.md) 🖥️ **Test models on your desktop before deploying**
 - [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Complete technical guide**
 
+## What's Next?
+
+Once you have the basic system running, check out:
+
+**[RECOMMENDATIONS.md](RECOMMENDATIONS.md)** 💡 **Next-level improvements**
+- Custom wake word ("Hey Frey" instead of "Ok Nabu")
+- Better voice quality (KITT-style British voice)
+- Routines and automation ("Movie time", "Goodnight")
+- Easter eggs and personality
+- Mobile access, notifications, and more!
+
 ## Full Documentation
 
 - **Getting started**: [GETTING_STARTED_FINETUNING.md](GETTING_STARTED_FINETUNING.md) 📖 **Complete walkthrough**
+- **Recommendations**: [RECOMMENDATIONS.md](RECOMMENDATIONS.md) 💡 **Level up your assistant**
 - **IaC setup guide**: [VOICE_ASSISTANT_IAC.md](VOICE_ASSISTANT_IAC.md) ⭐ **Start here for automated setup**
 - **Fine-tuning guide**: [MODEL_FINETUNING.md](MODEL_FINETUNING.md) 🚀 **Advanced: Custom models**
 - **LM Studio testing**: [LM_STUDIO_TESTING.md](LM_STUDIO_TESTING.md) 🖥️ **Test on desktop before deploying**
