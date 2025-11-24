@@ -15,7 +15,7 @@
 </head>
 <body>
   <h1>Frey Root Certificate Authority</h1>
-  <p>Install the Frey private CA on every device before visiting <code>*.{{ network.domain_name }}</code> services. This avoids HTTPS warnings and ensures trusted TLS for Traefik, Authentik, and every self-hosted application.</p>
+  <p>Install the Frey private CA on every device before visiting <code>*.{{ network.domain_name }}</code> services. This avoids HTTPS warnings and ensures trusted TLS for Traefik, Authelia, and every self-hosted application.</p>
 
   <div class="card">
     <h2>Download</h2>
@@ -29,7 +29,7 @@
     <ul>
       <li>Enables trusted HTTPS for <code>https://frey</code> and every <code>https://service.{{ network.domain_name }}</code> endpoint.</li>
       <li>Allows mobile apps (Home Assistant, Immich, Jellyfin, etc.) to sync without certificate prompts.</li>
-      <li>Powers mutual trust for Authentik OIDC callbacks and API clients.</li>
+      <li>Powers mutual trust for Authelia OIDC callbacks and API clients.</li>
     </ul>
   </div>
 

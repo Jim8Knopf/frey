@@ -3,11 +3,11 @@
   Jellyfin LDAP-Auth Plugin Configuration
   Managed by Ansible - DO NOT EDIT MANUALLY
 
-  This configuration connects Jellyfin to the Authentik LDAP outpost for
+  This configuration connects Jellyfin to the LLDAP server for
   unified authentication across all Frey services.
 
   Variables source: group_vars/all/main.yml (media.services.jellyfin.ldap_*)
-  Password source: group_vars/all/secrets.yml (authentik_ldap_bind_password)
+  Password source: group_vars/all/secrets.yml (lldap_admin_password)
 -->
 <PluginConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <!-- LDAP Server Connection -->
@@ -19,7 +19,7 @@
 
   <!-- LDAP Bind Credentials -->
   <LdapBindUser>{{ media.services.jellyfin.ldap_bind_user }}</LdapBindUser>
-  <LdapBindPassword>{{ authentik_ldap_bind_password }}</LdapBindPassword>
+  <LdapBindPassword>{{ lldap_admin_password }}</LdapBindPassword>
 
   <!-- LDAP Search Base and Filters -->
   <LdapBaseDn>{{ media.services.jellyfin.ldap_base_dn }}</LdapBaseDn>

@@ -4,13 +4,13 @@
 # ================================
 features:
   infrastructure: true
-  landing_page: true
+  landing_page: false
   networking: true
   wifi_access_point: true
   media: true
   monitoring: true
   automation: true
-  authentication: true  # Authentik SSO - enable after initial setup
+  authentication: true  # Authelia/LLDAP SSO - enable after initial setup
   file_management: false
   immich: true
   homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
@@ -74,7 +74,7 @@ network:
     # Interface configuration
     interface: "wlan1"             # WiFi interface for AP mode
     client_interface: "wlan0"      # Client interface for roaming
-    client_interface_ip: "192.168.0.252" #TODO Client interface IP (for authentik)
+    client_interface_ip: "192.168.0.252"
     nm_transition_delay: 5         # Seconds to wait during NetworkManager→dhcpcd transition (on fresh installs)
     roaming:
       enabled: true  # Enable wpa_supplicant with known_networks and priorities
@@ -128,7 +128,7 @@ network:
     - name: traefik
     - name: portainer
     - name: dockge
-    - name: auth  # Authentik SSO
+    - name: auth  # Authelia/LLDAP SSO
     # Monitoring services
     - name: grafana
     - name: prometheus
@@ -412,20 +412,38 @@ infrastructure:
       version: "1"
       ports:
         http: 5001
-    authentik:
-      enabled: false  # REPLACED BY LLDAP + Authelia (authentication role)
-      # Old Authentik config kept for reference during migration
-      # version: "2025.2.4"
-      # port: 9300
-      # port_https: 9446
-      # postgres_version: "16-alpine"
-      # redis_version: "alpine"
     step_ca:
       enabled: true  # Enable when ready to implement ACME-based certificate management
       version: "latest"
       port: 9336  # External port mapping (maps to internal 9443)
-      # After enabling, run: docker exec -it step-ca step ca init
-      # Then configure ACME provisioner: docker exec -it step-ca step ca provisioner add acme --type ACME
+      # CA Identity Configuration
+      ca_name: "Frey CA"  # Display name for the CA
+      root_ca_cn: "Frey Root CA"  # Common Name for root certificate
+      intermediate_ca_cn: "Frey CA Intermediate CA"  # Common Name for intermediate cert
+      organization: "Frey"  # Organization name (O)
+      country: "DE"  # Country code (C)
+      # CA DNS Names
+      dns_names:
+        - "ca.{{ network.domain_name }}"
+        - "step-ca.{{ network.domain_name }}"
+        - "step-ca"
+        - "localhost"
+        - "127.0.0.1"
+      # Provisioner Configuration
+      provisioner_name: "admin"  # Default JWK provisioner name
+      acme_provisioner_name: "acme"  # ACME provisioner name
+      # Certificate Durations (for ACME provisioner)
+      default_cert_duration: "2160h"  # 90 days
+      max_cert_duration: "2160h"  # 90 days
+      min_cert_duration: "5m"  # 5 minutes
+      # Certificate Files
+      cert_files:
+        root_ca: "frey-ca.crt"
+        root_key: "frey-ca.key"
+        wildcard_cert: "frey.crt"
+        wildcard_key: "frey.key"
+        wildcard_csr: "frey.csr"
+        san_config: "san.cnf"
 
 landing_page:
   enabled: true
@@ -470,7 +488,7 @@ landing_page:
   oidc:
     enable: true
     client_id: "dashy"
-    endpoint: "{{ network.authentik_public_url }}/application/o/dashy/"
+    endpoint: "{{ network.authelia_public_url }}/api/oidc"
     scope: "openid profile email groups"
     admin_group: "frey_admins"
   certificate_guides:
@@ -499,7 +517,7 @@ landing_page:
       description: "SSO, reverse proxy, and container management."
       item_size: medium
       services:
-        - title: "Authentik Portal"
+        - title: "Authelia Portal"
           description: "Single sign-on portal and user self-service."
           url: "https://auth.{{ network.domain_name }}"
           icon: "fas fa-unlock"
@@ -682,12 +700,12 @@ media:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
         - "{{ media.dir }}/podcasts:/podcasts"
-        # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+        # Trust Step-CA root for outbound TLS to OIDC provider (OIDC discovery)
         - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/etc/ssl/certs/step-ca.crt:ro"
       environment:
         # Ensure Node trusts Step-CA when calling https://auth.frey
         - "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/step-ca.crt"
-      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # OIDC/SSO Configuration (enabled when features.authentication is true)
       # NOTE: Audiobookshelf OIDC CANNOT be configured via environment variables
       # Must be configured manually via web UI: Settings → Authentication → OpenID Connect
       # Use these values when configuring in UI:
@@ -707,7 +725,7 @@ media:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
         - "{{ media.dir }}/movies:/data/movies"
-      # LDAP Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # LDAP Configuration (enabled when features.authentication is true)
       # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
       # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
       # Uses internal Docker service name for reliable communication across networks
@@ -846,7 +864,7 @@ immich:
       upload_location: "{{ storage.base_dir }}/photos/library"
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
-      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # OIDC/SSO Configuration (enabled when features.authentication is true)
       # Issuer URL uses auth.frey DNS (accessible via localdns Docker network)
       # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
       oidc_issuer_url: "{{ network.authelia_public_url }}"
@@ -931,7 +949,7 @@ homeassistant:
       version: "stable"
       image: "ghcr.io/home-assistant/home-assistant:{{ homeassistant.services.homeassistant.version | default('stable') }}"
       port: 8123
-      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # OIDC/SSO Configuration (enabled when features.authentication is true)
       # NOTE: OIDC must be configured manually in Home Assistant UI
       # Settings → Users → Add Integration → OpenID Connect
       oidc_issuer_url: "{{ network.authelia_public_url }}"

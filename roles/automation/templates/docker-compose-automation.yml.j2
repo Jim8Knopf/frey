@@ -114,12 +114,12 @@ services:
       - /run/dbus:/run/dbus:ro  # For Bluetooth and other system integrations
     environment:
       - TZ={{ network.timezone | default('UTC') }}
-{% if infrastructure.services.authentik.enabled | default(false) %}
+{% if features.authentication | default(false) %}
     # OIDC/SSO Configuration (requires manual setup in Home Assistant UI)
     # Configure via: Settings → Users → Add Integration → OpenID Connect
-    # Issuer URL: {{ network.authentik_public_url }}/application/o/homeassistant/
+    # Issuer URL: {{ homeassistant.services.homeassistant.oidc_issuer_url }}
     # Client ID: {{ homeassistant.services.homeassistant.oidc_client_id | default('homeassistant') }}
-    # Client Secret: {{ homeassistant_oidc_client_secret }}
+    # Client Secret: {{ homeassistant_oidc_secret }}
 {% endif %}
     privileged: true  # Required for USB device access (Zigbee, Z-Wave, etc.)
     networks:

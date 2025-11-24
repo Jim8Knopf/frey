@@ -34,7 +34,7 @@ appConfig:
 {% if landing_page.oidc.enable | default(false) %}
     oidc:
       clientId: "{{ landing_page.oidc.client_id }}"
-      endpoint: "{{ network.authentik_public_url }}/application/o/dashy/"
+      endpoint: "{{ network.authelia_public_url }}/api/oidc"
       scope: "{{ landing_page.oidc.scope }}"
 {% if landing_page.oidc.admin_group is defined %}
       adminGroup: "{{ landing_page.oidc.admin_group }}"

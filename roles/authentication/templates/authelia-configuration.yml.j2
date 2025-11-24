@@ -1,10 +1,9 @@
----
+{% set authelia_host = 'auth.' ~ network.domain_name %}
 # Authelia Configuration
 # Docs: https://www.authelia.com/configuration/prologue/introduction/
 
 server:
-  host: 0.0.0.0
-  port: 9091
+  address: tcp://0.0.0.0:9091
 
 log:
   level: {{ authentication.services.authelia.log_level }}
@@ -19,11 +18,15 @@ totp:
 # Session configuration
 session:
   name: authelia_session
-  domain: {{ network.domain_name }}
   same_site: lax
   expiration: 1h
   inactivity: 5m
-  remember_me_duration: 1M
+  remember_me: 1M
+  cookies:
+    - domain: "{{ authelia_host }}"
+      name: authelia_session
+      authelia_url: "https://{{ authelia_host }}"
+      default_redirection_url: "https://{{ authelia_host }}/post-login"
 
 # Storage backend (SQLite for simplicity)
 storage:
@@ -35,6 +38,10 @@ notifier:
   filesystem:
     filename: /config/notification.txt
 
+identity_validation:
+  reset_password:
+    jwt_secret: {{ authelia_jwt_secret }}
+
 # Authentication backend (LLDAP)
 authentication_backend:
   password_reset:
@@ -44,24 +51,24 @@ authentication_backend:
 
   ldap:
     implementation: lldap
-    url: ldap://lldap:3890
+    address: ldap://lldap:3890
     timeout: 5s
     start_tls: false
 
     # Base DN and search
     base_dn: {{ authentication.services.lldap.base_dn }}
-    username_attribute: uid
     additional_users_dn: ou=people
     users_filter: (&(|({username_attribute}={input})({mail_attribute}={input}))(objectClass=person))
 
     # Groups
     additional_groups_dn: ou=groups
     groups_filter: (member={dn})
-    group_name_attribute: cn
 
-    # Attributes
-    mail_attribute: mail
-    display_name_attribute: displayName
+    attributes:
+      username: uid
+      group_name: cn
+      mail: mail
+      display_name: displayName
 
     # Service account for LDAP queries
     user: uid={{ authentication.services.lldap.admin_username }},ou=people,{{ authentication.services.lldap.base_dn }}
@@ -94,14 +101,19 @@ identity_providers:
     hmac_secret: {{ authelia_oidc_hmac_secret }}
 
     # Private key for signing JWT tokens (RS256)
-    issuer_private_key: |
-{{ authelia_oidc_private_key | indent(6, first=True) }}
+    # NOTE: The value of 'authelia_oidc_private_key' must be a valid PEM-encoded RSA private key.
+    jwks:
+      - algorithm: RS256
+        use: sig
+        key: |
+{{ authelia_oidc_private_key | indent(10, first=True) }}
 
-    # Access token lifespan
-    access_token_lifespan: 1h
-    authorize_code_lifespan: 1m
-    id_token_lifespan: 1h
-    refresh_token_lifespan: 90m
+    # Lifespans
+    lifespans:
+      access_token: 1h
+      authorize_code: 1m
+      id_token: 1h
+      refresh_token: 90m
 
     # Enable PKCE
     enable_client_debug_messages: false
@@ -121,18 +133,27 @@ identity_providers:
     # OIDC clients
     clients:
 {% for client in authentication.oidc_clients %}
+{% set hash_key = client.name ~ '_oidc_secret_hash' %}
+{% set plain_key = client.name ~ '_oidc_secret' %}
+{% set hash_value = lookup('vars', hash_key, default='') | trim %}
+{% set plain_value = lookup('vars', plain_key, default='') | trim %}
+{% set secret_value = hash_value if hash_value and ('...' not in hash_value) else plain_value %}
+{% set client_scopes = client.scopes %}
+{% if 'offline_access' not in client_scopes %}
+{% set client_scopes = client_scopes + ['offline_access'] %}
+{% endif %}
       # {{ client.description }}
-      - id: {{ client.name }}
-        description: {{ client.description }}
-        secret: {{ lookup('vars', client.name ~ '_oidc_secret_hash') }}
+      - client_id: "{{ client.name }}"
+        client_name: "{{ client.description }}"
+        client_secret: '{{ secret_value }}'
         public: false
-        authorization_policy: {{ authentication.services.authelia.default_policy }}
+        authorization_policy: "{{ authentication.services.authelia.default_policy }}"
         redirect_uris:
 {% for uri in client.redirect_uris %}
           - {{ uri }}
 {% endfor %}
         scopes:
-{% for scope in client.scopes %}
+{% for scope in client_scopes %}
           - {{ scope }}
 {% endfor %}
         grant_types:
@@ -144,6 +165,6 @@ identity_providers:
           - form_post
           - query
           - fragment
-        userinfo_signing_algorithm: none
+        userinfo_signed_response_alg: none
 
 {% endfor %}

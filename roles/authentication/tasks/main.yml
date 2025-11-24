@@ -2,7 +2,7 @@
 # Authentication Stack Deployment (LLDAP + Authelia)
 
 - name: Include common user creation tasks
-  include_tasks: ../../templates/create_user.yml
+  include_tasks: templates/create_user.yml
   vars:
     stack: authentication
     folders:
@@ -16,6 +16,16 @@
     name: auth_network
     driver: bridge
     state: present
+
+- name: Check OIDC secrets
+  ansible.builtin.assert:
+    that:
+      - "(vars[item.name ~ '_oidc_secret'] | default('')) | length > 0"
+    success_msg: "Secret defined for {{ item.name }}"
+    fail_msg: "Define {{ item.name }}_oidc_secret in group_vars/all/secrets.yml"
+  loop: "{{ authentication.oidc_clients }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Template Authelia configuration
   template:
@@ -68,11 +78,15 @@
       register: auth_deploy_result
 
     - name: Display authentication stack deployment status
-      debug:
-        var: auth_deploy_result
+      ansible.builtin.debug:
+        msg: >-
+          Authentication deploy changed={{ auth_deploy_result.changed }};
+          Containers: {%- for c in auth_deploy_result.containers | default([]) -%}
+          {{ c.Name }}={{ c.Status }}{%- if not loop.last %}, {% endif -%}
+          {%- endfor -%}
 
     - name: Wait for LLDAP to be healthy
-      command: docker inspect --format='{{`{{.State.Health.Status}}`}}' lldap
+      command: docker inspect --format='{% raw %}{{.State.Health.Status}}{% endraw %}' lldap
       register: lldap_health
       until: lldap_health.stdout == 'healthy'
       retries: 30
@@ -80,10 +94,10 @@
       changed_when: false
 
     - name: Wait for Authelia to be healthy
-      command: docker inspect --format='{{`{{.State.Health.Status}}`}}' authelia
+      command: docker inspect --format='{% raw %}{{.State.Health.Status}}{% endraw %}' authelia
       register: authelia_health
       until: authelia_health.stdout == 'healthy'
-      retries: 30
+      retries: 5
       delay: 10
       changed_when: false
 

@@ -171,38 +171,6 @@
       tags: [docker, base]
 
     # ==========================================================================
-    # AUTHENTICATION LAYER - SSO & User Management
-    # ==========================================================================
-
-    # --------------------------------------------------------------------------
-    # Authentication Stack (LLDAP + Authelia)
-    # --------------------------------------------------------------------------
-    # Deploys: Lightweight authentication services
-    #
-    # Services:
-    #   - LLDAP (LDAP Directory):
-    #       Lightweight user/group management
-    #       Simple web UI for user creation
-    #       LDAP server for Jellyfin authentication
-    #       Port 17170, URL: http://lldap.frey
-    #       LDAP Port: 3890
-    #
-    #   - Authelia (SSO Portal):
-    #       OIDC/OAuth2 provider for services
-    #       Connects to LLDAP for user authentication
-    #       Single sign-on for 6+ services
-    #       Port 9091, URL: http://auth.frey
-    #
-    # Replaces: Authentik (too resource-heavy, unreliable IaC)
-    # User/Group: auth_manager (uid: 3000)
-    # Configuration: authentication.* in main.yml
-    # IaC: Fully configured via Ansible templates (no manual steps!)
-    # --------------------------------------------------------------------------
-    - role: authentication
-      tags: [authentication, auth, sso]
-      when: features.authentication
-
-    # ==========================================================================
     # INFRASTRUCTURE LAYER - Core Services
     # ==========================================================================
 
@@ -256,6 +224,38 @@
     - role: landing_page
       tags: [landing, infrastructure]
       when: features.landing_page | default(false)
+
+    # ==========================================================================
+    # AUTHENTICATION LAYER - SSO & User Management
+    # ==========================================================================
+
+    # --------------------------------------------------------------------------
+    # Authentication Stack (LLDAP + Authelia)
+    # --------------------------------------------------------------------------
+    # Deploys: Lightweight authentication services
+    #
+    # Services:
+    #   - LLDAP (LDAP Directory):
+    #       Lightweight user/group management
+    #       Simple web UI for user creation
+    #       LDAP server for Jellyfin authentication
+    #       Port 17170, URL: http://lldap.frey
+    #       LDAP Port: 3890
+    #
+    #   - Authelia (SSO Portal):
+    #       OIDC/OAuth2 provider for services
+    #       Connects to LLDAP for user authentication
+    #       Single sign-on for 6+ services
+    #       Port 9091, URL: http://auth.frey
+    #
+    # Replaces: Authentik (too resource-heavy, unreliable IaC)
+    # User/Group: auth_manager (uid: 3000)
+    # Configuration: authentication.* in main.yml
+    # IaC: Fully configured via Ansible templates (no manual steps!)
+    # --------------------------------------------------------------------------
+    - role: authentication
+      tags: [authentication, auth, sso]
+      when: features.authentication
 
     # ==========================================================================
     # SERVICE LAYER - Application Stacks

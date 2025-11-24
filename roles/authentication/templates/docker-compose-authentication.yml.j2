@@ -44,7 +44,9 @@ services:
       - "traefik.http.routers.lldap.tls.certresolver=step-ca"
       - "traefik.http.services.lldap.loadbalancer.server.port=17170"
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 17170 || exit 1"]
+      test:
+        - CMD-SHELL
+        - "grep -q ':4312' /proc/net/tcp || exit 1"
       interval: 30s
       timeout: 10s
       retries: 3
@@ -64,13 +66,8 @@ services:
     restart: unless-stopped
     environment:
       # Secrets (from secrets.yml)
-      AUTHELIA_JWT_SECRET: "{{ authelia_jwt_secret }}"
       AUTHELIA_SESSION_SECRET: "{{ authelia_session_secret }}"
       AUTHELIA_STORAGE_ENCRYPTION_KEY: "{{ authelia_storage_key }}"
-
-      # OIDC secrets
-      AUTHELIA_IDENTITY_PROVIDERS_OIDC_HMAC_SECRET: "{{ authelia_oidc_hmac_secret }}"
-      AUTHELIA_IDENTITY_PROVIDERS_OIDC_ISSUER_PRIVATE_KEY: "{{ authelia_oidc_private_key }}"
 
       # Timezone
       TZ: "{{ network.timezone }}"
@@ -98,7 +95,9 @@ services:
       - "traefik.http.routers.authelia-http.rule=Host(`auth.{{ network.domain_name }}`)"
       - "traefik.http.routers.authelia-http.entrypoints=web"
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9091/api/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - "wget --spider --quiet http://127.0.0.1:9091/api/health || exit 1"
       interval: 30s
       timeout: 10s
       retries: 3
@@ -112,5 +111,5 @@ networks:
   localdns:
     external: true
   auth_network:
+    external: true
     name: auth_network
-    driver: bridge

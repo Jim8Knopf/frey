@@ -3,7 +3,7 @@
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "infrastructure"
-    folders: [traefik, traefik/certificates, portainer, authentik, authentik/database, authentik/redis, authentik/media, authentik/certs, authentik/custom-templates, authentik/blueprints, step-ca]
+    folders: [traefik, traefik/certificates, portainer, step-ca]
     checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, storage.stacks]
 
 - name: Fix Step CA directory ownership for container user
@@ -21,19 +21,61 @@
   register: step_ca_config
   when: infrastructure.services.step_ca.enabled | default(false)
 
-- name: Check Step CA root certificate readability
+- name: Check Step CA root certificate entry
   ansible.builtin.stat:
     path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
   register: step_ca_root
   when: infrastructure.services.step_ca.enabled | default(false)
 
-- name: Ensure Step CA root certificate mode allows container access
+- name: Check Step CA intermediate certificate entry
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/intermediate_ca.crt"
+  register: step_ca_intermediate
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+- name: Remove invalid Step CA root entry
   ansible.builtin.file:
     path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+    state: absent
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_root.stat.isdir | default(false)
+
+- name: Remove invalid Step CA intermediate entry
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/intermediate_ca.crt"
+    state: absent
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_intermediate.stat.isdir | default(false)
+
+- name: Ensure Step CA cert directory has proper ownership
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/step-ca/certs"
+    state: directory
+    owner: 1000
+    group: 1000
+    mode: '0755'
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+- name: Export Step CA root certificate
+  ansible.builtin.command:
+    cmd: docker exec step-ca step ca root
+  register: step_ca_root_export
+  changed_when: false
+  failed_when: false
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+- name: Publish Step CA root certificate for download
+  ansible.builtin.copy:
+    dest: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    content: "{{ step_ca_root_export.stdout }}"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
     mode: '0644'
   when:
     - infrastructure.services.step_ca.enabled | default(false)
-    - step_ca_root.stat.exists
+    - step_ca_root_export.rc == 0
 
 - name: Enforce 90-day certificates for Step CA ACME provisioner
   ansible.builtin.shell: |
@@ -55,9 +97,9 @@
         acme_found = True
         claims = prov.setdefault("claims", {})
         for key, value in (
-            ("defaultTLSCertDuration", "2160h"),
-            ("maxTLSCertDuration", "2160h"),
-            ("minTLSCertDuration", "5m"),
+            ("defaultTLSCertDuration", "{{ infrastructure.services.step_ca.default_cert_duration }}"),
+            ("maxTLSCertDuration", "{{ infrastructure.services.step_ca.max_cert_duration }}"),
+            ("minTLSCertDuration", "{{ infrastructure.services.step_ca.min_cert_duration }}"),
         ):
             if claims.get(key) != value:
                 claims[key] = value
@@ -80,49 +122,57 @@
   changed_when: "'updated' in step_ca_claims.stdout"
 
 # Certificate Generation Tasks
-- name: Check if Frey CA certificate exists
+- name: Check if CA certificate exists
   ansible.builtin.stat:
-    path: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
+    path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
   register: ca_cert_check
 
-- name: Generate Frey Root CA private key
+- name: Generate Root CA private key
   ansible.builtin.command:
     cmd: >
       openssl genrsa
-      -out {{ storage.appdata_dir }}/traefik/certificates/frey-ca.key
+      -out {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_key }}
       4096
-    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.key"
-  when: not ca_cert_check.stat.exists
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_key }}"
+  when:
+    - not ca_cert_check.stat.exists
+    - not (infrastructure.services.step_ca.enabled | default(false))
 
-- name: Generate Frey Root CA certificate
+- name: Generate Root CA certificate
   ansible.builtin.command:
     cmd: >
       openssl req -x509 -new
-      -key {{ storage.appdata_dir }}/traefik/certificates/frey-ca.key
-      -out {{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt
+      -key {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_key }}
+      -out {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}
       -days 3650
-      -subj "/CN=Frey Root CA/O=Frey Hub/C=US"
-    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
-  when: not ca_cert_check.stat.exists
+      -subj "/CN={{ infrastructure.services.step_ca.root_ca_cn }}/O={{ infrastructure.services.step_ca.organization }}/C={{ infrastructure.services.step_ca.country }}"
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+  when:
+    - not ca_cert_check.stat.exists
+    - not (infrastructure.services.step_ca.enabled | default(false))
 
-- name: Generate wildcard private key for *.frey
+- name: Generate wildcard private key for *.{{ network.domain_name }}
   ansible.builtin.command:
     cmd: >
       openssl genrsa
-      -out {{ storage.appdata_dir }}/traefik/certificates/frey.key
+      -out {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_key }}
       4096
-    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey.key"
-  when: not ca_cert_check.stat.exists
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_key }}"
+  when:
+    - not ca_cert_check.stat.exists
+    - not (infrastructure.services.step_ca.enabled | default(false))
 
-- name: Generate certificate signing request for *.frey
+- name: Generate certificate signing request for *.{{ network.domain_name }}
   ansible.builtin.command:
     cmd: >
       openssl req -new
-      -key {{ storage.appdata_dir }}/traefik/certificates/frey.key
-      -out {{ storage.appdata_dir }}/traefik/certificates/frey.csr
-      -subj "/CN=*.frey/O=Frey Hub/C=US"
-    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey.csr"
-  when: not ca_cert_check.stat.exists
+      -key {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_key }}
+      -out {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_csr }}
+      -subj "/CN=*.{{ network.domain_name }}/O={{ infrastructure.services.step_ca.organization }}/C={{ infrastructure.services.step_ca.country }}"
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_csr }}"
+  when:
+    - not ca_cert_check.stat.exists
+    - not (infrastructure.services.step_ca.enabled | default(false))
 
 - name: Create OpenSSL extension file for SAN
   ansible.builtin.copy:
@@ -133,28 +183,32 @@
       subjectAltName = @alt_names
 
       [alt_names]
-      DNS.1 = *.frey
-      DNS.2 = frey
-    dest: "{{ storage.appdata_dir }}/traefik/certificates/san.cnf"
+      DNS.1 = *.{{ network.domain_name }}
+      DNS.2 = {{ network.domain_name }}
+    dest: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.san_config }}"
     owner: "{{ infrastructure.user.name }}"
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
-  when: not ca_cert_check.stat.exists
+  when:
+    - not ca_cert_check.stat.exists
+    - not (infrastructure.services.step_ca.enabled | default(false))
 
 - name: Sign wildcard certificate with CA
   ansible.builtin.command:
     cmd: >
       openssl x509 -req
-      -in {{ storage.appdata_dir }}/traefik/certificates/frey.csr
-      -CA {{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt
-      -CAkey {{ storage.appdata_dir }}/traefik/certificates/frey-ca.key
+      -in {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_csr }}
+      -CA {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}
+      -CAkey {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_key }}
       -CAcreateserial
-      -out {{ storage.appdata_dir }}/traefik/certificates/frey.crt
+      -out {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}
       -days 3650
       -extensions v3_req
-      -extfile {{ storage.appdata_dir }}/traefik/certificates/san.cnf
-    creates: "{{ storage.appdata_dir }}/traefik/certificates/frey.crt"
-  when: not ca_cert_check.stat.exists
+      -extfile {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.san_config }}
+    creates: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}"
+  when:
+    - not ca_cert_check.stat.exists
+    - not (infrastructure.services.step_ca.enabled | default(false))
 
 - name: Set ownership on certificate files
   ansible.builtin.file:
@@ -163,18 +217,25 @@
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
   loop:
-    - frey-ca.crt
-    - frey-ca.key
-    - frey.crt
-    - frey.key
-  when: not ca_cert_check.stat.exists
+    - "{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    - "{{ infrastructure.services.step_ca.cert_files.root_key }}"
+    - "{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}"
+    - "{{ infrastructure.services.step_ca.cert_files.wildcard_key }}"
+  when:
+    - not ca_cert_check.stat.exists
+    - not (infrastructure.services.step_ca.enabled | default(false))
+
+- name: Check CA certificate availability
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+  register: frey_ca_published
 
 - name: Copy CA certificate to local Downloads directory
   ansible.builtin.fetch:
-    src: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
-    dest: "{{ lookup('env', 'HOME') }}/Downloads/frey-ca.crt"
+    src: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    dest: "{{ lookup('env', 'HOME') }}/Downloads/Cert/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
     flat: yes
-  when: ca_cert_check.stat.exists or not ca_cert_check.stat.exists
+  when: frey_ca_published.stat.exists
 
 - name: Create Traefik static configuration
   ansible.builtin.template:
@@ -184,764 +245,136 @@
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
 
-- name: Template Authentik blueprint files
-  ansible.builtin.template:
-    src: "{{ item }}"
-    dest: "{{ storage.appdata_dir }}/authentik/blueprints/{{ item | basename | regex_replace('\\.j2$', '') }}"
-    owner: "{{ infrastructure.user.name }}"
-    group: "{{ infrastructure.group.name }}"
-    mode: '0644'
-  loop:
-    - authentik-blueprints/00-groups.yaml.j2
-    - authentik-blueprints/01-service-accounts.yaml.j2
-    - authentik-blueprints/10-oidc-immich.yaml.j2
-    - authentik-blueprints/11-oidc-audiobookshelf.yaml.j2
-    - authentik-blueprints/12-oidc-grafana.yaml.j2
-    - authentik-blueprints/13-oidc-homeassistant.yaml.j2
-    - authentik-blueprints/14-oidc-mealie.yaml.j2
-    - authentik-blueprints/15-oidc-dashy.yaml.j2
-    - authentik-blueprints/20-ldap-jellyfin.yaml.j2
-  when: infrastructure.services.authentik.enabled | default(false)
-  register: authentik_blueprints_render
+# ==============================================================================
+# STEP-CA PRE-DEPLOYMENT CLEANUP
+# ==============================================================================
+- name: Check if Step-CA configuration is complete
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/step-ca/config/ca.json"
+  register: step_ca_config_check
+  when: infrastructure.services.step_ca.enabled | default(false)
 
-- name: Fix Redis data directory ownership (UID 999 required by Redis container)
-  ansible.builtin.file:
-    path: "{{ storage.appdata_dir }}/authentik/redis"
-    owner: 999
-    group: 999
-    mode: '0755'
-    state: directory
-  when: infrastructure.services.authentik.enabled | default(false)
+- name: Clean up incomplete Step-CA initialization
+  block:
+    - name: Stop and remove broken Step-CA container
+      community.docker.docker_container:
+        name: step-ca
+        state: absent
+      failed_when: false
 
-- name: Deploy infrastructure compose file
+    - name: Remove incomplete Step-CA configuration
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca"
+        state: absent
+
+    - name: Recreate Step-CA directory with proper ownership
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca"
+        state: directory
+        owner: 1000  # step user inside container
+        group: 1000
+        mode: '0755'
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - not step_ca_config_check.stat.exists
+
+# ==============================================================================
+# DOCKER COMPOSE DEPLOYMENT
+# ==============================================================================
+- name: Template infrastructure docker-compose file
   ansible.builtin.template:
     src: docker-compose-infrastructure.yml.j2
     dest: "{{ storage.stacks }}/infrastructure/docker-compose.yml"
     owner: "{{ infrastructure.user.name }}"
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
+  register: infrastructure_compose_template
 
-- name: Create required Docker networks
-  community.docker.docker_network:
-    name: "{{ item }}"
-    state: present
-    driver: bridge
-  loop:
-    - proxy                     # For Traefik routing
-    - localdns                  # For DNS resolution
-    - infrastructure_network    # Service-specific network
+- name: Validate infrastructure docker-compose syntax
+  ansible.builtin.command:
+    cmd: docker compose -f {{ storage.stacks }}/infrastructure/docker-compose.yml config --quiet
+  changed_when: false
+  register: infrastructure_compose_validation
+  failed_when: infrastructure_compose_validation.rc != 0
 
-- name: Start infrastructure containers using compose
-  community.docker.docker_compose_v2:
-    project_src: "{{ storage.stacks }}/infrastructure"
-    state: present
+- name: Start infrastructure stack with graceful error handling
+  block:
+    - name: Start infrastructure stack containers using compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/infrastructure"
+        state: present
+        remove_orphans: true
+        timeout: 300
+      register: compose_result
+      retries: 2
+      delay: 30
 
-- name: Restart Step CA after claim updates
-  community.docker.docker_container:
-    name: step-ca
-    state: started
-    restart: true
+  rescue:
+    - name: Handle compose failure - gather logs
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/infrastructure/docker-compose.yml" logs --tail=50
+      register: compose_logs
+      failed_when: false
+
+    - name: Display compose error details
+      ansible.builtin.debug:
+        msg: |
+          Infrastructure stack deployment failed. Recent logs:
+          {{ compose_logs.stdout }}
+      when: compose_logs.stdout is defined
+
+    - name: Fail with helpful message
+      ansible.builtin.fail:
+        msg: "Infrastructure stack deployment failed. Check the logs above and ensure all required directories exist."
+
+# ==============================================================================
+# POST-DEPLOYMENT: STEP-CA VERIFICATION AND CERTIFICATE EXPORT
+# ==============================================================================
+- name: Wait for Step-CA to be healthy (if enabled)
+  ansible.builtin.shell: |
+    for i in {1..30}; do
+      if docker exec step-ca step ca health 2>/dev/null; then
+        echo "Step-CA is healthy"
+        exit 0
+      fi
+      echo "Waiting for Step-CA to initialize... ($i/30)"
+      sleep 2
+    done
+    echo "Step-CA failed to become healthy after 60 seconds"
+    exit 1
+  register: step_ca_health
+  changed_when: false
+  failed_when: false
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+- name: Export Step-CA root certificate after successful initialization
+  ansible.builtin.command:
+    cmd: docker exec step-ca step ca root
+  register: step_ca_root_export_post
+  changed_when: false
+  failed_when: false
   when:
     - infrastructure.services.step_ca.enabled | default(false)
-    - step_ca_claims is defined
-    - (step_ca_claims.stdout | default('')) is search('updated')
+    - step_ca_health is succeeded
 
-# --------------------------------------------------------------------------
-# FORCE RENEWAL OF AUTH.FREY CERTIFICATE VIA STEP-CA
-# --------------------------------------------------------------------------
-- name: Stop Traefik to modify ACME store
-  community.docker.docker_container:
-    name: traefik
-    state: stopped
-  when: infrastructure.services.traefik is defined
-  tags: [infrastructure, traefik, tls]
-
-- name: Backup Traefik ACME store
+- name: Publish Step-CA root certificate for Traefik and client download
   ansible.builtin.copy:
-    src: "{{ storage.appdata_dir }}/traefik/acme/acme.json"
-    dest: "{{ storage.appdata_dir }}/traefik/acme/acme.json.bak"
-    remote_src: true
-    mode: '0600'
-    backup: yes
-  tags: [infrastructure, traefik, tls]
+    dest: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    content: "{{ step_ca_root_export_post.stdout }}"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0644'
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_root_export_post is succeeded
+    - step_ca_root_export_post.stdout is defined
 
-- name: Reset ACME store to force renewal
-  ansible.builtin.copy:
-    content: "{}\n"
-    dest: "{{ storage.appdata_dir }}/traefik/acme/acme.json"
-    owner: root
-    group: root
-    mode: '0600'
-  tags: [infrastructure, traefik, tls]
-
-- name: Start Traefik after ACME edit
-  community.docker.docker_container:
-    name: traefik
-    state: started
-  tags: [infrastructure, traefik, tls]
-
-- name: Wait for HTTPS (Traefik) on 443
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: 443
-    timeout: 120
-  tags: [infrastructure, traefik, tls]
-
-# ==============================================================================
-# AUTHENTIK BLUEPRINT APPLICATION
-# ==============================================================================
-# After containers are up, force-apply custom blueprints so deleted providers/
-# applications are recreated (e.g., after SSL/URL changes).
-
-- name: Wait for Authentik HTTP port to be reachable
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: "{{ infrastructure.services.authentik.port | default(9300) }}"
-    timeout: 60
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints]
-
-# ==============================================================================
-# AUTHENTIK: Generic Blueprint Re-apply (full IaC)
-# ==============================================================================
-
-- name: Discover available Authentik blueprints
-  ansible.builtin.find:
-    paths: "{{ storage.appdata_dir }}/authentik/blueprints"
-    patterns: "*.yaml"
-    file_type: file
-  register: ak_blueprints_files
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Determine reapply selector
-  ansible.builtin.set_fact:
-    ak_reapply_raw: "{{ authentik_reapply_blueprints | default(infrastructure.services.authentik.reapply_blueprints | default([])) }}"
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Normalize reapply selector
-  ansible.builtin.set_fact:
-    ak_reapply_var: >-
-      {{ 'all' if (ak_reapply_raw | string) == 'all'
-         else (
-           ak_reapply_raw
-           if (ak_reapply_raw is sequence and (ak_reapply_raw is not string))
-           else (ak_reapply_raw | from_yaml)
-         )
-      }}
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Determine blueprints to re-apply
-  ansible.builtin.set_fact:
-    ak_reapply_list: "{{ (ak_blueprints_files.files | map(attribute='path') | map('basename') | list) if (ak_reapply_var | string) == 'all' else (ak_reapply_var | list) }}"
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Show blueprints to re-apply
-  ansible.builtin.debug:
-    msg: "Re-applying blueprints: {{ ak_reapply_list | default([]) | join(', ') }}"
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Discover Authentik blueprint instance table
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "WITH rels AS (
-         SELECT c.relname, n.nspname, format('%I.%I', n.nspname, c.relname) AS fqtn
-         FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE c.relkind = 'r'
-       ),
-       ordered_exact AS (
-         SELECT fqtn
-         FROM rels
-         WHERE relname IN ('authentik_blueprints_blueprintinstance','blueprints_blueprintinstance')
-         ORDER BY CASE relname
-           WHEN 'authentik_blueprints_blueprintinstance' THEN 1
-           WHEN 'blueprints_blueprintinstance' THEN 2
-           ELSE 99
-         END
-         LIMIT 1
-       ),
-       fuzzy AS (
-         SELECT fqtn
-         FROM rels
-         WHERE relname ILIKE '%blueprintinstance%'
-         ORDER BY relname
-         LIMIT 1
-       )
-       SELECT COALESCE(
-         (SELECT fqtn FROM ordered_exact),
-         (SELECT fqtn FROM fuzzy),
-         ''
-       );"
-  args:
-    executable: /bin/bash
-  register: ak_bp_table_query
-  changed_when: false
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Record Authentik blueprint instance table
-  ansible.builtin.set_fact:
-    ak_blueprint_instance_table: "{{ ak_bp_table_query.stdout | default('') | trim }}"
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Flag Authentik blueprint instance table availability
-  ansible.builtin.set_fact:
-    ak_blueprint_table_missing: "{{ (ak_blueprint_instance_table | default('') | trim | length) == 0 }}"
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Warn when Authentik blueprint instance table not found
-  ansible.builtin.debug:
-    msg: >-
-      Authentik blueprint instance table not found; skipping DB cleanup/status checks
-      and falling back to direct blueprint applies.
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_table_missing | default(false))
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Initialize blueprint status placeholders
-  ansible.builtin.set_fact:
-    ak_bp_status_results: []
-    ak_bp_status2_results: []
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Delete blueprint instance records (force re-apply)
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "WITH deleted AS (DELETE FROM {{ ak_blueprint_instance_table }} WHERE path='{{ item }}' RETURNING 1) SELECT COUNT(*) FROM deleted;"
-  args:
-    executable: /bin/bash
-  loop: "{{ ak_reapply_list | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
-  register: ak_bp_delete
-  changed_when: "(stdout | default('0') | trim | int) > 0"
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_instance_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Restart authentik_server to trigger bootstrap import
-  community.docker.docker_container:
-    name: authentik_server
-    state: started
-    restart: true
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Wait for Authentik port after restart
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: "{{ infrastructure.services.authentik.port | default(9000) }}"
-    timeout: 120
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Apply selected blueprints via blueprint_shell (HOME=/tmp)
-  ansible.builtin.shell: |
-    set -euo pipefail
-    docker exec -e HOME=/tmp -i authentik_server sh -lc "printf 'apply -f /blueprints/{{ item }} --force\n' | ak blueprint_shell"
-  args:
-    executable: /bin/bash
-  loop: "{{ ak_reapply_list | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
-  register: ak_bp_apply
-  changed_when: false
-  failed_when: false
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Import selected blueprints via import_blueprints (best-effort)
-  ansible.builtin.shell: |
-    set -euo pipefail
-    docker exec -e HOME=/tmp -i authentik_server ak import_blueprints "/blueprints/{{ item }}" || true
-  args:
-    executable: /bin/bash
-  loop: "{{ ak_reapply_list | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
-  register: ak_bp_import
-  changed_when: false
-  failed_when: false
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Verify blueprint instance status
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "SELECT '{{ item }}:' || COALESCE((SELECT status FROM {{ ak_blueprint_instance_table }} WHERE path='{{ item }}'),'missing');"
-  args:
-    executable: /bin/bash
-  loop: "{{ ak_reapply_list | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
-  register: ak_bp_status
-  changed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_instance_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Show blueprint statuses
-  ansible.builtin.debug:
-    msg: "{{ ak_bp_status.results | map(attribute='stdout') | map('trim') | reject('equalto','') | list }}"
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_instance_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Snapshot blueprint status results
-  ansible.builtin.set_fact:
-    ak_bp_status_results: "{{ ak_bp_status.results | default([]) }}"
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_instance_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Determine missing blueprints before ensures
-  ansible.builtin.set_fact:
-    ak_blueprint_missing_pre: >-
-      {{
-        (ak_bp_status_results | selectattr('stdout', 'search', ':missing') | map(attribute='item') | list)
-        if not (ak_blueprint_table_missing | default(false))
-        else (ak_reapply_list | default([]))
-      }}
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
- 
-
-- name: Ensure Immich via ORM when missing
-  block:
-    - name: Render immich ensure script on host
-      ansible.builtin.template:
-        src: authentik-ensure/ensure_immich.py.j2
-        dest: "{{ storage.appdata_dir }}/authentik/ensure_immich.py"
-        owner: "{{ infrastructure.user.name }}"
-        group: "{{ infrastructure.group.name }}"
-        mode: '0644'
-    - name: Copy and execute immich ensure script in container
-      ansible.builtin.shell: |
-        set -euo pipefail
-        docker cp "{{ storage.appdata_dir }}/authentik/ensure_immich.py" authentik_server:/tmp/ensure_immich.py
-        docker exec authentik_server ak shell -c "exec(open('/tmp/ensure_immich.py').read())"
-      args:
-        executable: /bin/bash
-      register: ak_ensure_immich
-      changed_when: false
-      failed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | select('equalto','10-oidc-immich.yaml') | list | length > 0)
-    and ('10-oidc-immich.yaml' in (ak_blueprint_missing_pre | default([])))
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Ensure Service Accounts via ORM when missing
-  block:
-    - name: Render service accounts ensure script on host
-      ansible.builtin.template:
-        src: authentik-ensure/ensure_service_accounts.py.j2
-        dest: "{{ storage.appdata_dir }}/authentik/ensure_service_accounts.py"
-        owner: "{{ infrastructure.user.name }}"
-        group: "{{ infrastructure.group.name }}"
-        mode: '0644'
-    - name: Copy and execute service accounts ensure script in container
-      ansible.builtin.shell: |
-        set -euo pipefail
-        docker cp "{{ storage.appdata_dir }}/authentik/ensure_service_accounts.py" authentik_server:/tmp/ensure_service_accounts.py
-        docker exec authentik_server ak shell -c "exec(open('/tmp/ensure_service_accounts.py').read())"
-      args:
-        executable: /bin/bash
-      register: ak_ensure_sa
-      changed_when: false
-      failed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | select('equalto','01-service-accounts.yaml') | list | length > 0)
-    and ('01-service-accounts.yaml' in (ak_blueprint_missing_pre | default([])))
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Ensure Audiobookshelf via ORM when missing
-  block:
-    - name: Render Audiobookshelf ensure script on host
-      ansible.builtin.template:
-        src: authentik-ensure/ensure_audiobookshelf.py.j2
-        dest: "{{ storage.appdata_dir }}/authentik/ensure_audiobookshelf.py"
-        owner: "{{ infrastructure.user.name }}"
-        group: "{{ infrastructure.group.name }}"
-        mode: '0644'
-    - name: Copy and execute Audiobookshelf ensure script in container
-      ansible.builtin.shell: |
-        set -euo pipefail
-        docker cp "{{ storage.appdata_dir }}/authentik/ensure_audiobookshelf.py" authentik_server:/tmp/ensure_audiobookshelf.py
-        docker exec authentik_server ak shell -c "exec(open('/tmp/ensure_audiobookshelf.py').read())"
-      args:
-        executable: /bin/bash
-      register: ak_ensure_abs
-      changed_when: false
-      failed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | select('equalto','11-oidc-audiobookshelf.yaml') | list | length > 0)
-    and ('11-oidc-audiobookshelf.yaml' in (ak_blueprint_missing_pre | default([])))
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Ensure Dashy via ORM when missing
-  block:
-    - name: Render Dashy ensure script on host
-      ansible.builtin.template:
-        src: authentik-ensure/ensure_dashy.py.j2
-        dest: "{{ storage.appdata_dir }}/authentik/ensure_dashy.py"
-        owner: "{{ infrastructure.user.name }}"
-        group: "{{ infrastructure.group.name }}"
-        mode: '0644'
-    - name: Copy and execute Dashy ensure script in container
-      ansible.builtin.shell: |
-        set -euo pipefail
-        docker cp "{{ storage.appdata_dir }}/authentik/ensure_dashy.py" authentik_server:/tmp/ensure_dashy.py
-        docker exec authentik_server ak shell -c "exec(open('/tmp/ensure_dashy.py').read())"
-      args:
-        executable: /bin/bash
-      register: ak_ensure_dashy
-      changed_when: false
-      failed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | select('equalto','15-oidc-dashy.yaml') | list | length > 0)
-    and ('15-oidc-dashy.yaml' in (ak_blueprint_missing_pre | default([])))
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-
-- name: Re-verify blueprint instance status after ensures
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "SELECT '{{ item }}:' || COALESCE((SELECT status FROM {{ ak_blueprint_instance_table }} WHERE path='{{ item }}'),'missing');"
-  args:
-    executable: /bin/bash
-  loop: "{{ ak_reapply_list | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
-  register: ak_bp_status2
-  changed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_instance_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Show final blueprint statuses
-  ansible.builtin.debug:
-    msg: "{{ ak_bp_status2.results | map(attribute='stdout') | map('trim') | reject('equalto','') | list }}"
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_instance_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Snapshot final blueprint status results
-  ansible.builtin.set_fact:
-    ak_bp_status2_results: "{{ ak_bp_status2.results | default([]) }}"
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_blueprint_instance_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Determine missing blueprints after ensures
-  ansible.builtin.set_fact:
-    ak_blueprint_missing_post: >-
-      {{
-        (ak_bp_status2_results | selectattr('stdout', 'search', ':missing') | map(attribute='item') | list)
-        if not (ak_blueprint_table_missing | default(false))
-        else []
-      }}
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Discover Authentik OAuth2 provider table
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "WITH rels AS (
-         SELECT c.relname, n.nspname, format('%I.%I', n.nspname, c.relname) AS fqtn
-         FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE c.relkind = 'r'
-       ),
-       ordered_exact AS (
-         SELECT fqtn
-         FROM rels
-         WHERE relname IN ('authentik_providers_oauth2_oauth2provider','providers_oauth2_oauth2provider','authentik_providers_oauth2provider')
-         ORDER BY CASE relname
-           WHEN 'authentik_providers_oauth2_oauth2provider' THEN 1
-           WHEN 'providers_oauth2_oauth2provider' THEN 2
-           WHEN 'authentik_providers_oauth2provider' THEN 3
-           ELSE 99
-         END
-         LIMIT 1
-       ),
-       fuzzy AS (
-         SELECT fqtn
-         FROM rels
-         WHERE relname ILIKE '%oauth2provider%'
-         ORDER BY relname
-         LIMIT 1
-       )
-       SELECT COALESCE(
-         (SELECT fqtn FROM ordered_exact),
-         (SELECT fqtn FROM fuzzy),
-         ''
-       );"
-  args:
-    executable: /bin/bash
-  register: ak_oauth2_table_query
-  changed_when: false
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Record Authentik OAuth2 provider table
-  ansible.builtin.set_fact:
-    ak_oauth2_provider_table: "{{ ak_oauth2_table_query.stdout | default('') | trim }}"
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Warn when Authentik OAuth2 provider table not found
-  ansible.builtin.debug:
-    msg: "Auth OIDC provider table not found; provider existence checks will be skipped."
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_oauth2_provider_table | default('') | length == 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Discover Authentik core user table
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "WITH rels AS (
-         SELECT c.relname, n.nspname, format('%I.%I', n.nspname, c.relname) AS fqtn
-         FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE c.relkind = 'r'
-       ),
-       ordered_exact AS (
-         SELECT fqtn
-         FROM rels
-         WHERE relname IN ('authentik_core_user','core_user')
-         ORDER BY CASE relname
-           WHEN 'authentik_core_user' THEN 1
-           WHEN 'core_user' THEN 2
-           ELSE 99
-         END
-         LIMIT 1
-       ),
-       fuzzy AS (
-         SELECT fqtn
-         FROM rels
-         WHERE relname ILIKE '%core_user%'
-         ORDER BY relname
-         LIMIT 1
-       )
-       SELECT COALESCE(
-         (SELECT fqtn FROM ordered_exact),
-         (SELECT fqtn FROM fuzzy),
-         ''
-       );"
-  args:
-    executable: /bin/bash
-  register: ak_core_user_table_query
-  changed_when: false
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Record Authentik core user table
-  ansible.builtin.set_fact:
-    ak_core_user_table: "{{ ak_core_user_table_query.stdout | default('') | trim }}"
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Warn when Authentik core user table not found
-  ansible.builtin.debug:
-    msg: "Auth user table not found; service-account existence checks will be skipped."
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_core_user_table | default('') | length == 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Seed Authentik OAuth2 provider count defaults when table missing
-  ansible.builtin.set_fact:
-    ak_abs_count: {"stdout": "0"}
-    ak_immich_count: {"stdout": "0"}
-    ak_mealie_count: {"stdout": "0"}
-    ak_dashy_count: {"stdout": "0"}
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_oauth2_provider_table | default('') | length == 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Seed Authentik service-account count defaults when table missing
-  ansible.builtin.set_fact:
-    ak_sa_sum: {"stdout": "0"}
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_core_user_table | default('') | length == 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Check existence of ABS provider
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "SELECT COUNT(*) FROM {{ ak_oauth2_provider_table }} WHERE client_id='audiobookshelf'"
-  register: ak_abs_count
-  changed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_oauth2_provider_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Check existence of Immich provider
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "SELECT COUNT(*) FROM {{ ak_oauth2_provider_table }} WHERE client_id='immich'"
-  register: ak_immich_count
-  changed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_oauth2_provider_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Check existence of Mealie provider
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "SELECT COUNT(*) FROM {{ ak_oauth2_provider_table }} WHERE client_id='mealie'"
-  register: ak_mealie_count
-  changed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_oauth2_provider_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Check existence of Dashy provider
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "SELECT COUNT(*) FROM {{ ak_oauth2_provider_table }} WHERE client_id='{{ landing_page.oidc.client_id | default('dashy') }}'"
-  register: ak_dashy_count
-  changed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_oauth2_provider_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Check existence of service accounts
-  ansible.builtin.shell: |
-    set -euo pipefail
-    PGPASSWORD={{ authentik_postgres_password | quote }} docker exec -e PGPASSWORD={{ authentik_postgres_password | quote }} authentik_postgres \
-      psql -U {{ authentik_db_user | default('authentik') }} -d {{ authentik_db_name | default('authentik') }} -tAc \
-      "SELECT SUM(CASE WHEN username IN ('ldap_bind','jason') THEN 1 ELSE 0 END) FROM {{ ak_core_user_table }}"
-  register: ak_sa_sum
-  changed_when: false
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_core_user_table | default('') | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Compute acceptable-missing list
-  ansible.builtin.set_fact:
-    ak_ok_missing: >-
-      {{
-        (
-          ['11-oidc-audiobookshelf.yaml'] if ((ak_abs_count.stdout | default('0') | trim | int) > 0) else []
-        )
-        + (
-          ['10-oidc-immich.yaml'] if ((ak_immich_count.stdout | default('0') | trim | int) > 0) else []
-        )
-        + (
-          ['14-oidc-mealie.yaml'] if ((ak_mealie_count.stdout | default('0') | trim | int) > 0) else []
-        )
-        + (
-          ['01-service-accounts.yaml'] if ((ak_sa_sum.stdout | default('0') | trim | int) >= 1) else []
-        )
-        + (
-          ['15-oidc-dashy.yaml'] if ((ak_dashy_count.stdout | default('0') | trim | int) > 0) else []
-        )
-      }}
-  when: infrastructure.services.authentik.enabled | default(false)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Compute missing list
-  ansible.builtin.set_fact:
-    ak_missing_list: "{{ ak_blueprint_missing_post | default([]) }}"
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Compute unresolved missing list
-  ansible.builtin.set_fact:
-    ak_unresolved_missing: "{{ ak_missing_list | default([]) | difference(ak_ok_missing | default([])) }}"
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Show unresolved missing
-  ansible.builtin.debug:
-    msg: "Unresolved missing: {{ ak_unresolved_missing | default([]) }} (ok_missing={{ ak_ok_missing | default([]) }})"
-  when: infrastructure.services.authentik.enabled | default(false) and (ak_reapply_list | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
-- name: Fail if any blueprint still unresolved
-  ansible.builtin.fail:
-    msg: |
-      Some blueprints failed to apply or ensure.
-      Unresolved missing: {{ ak_unresolved_missing | default([]) }}
-  when: >-
-    infrastructure.services.authentik.enabled | default(false)
-    and (ak_reapply_list | default([]) | length > 0)
-    and (ak_unresolved_missing | default([]) | length > 0)
-  tags: [infrastructure, authentik, blueprints, reapply, authentik_reapply]
-
- 
-
-
-- name: Restart authentik_server to (re)instantiate blueprints
-  community.docker.docker_container:
-    name: authentik_server
-    state: started
-    restart: true
-  when: infrastructure.services.authentik.enabled | default(false) and (authentik_blueprints_render is defined and authentik_blueprints_render.changed)
-  tags: [infrastructure, authentik, blueprints]
-
-- name: Restart authentik_worker to (re)instantiate blueprints
-  community.docker.docker_container:
-    name: authentik_worker
-    state: started
-    restart: true
-  when: infrastructure.services.authentik.enabled | default(false) and (authentik_blueprints_render is defined and authentik_blueprints_render.changed)
-  tags: [infrastructure, authentik, blueprints]
+- name: Copy Step-CA certificate to local Downloads directory
+  ansible.builtin.fetch:
+    src: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    dest: "{{ lookup('env', 'HOME') }}/Downloads/Cert/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    flat: yes
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_root_export_post is succeeded
+    - step_ca_root_export_post.stdout is defined
