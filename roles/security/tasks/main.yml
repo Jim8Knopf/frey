@@ -158,6 +158,8 @@
   ansible.builtin.set_fact:
     discovered_services: "{{ discovered_services | default([]) + [{'port': item.stdout.split(':')[1] | int, 'service': item.stdout.split(':')[0], 'description': item.stdout.split(':')[0] + ' (auto-discovered)'}] }}"
   loop: "{{ docker_service_ports.results }}"
+  loop_control:
+    label: "{{ item.stdout.split(':')[0] if ':' in item.stdout else 'invalid' }}"
   when:
     - docker_service_ports.results is defined
     - item.stdout is defined
@@ -261,6 +263,23 @@
   tags:
     - firewall
     - ufw
+    - ssh_safety
+
+- name: Allow SSH from WiFi AP network (management access)
+  community.general.ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+    from_ip: "{{ network_security.wifi_ap_network }}"
+    comment: "WIFI_AP: SSH access for Pi management"
+  when:
+    - enable_ufw | default(true)
+    - network.wifi is defined
+    - features.wifi_access_point | default(false)
+  tags:
+    - firewall
+    - ufw
+    - wifi_ap
     - ssh_safety
 
 # ==============================================================================
@@ -456,6 +475,7 @@
 
 - name: Force new SSH connection to test firewall rules
   ansible.builtin.meta: reset_connection
+  when: enable_ufw | default(true)
   tags:
     - firewall
     - ufw

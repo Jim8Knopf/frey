@@ -455,7 +455,7 @@ automation:
 **Purpose:** System health, metrics, logging, and alerting
 
 #### Grafana (Visualization & Dashboards)
-- **URL:** `http://grafana.frey`
+- **URL:** `https://grafana.frey`
 - **Purpose:** Metrics visualization and monitoring dashboards
 - **Key Features:**
   - Beautiful dashboards
@@ -676,7 +676,7 @@ Single Sign-On allows you to authenticate once with Authentik and access all int
 
 **How It Works:**
 
-1. Visit any integrated service (e.g., `http://grafana.frey`)
+1. Visit any integrated service (e.g., `https://grafana.frey`)
 2. Click "Sign in with Authentik"
 3. Authenticate with Authentik credentials
 4. Automatically logged into the service
@@ -1111,7 +1111,7 @@ network:
     - name: traefik         # http://traefik.frey
     - name: portainer       # http://portainer.frey
     - name: jellyfin        # http://jellyfin.frey
-    - name: grafana         # http://grafana.frey
+    - name: grafana         # https://grafana.frey
     # Add more as needed
 ```
 
@@ -1199,7 +1199,7 @@ sudo journalctl -f
 ```
 
 **Grafana Loki (Centralized):**
-1. Open `http://grafana.frey`
+1. Open `https://grafana.frey`
 2. Explore → Loki
 3. Query: `{container="jellyfin"}`
 
@@ -1279,7 +1279,7 @@ tar -czf ~/backups/frey-ansible-$(date +%Y%m%d).tar.gz \
 ### Monitoring System Health
 
 **Grafana Dashboards:**
-1. Open `http://grafana.frey`
+1. Open `https://grafana.frey`
 2. Login (or use SSO)
 3. Dashboards → Browse
 
@@ -1822,7 +1822,7 @@ Contributions welcome! To add features or fix bugs:
 | Ollama | 11434 | http://ai.frey:11434 |
 | Open WebUI | 3002 | http://ai.frey |
 | **Monitoring** |
-| Grafana | 3000 | http://grafana.frey |
+| Grafana | 3000 | https://grafana.frey |
 | Prometheus | 9090 | http://prometheus.frey |
 | Uptime Kuma | 3001 | http://uptime-kuma.frey |
 | Speedtest | 8181 | http://speedtest.frey |

@@ -1,0 +1,28 @@
+# ==============================================================================
+# HOSTAPD SERVICE RESILIENCE OVERRIDE
+# ==============================================================================
+# Purpose: Make hostapd gracefully handle missing WiFi AP interface (wlan1)
+#
+# This override ensures:
+# 1. hostapd only starts if {{ network.wifi.interface }} exists
+# 2. If interface missing, service is skipped (not failed)
+# 3. If service fails, it retries forever (for hot-plug support)
+# 4. When USB WiFi adapter plugged in, service auto-starts via udev
+#
+# Location: /etc/systemd/system/hostapd.service.d/resilient.conf
+# ==============================================================================
+
+[Unit]
+# Only start if AP interface exists
+# If interface missing, systemd skips this service (condition not met)
+ConditionPathExists=/sys/class/net/{{ network.wifi.interface }}
+
+[Service]
+# Restart policy for hot-plug support
+# If hostapd fails (e.g., interface disappears), keep retrying
+Restart=on-failure
+RestartSec=10s
+
+# Disable start limit - allow infinite restart attempts
+# This ensures service recovers when USB WiFi adapter is plugged in
+StartLimitIntervalSec=0

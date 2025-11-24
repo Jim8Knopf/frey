@@ -148,7 +148,7 @@ services:
       # DNS-based root URL for Traefik access (primary access method)
       # OAuth flow: grafana.frey → auth.frey → grafana.frey
       # Works offline via AdGuard local DNS resolution
-      - GF_SERVER_ROOT_URL=http://grafana.{{ network.domain_name }}
+      - GF_SERVER_ROOT_URL=https://grafana.{{ network.domain_name }}
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
 {% if infrastructure.services.authentik.enabled | default(false) %}
       # OIDC/SSO Authentication with Authentik (uses internal Docker service name)
@@ -163,6 +163,8 @@ services:
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH={{ monitoring.grafana.oidc_role_attribute_path }}
       - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
       - GF_AUTH_SIGNOUT_REDIRECT_URL={{ monitoring.grafana.oidc_auth_url }}
+      # Skip TLS certificate verification for self-signed Authentik certificate
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true
 {% endif %}
     networks:
       proxy:              # For Traefik access (resolves auth.frey via Traefik's network alias)
@@ -216,6 +218,7 @@ services:
     volumes:
       - "{{ monitoring.dir }}/logs:/var/log:ro"
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # For Docker service discovery
       - "{{ storage.appdata_dir }}/promtail:/etc/promtail"
     command: -config.file=/etc/promtail/config.yml
     networks:
@@ -298,6 +301,110 @@ services:
       - "traefik.http.services.speedtest.loadbalancer.server.port=80"
   {% endif %}
 
+  {% if monitoring['postgres-exporter'].enabled | default(false) -%}
+  postgres-exporter-authentik:
+    image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
+    container_name: postgres-exporter-authentik
+    restart: unless-stopped
+    environment:
+      - DATA_SOURCE_NAME=postgresql://{{ authentik_db_user }}:{{ authentik_postgres_password }}@authentik-db:5432/{{ authentik_db_name }}?sslmode=disable
+    networks:
+      - monitoring_network
+      - infrastructure_network  # Access to Authentik DB
+    depends_on:
+      - prometheus
+
+{%   if immich_db_password is defined %}
+  postgres-exporter-immich:
+    image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
+    container_name: postgres-exporter-immich
+    restart: unless-stopped
+    environment:
+      - DATA_SOURCE_NAME=postgresql://immich:{{ immich_db_password }}@immich_postgres:5432/immich?sslmode=disable
+    networks:
+      - monitoring_network
+      - photos_network  # Access to Immich DB
+    depends_on:
+      - prometheus
+{%   else %}
+  # immich_db_password not defined: postgres-exporter-immich disabled (see roles/monitoring/tasks warning)
+{%   endif %}
+
+  postgres-exporter-mealie:
+    image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
+    container_name: postgres-exporter-mealie
+    restart: unless-stopped
+    environment:
+      - DATA_SOURCE_NAME=postgresql://{{ cookbook.db_user | default('mealie') }}:{{ cookbook.db_password }}@mealie-db:5432/{{ cookbook.db_name | default('mealie') }}?sslmode=disable
+    networks:
+      - monitoring_network
+      - cookbook_network  # Access to Mealie DB
+    depends_on:
+      - prometheus
+  {% endif %}
+
+  {% if monitoring['redis-exporter'].enabled | default(false) -%}
+  redis-exporter:
+    image: "{{ monitoring['redis-exporter'].image }}:{{ monitoring['redis-exporter'].version }}"
+    container_name: redis-exporter
+    restart: unless-stopped
+    environment:
+      - REDIS_ADDR=authentik-redis:6379
+    networks:
+      - monitoring_network
+      - infrastructure_network  # Access to Authentik Redis
+    depends_on:
+      - prometheus
+  {% endif %}
+
+  {% if monitoring['adguard-exporter'].enabled | default(false) -%}
+  {%   if (adguard_username is defined) and (adguard_password is defined) %}
+  adguard-exporter:
+    image: "{{ monitoring['adguard-exporter'].image }}:{{ monitoring['adguard-exporter'].version }}"
+    container_name: adguard-exporter
+    restart: unless-stopped
+    environment:
+      - ADGUARD_PROTOCOL=http
+      - ADGUARD_HOSTNAME=adguardhome
+      - ADGUARD_PORT=80
+      - ADGUARD_USERNAME={{ adguard_username }}
+      - ADGUARD_PASSWORD={{ adguard_password }}
+      - INTERVAL=30s
+      - LOG_LIMIT=10000
+      - SERVER_PORT=9617
+    networks:
+      - monitoring_network
+      - localdns  # Access to AdGuard Home
+    depends_on:
+      - prometheus
+  {%   else %}
+  # adguard_username/adguard_password missing: adguard-exporter disabled
+  {%   endif %}
+  {% endif %}
+
+  {% if monitoring['qbittorrent-exporter'].enabled | default(false) -%}
+  {%   if (qbittorrent_username is defined) and (qbittorrent_password is defined) %}
+  qbittorrent-exporter:
+    image: "{{ monitoring['qbittorrent-exporter'].image }}:{{ monitoring['qbittorrent-exporter'].version }}"
+    container_name: qbittorrent-exporter
+    restart: unless-stopped
+    environment:
+      - QBITTORRENT_HOST=qbittorrent
+      - QBITTORRENT_PORT=8080
+      - QBITTORRENT_USER={{ qbittorrent_username }}
+      - QBITTORRENT_PASS={{ qbittorrent_password }}
+      - EXPORTER_PORT=9022
+      - EXPORTER_LOG_LEVEL=INFO
+    networks:
+      - monitoring_network
+      - media_network  # Access to qBittorrent
+    depends_on:
+      - prometheus
+  {%   else %}
+  # qbittorrent_username/qbittorrent_password missing: qbittorrent-exporter disabled
+  {%   endif %}
+  {% endif %}
+
 networks:
   # Traefik routing - all web-accessible services join this
   proxy:
@@ -305,7 +412,19 @@ networks:
   # DNS resolution between containers
   localdns:
     external: true
-  
+  # Infrastructure network for DB/Redis access
+  infrastructure_network:
+    external: true
+  # Photos network for Immich DB access
+  photos_network:
+    external: true
+  # Cookbook network for Mealie DB access
+  cookbook_network:
+    external: true
+  # Media network for qBittorrent access
+  media_network:
+    external: true
+
   # Service-specific network for monitoring
   monitoring_network:
     name: monitoring_network

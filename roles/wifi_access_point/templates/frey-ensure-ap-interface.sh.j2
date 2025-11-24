@@ -1,0 +1,60 @@
+#!/bin/bash
+# ==============================================================================
+# FREY AP INTERFACE ENSURER
+# ==============================================================================
+# Re-creates the WiFi access-point interface if it disappears (common when the
+# client interface re-associates or the driver resets). This keeps hostapd/dnsmasq
+# from failing when upstream WiFi drops.
+# ==============================================================================
+set -euo pipefail
+
+AP_IF="{{ network.wifi.interface }}"
+SOURCE_IF="{{ network.wifi.virtual_ap.source_interface | default(network.wifi.client_interface) }}"
+LOG_TAG="frey-ensure-ap-interface"
+
+log() {
+    logger -t "${LOG_TAG}" "$*"
+}
+
+if ip link show "${AP_IF}" >/dev/null 2>&1; then
+    exit 0
+fi
+
+if [ -z "${SOURCE_IF}" ]; then
+    log "AP interface ${AP_IF} missing but no source_interface configured"
+    exit 0
+fi
+
+if ! command -v iw >/dev/null 2>&1; then
+    log "iw utility not available; cannot recreate ${AP_IF}"
+    exit 0
+fi
+
+if ! ip link show "${SOURCE_IF}" >/dev/null 2>&1; then
+    log "Source interface ${SOURCE_IF} unavailable; cannot recreate ${AP_IF}"
+    exit 0
+fi
+
+PHY_LINE=$(iw dev "${SOURCE_IF}" info 2>/dev/null | grep '^wiphy')
+PHY_NAME=""
+if [ -n "${PHY_LINE}" ]; then
+    PHY_IDX=$(echo "${PHY_LINE}" | awk '{print $2}')
+    PHY_NAME="phy${PHY_IDX}"
+fi
+
+if [ -z "${PHY_NAME}" ]; then
+    log "Unable to determine PHY for ${SOURCE_IF}; aborting AP interface recreation"
+    exit 0
+fi
+
+# Attempt to create AP interface on the same PHY.
+if iw "${PHY_NAME}" interface add "${AP_IF}" type __ap >/dev/null 2>&1; then
+    ip link set "${AP_IF}" up >/dev/null 2>&1 || true
+    log "Recreated AP interface ${AP_IF} from ${SOURCE_IF} (${PHY_NAME})"
+    systemctl restart hostapd.service >/dev/null 2>&1 || true
+    systemctl restart dnsmasq.service >/dev/null 2>&1 || true
+    exit 0
+fi
+
+log "Failed to recreate AP interface ${AP_IF} via ${PHY_NAME}"
+exit 0

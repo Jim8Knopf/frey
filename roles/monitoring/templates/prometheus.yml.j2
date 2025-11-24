@@ -1,19 +1,102 @@
 global:
   scrape_interval: 30s
   evaluation_interval: 30s
+  external_labels:
+    cluster: 'frey'
+    environment: 'production'
+
+# Alerting configuration
+{% if monitoring.alerting.enabled | default(false) %}
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+      # TODO: Configure alertmanager or ntfy integration
+
+# Load alerting rules
+rule_files:
+  - '/etc/prometheus/alerts/*.yml'
+{% endif %}
 
 scrape_configs:
+  # Prometheus self-monitoring
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
 
+  # System metrics
   - job_name: 'node-exporter'
     static_configs:
       - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
 
+  # Container metrics
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']
+        labels:
+          service: 'cadvisor'
 
-  - job_name: 'docker-containers'
-    # docker service discovery removed to avoid needing access to the host docker socket
+{% if infrastructure.services.traefik.metrics.enabled | default(false) %}
+  # Traefik reverse proxy metrics
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['traefik:8083']
+        labels:
+          service: 'traefik'
+{% endif %}
+
+{% if monitoring['postgres-exporter'].enabled | default(false) %}
+  # PostgreSQL databases
+  - job_name: 'postgres-authentik'
+    static_configs:
+      - targets: ['postgres-exporter-authentik:9187']
+        labels:
+          service: 'postgresql'
+          database: 'authentik'
+
+  - job_name: 'postgres-immich'
+    static_configs:
+      - targets: ['postgres-exporter-immich:9187']
+        labels:
+          service: 'postgresql'
+          database: 'immich'
+
+  - job_name: 'postgres-mealie'
+    static_configs:
+      - targets: ['postgres-exporter-mealie:9187']
+        labels:
+          service: 'postgresql'
+          database: 'mealie'
+{% endif %}
+
+{% if monitoring['redis-exporter'].enabled | default(false) %}
+  # Redis cache
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+          application: 'authentik'
+{% endif %}
+
+{% if monitoring['adguard-exporter'].enabled | default(false) %}
+  # AdGuard Home DNS/DHCP
+  - job_name: 'adguard'
+    static_configs:
+      - targets: ['adguard-exporter:9617']
+        labels:
+          service: 'adguard-home'
+{% endif %}
+
+{% if monitoring['qbittorrent-exporter'].enabled | default(false) %}
+  # qBittorrent torrent client
+  - job_name: 'qbittorrent'
+    static_configs:
+      - targets: ['qbittorrent-exporter:9022']
+        labels:
+          service: 'qbittorrent'
+{% endif %}

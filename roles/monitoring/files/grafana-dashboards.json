@@ -1,0 +1,64 @@
+{
+  "dashboards": [
+    {
+      "id": 1860,
+      "name": "Node Exporter Full",
+      "description": "Complete Raspberry Pi system metrics - CPU, memory, disk, network, temperature",
+      "url": "https://grafana.com/api/dashboards/1860/revisions/latest/download"
+    },
+    {
+      "id": 13496,
+      "name": "Docker and System Monitoring",
+      "description": "Combined Docker container and system overview with resource usage",
+      "url": "https://grafana.com/api/dashboards/13496/revisions/latest/download"
+    },
+    {
+      "id": 14282,
+      "name": "cAdvisor Exporter",
+      "description": "Container resource usage and performance metrics",
+      "url": "https://grafana.com/api/dashboards/14282/revisions/latest/download"
+    },
+    {
+      "id": 17346,
+      "name": "Traefik Official Standalone",
+      "description": "Traefik reverse proxy metrics - requests, response times, error rates",
+      "url": "https://grafana.com/api/dashboards/17346/revisions/latest/download"
+    },
+    {
+      "id": 12273,
+      "name": "PostgreSQL Database",
+      "description": "PostgreSQL database performance metrics and connection monitoring",
+      "url": "https://grafana.com/api/dashboards/12273/revisions/latest/download"
+    },
+    {
+      "id": 763,
+      "name": "Redis Dashboard",
+      "description": "Redis cache performance - hit rates, memory usage, commands",
+      "url": "https://grafana.com/api/dashboards/763/revisions/latest/download"
+    },
+    {
+      "id": 13330,
+      "name": "AdGuard Exporter",
+      "description": "DNS query statistics, blocked domains, and top clients",
+      "url": "https://grafana.com/api/dashboards/13330/revisions/latest/download"
+    },
+    {
+      "id": 15116,
+      "name": "qBittorrent Dashboard",
+      "description": "Torrent metrics, download/upload speeds, and ratios",
+      "url": "https://grafana.com/api/dashboards/15116/revisions/latest/download"
+    },
+    {
+      "id": 18042,
+      "name": "Loki Logs Dashboard",
+      "description": "Log aggregation viewer with search and filtering",
+      "url": "https://grafana.com/api/dashboards/18042/revisions/latest/download"
+    },
+    {
+      "id": 14055,
+      "name": "Loki Stack Monitoring",
+      "description": "Monitor Loki infrastructure itself - ingestion rates, Promtail errors",
+      "url": "https://grafana.com/api/dashboards/14055/revisions/latest/download"
+    }
+  ]
+}

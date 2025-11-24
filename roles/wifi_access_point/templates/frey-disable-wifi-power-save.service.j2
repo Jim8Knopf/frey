@@ -1,0 +1,11 @@
+[Unit]
+Description=Disable WiFi power saving (Frey AP)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-disable-wifi-power-save
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

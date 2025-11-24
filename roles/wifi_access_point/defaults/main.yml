@@ -25,6 +25,26 @@ network:
     country: "US"
     hw_mode: g
     channel: 7
+    upstream_dns_servers:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    use_system_dns: true
+    system_resolv_conf: "/etc/resolv.conf"
+    power_management:
+      disable_power_save: true
+      extra_interfaces: []
+    virtual_ap:
+      enabled: false
+      source_interface: "{{ network.wifi.client_interface }}"
+      ensure_interval: 15
+    connectivity_monitor:
+      enabled: false  # Disabled by default; enable explicitly after confirming dhcpcd is working
+      ping_target: null
+      ping_count: 3
+      failure_threshold: 1
+      interval_seconds: 60
+      restart_dhcpcd: true
+      restart_wpa_supplicant: true
   # Enable NAT from AP network to client/uplink interface (optional)
   enable_nat: false
   # Method to persist NAT rules: 'iptables-persistent' or 'iptables-save'

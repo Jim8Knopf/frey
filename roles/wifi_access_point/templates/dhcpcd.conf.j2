@@ -61,6 +61,17 @@ metric 100
 # This prevents dhcpcd from interfering with the roaming service.
 nohook wpa_supplicant
 
+# BACKGROUND DHCP CLIENT
+# Don't block dhcpcd startup waiting for this interface to get an IP
+# This allows the AP interface to come up even if client interface has no connection
+# The client interface will get an IP in the background when WiFi connects
+background
+
+# DISABLE LINK-LOCAL FALLBACK
+# Don't fall back to 169.254.x.x if DHCP fails
+# We want to know immediately if WiFi/DHCP is broken
+noipv4ll
+
 # ------------------------------------------------------------------------------
 # ACCESS POINT INTERFACE CONFIGURATION (WiFi AP)
 # ------------------------------------------------------------------------------

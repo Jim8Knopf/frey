@@ -14,8 +14,8 @@
 [Unit]
 Description=Frey NAT Manager - Dynamic Internet Passthrough for WiFi AP
 Documentation=https://github.com/jim/frey
-After=network.target hostapd.service dhcpcd.service
-Wants=hostapd.service
+After=network.target network-online.target hostapd.service dhcpcd.service
+Wants=network-online.target hostapd.service
 
 [Service]
 Type=simple

@@ -1,0 +1,31 @@
+# ==============================================================================
+# FREY WIFI HOTPLUG UDEV RULES
+# ==============================================================================
+# Purpose: Automatically start/stop WiFi AP services when USB WiFi adapter
+#          is plugged in or removed
+#
+# Behavior:
+# - When {{ network.wifi.interface }} appears: Restart hostapd and dnsmasq
+# - When {{ network.wifi.interface }} removed: Stop hostapd and dnsmasq
+#
+# This enables hot-plug support:
+# 1. System boots with only wlan0 (built-in WiFi for client connection)
+# 2. User plugs in USB WiFi adapter → wlan1 appears
+# 3. This rule triggers → hostapd and dnsmasq start automatically
+# 4. WiFi AP "FreyHub" begins broadcasting within ~2 seconds
+#
+# Location: /etc/udev/rules.d/80-frey-wifi-hotplug.rules
+# ==============================================================================
+
+# Trigger when network interface is added
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="{{ network.wifi.interface }}", \
+  TAG+="systemd", \
+  ENV{SYSTEMD_WANTS}+="hostapd.service dnsmasq.service"
+
+# Alternative method using direct systemctl (if TAG+systemd doesn't work)
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="{{ network.wifi.interface }}", \
+  RUN+="/usr/bin/systemctl restart hostapd.service dnsmasq.service"
+
+# Stop services when interface is removed (optional - prevents errors in logs)
+ACTION=="remove", SUBSYSTEM=="net", KERNEL=="{{ network.wifi.interface }}", \
+  RUN+="/usr/bin/systemctl stop hostapd.service dnsmasq.service"

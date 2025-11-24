@@ -75,12 +75,33 @@ network:
     interface: "wlan1"             # WiFi interface for AP mode
     client_interface: "wlan0"      # Client interface for roaming
     client_interface_ip: "192.168.0.252" #TODO Client interface IP (for authentik)
+    nm_transition_delay: 5         # Seconds to wait during NetworkManager→dhcpcd transition (on fresh installs)
     roaming:
-      enabled: true
+      enabled: true  # Enable wpa_supplicant with known_networks and priorities
+      daemon_enabled: false  # Disable roaming daemon (was causing connection instability)
       client_interface: "wlan0"  # Interface for connecting to public WiFi
       mqtt_topic: "frey/wifi/roaming"
-      known_networks: "{{ wifi_ap.known_networks }}"  # From secrets.yml
-    
+      known_networks: "{{ network.wifi.roaming.known_networks }}"  # From secrets.yml
+
+    # WiFi power management
+    power_management:
+      disable_power_save: true
+      extra_interfaces: []
+    virtual_ap:
+      enabled: false  # Using physical adapters (wlan0/wlan1), not virtual interfaces
+      source_interface: "{{ network.wifi.client_interface }}"
+      ensure_interval: 10
+
+    # Connectivity monitor - DISABLED to prevent connection cycling
+    connectivity_monitor:
+      enabled: false  # DISABLED: Was causing disconnections by restarting services
+      ping_target: null
+      ping_count: 3
+      failure_threshold: 1
+      interval_seconds: 60
+      restart_dhcpcd: true
+      restart_wpa_supplicant: true
+
     # WiFi radio settings
     # Set hw_mode to 'auto' to prefer 5GHz when supported, else fall back to 2.4GHz
     hw_mode: auto                  # auto: prefer 5GHz (a) if supported; else 2.4GHz (g)
@@ -95,6 +116,10 @@ network:
 
   # DNS Service Resolution
   dns_rewrites:
+    # Landing + apex host
+    - name: frey
+      host: "{{ network.domain_name }}"
+    - name: landing
     # Landing + apex host
     - name: frey
       host: "{{ network.domain_name }}"
@@ -124,6 +149,9 @@ network:
     - name: jellyseerr
     - name: lidarr
     - name: jellystat
+    # Automation + smart home
+    - name: homeassistant
+    - name: n8n
     # Automation + smart home
     - name: homeassistant
     - name: n8n
@@ -320,6 +348,33 @@ monitoring:
     port: 8181
     image: "lscr.io/linuxserver/speedtest-tracker"
     version: "latest"
+  # Application-specific exporters for comprehensive monitoring
+  postgres-exporter:
+    enabled: true
+    port: 9187
+    image: "prometheuscommunity/postgres-exporter"
+    version: "latest"
+  redis-exporter:
+    enabled: true
+    port: 9121
+    image: "oliver006/redis_exporter"
+    version: "latest"
+  adguard-exporter:
+    enabled: true
+    port: 9617
+    image: "ebrianne/adguard-exporter"
+    version: "latest"
+  qbittorrent-exporter:
+    enabled: true
+    port: 9022
+    image: "esanchezm/prometheus-qbittorrent-exporter"
+    version: "latest"
+  # Dashboard auto-provisioning
+  dashboard_provisioning:
+    enabled: true
+  # Alerting configuration
+  alerting:
+    enabled: true
 
 
 # ===================================================================
@@ -344,6 +399,9 @@ infrastructure:
         dashboard: 8082
       config:
         acme_email: "{{ admin_email }}"  # Using admin email for Let's Encrypt notifications
+      metrics:
+        enabled: true
+        port: 8083
     portainer:
       enabled: true
       version: "latest"
@@ -356,7 +414,7 @@ infrastructure:
         http: 5001
     authentik:
       enabled: true  # Enable after initial infrastructure setup
-      version: "2025.2.4"  # Pinned version for reproducible deployments
+      version: "2024.12.3"  # Temporary downgrade to fix migration issue
       port: 9300  # Changed from 9000 to avoid conflict with Portainer
       port_https: 9446
       postgres_version: "16-alpine"
@@ -398,20 +456,19 @@ landing_page:
   config_path: "{{ storage.appdata_dir }}/landing/user-data/conf.yml"
   assets_dir: "{{ storage.appdata_dir }}/landing/user-data/assets"
   docs_dir: "{{ storage.appdata_dir }}/landing/user-data/assets/docs"
-  overrides_dir: "{{ storage.appdata_dir }}/landing/user-data/overrides"
+  overrides_dir: "{{ storage.appdata_dir }}/landing/overrides"
+  source_overrides: []
   image: "ghcr.io/lissy93/dashy"
   version: "latest"
   container_name: landing-page
   compose_project: landing_page
   port: 8080
-  allow_guest_access: false
+  allow_guest_access: true
   nav_links:
     - title: "User Guide"
-      url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.user_guide.docs_filename }}"
+      url: "https://cookbook.{{ network.domain_name }}"
     - title: "Certificate Guide"
       url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.certificate.docs_filename }}"
-    - title: "Download Root CA"
-      url: "https://{{ landing_page.hostname }}/assets/{{ landing_page.certificate.download_name }}"
   certificate:
     source_path: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
     download_name: "frey-root-ca.crt"
@@ -581,13 +638,22 @@ landing_page:
           url: "https://n8n.{{ network.domain_name }}"
           icon: "fas fa-code-branch"
           groups: ["n8n_admins"]
-  # Dashy source overrides applied inside the container (relative to /app)
-  source_overrides:
-    - src/utils/OidcAuth.js
-    - src/utils/Auth.js
-    - src/views/Login.vue
-    - src/components/Settings/AuthButtons.vue
-    - src/assets/interface-icons/user-login.svg
+    - name: "Trust & Documentation"
+      type: certificate
+      icon: "fas fa-certificate"
+      description: "Install the Frey CA to trust every *.{{ network.domain_name }} service."
+      item_size: small
+      services:
+        - title: "Download Frey Root CA"
+          description: "Install this certificate on every device before using services."
+          url: "https://frey/assets/{{ landing_page.certificate.download_name }}"
+          icon: "fas fa-download"
+          tags: ["certificate"]
+        - title: "Detailed Instructions"
+          description: "Android and Manjaro/Linux walkthrough."
+          url: "https://frey/assets/docs/{{ landing_page.certificate.docs_filename }}"
+          icon: "fas fa-book-reader"
+          tags: ["how-to"]
 
 # ===================================================================
 # MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
@@ -605,8 +671,8 @@ media:
 
   network:
     name: "media_network"
-    subnet: "10.20.0.0/24" # TODO probably unnessecarry 
-    gateway: "10.20.0.1"
+    # No explicit subnet needed - Docker auto-assigns IPs
+    # Services use DNS names for communication, not IPs
 
   vpn:
     enabled: false

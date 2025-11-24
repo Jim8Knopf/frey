@@ -145,7 +145,7 @@ http://auth.frey
 
 ```bash
 # Open browser
-http://grafana.frey
+https://grafana.frey
 
 # Click "Sign in with Authentik"
 ```
@@ -244,7 +244,7 @@ nslookup jellyfin.frey
 
 # Test web access
 curl -I http://traefik.frey:8082
-curl -I http://grafana.frey
+curl -I https://grafana.frey
 ```
 
 ### Service URLs
@@ -253,7 +253,7 @@ curl -I http://grafana.frey
 |---------|-----|--------------|
 | Traefik Dashboard | http://traefik.frey:8082 | Should show routes |
 | Authentik | http://auth.frey | Should show login |
-| Grafana | http://grafana.frey | Should show SSO login |
+| Grafana | https://grafana.frey | Should show SSO login |
 | Home Assistant | http://homeassistant.frey | Should show login |
 | Jellyfin | http://jellyfin.frey | Should show library |
 | Audiobookshelf | http://audiobookshelf.frey | Should show books |

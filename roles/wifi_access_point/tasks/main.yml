@@ -6,6 +6,7 @@
   ansible.builtin.assert:
     that:
       - network.wifi.interface is defined
+      - network.wifi.client_interface is defined
       - network.wifi.ssid is defined
       - network.wifi.password is defined
       - network.wifi.ip is defined
@@ -19,11 +20,482 @@
   when:
     - (network.wifi.interface == ansible_default_ipv4.interface) and (force_apply | default(false) | bool) == false
 
+- name: Fail if AP and client interfaces are identical
+  ansible.builtin.fail:
+    msg: "Refusing to configure hostapd and wpa_supplicant on the same interface ({{ network.wifi.interface }}). Set network.wifi.interface and network.wifi.client_interface to different adapters or set force_apply=true if you really want to share one NIC."
+  when:
+    - (network.wifi.client_interface | default('')) == (network.wifi.interface | default(''))
+    - (force_apply | default(false) | bool) == false
+
+# ==============================================================================
+# Pre-Flight Hardware Validation
+# ==============================================================================
+# Verify physical WiFi interfaces exist before attempting deployment
+
+- name: Verify AP interface exists
+  ansible.builtin.command:
+    cmd: ip link show {{ network.wifi.interface }}
+  register: ap_interface_check
+  changed_when: false
+  failed_when: false
+  tags:
+    - wifi_ap
+    - pre_flight
+
+- name: Verify client interface exists
+  ansible.builtin.command:
+    cmd: ip link show {{ network.wifi.client_interface }}
+  register: client_interface_check
+  changed_when: false
+  failed_when: false
+  tags:
+    - wifi_ap
+    - pre_flight
+
+# DISABLED FOR HOT-PLUG SUPPORT: Allow deployment without wlan1 present
+# Services will use ConditionPathExists to gracefully skip when interface missing
+# - name: Fail if AP interface missing (physical adapter mode)
+#   ansible.builtin.fail:
+#     msg: |
+#       CRITICAL: AP interface {{ network.wifi.interface }} not found!
+#
+#       Expected interface: {{ network.wifi.interface }}
+#       Available interfaces:
+#       {{ ansible_interfaces | join(', ') }}
+#
+#       This usually means:
+#       1. No secondary WiFi adapter is connected
+#       2. WiFi driver not loaded (check: lsmod | grep brcmfmac)
+#       3. Hardware failure
+#
+#       SOLUTIONS:
+#       - Connect a USB WiFi adapter
+#       - Enable virtual AP mode: network.wifi.virtual_ap.enabled: true
+#       - Use different interface: network.wifi.interface: wlan0
+#   when:
+#     - not (network.wifi.virtual_ap.enabled | default(false))
+#     - ap_interface_check.rc != 0
+#   tags:
+#     - wifi_ap
+#     - pre_flight
+
+- name: Fail if client interface missing
+  ansible.builtin.fail:
+    msg: |
+      CRITICAL: Client interface {{ network.wifi.client_interface }} not found!
+
+      Expected interface: {{ network.wifi.client_interface }}
+      Available interfaces:
+      {{ ansible_interfaces | join(', ') }}
+
+      This usually means:
+      1. WiFi interface name changed (check: ip link)
+      2. WiFi driver not loaded
+      3. Hardware failure
+
+      SOLUTION: Update network.wifi.client_interface to match actual interface name
+  when:
+    - client_interface_check.rc != 0
+    - network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_ap
+    - pre_flight
+
+# ==============================================================================
+# NetworkManager Transition Detection & Staging
+# ==============================================================================
+# Fresh Raspberry Pi OS uses NetworkManager. We need to transition to dhcpcd
+# without breaking the active SSH connection. This is done in two phases:
+#   Phase 1: Stage configuration, create transition service, require reboot
+#   Phase 2: After reboot (on dhcpcd), continue with full AP setup
+# ==============================================================================
+
+- name: Check if NetworkManager is active
+  ansible.builtin.systemd:
+    name: NetworkManager
+  register: networkmanager_status
+  failed_when: false
+  changed_when: false
+
+- name: Check if NetworkManager is managing the client interface
+  ansible.builtin.shell: |
+    nmcli -t -f DEVICE,STATE device status | grep "^{{ network.wifi.client_interface }}:connected"
+  register: nm_manages_interface
+  failed_when: false
+  changed_when: false
+
+- name: Check if dhcpcd is already active
+  ansible.builtin.systemd:
+    name: dhcpcd
+  register: dhcpcd_status
+  failed_when: false
+  changed_when: false
+
+- name: Set NetworkManager transition requirement fact
+  ansible.builtin.set_fact:
+    nm_transition_required: >-
+      {{
+        (networkmanager_status.status is defined and
+         networkmanager_status.status.ActiveState == 'active' and
+         nm_manages_interface.rc == 0) and
+        (dhcpcd_status.status is not defined or
+         dhcpcd_status.status.ActiveState != 'active')
+      }}
+
+- name: NetworkManager Transition Block
+  when: nm_transition_required | bool
+  block:
+    - name: Inform about NetworkManager transition
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          NETWORKMANAGER DETECTED
+          ========================================
+          Fresh Raspberry Pi OS installation detected.
+          Staging transition from NetworkManager to dhcpcd+wpa_supplicant.
+          This requires a reboot to complete safely.
+          ========================================
+
+    - name: Get current WiFi SSID from NetworkManager
+      ansible.builtin.shell: |
+        nmcli -t -f active,ssid dev wifi | grep '^yes:' | head -n1 | cut -d: -f2
+      register: nm_current_ssid
+      changed_when: false
+      failed_when: false
+
+    - name: Get NetworkManager connection UUID for current SSID
+      ansible.builtin.shell: |
+        nmcli -t -f NAME,UUID connection show | grep "^{{ nm_current_ssid.stdout }}:" | head -n1 | cut -d: -f2
+      register: nm_connection_uuid
+      when: nm_current_ssid.stdout | length > 0
+      changed_when: false
+      failed_when: false
+
+    - name: Get current WiFi password from NetworkManager by UUID
+      ansible.builtin.shell: |
+        nmcli -s -g 802-11-wireless-security.psk connection show uuid "{{ nm_connection_uuid.stdout }}"
+      register: nm_current_password
+      when:
+        - nm_current_ssid.stdout | length > 0
+        - nm_connection_uuid.stdout | length > 0
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Determine WiFi credentials source
+      ansible.builtin.set_fact:
+        wifi_ssid_to_use: "{{ nm_current_ssid.stdout if (nm_current_ssid.stdout | length > 0) else (network.wifi.client_ssid | default('')) }}"
+        wifi_password_to_use: "{{ nm_current_password.stdout if (nm_current_password.stdout is defined and nm_current_password.stdout | length > 0) else (network.wifi.client_password | default('')) }}"
+      no_log: true
+
+    - name: Verify WiFi credentials are available
+      ansible.builtin.assert:
+        that:
+          - wifi_ssid_to_use | length > 0
+          - wifi_password_to_use | length > 0
+        msg: |
+          ERROR: WiFi credentials not found!
+
+          Neither NetworkManager connection nor group_vars contain WiFi credentials.
+
+          Please add to group_vars/all/main.yml or secrets.yml:
+            network:
+              wifi:
+                client_ssid: "YOUR_WIFI_SSID"
+                client_password: "YOUR_WIFI_PASSWORD"
+
+    - name: Test WiFi credentials BEFORE committing to transition
+      block:
+        # Use wpa_passphrase to validate credentials without touching the live network interface
+        # This is SAFE - it only generates PSK, doesn't connect to anything
+        - name: Validate WiFi credentials using wpa_passphrase
+          ansible.builtin.shell: |
+            wpa_passphrase "{{ wifi_ssid_to_use }}" "{{ wifi_password_to_use }}"
+          register: wpa_test
+          failed_when: false
+          changed_when: false
+          no_log: true
+
+        - name: Warn if credential validation failed
+          ansible.builtin.debug:
+            msg: |
+              WARNING: WiFi credential validation failed with exit code {{ wpa_test.rc }}
+
+              This may indicate invalid WiFi passphrase format.
+              Proceeding with transition, but you may lose SSH access after reboot.
+
+              If you have issues after reboot, check:
+              - SSID is correct: "{{ wifi_ssid_to_use }}"
+              - Password length is >= 8 characters
+              - Password doesn't contain special characters that need escaping
+          when: wpa_test.rc != 0
+
+    # Install required packages before staging configuration
+    - name: Install packages required for NetworkManager transition
+      ansible.builtin.apt:
+        name:
+          - dhcpcd5
+          - wpasupplicant
+          - hostapd
+          - dnsmasq
+          - rfkill
+          - iw
+        state: present
+        update_cache: yes
+
+    - name: Deploy dhcpcd configuration (staged)
+      ansible.builtin.template:
+        src: dhcpcd.conf.j2
+        dest: /etc/dhcpcd.conf
+        mode: '0644'
+        backup: yes
+
+    - name: Create wpa_supplicant config using template (with known_networks)
+      ansible.builtin.template:
+        src: wpa_supplicant-wlan0.conf.j2
+        dest: "/etc/wpa_supplicant/wpa_supplicant-{{ network.wifi.client_interface }}.conf"
+        mode: '0600'
+      when: network.wifi.roaming.known_networks is defined
+      no_log: true
+
+    - name: Create fallback wpa_supplicant config (current network only)
+      ansible.builtin.copy:
+        content: |
+          ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+          update_config=1
+          country={{ network.wifi.country | default('AU') }}
+
+          network={
+              ssid="{{ wifi_ssid_to_use }}"
+              psk="{{ wifi_password_to_use }}"
+              priority=100
+          }
+        dest: "/etc/wpa_supplicant/wpa_supplicant-{{ network.wifi.client_interface }}.conf"
+        mode: '0600'
+      when: network.wifi.roaming.known_networks is not defined
+      no_log: true
+
+    - name: Enable dhcpcd service (staged, will start after reboot)
+      ansible.builtin.systemd:
+        name: dhcpcd
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Create wpa_supplicant service override directory
+      ansible.builtin.file:
+        path: "/etc/systemd/system/wpa_supplicant@{{ network.wifi.client_interface }}.service.d"
+        state: directory
+        mode: '0755'
+
+    - name: Create wpa_supplicant service override with driver specification
+      ansible.builtin.copy:
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/sbin/wpa_supplicant -Dnl80211,wext -c/etc/wpa_supplicant/wpa_supplicant-%I.conf -i%I
+        dest: "/etc/systemd/system/wpa_supplicant@{{ network.wifi.client_interface }}.service.d/override.conf"
+        mode: '0644'
+
+    - name: Enable wpa_supplicant for client interface (staged)
+      ansible.builtin.systemd:
+        name: "wpa_supplicant@{{ network.wifi.client_interface }}"
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Create NetworkManager transition service
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Transition from NetworkManager to dhcpcd+wpa_supplicant
+          After=network-pre.target sysinit.target
+          Before=network-online.target
+          DefaultDependencies=no
+          ConditionPathExists=/etc/systemd/system/nm-transition.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          TimeoutStartSec=180
+
+          # Phase 0: Pre-transition cleanup and DNS fallback
+          ExecStart=/bin/bash -c 'if [ -L /etc/resolv.conf ]; then rm /etc/resolv.conf; echo "nameserver 8.8.8.8" > /etc/resolv.conf; fi'
+          ExecStart=/bin/systemctl disable NetworkManager-wait-online.service
+          ExecStart=/bin/systemctl disable NetworkManager-dispatcher.service
+          ExecStart=/bin/systemctl stop NetworkManager-wait-online.service
+          ExecStart=/bin/systemctl stop NetworkManager-dispatcher.service
+
+          # Phase 1: Stop NetworkManager gracefully
+          ExecStart=/bin/systemctl stop NetworkManager
+          ExecStart=/bin/bash -c 'systemctl is-active --quiet systemd-resolved && systemctl stop systemd-resolved || true'
+
+          # Phase 2: Start wpa_supplicant for client interface
+          ExecStart=/bin/systemctl start wpa_supplicant@{{ network.wifi.client_interface }}
+
+          # Phase 3: Wait for WiFi association (up to 30 seconds)
+          ExecStart=/bin/bash -c 'echo "Waiting for WiFi association..."; for i in {1..30}; do if wpa_cli -i {{ network.wifi.client_interface }} status | grep -q "wpa_state=COMPLETED"; then echo "WiFi associated!"; exit 0; fi; sleep 1; done; echo "ERROR: WiFi association failed"; exit 1'
+
+          # Phase 4: Start dhcpcd
+          ExecStart=/bin/systemctl start dhcpcd
+
+          # Phase 5: Wait for IP address (up to 30 seconds)
+          ExecStart=/bin/bash -c 'echo "Waiting for IP address..."; for i in {1..30}; do if ip addr show {{ network.wifi.client_interface }} | grep -q "inet "; then echo "IP acquired!"; ip addr show {{ network.wifi.client_interface }} | grep "inet "; exit 0; fi; sleep 1; done; echo "ERROR: No IP address"; exit 1'
+
+          # Phase 6: Validate network connectivity
+          ExecStart=/bin/bash -c 'echo "=== Network Validation ==="; echo "WiFi State:"; wpa_cli -i {{ network.wifi.client_interface }} status | grep wpa_state; echo "IP Address:"; ip addr show {{ network.wifi.client_interface }} | grep "inet "; echo "Default Route:"; ip route | grep default; echo "Internet Test:"; (ping -c 1 -W 5 8.8.8.8 && echo "Internet: OK") || echo "WARNING: No internet (may be captive portal)"; echo "=== Validation Complete ==="'
+
+          # Phase 7: Only mask services after successful network restoration
+          ExecStart=/bin/systemctl mask NetworkManager
+          ExecStart=/bin/bash -c 'systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && systemctl mask systemd-resolved || true'
+          ExecStart=/bin/systemctl mask wpa_supplicant
+
+          # Phase 8: Disable this transition service
+          ExecStart=/bin/systemctl disable nm-transition.service
+
+          # Rollback on failure
+          ExecStopPost=/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then echo "TRANSITION FAILED - Rolling back..."; systemctl stop dhcpcd; systemctl stop wpa_supplicant@{{ network.wifi.client_interface }}; systemctl unmask NetworkManager; systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && systemctl unmask systemd-resolved || true; systemctl start NetworkManager; echo "Rollback complete - NetworkManager restored"; fi'
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/nm-transition.service
+        mode: '0644'
+
+    - name: Enable NetworkManager transition service
+      ansible.builtin.systemd:
+        name: nm-transition
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Create recovery instructions file
+      ansible.builtin.copy:
+        content: |
+          # NetworkManager Transition Recovery Instructions
+
+          If the Raspberry Pi did not successfully transition to dhcpcd:
+
+          ## 1. Check Transition Service Status
+
+          Connect via physical console (monitor + keyboard) and check:
+
+          ```bash
+          sudo journalctl -u nm-transition.service -n 50
+          ```
+
+          ## 2. Check wpa_supplicant Status
+
+          ```bash
+          sudo systemctl status wpa_supplicant@{{ network.wifi.client_interface }}
+          sudo journalctl -u wpa_supplicant@{{ network.wifi.client_interface }} -n 50
+          ```
+
+          ## 3. Check dhcpcd Status
+
+          ```bash
+          sudo systemctl status dhcpcd
+          sudo journalctl -u dhcpcd -n 50
+          ```
+
+          ## 4. Check WiFi Interface
+
+          ```bash
+          ip addr show {{ network.wifi.client_interface }}
+          iw {{ network.wifi.client_interface }} link
+          ```
+
+          ## ROLLBACK TO NETWORKMANAGER
+
+          If you need to rollback:
+
+          ```bash
+          sudo systemctl stop dhcpcd
+          sudo systemctl stop wpa_supplicant@{{ network.wifi.client_interface }}
+          sudo systemctl unmask NetworkManager
+          # Only unmask/start systemd-resolved if it exists on your system
+          systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && sudo systemctl unmask systemd-resolved || true
+          sudo systemctl start NetworkManager
+          systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 && sudo systemctl start systemd-resolved || true
+          sudo reboot
+          ```
+
+          ## MANUAL FIX (if credentials were wrong)
+
+          Edit WiFi credentials:
+
+          ```bash
+          sudo nano /etc/wpa_supplicant/wpa_supplicant-{{ network.wifi.client_interface }}.conf
+          ```
+
+          Restart services:
+
+          ```bash
+          sudo systemctl restart wpa_supplicant@{{ network.wifi.client_interface }}
+          sudo systemctl restart dhcpcd
+          ```
+
+          ## GET HELP
+
+          Check system logs:
+
+          ```bash
+          sudo journalctl -xe
+          ```
+
+          Check network interfaces:
+
+          ```bash
+          ip link
+          networkctl status
+          ```
+        dest: "/root/NETWORKMANAGER-TRANSITION-RECOVERY.md"
+        mode: '0644'
+
+    - name: Display transition instructions
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          NETWORKMANAGER TRANSITION STAGED
+          ========================================
+
+          Configuration has been staged for network manager transition.
+
+          NEXT STEPS:
+          1. Reboot the Raspberry Pi:
+             sudo reboot
+
+          2. Wait 60 seconds for the Pi to reboot and reconnect to WiFi
+
+          3. Reconnect via SSH (same IP/hostname should work)
+
+          4. Run this playbook again to complete the WiFi AP setup:
+             ansible-playbook -i inventory/hosts.yml playbooks/site.yml --vault-password-file .vault_pass
+
+          The transition from NetworkManager to dhcpcd will happen
+          automatically during the reboot.
+          ========================================
+
+    - name: End playbook after staging NetworkManager transition
+      ansible.builtin.meta: end_play
+
 - name: Check for internet connectivity
   ansible.builtin.shell: ping -c 1 8.8.8.8
   register: internet_connection
   failed_when: false
   changed_when: false
+
+- name: Temporarily stop AP interface ensure timer during deployment
+  ansible.builtin.systemd:
+    name: frey-ensure-ap-interface.timer
+    state: stopped
+  when: network.wifi.virtual_ap.enabled | default(false)
+  failed_when: false
+  register: timer_stopped
+
+- name: Temporarily stop AP interface ensure service during deployment
+  ansible.builtin.systemd:
+    name: frey-ensure-ap-interface.service
+    state: stopped
+  when: network.wifi.virtual_ap.enabled | default(false)
+  failed_when: false
+  register: service_stopped
 
 - name: Install packages required for AP
   ansible.builtin.apt:
@@ -74,6 +546,44 @@
       Effective hw_mode: {{ wifi_hw_mode_effective }}
       Effective channel: {{ wifi_channel_effective }}
 
+- name: Pre-flight AP deployment safety checks
+  block:
+    - name: Verify AP interface exists and is distinct from control interface
+      ansible.builtin.assert:
+        that:
+          - network.wifi.interface != ansible_default_ipv4.interface
+          - network.wifi.interface != (network.wifi.client_interface | default(''))
+        msg: |
+          ERROR: AP interface conflicts with control or client interface!
+          AP interface: {{ network.wifi.interface }}
+          Control interface: {{ ansible_default_ipv4.interface }}
+          Client interface: {{ network.wifi.client_interface | default('not set') }}
+
+    - name: Check if AP is currently serving clients
+      ansible.builtin.shell: |
+        if systemctl is-active hostapd >/dev/null 2>&1; then
+          hostapd_cli -i {{ network.wifi.interface }} all_sta 2>/dev/null | grep -c "^[0-9a-f]" || echo "0"
+        else
+          echo "0"
+        fi
+      register: connected_clients
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if clients will be disrupted
+      ansible.builtin.debug:
+        msg: |
+          WARNING: {{ connected_clients.stdout }} clients currently connected to AP.
+          Deployment will briefly disrupt their connections.
+          Set 'skip_ap_deployment: true' in extra-vars to skip WiFi AP role.
+      when: (connected_clients.stdout | int) > 0
+
+    - name: Abort if requested to skip AP during active use
+      ansible.builtin.meta: end_host
+      when:
+        - (connected_clients.stdout | int) > 0
+        - skip_ap_deployment | default(false)
+
 - name: Determine if wpa_supplicant should be stopped
   ansible.builtin.set_fact:
     wifi_disable_wpasupplicant: "{{ (network.wifi.client_interface is not defined) or (network.wifi.client_interface == network.wifi.interface) }}"
@@ -93,6 +603,8 @@
   register: service_check
   failed_when: false
   changed_when: false
+  loop_control:
+    label: "{{ item }}"
 
 - name: Stop and disable conflicting services (best-effort)
   ansible.builtin.systemd:
@@ -101,8 +613,18 @@
     enabled: no
     masked: yes
   loop: "{{ service_check.results }}"
-  when: item.status is defined and item.status.LoadState == "loaded"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not (nm_transition_required | default(false))
+    - item.status is defined
+    - item.status.LoadState == "loaded"
   ignore_errors: yes
+
+- name: Skip dhcpcd deployment (already staged during NetworkManager transition)
+  ansible.builtin.debug:
+    msg: "Skipping dhcpcd deployment - already configured during NetworkManager transition staging"
+  when: nm_transition_required | default(false)
 
 - name: Deploy dhcpcd configuration for the AP
   ansible.builtin.template:
@@ -110,13 +632,99 @@
     dest: /etc/dhcpcd.conf
     mode: '0644'
     backup: yes
+  when: not (nm_transition_required | default(false))
+  register: dhcpcd_config_result
 
-- name: Restart dhcpcd
+- name: Detect if SSH is over interface managed by dhcpcd
+  ansible.builtin.set_fact:
+    ssh_over_dhcpcd: "{{ ansible_default_ipv4.interface in [network.wifi.client_interface | default('wlan0'), network.wifi.interface] }}"
+  when:
+    - not (nm_transition_required | default(false))
+    - dhcpcd_config_result is changed
+
+- name: Warn about potential SSH disruption
+  ansible.builtin.debug:
+    msg: |
+      WARNING: dhcpcd reload may briefly affect network connection!
+      SSH is connected via: {{ ansible_default_ipv4.interface }}
+      dhcpcd manages: {{ network.wifi.client_interface | default('wlan0') }}, {{ network.wifi.interface }}
+
+      Using graceful reload with connection preservation...
+  when:
+    - not (nm_transition_required | default(false))
+    - dhcpcd_config_result is changed
+    - ssh_over_dhcpcd | default(false)
+
+- name: Reload dhcpcd gracefully (preserve active connections)
+  when:
+    - not (nm_transition_required | default(false))
+    - dhcpcd_config_result is changed
+  block:
+    - name: Send SIGHUP to dhcpcd (reload config without dropping leases)
+      ansible.builtin.command: killall -HUP dhcpcd
+      register: dhcpcd_reload
+      failed_when: false
+      changed_when: dhcpcd_reload.rc == 0
+
+    - name: Wait for dhcpcd to reload (5 seconds)
+      ansible.builtin.pause:
+        seconds: 5
+      when: dhcpcd_reload.rc == 0
+
+  rescue:
+    - name: Fallback to full restart if SIGHUP failed
+      ansible.builtin.systemd:
+        name: dhcpcd
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Wait for network to stabilize
+      ansible.builtin.pause:
+        seconds: 10
+
+- name: Ensure dhcpcd is running if config unchanged
+  when:
+    - not (nm_transition_required | default(false))
+    - dhcpcd_config_result is not changed
   ansible.builtin.systemd:
     name: dhcpcd
-    state: restarted
+    state: started
+    enabled: yes
+
+# ==============================================================================
+# SSH SERVICE NETWORK DEPENDENCIES
+# ==============================================================================
+# Ensure SSH starts AFTER network is ready (prevents boot-time inaccessibility)
+# This integrates the manual fix from /etc/systemd/system/ssh.service.d/
+
+- name: Create SSH service override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/ssh.service.d
+    state: directory
+    mode: '0755'
+  tags:
+    - ssh_safety
+    - wifi_ap
+
+- name: Deploy SSH network-wait override
+  ansible.builtin.template:
+    src: ssh-network-wait.conf.j2
+    dest: /etc/systemd/system/ssh.service.d/network-wait.conf
+    mode: '0644'
+  notify: reload systemd
+  tags:
+    - ssh_safety
+    - wifi_ap
+
+- name: Ensure SSH service is enabled
+  ansible.builtin.systemd:
+    name: ssh
     enabled: yes
     daemon_reload: yes
+  tags:
+    - ssh_safety
+    - wifi_ap
 
 - name: Wait for AP IP to be present on the host
   ansible.builtin.wait_for:
@@ -135,11 +743,116 @@
   changed_when: true
   failed_when: false
 
+- name: Assemble WiFi interfaces that require power-save disabling
+  ansible.builtin.set_fact:
+    wifi_power_save_interfaces: >-
+      {{
+        (
+          [
+            network.wifi.interface | default(''),
+            network.wifi.client_interface | default(''),
+            (network.wifi.roaming.client_interface if (network.wifi.roaming is defined and network.wifi.roaming.client_interface is defined) else '')
+          ]
+          + (network.wifi.power_management.extra_interfaces | default([]))
+        )
+        | select('truthy')
+        | unique
+        | list
+      }}
+  when: network.wifi.power_management.disable_power_save | default(true)
+
+- name: Deploy WiFi power-save disable script
+  ansible.builtin.template:
+    src: frey-disable-wifi-power-save.sh.j2
+    dest: /usr/local/bin/frey-disable-wifi-power-save
+    mode: '0755'
+  when:
+    - not (nm_transition_required | default(false))
+    - network.wifi.power_management.disable_power_save | default(true)
+
+- name: Deploy WiFi power-save disable service
+  ansible.builtin.template:
+    src: frey-disable-wifi-power-save.service.j2
+    dest: /etc/systemd/system/frey-disable-wifi-power-save.service
+    mode: '0644'
+  when:
+    - not (nm_transition_required | default(false))
+    - network.wifi.power_management.disable_power_save | default(true)
+
+- name: Enable WiFi power-save disable service
+  ansible.builtin.systemd:
+    name: frey-disable-wifi-power-save
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when:
+    - not (nm_transition_required | default(false))
+    - network.wifi.power_management.disable_power_save | default(true)
+
+- name: Deploy AP interface ensure script
+  ansible.builtin.template:
+    src: frey-ensure-ap-interface.sh.j2
+    dest: /usr/local/bin/frey-ensure-ap-interface
+    mode: '0755'
+  when: network.wifi.virtual_ap.enabled | default(false)
+
+- name: Deploy AP interface ensure service
+  ansible.builtin.template:
+    src: frey-ensure-ap-interface.service.j2
+    dest: /etc/systemd/system/frey-ensure-ap-interface.service
+  when: network.wifi.virtual_ap.enabled | default(false)
+
+- name: Deploy AP interface ensure timer
+  ansible.builtin.template:
+    src: frey-ensure-ap-interface.timer.j2
+    dest: /etc/systemd/system/frey-ensure-ap-interface.timer
+  when: network.wifi.virtual_ap.enabled | default(false)
+
+- name: Ensure AP interface watcher enabled
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - frey-ensure-ap-interface.service
+    - frey-ensure-ap-interface.timer
+  when: network.wifi.virtual_ap.enabled | default(false)
+
+- name: Ensure hostapd override directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/hostapd.service.d
+    state: directory
+    mode: '0755'
+
+- name: Install hostapd override for AP interface ensure (virtual AP mode)
+  ansible.builtin.template:
+    src: hostapd-override.conf.j2
+    dest: /etc/systemd/system/hostapd.service.d/override-ensure-ap.conf
+  when: network.wifi.virtual_ap.enabled | default(false)
+  notify: Reload systemd
+
+- name: Install hostapd resilience override (physical adapter mode with hot-plug)
+  ansible.builtin.template:
+    src: hostapd-override-resilient.conf.j2
+    dest: /etc/systemd/system/hostapd.service.d/resilient.conf
+    mode: '0644'
+  when: not (network.wifi.virtual_ap.enabled | default(false))
+  notify: Reload systemd
+
+- name: Ensure AP interface exists before hostapd actions
+  ansible.builtin.command:
+    cmd: /usr/local/bin/frey-ensure-ap-interface
+  changed_when: false
+  failed_when: false
+  when: network.wifi.virtual_ap.enabled | default(false)
+
 - name: Deploy hostapd configuration
   ansible.builtin.template:
     src: hostapd.conf.j2
     dest: /etc/hostapd/hostapd.conf
     mode: '0644'
+  register: hostapd_config_result
 
 - name: Ensure hostapd points at the service config
   ansible.builtin.lineinfile:
@@ -152,34 +865,76 @@
     name: hostapd
     masked: no
 
-- name: Start hostapd
+- name: Start or reconfigure hostapd with proper state checking
   block:
-    - name: Try to reconfigure hostapd (if already running)
+    - name: Check current hostapd service state
+      ansible.builtin.systemd:
+        name: hostapd
+      register: hostapd_status
+      failed_when: false
+
+    - name: Try graceful reconfigure if hostapd is active and config changed
       ansible.builtin.command:
         cmd: hostapd_cli -i {{ network.wifi.interface }} reconfigure
       register: hostapd_reconf
       changed_when: hostapd_reconf.rc == 0
       failed_when: false
+      when:
+        - hostapd_status.status is defined
+        - hostapd_status.status.ActiveState == "active"
+        - hostapd_config_result is changed
 
-    - name: Start hostapd if it was not running or reconfigure failed
+    - name: Restart hostapd if reconfigure failed on active service
+      ansible.builtin.systemd:
+        name: hostapd
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+      when:
+        - hostapd_status.status is defined
+        - hostapd_status.status.ActiveState == "active"
+        - hostapd_reconf is defined
+        - (hostapd_reconf.rc | default(1)) != 0
+
+    - name: Start hostapd if not currently running
       ansible.builtin.systemd:
         name: hostapd
         state: started
         enabled: yes
         daemon_reload: yes
-      when: hostapd_reconf is not defined or hostapd_reconf.rc != 0
+      when:
+        - hostapd_status.status is not defined or hostapd_status.status.ActiveState != "active"
+
+    - name: Wait for hostapd to initialize wireless radio
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Verify hostapd is active
+      ansible.builtin.systemd:
+        name: hostapd
+      register: hostapd_verify
+      failed_when: hostapd_verify.status.ActiveState != "active"
+      retries: 10
+      delay: 5
+      until: hostapd_verify.status.ActiveState == "active"
 
   rescue:
-    - name: Ensure hostapd service is started (rescue)
-      ansible.builtin.systemd:
-        name: hostapd
-        state: started
-        enabled: yes
-        daemon_reload: yes
+    - name: Capture hostapd logs on failure
+      ansible.builtin.command:
+        cmd: journalctl -u hostapd -n 50 --no-pager
+      register: hostapd_logs
+      changed_when: false
 
-- name: Pause briefly to let hostapd initialize
-  ansible.builtin.pause:
-    seconds: 3
+    - name: Display hostapd failure diagnostics
+      ansible.builtin.debug:
+        msg: |
+          HOSTAPD FAILED TO START
+          Interface: {{ network.wifi.interface }}
+          Logs: {{ hostapd_logs.stdout_lines }}
+
+    - name: Fail deployment with diagnostic information
+      ansible.builtin.fail:
+        msg: "hostapd failed to start - see logs above"
 
 - name: Backup and disable main dnsmasq.conf to prevent conflicts
   ansible.builtin.copy:
@@ -215,6 +970,7 @@
     src: dnsmasq.conf.j2
     dest: /etc/dnsmasq.d/01-wifi-ap.conf
     mode: '0644'
+  register: dnsmasq_config_result
 
 - name: Create dnsmasq systemd override directory
   ansible.builtin.file:
@@ -255,13 +1011,24 @@
   changed_when: false
   failed_when: dnsmasq_test.rc != 0
 
-- name: Force restart dnsmasq to apply new configuration
+- name: Restart dnsmasq only if configuration changed
   ansible.builtin.systemd:
     name: dnsmasq
     state: restarted
     enabled: yes
     daemon_reload: yes
-  when: dnsmasq_test.rc == 0
+  when:
+    - dnsmasq_test.rc == 0
+    - dnsmasq_config_result is changed
+
+- name: Ensure dnsmasq is running if config unchanged
+  ansible.builtin.systemd:
+    name: dnsmasq
+    state: started
+    enabled: yes
+  when:
+    - dnsmasq_test.rc == 0
+    - dnsmasq_config_result is not changed
 
 - name: Enable and start Frey NAT Manager service
   ansible.builtin.systemd:
@@ -270,17 +1037,24 @@
     enabled: yes
     daemon_reload: yes
 
-- name: Wait for dnsmasq to bind on port 53 (DNS)
+- name: Wait for dnsmasq to bind on port 53 (DNS) with retry
   ansible.builtin.wait_for:
     host: "{{ network.wifi.ip }}"
     port: 53
     timeout: 30
+  retries: 3
+  delay: 5
+  register: dnsmasq_port_check
+  until: dnsmasq_port_check is succeeded
 
-- name: Verify dnsmasq is listening on DHCP port 67
+- name: Verify dnsmasq is listening on DHCP port 67 with retry
   ansible.builtin.shell: ss -ulnp | grep ':67' || echo "DHCP_NOT_LISTENING"
   register: dhcp_check
   changed_when: false
   failed_when: "'DHCP_NOT_LISTENING' in dhcp_check.stdout"
+  retries: 3
+  delay: 2
+  until: "'DHCP_NOT_LISTENING' not in dhcp_check.stdout"
 
 - name: Display dnsmasq listening ports
   ansible.builtin.shell: ss -ulnp | grep dnsmasq
@@ -292,6 +1066,134 @@
     msg: |
       dnsmasq is listening on:
       {{ dnsmasq_ports.stdout_lines | join('\n') }}
+
+- name: Comprehensive AP deployment validation
+  block:
+    - name: Wait for AP to fully initialize
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Check hostapd service status
+      ansible.builtin.systemd:
+        name: hostapd
+      register: final_hostapd_check
+      failed_when: final_hostapd_check.status.ActiveState != "active"
+
+    - name: Check dnsmasq service status
+      ansible.builtin.systemd:
+        name: dnsmasq
+      register: final_dnsmasq_check
+      failed_when: final_dnsmasq_check.status.ActiveState != "active"
+
+    - name: Verify AP is broadcasting
+      ansible.builtin.shell: |
+        iw dev {{ network.wifi.interface }} info | grep -q "type AP" && echo "BROADCASTING" || echo "NOT_BROADCASTING"
+      register: ap_broadcast_check
+      changed_when: false
+      failed_when: "'NOT_BROADCASTING' in ap_broadcast_check.stdout"
+
+    - name: Verify DHCP is operational
+      ansible.builtin.shell: |
+        ss -ulnp | grep -q ':67.*dnsmasq' && echo "DHCP_OK" || echo "DHCP_FAILED"
+      register: dhcp_operational_check
+      changed_when: false
+      failed_when: "'DHCP_FAILED' in dhcp_operational_check.stdout"
+
+    - name: Display successful deployment summary
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          WiFi AP DEPLOYMENT SUCCESSFUL
+          ============================================
+          SSID: {{ network.wifi.ssid }}
+          Interface: {{ network.wifi.interface }} ({{ network.wifi.ip }})
+          Hostapd: {{ final_hostapd_check.status.ActiveState }}
+          dnsmasq: {{ final_dnsmasq_check.status.ActiveState }}
+          Broadcasting: {{ 'YES' if 'BROADCASTING' in ap_broadcast_check.stdout else 'NO' }}
+          DHCP: {{ 'OPERATIONAL' if 'DHCP_OK' in dhcp_operational_check.stdout else 'FAILED' }}
+          ============================================
+
+  rescue:
+    - name: DEPLOYMENT FAILED - Initiating Rollback
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          WiFi AP DEPLOYMENT FAILED - ROLLING BACK
+          ============================================
+
+    - name: Capture diagnostic logs before rollback
+      ansible.builtin.shell: |
+        echo "=== hostapd status ==="
+        systemctl status hostapd --no-pager -l || true
+        echo "=== dnsmasq status ==="
+        systemctl status dnsmasq --no-pager -l || true
+        echo "=== interface state ==="
+        ip addr show {{ network.wifi.interface }} || true
+        echo "=== hostapd logs ==="
+        journalctl -u hostapd -n 30 --no-pager || true
+        echo "=== dnsmasq logs ==="
+        journalctl -u dnsmasq -n 30 --no-pager || true
+      register: ap_failure_diagnostics
+      changed_when: false
+
+    - name: Stop failed services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - hostapd
+        - dnsmasq
+        - frey-nat-manager
+      ignore_errors: yes
+
+    - name: Restore backup configurations if they exist
+      ansible.builtin.shell: |
+        # Restore dhcpcd.conf backup
+        if [ -f /etc/dhcpcd.conf.backup ]; then
+          cp /etc/dhcpcd.conf.backup /etc/dhcpcd.conf
+          echo "Restored dhcpcd.conf"
+        fi
+
+        # Restore hostapd.conf backup
+        if [ -f /etc/hostapd/hostapd.conf.backup ]; then
+          cp /etc/hostapd/hostapd.conf.backup /etc/hostapd/hostapd.conf
+          echo "Restored hostapd.conf"
+        fi
+
+        # Restore dnsmasq backup
+        if [ -f /etc/dnsmasq.d/01-wifi-ap.conf.backup ]; then
+          cp /etc/dnsmasq.d/01-wifi-ap.conf.backup /etc/dnsmasq.d/01-wifi-ap.conf
+          echo "Restored dnsmasq.conf"
+        fi
+      ignore_errors: yes
+      register: rollback_restore
+
+    - name: Restart dhcpcd with original config
+      ansible.builtin.systemd:
+        name: dhcpcd
+        state: restarted
+      ignore_errors: yes
+
+    - name: Display failure diagnostics and recovery instructions
+      ansible.builtin.debug:
+        msg: |
+          {{ ap_failure_diagnostics.stdout_lines }}
+
+          ============================================
+          ROLLBACK COMPLETE
+          ============================================
+          Services stopped, configurations restored.
+
+          Recovery steps:
+          1. SSH into the Pi (should still work)
+          2. Review logs: sudo journalctl -u hostapd -u dnsmasq -f
+          3. Check interface: ip addr show {{ network.wifi.interface }}
+          4. Fix configuration in group_vars/all/main.yml
+          5. Rerun playbook with --tags wifi_access_point
+
+    - name: Fail deployment with rollback notice
+      ansible.builtin.fail:
+        msg: "WiFi AP deployment FAILED. Services stopped and configs restored. See diagnostics above."
 
 - name: Read DHCP leases (best-effort)
   ansible.builtin.command: cat /var/lib/misc/dnsmasq.leases
@@ -328,6 +1230,43 @@
     src: CONNECT-TO-WIFI.md
     dest: "{{ storage.base_dir | default('/opt/frey') }}/CONNECT-TO-WIFI.md"
     mode: '0644'
+
+- name: Deploy WiFi connectivity healthcheck script
+  ansible.builtin.template:
+    src: frey-wifi-healthcheck.sh.j2
+    dest: /usr/local/bin/frey-wifi-healthcheck
+    mode: '0755'
+  when:
+    - not (nm_transition_required | default(false))
+    - network.wifi.connectivity_monitor.enabled | default(false)
+
+- name: Deploy WiFi connectivity healthcheck service
+  ansible.builtin.template:
+    src: frey-wifi-healthcheck.service.j2
+    dest: /etc/systemd/system/frey-wifi-healthcheck.service
+    mode: '0644'
+  when:
+    - not (nm_transition_required | default(false))
+    - network.wifi.connectivity_monitor.enabled | default(false)
+
+- name: Deploy WiFi connectivity healthcheck timer
+  ansible.builtin.template:
+    src: frey-wifi-healthcheck.timer.j2
+    dest: /etc/systemd/system/frey-wifi-healthcheck.timer
+    mode: '0644'
+  when:
+    - not (nm_transition_required | default(false))
+    - network.wifi.connectivity_monitor.enabled | default(false)
+
+- name: Enable WiFi connectivity watchdog timer
+  ansible.builtin.systemd:
+    name: frey-wifi-healthcheck.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when:
+    - not (nm_transition_required | default(false))
+    - network.wifi.connectivity_monitor.enabled | default(false)
 
 # ==============================================================================
 # BLOCK DNS-over-HTTPS (DoH) - Force clients to use local DNS
@@ -533,7 +1472,7 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.enabled | default(false)
+  when: network.wifi.roaming.daemon_enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -545,7 +1484,7 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.enabled | default(false)
+  when: network.wifi.roaming.daemon_enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -557,7 +1496,7 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.enabled | default(false)
+  when: network.wifi.roaming.daemon_enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -569,7 +1508,7 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.enabled | default(false)
+  when: network.wifi.roaming.daemon_enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -581,7 +1520,7 @@
     mode: '0644'
     owner: root
     group: root
-  when: network.wifi.roaming.enabled | default(false)
+  when: network.wifi.roaming.daemon_enabled | default(false)
   notify: Reload systemd
   tags:
     - wifi_roaming
@@ -593,7 +1532,7 @@
     enabled: yes
     state: started
     daemon_reload: yes
-  when: network.wifi.roaming.enabled | default(false)
+  when: network.wifi.roaming.daemon_enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -602,7 +1541,7 @@
   ansible.builtin.systemd:
     name: frey-wifi-roaming
   register: roaming_daemon_status
-  when: network.wifi.roaming.enabled | default(false)
+  when: network.wifi.roaming.daemon_enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -611,8 +1550,95 @@
   ansible.builtin.debug:
     msg: "WiFi roaming daemon is {{ roaming_daemon_status.status.ActiveState }}"
   when:
-    - network.wifi.roaming.enabled | default(false)
+    - network.wifi.roaming.daemon_enabled | default(false)
     - roaming_daemon_status is defined
   tags:
     - wifi_roaming
     - roaming_daemon
+
+- name: Re-enable AP interface ensure timer after deployment
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  loop:
+    - frey-ensure-ap-interface.service
+    - frey-ensure-ap-interface.timer
+  when:
+    - network.wifi.virtual_ap.enabled | default(false)
+    - timer_stopped is defined or service_stopped is defined
+
+# ==============================================================================
+# WIFI AP HEALTH CHECK SERVICE
+# ==============================================================================
+# Monitors critical AP services and auto-restarts them if they fail
+
+- name: Deploy WiFi AP health check script
+  ansible.builtin.template:
+    src: frey-ap-healthcheck.sh.j2
+    dest: /usr/local/bin/frey-ap-healthcheck
+    mode: '0755'
+  tags:
+    - wifi_ap
+    - health_check
+
+- name: Deploy WiFi AP health check service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Frey WiFi AP Health Check
+      After=network-online.target hostapd.service dnsmasq.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/frey-ap-healthcheck
+    dest: /etc/systemd/system/frey-ap-healthcheck.service
+    mode: '0644'
+  tags:
+    - wifi_ap
+    - health_check
+
+- name: Deploy WiFi AP health check timer
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Frey WiFi AP Health Check Timer
+
+      [Timer]
+      OnBootSec=5min
+      OnUnitActiveSec=5min
+
+      [Install]
+      WantedBy=timers.target
+    dest: /etc/systemd/system/frey-ap-healthcheck.timer
+    mode: '0644'
+  tags:
+    - wifi_ap
+    - health_check
+
+- name: Enable WiFi AP health check timer
+  ansible.builtin.systemd:
+    name: frey-ap-healthcheck.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  tags:
+    - wifi_ap
+    - health_check
+
+# ==============================================================================
+# WIFI HOT-PLUG SUPPORT (USB WiFi Adapter Detection)
+# ==============================================================================
+# Automatically start AP services when USB WiFi adapter is plugged in
+
+- name: Deploy WiFi hot-plug udev rule
+  ansible.builtin.template:
+    src: 80-frey-wifi-hotplug.rules.j2
+    dest: /etc/udev/rules.d/80-frey-wifi-hotplug.rules
+    mode: '0644'
+  when: not (network.wifi.virtual_ap.enabled | default(false))
+  notify: Reload udev
+  tags:
+    - wifi_ap
+    - hot_plug

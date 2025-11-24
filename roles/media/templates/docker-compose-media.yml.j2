@@ -5,10 +5,8 @@ networks:
   localdns:
     external: true  # For DNS resolution
   media_network:
-    name: media_network
-    ipam:
-      config:
-        - subnet: 10.20.7.0/24  # Media services subnet
+    external: true  # Created ahead of time so monitoring/qB exporter can join
+    name: "{{ media.network.name | default('media_network') }}"
 
 services:
   {% if media.vpn.enabled | default(false) -%}

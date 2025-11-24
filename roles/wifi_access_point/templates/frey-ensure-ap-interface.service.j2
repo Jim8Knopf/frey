@@ -1,0 +1,11 @@
+[Unit]
+Description=Ensure Frey AP interface {{ network.wifi.interface }} exists
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-ensure-ap-interface
+
+[Install]
+WantedBy=multi-user.target

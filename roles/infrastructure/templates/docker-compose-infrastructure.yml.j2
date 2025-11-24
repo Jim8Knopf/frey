@@ -8,6 +8,9 @@ services:
       - "80:80"       # HTTP - accessible from WiFi AP
       - "443:443"     # HTTPS - accessible from WiFi AP
       - "{{ infrastructure.services.traefik.ports.dashboard }}:8080" # Dashboard (localhost only)
+{% if infrastructure.services.traefik.metrics.enabled | default(false) %}
+      - "{{ infrastructure.services.traefik.metrics.port }}:8083" # Prometheus metrics
+{% endif %}
     environment:
       # Trust Step CA root certificate for ACME client (Lego)
       - LEGO_CA_CERTIFICATES=/etc/ssl/step-ca/root_ca.crt
@@ -204,6 +207,13 @@ services:
   # Provides automated certificate management via ACME protocol
   # Integrates with Traefik for automatic cert generation and renewal
 {% if infrastructure.services.step_ca.enabled | default(false) %}
+{% set dns_hosts = namespace(values=[]) %}
+{% for service in network.dns_rewrites | default([]) %}
+{% set host_name = service.host | default(service.name ~ '.' ~ network.domain_name) %}
+{% if host_name not in dns_hosts.values %}
+{% set dns_hosts.values = dns_hosts.values + [host_name] %}
+{% endif %}
+{% endfor %}
   step-ca:
     image: smallstep/step-ca:{{ infrastructure.services.step_ca.version | default('latest') }}
     container_name: step-ca
@@ -216,13 +226,12 @@ services:
       infrastructure_network:  # Service-specific network
       localdns:          # Required for DNS resolution
     extra_hosts:
-      - "ca.{{ network.domain_name }}:127.0.0.1"  # Required for health check
+      "ca.{{ network.domain_name }}": "127.0.0.1"  # Required for health check
       # Map all *.frey domains to Traefik container for ACME validation
       # Using 'host-gateway' special value which resolves to Docker host's internal IP
       # This allows Step CA to reach Traefik on the proxy network
-{% for service in network.dns_rewrites %}
-{% set host_name = service.host | default(service.name ~ '.' ~ network.domain_name) %}
-      - "{{ host_name }}:host-gateway"
+{% for host_name in dns_hosts.values %}
+      "{{ host_name }}": "host-gateway"
 {% endfor %}
     environment:
       - DOCKER_STEPCA_INIT_NAME=Frey CA

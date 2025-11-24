@@ -92,6 +92,27 @@
     group: "{{ monitoring.group.name }}"
     mode: '0644'
 
+- name: Warn when Immich DB password missing (disables Immich Postgres exporter)
+  ansible.builtin.debug:
+    msg: "immich_db_password not defined — skipping postgres-exporter for Immich. Add it to group_vars/all/secrets.yml to enable exporter."
+  when:
+    - monitoring['postgres-exporter'].enabled | default(false)
+    - immich_db_password is not defined
+
+- name: Warn when AdGuard exporter credentials are missing
+  ansible.builtin.debug:
+    msg: "adguard_username/adguard_password not defined — skipping adguard-exporter. Add both to group_vars/all/secrets.yml to enable exporter."
+  when:
+    - monitoring['adguard-exporter'].enabled | default(false)
+    - (adguard_username is not defined) or (adguard_password is not defined)
+
+- name: Warn when qBittorrent exporter credentials are missing
+  ansible.builtin.debug:
+    msg: "qbittorrent_username/qbittorrent_password not defined — skipping qbittorrent-exporter. Add both to group_vars/all/secrets.yml (or disable the exporter) to enable metrics."
+  when:
+    - monitoring['qbittorrent-exporter'].enabled | default(false)
+    - (qbittorrent_username is not defined) or (qbittorrent_password is not defined)
+
 - name: Deploy monitoring stack compose file
   ansible.builtin.template:
     src: docker-compose-monitoring.yml.j2
@@ -143,10 +164,134 @@
     group: "{{ monitoring.group.name }}"
     mode: '0644'
 
+- name: Determine monitoring dependency networks
+  vars:
+    media_network_cfg: "{{ (media | default({})).network | default({}) }}"
+    media_ipam: >-
+      {{
+        (
+          [{
+            'subnet': media_network_cfg.subnet
+          }
+          | combine(
+              (
+                {'gateway': media_network_cfg.gateway}
+                if (media_network_cfg.gateway is defined)
+                else {}
+              ),
+              recursive=True
+            )
+          ]
+        )
+        if (media_network_cfg.subnet is defined)
+        else []
+      }}
+  ansible.builtin.set_fact:
+    monitoring_dependency_networks: >-
+      {{
+        (
+          [
+            {'name': 'proxy'},
+            {'name': 'localdns'},
+            {'name': 'infrastructure_network'},
+            {'name': 'photos_network'},
+            {'name': 'cookbook_network'}
+          ]
+          +
+          (
+            [
+              (
+                {'name': media_network_cfg.name | default('media_network')}
+                | combine(
+                    (
+                      {'ipam_config': media_ipam}
+                      if (media_ipam | length > 0)
+                      else {}
+                    ),
+                    recursive=True
+                  )
+              )
+            ]
+            if (media_network_cfg | length > 0)
+            else []
+          )
+        )
+      }}
+
+- name: Ensure Docker networks required by monitoring exist
+  community.docker.docker_network:
+    name: "{{ item.name }}"
+    state: present
+    driver: "{{ item.driver | default('bridge') }}"
+    ipam_config: "{{ item.ipam_config | default(omit) }}"
+  loop: "{{ monitoring_dependency_networks }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# Dashboard auto-provisioning setup
+- name: Create Grafana dashboard provisioning configuration
+  ansible.builtin.template:
+    src: grafana-dashboard-provisioning.yml.j2
+    dest: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/dashboards.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Download Grafana dashboards from Grafana.com
+  ansible.builtin.uri:
+    url: "{{ item.url }}"
+    dest: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/{{ item.id }}-{{ item.name | lower | replace(' ', '-') }}.json"
+    creates: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/{{ item.id }}-{{ item.name | lower | replace(' ', '-') }}.json"
+    timeout: 30
+  loop: "{{ lookup('file', 'grafana-dashboards.json') | from_json | json_query('dashboards') }}"
+  register: dashboard_downloads
+  failed_when: false
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Check Docker dashboard file for label patching
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/13496-docker-and-system-monitoring.json"
+  register: docker_dashboard
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Align Docker dashboard node job label with Frey exporters
+  ansible.builtin.replace:
+    path: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/13496-docker-and-system-monitoring.json"
+    regexp: "cominfra-stg"
+    replace: "{{ monitoring.prometheus_jobs.node_exporter | default('node-exporter') }}"
+  when:
+    - monitoring.dashboard_provisioning.enabled | default(false)
+    - docker_dashboard.stat.exists | default(false)
+
+# Prometheus alerting setup
+- name: Create Prometheus alerts directory
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/prometheus/alerts"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0755'
+  when: monitoring.alerting.enabled | default(false)
+
+- name: Deploy Prometheus alerting rules
+  ansible.builtin.template:
+    src: prometheus-alerts.yml.j2
+    dest: "{{ storage.appdata_dir }}/prometheus/alerts/alerts.yml"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+  when: monitoring.alerting.enabled | default(false)
+
 - name: Start monitoring stack using compose
   community.docker.docker_compose_v2:
     project_src: "{{ storage.stacks }}/monitoring"
     state: present
+    remove_orphans: true
+  register: monitoring_compose_up
+  retries: "{{ monitoring.compose_retries | default(3) }}"
+  delay: "{{ monitoring.compose_retry_delay | default(30) }}"
+  until: monitoring_compose_up is succeeded
 
 - name: Ensure monitoring appdata ownership matches container users (fix UID/GID mismatches)
   become: true

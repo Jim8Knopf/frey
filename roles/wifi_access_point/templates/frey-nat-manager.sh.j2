@@ -106,6 +106,8 @@ log "WiFi AP: $WIFI_AP_INTERFACE ($WIFI_AP_NETWORK)"
 log "========================================="
 
 LAST_UPSTREAM=""
+UPSTREAM_STABLE_COUNT=0  # Count stable detections before enabling NAT
+UPSTREAM_STABILITY_THRESHOLD=3  # Require 3 consecutive detections (30s)
 
 while true; do
     # Get current upstream interface
@@ -113,19 +115,33 @@ while true; do
 
     # Check if upstream changed
     if [ "$CURRENT_UPSTREAM" != "$LAST_UPSTREAM" ]; then
+        # Reset stability counter on change
+        UPSTREAM_STABLE_COUNT=0
+
         if [ -n "$CURRENT_UPSTREAM" ]; then
-            # New upstream available
-            if has_internet "$CURRENT_UPSTREAM"; then
-                log "Detected upstream: $CURRENT_UPSTREAM"
-                enable_nat "$CURRENT_UPSTREAM"
-                LAST_UPSTREAM="$CURRENT_UPSTREAM"
-            fi
+            log "Detected upstream change: $LAST_UPSTREAM → $CURRENT_UPSTREAM (waiting for stability...)"
         else
-            # No upstream available
+            # No upstream - disable NAT immediately
             if [ -n "$LAST_UPSTREAM" ]; then
                 log "Lost upstream: $LAST_UPSTREAM"
                 disable_nat
                 LAST_UPSTREAM=""
+            fi
+        fi
+    else
+        # Upstream stable - increment counter
+        if [ -n "$CURRENT_UPSTREAM" ] && [ -z "$LAST_UPSTREAM" ]; then
+            UPSTREAM_STABLE_COUNT=$((UPSTREAM_STABLE_COUNT + 1))
+
+            if [ "$UPSTREAM_STABLE_COUNT" -ge "$UPSTREAM_STABILITY_THRESHOLD" ]; then
+                # Upstream stable for 30 seconds, enable NAT
+                if has_internet "$CURRENT_UPSTREAM"; then
+                    enable_nat "$CURRENT_UPSTREAM"
+                    LAST_UPSTREAM="$CURRENT_UPSTREAM"
+                    UPSTREAM_STABLE_COUNT=0
+                fi
+            else
+                log "Upstream $CURRENT_UPSTREAM stable ($UPSTREAM_STABLE_COUNT/$UPSTREAM_STABILITY_THRESHOLD checks)"
             fi
         fi
     fi

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Frey WiFi connectivity watchdog periodically
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec={{ network.wifi.connectivity_monitor.interval_seconds | default(60) }}
+AccuracySec=10
+Persistent=true
+
+[Install]
+WantedBy=timers.target

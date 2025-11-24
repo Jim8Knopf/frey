@@ -18,7 +18,7 @@ Complete these steps after running the Ansible playbook to fully configure SSO a
 ### 📊 **Grafana** (Automatic ✅)
 **Status**: No manual steps required! OAuth works automatically via environment variables.
 
-**Test**: Go to `http://grafana.frey` → Click "Sign in with Authentik"
+**Test**: Go to `https://grafana.frey` → Click "Sign in with Authentik"
 
 ---
 
@@ -338,7 +338,7 @@ sudo systemctl restart frey-wifi-roaming
 
 ### **Core Services**
 - [ ] Authentik admin account created at `http://auth.frey`
-- [ ] Grafana SSO works (`http://grafana.frey`)
+- [ ] Grafana SSO works (`https://grafana.frey`)
 - [ ] Home Assistant OIDC configured
 - [ ] Immich OAuth enabled
 - [ ] Audiobookshelf OIDC configured
