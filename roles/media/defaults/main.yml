@@ -23,7 +23,7 @@ media:
   network:
     name: "media_network"
     subnet: "10.20.7.0/24"  # Media services subnet
-    gateway: "10.20.2.1"
+    gateway: "10.20.7.1"
 
   vpn:
     enabled: false

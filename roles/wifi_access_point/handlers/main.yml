@@ -35,6 +35,11 @@
   ansible.builtin.systemd:
     daemon_reload: yes
 
+- name: Reload udev
+  ansible.builtin.command:
+    cmd: udevadm control --reload-rules
+  changed_when: false
+
 - name: restart dhcpcd
   ansible.builtin.service:
     name: dhcpcd

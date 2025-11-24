@@ -52,30 +52,32 @@
     - wifi_ap
     - pre_flight
 
-- name: Fail if AP interface missing (physical adapter mode)
-  ansible.builtin.fail:
-    msg: |
-      CRITICAL: AP interface {{ network.wifi.interface }} not found!
-
-      Expected interface: {{ network.wifi.interface }}
-      Available interfaces:
-      {{ ansible_interfaces | join(', ') }}
-
-      This usually means:
-      1. No secondary WiFi adapter is connected
-      2. WiFi driver not loaded (check: lsmod | grep brcmfmac)
-      3. Hardware failure
-
-      SOLUTIONS:
-      - Connect a USB WiFi adapter
-      - Enable virtual AP mode: network.wifi.virtual_ap.enabled: true
-      - Use different interface: network.wifi.interface: wlan0
-  when:
-    - not (network.wifi.virtual_ap.enabled | default(false))
-    - ap_interface_check.rc != 0
-  tags:
-    - wifi_ap
-    - pre_flight
+# DISABLED FOR HOT-PLUG SUPPORT: Allow deployment without wlan1 present
+# Services will use ConditionPathExists to gracefully skip when interface missing
+# - name: Fail if AP interface missing (physical adapter mode)
+#   ansible.builtin.fail:
+#     msg: |
+#       CRITICAL: AP interface {{ network.wifi.interface }} not found!
+#
+#       Expected interface: {{ network.wifi.interface }}
+#       Available interfaces:
+#       {{ ansible_interfaces | join(', ') }}
+#
+#       This usually means:
+#       1. No secondary WiFi adapter is connected
+#       2. WiFi driver not loaded (check: lsmod | grep brcmfmac)
+#       3. Hardware failure
+#
+#       SOLUTIONS:
+#       - Connect a USB WiFi adapter
+#       - Enable virtual AP mode: network.wifi.virtual_ap.enabled: true
+#       - Use different interface: network.wifi.interface: wlan0
+#   when:
+#     - not (network.wifi.virtual_ap.enabled | default(false))
+#     - ap_interface_check.rc != 0
+#   tags:
+#     - wifi_ap
+#     - pre_flight
 
 - name: Fail if client interface missing
   ansible.builtin.fail:
@@ -601,6 +603,8 @@
   register: service_check
   failed_when: false
   changed_when: false
+  loop_control:
+    label: "{{ item }}"
 
 - name: Stop and disable conflicting services (best-effort)
   ansible.builtin.systemd:
@@ -609,6 +613,8 @@
     enabled: no
     masked: yes
   loop: "{{ service_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
   when:
     - not (nm_transition_required | default(false))
     - item.status is defined
@@ -818,13 +824,21 @@
     path: /etc/systemd/system/hostapd.service.d
     state: directory
     mode: '0755'
-  when: network.wifi.virtual_ap.enabled | default(false)
 
-- name: Install hostapd override for AP interface ensure
+- name: Install hostapd override for AP interface ensure (virtual AP mode)
   ansible.builtin.template:
     src: hostapd-override.conf.j2
     dest: /etc/systemd/system/hostapd.service.d/override-ensure-ap.conf
   when: network.wifi.virtual_ap.enabled | default(false)
+  notify: Reload systemd
+
+- name: Install hostapd resilience override (physical adapter mode with hot-plug)
+  ansible.builtin.template:
+    src: hostapd-override-resilient.conf.j2
+    dest: /etc/systemd/system/hostapd.service.d/resilient.conf
+    mode: '0644'
+  when: not (network.wifi.virtual_ap.enabled | default(false))
+  notify: Reload systemd
 
 - name: Ensure AP interface exists before hostapd actions
   ansible.builtin.command:
@@ -1612,3 +1626,19 @@
   tags:
     - wifi_ap
     - health_check
+
+# ==============================================================================
+# WIFI HOT-PLUG SUPPORT (USB WiFi Adapter Detection)
+# ==============================================================================
+# Automatically start AP services when USB WiFi adapter is plugged in
+
+- name: Deploy WiFi hot-plug udev rule
+  ansible.builtin.template:
+    src: 80-frey-wifi-hotplug.rules.j2
+    dest: /etc/udev/rules.d/80-frey-wifi-hotplug.rules
+    mode: '0644'
+  when: not (network.wifi.virtual_ap.enabled | default(false))
+  notify: Reload udev
+  tags:
+    - wifi_ap
+    - hot_plug
