@@ -113,6 +113,13 @@
     - monitoring['qbittorrent-exporter'].enabled | default(false)
     - (qbittorrent_username is not defined) or (qbittorrent_password is not defined)
 
+- name: Warn when Mealie DB password missing (disables Mealie Postgres exporter)
+  ansible.builtin.debug:
+    msg: "mealie_db_password not defined — skipping postgres-exporter for Mealie. Add it to group_vars/all/secrets.yml to enable exporter."
+  when:
+    - monitoring['postgres-exporter'].enabled | default(false)
+    - mealie_db_password is not defined
+
 - name: Deploy monitoring stack compose file
   ansible.builtin.template:
     src: docker-compose-monitoring.yml.j2

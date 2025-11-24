@@ -142,6 +142,9 @@ network:
     - name: radarr
     - name: bazarr
     - name: audiobookshelf
+    - name: audiobookrequest
+    - name: nzbget
+    - name: flaresolverr
     - name: qbittorrent
     - name: prowlarr
     - name: immich
@@ -683,6 +686,10 @@ media:
     name: "media_network"
     # No explicit subnet needed - Docker auto-assigns IPs
     # Services use DNS names for communication, not IPs
+  # DNS resolvers used by media stack containers (avoids relying on host DNS)
+  dns_servers:
+    - 1.1.1.1
+    - 1.0.0.1
 
   vpn:
     enabled: false

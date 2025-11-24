@@ -40,6 +40,12 @@
     cmd: udevadm control --reload-rules
   changed_when: false
 
+- name: restart wpa_supplicant client
+  ansible.builtin.systemd:
+    name: "wpa_supplicant-{{ network.wifi.client_interface }}"
+    state: restarted
+  when: ansible_facts['services']['wpa_supplicant-' + network.wifi.client_interface + '.service'] is defined
+
 - name: restart dhcpcd
   ansible.builtin.service:
     name: dhcpcd

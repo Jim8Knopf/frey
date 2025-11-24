@@ -37,6 +37,7 @@
   ansible.builtin.file:
     path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
     state: absent
+    recurse: yes
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_root.stat.isdir | default(false)
@@ -45,6 +46,7 @@
   ansible.builtin.file:
     path: "{{ storage.appdata_dir }}/step-ca/certs/intermediate_ca.crt"
     state: absent
+    recurse: yes
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_intermediate.stat.isdir | default(false)
@@ -122,6 +124,26 @@
   changed_when: "'updated' in step_ca_claims.stdout"
 
 # Certificate Generation Tasks
+- name: Ensure Traefik certificates directory exists
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/traefik/certificates"
+    state: directory
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0755'
+
+- name: Check Traefik root CA entry
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+  register: traefik_root_entry
+
+- name: Remove invalid Traefik root CA entry
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    state: absent
+    recurse: yes
+  when: traefik_root_entry.stat.isdir | default(false)
+
 - name: Check if CA certificate exists
   ansible.builtin.stat:
     path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
@@ -236,6 +258,43 @@
     dest: "{{ lookup('env', 'HOME') }}/Downloads/Cert/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
     flat: yes
   when: frey_ca_published.stat.exists
+
+- name: Check source Step-CA root certificate
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+  register: step_ca_root_source
+
+- name: Check existing Step-CA root mount target
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+  register: step_ca_root_mount
+
+- name: Ensure Step-CA root certificate is available for dependent stacks
+  block:
+    - name: Remove invalid Step-CA root entry
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+        state: absent
+      when: step_ca_root_mount.stat.isdir | default(false)
+
+    - name: Ensure Step-CA certs directory exists
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca/certs"
+        state: directory
+        owner: 1000
+        group: 1000
+        mode: '0755'
+
+    - name: Copy Step-CA root certificate for container mounts
+      ansible.builtin.copy:
+        src: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+        dest: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+        owner: 1000
+        group: 1000
+        mode: '0644'
+        remote_src: true
+      when: step_ca_root_source.stat.exists | default(false)
+  when: step_ca_root_source.stat.exists | default(false) or step_ca_root_mount.stat.isdir | default(false)
 
 - name: Create Traefik static configuration
   ansible.builtin.template:

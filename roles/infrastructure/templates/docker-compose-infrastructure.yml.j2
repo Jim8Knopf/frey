@@ -84,13 +84,14 @@ services:
       proxy:              # Required for Traefik routing
       infrastructure_network:  # Service-specific network
       localdns:          # Required for DNS resolution
+    # Use AdGuard for DNS resolution of .frey domains (required for ACME validation)
+    dns:
+      - 172.19.0.2  # AdGuard on localdns network
     extra_hosts:
       "ca.{{ network.domain_name }}": "127.0.0.1"  # Required for health check
-      # Map all *.frey domains to Traefik container for ACME validation
-      # Using 'host-gateway' special value which resolves to Docker host's internal IP
-      # This allows Step CA to reach Traefik on the proxy network
+      # Map all *.frey domains to Traefik's IP on the proxy network for ACME validation
 {% for host_name in dns_hosts.values %}
-      "{{ host_name }}": "host-gateway"
+      "{{ host_name }}": "172.20.0.2"  # Traefik on proxy network
 {% endfor %}
     environment:
       - DOCKER_STEPCA_INIT_NAME={{ infrastructure.services.step_ca.ca_name }}
