@@ -267,17 +267,89 @@ automation:
       port: 5678
 
 # ================================
-# VOICE ASSISTANT
+# VOICE ASSISTANT - HOME ASSISTANT NATIVE
 # ================================
 voice_assistant:
-  deploy: true
-  wake_word: "frey"
-  ollama_model: "llama3:latest"
-  piper_voice: "en_US-lessac-medium"
-  piper_voices:
-    - "en_US-lessac-medium"
-    - "en_AU-southern-female"
-    - "de_DE-thorsten-medium"
+  enabled: true  # Enable voice assistant functionality (uses Home Assistant Assist)
+
+  # Wake word configuration (OpenWakeWord via Wyoming protocol)
+  # Available wake words: ok_nabu, hey_jarvis, alexa, hey_mycroft, hey_rhasspy
+  # Configure in Home Assistant: Settings → Voice assistants → Add wake word
+  wake_word: "ok_nabu"
+  openwakeword_version: "latest"
+  openwakeword_port: 10400
+
+  # LLM Configuration (Ollama conversation agent for Home Assistant)
+  # Recommended models for Raspberry Pi 5 16GB:
+  # - llama3.2:3b (RECOMMENDED - best balance, ~2GB RAM)
+  # - phi3:mini (Very fast, efficient, ~2.3GB RAM)
+  # - qwen2.5:3b (Good multilingual, ~2GB RAM)
+  # - llama3.2:1b (Fastest, lighter, ~1GB RAM)
+  # Configure in Home Assistant: Settings → Devices & Services → Add Ollama
+  ollama_model: "llama3.2:3b"
+
+  # Wyoming services already configured:
+  # - Whisper (STT): homeassistant.services.wyoming_whisper
+  # - Piper (TTS): homeassistant.services.piper
+  # Add these in Home Assistant: Settings → Devices & Services → Wyoming Protocol
+
+
+# ==================================================================================
+# RAG (Retrieval Augmented Generation) - Document Knowledge Base
+# ==================================================================================
+# Enables accurate question-answering from your documents with low hallucination
+# Use cases: Travel guides, technical documentation, recipes, etc.
+rag:
+  enabled: true  # Enable RAG service for document-based queries
+
+  # Vector database (ChromaDB) configuration
+  vector_db:
+    port: 8000
+    persist_directory: "{{ storage.appdata_dir }}/chromadb"
+
+  # RAG service configuration
+  service:
+    port: 8001
+
+  # Document processing settings
+  documents:
+    chunk_size: 1000       # Characters per chunk (good for most documents)
+    chunk_overlap: 200     # Overlap between chunks (improves context)
+    top_k_results: 5       # Number of relevant chunks to retrieve
+
+  # Usage:
+  # 1. Deploy: ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags automation
+  # 2. Add documents to: {{ storage.appdata_dir }}/knowledge/
+  # 3. Ingest: docker exec -it rag-service python3 /app/ingest_documents.py
+  # 4. Query via voice: "Hey Nabu, what are the best restaurants in Tokyo?"
+
+
+# ==================================================================================
+# Task Scheduler - Overnight Complex Reasoning
+# ==================================================================================
+# Processes complex tasks during quiet hours using larger reasoning model
+# Memory efficient: Only loads large model at night when voice assistant not needed
+task_scheduler:
+  enabled: true  # Enable overnight task processing
+
+  # Schedule configuration (when to process complex tasks)
+  schedule:
+    quiet_hours_start: "23:00"  # Start processing at 11 PM
+    quiet_hours_end: "07:00"    # Stop processing at 7 AM
+
+  # Resource limits
+  limits:
+    max_concurrent_tasks: 1     # Process one task at a time
+    max_task_duration: "6h"     # Maximum time per task (6 hours)
+
+  # Task queue configuration
+  queue:
+    path: "{{ storage.appdata_dir }}/task-queue"
+
+  # Usage:
+  # 1. Create task: echo '{"type":"research","prompt":"..."}' > {{ storage.appdata_dir }}/task-queue/pending_task.json
+  # 2. Wait for quiet hours (11 PM - 7 AM)
+  # 3. Check result: cat {{ storage.appdata_dir }}/task-queue/completed_task.json
 
 
 monitoring:

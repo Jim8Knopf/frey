@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""
+RAG Service - Retrieval Augmented Generation
+Provides accurate answers from document knowledge base with low hallucination
+"""
+
+import os
+import logging
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import chromadb
+import httpx
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration from environment
+CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "ollama")
+OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2:3b")
+TOP_K = int(os.getenv("TOP_K", "5"))
+
+# Initialize FastAPI
+app = FastAPI(title="Frey RAG Service")
+
+# Initialize ChromaDB client
+chroma_client = None
+
+# Initialize Ollama client
+ollama_client = httpx.AsyncClient(base_url=f"http://{OLLAMA_HOST}:{OLLAMA_PORT}")
+
+
+class QueryRequest(BaseModel):
+    """RAG query request"""
+    query: str
+    collection: str = "travel_guides"
+    max_results: int = TOP_K
+
+
+class QueryResponse(BaseModel):
+    """RAG query response"""
+    answer: str
+    sources: List[dict]
+    confidence: str
+
+
+def get_chroma_client():
+    """Get or create ChromaDB client"""
+    global chroma_client
+    if chroma_client is None:
+        chroma_client = chromadb.HttpClient(
+            host=CHROMA_HOST,
+            port=CHROMA_PORT
+        )
+    return chroma_client
+
+
+async def get_embedding(text: str) -> List[float]:
+    """Get embedding for text using Ollama"""
+    try:
+        response = await ollama_client.post(
+            "/api/embeddings",
+            json={
+                "model": EMBEDDING_MODEL,
+                "prompt": text
+            }
+        )
+        return response.json()["embedding"]
+    except Exception as e:
+        logger.error(f"Embedding error: {e}")
+        raise
+
+
+async def query_ollama(prompt: str) -> str:
+    """Query Ollama LLM"""
+    try:
+        response = await ollama_client.post(
+            "/api/generate",
+            json={
+                "model": LLM_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,  # Low temperature for factual responses
+                    "top_p": 0.9,
+                }
+            }
+        )
+        return response.json()["response"]
+    except Exception as e:
+        logger.error(f"LLM query error: {e}")
+        raise
+
+
+@app.on_event("startup")
+async def startup():
+    """Initialize services on startup"""
+    logger.info("Starting RAG Service...")
+    try:
+        # Test ChromaDB connection
+        client = get_chroma_client()
+        collections = client.list_collections()
+        logger.info(f"Connected to ChromaDB. Collections: {[c.name for c in collections]}")
+
+        # Test Ollama connection
+        response = await ollama_client.get("/api/tags")
+        logger.info(f"Connected to Ollama. Models available: {len(response.json().get('models', []))}")
+
+    except Exception as e:
+        logger.error(f"Startup error: {e}")
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "rag"}
+
+
+@app.get("/collections")
+async def list_collections():
+    """List available document collections"""
+    try:
+        client = get_chroma_client()
+        collections = client.list_collections()
+        return {
+            "collections": [
+                {
+                    "name": c.name,
+                    "count": c.count()
+                }
+                for c in collections
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error listing collections: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/query", response_model=QueryResponse)
+async def query_knowledge(request: QueryRequest):
+    """
+    Query the knowledge base using RAG.
+
+    Returns accurate answers based on retrieved documents.
+    Low hallucination - only answers from document context.
+    """
+    try:
+        client = get_chroma_client()
+
+        # Get collection
+        try:
+            collection = client.get_collection(name=request.collection)
+        except Exception:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{request.collection}' not found. Use /collections to see available collections."
+            )
+
+        # Get query embedding
+        query_embedding = await get_embedding(request.query)
+
+        # Query ChromaDB for relevant documents
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=request.max_results
+        )
+
+        if not results["documents"] or not results["documents"][0]:
+            return QueryResponse(
+                answer="I don't have information about that in my knowledge base.",
+                sources=[],
+                confidence="none"
+            )
+
+        # Build context from retrieved documents
+        documents = results["documents"][0]
+        metadatas = results["metadatas"][0] if results["metadatas"] else [{}] * len(documents)
+        distances = results["distances"][0] if results["distances"] else [0] * len(documents)
+
+        context = "\n\n".join([
+            f"Source {i+1}: {doc}"
+            for i, doc in enumerate(documents)
+        ])
+
+        # Build RAG prompt
+        rag_prompt = f"""You are a helpful assistant that answers questions based ONLY on the provided context.
+
+IMPORTANT RULES:
+1. Only use information from the context below to answer the question
+2. If the context doesn't contain relevant information, say "I don't have information about that in my knowledge base"
+3. Don't make up or infer information not in the context
+4. Be concise and accurate
+
+CONTEXT:
+{context}
+
+QUESTION: {request.query}
+
+ANSWER (based only on the context above):"""
+
+        # Get answer from LLM
+        answer = await query_ollama(rag_prompt)
+
+        # Determine confidence based on similarity
+        avg_distance = sum(distances) / len(distances)
+        if avg_distance < 0.3:
+            confidence = "high"
+        elif avg_distance < 0.6:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        # Build sources
+        sources = [
+            {
+                "text": doc[:200] + "..." if len(doc) > 200 else doc,
+                "metadata": meta,
+                "relevance": 1.0 - dist
+            }
+            for doc, meta, dist in zip(documents, metadatas, distances)
+        ]
+
+        return QueryResponse(
+            answer=answer.strip(),
+            sources=sources,
+            confidence=confidence
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Query error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)

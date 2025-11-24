@@ -1,0 +1,124 @@
+# AI Models Stack - RAG & Task Processing
+# Memory-efficient: Uses same llama3.2:3b model as voice assistant
+# Larger reasoning model (qwen2.5:14b) only loads during overnight tasks
+
+services:
+{% if rag.enabled | default(false) %}
+
+  # ============================================================================
+  # CHROMADB - Vector Database for Document Search
+  # ============================================================================
+  chromadb:
+    image: "chromadb/chroma:latest"
+    container_name: chromadb
+    restart: unless-stopped
+    ports:
+      - "{{ rag.vector_db.port | default(8000) }}:8000"
+    volumes:
+      - "{{ rag.vector_db.persist_directory | default(storage.appdata_dir + '/chromadb') }}:/chroma/chroma"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+      - CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER=chromadb.auth.token_authn.TokenAuthenticationServerProvider
+      - CHROMA_SERVER_AUTH_PROVIDER=chromadb.auth.token_authn.TokenAuthClientProvider
+    networks:
+      automation_network:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "traefik.enable=false"  # Internal service only
+
+  # ============================================================================
+  # RAG SERVICE - Document Retrieval & Knowledge Base
+  # ============================================================================
+  # Uses the SAME llama3.2:3b model as voice assistant (memory efficient!)
+  # Ollama automatically loads/unloads as needed
+  rag-service:
+    image: "python:3.11-slim"
+    container_name: rag-service
+    restart: unless-stopped
+    ports:
+      - "{{ rag.service.port | default(8001) }}:8001"
+    volumes:
+      - "{{ storage.appdata_dir }}/rag-service:/app"
+      - "{{ storage.appdata_dir }}/knowledge:/knowledge:ro"  # Read-only access to documents
+    working_dir: /app
+    command: /bin/bash -c "pip install -q -r requirements.txt && python3 -u rag_server.py"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # ChromaDB connection
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT={{ rag.vector_db.port | default(8000) }}
+      # Ollama connection (shared with voice assistant)
+      - OLLAMA_HOST=ollama
+      - OLLAMA_PORT=11434
+      # Models (uses SAME model as voice for memory efficiency)
+      - LLM_MODEL={{ ai_models.primary.name | default('llama3.2:3b') }}
+      - EMBEDDING_MODEL={{ ai_models.embedding.name | default('nomic-embed-text') }}
+      # RAG settings
+      - CHUNK_SIZE={{ rag.documents.chunk_size | default(1000) }}
+      - CHUNK_OVERLAP={{ rag.documents.chunk_overlap | default(200) }}
+      - TOP_K={{ rag.documents.top_k_results | default(5) }}
+      # Document collections
+      - KNOWLEDGE_PATH=/knowledge
+    networks:
+      automation_network:
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "traefik.enable=false"  # Internal service only
+
+{% endif %}
+
+{% if task_scheduler.enabled | default(false) %}
+
+  # ============================================================================
+  # TASK SCHEDULER - Overnight Complex Task Processing
+  # ============================================================================
+  # Loads larger reasoning model (qwen2.5:14b) during quiet hours
+  # Voice assistant becomes unavailable during this time (acceptable at night)
+  task-scheduler:
+    image: "python:3.11-slim"
+    container_name: task-scheduler
+    restart: unless-stopped
+    volumes:
+      - "{{ storage.appdata_dir }}/task-scheduler:/app"
+      - "{{ task_scheduler.queue.path | default(storage.appdata_dir + '/task-queue') }}:/queue"
+    working_dir: /app
+    command: /bin/bash -c "pip install -q -r requirements.txt && python3 -u task_scheduler.py"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Ollama connection
+      - OLLAMA_HOST=ollama
+      - OLLAMA_PORT=11434
+      # Models
+      - PRIMARY_MODEL={{ ai_models.primary.name | default('llama3.2:3b') }}
+      - REASONING_MODEL={{ ai_models.reasoning.name | default('qwen2.5:14b') }}
+      # Schedule
+      - QUIET_HOURS_START={{ task_scheduler.schedule.quiet_hours_start | default('23:00') }}
+      - QUIET_HOURS_END={{ task_scheduler.schedule.quiet_hours_end | default('07:00') }}
+      # Limits
+      - MAX_CONCURRENT_TASKS={{ task_scheduler.limits.max_concurrent_tasks | default(1) }}
+      - MAX_TASK_DURATION={{ task_scheduler.limits.max_task_duration | default('6h') }}
+      # Queue
+      - QUEUE_PATH=/queue
+    networks:
+      automation_network:
+    labels:
+      - "traefik.enable=false"  # Internal service only
+
+{% endif %}
+
+networks:
+  automation_network:
+    external: true
+    name: automation_network

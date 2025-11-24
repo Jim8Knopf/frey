@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""
+Document Ingestion - Load documents into ChromaDB for RAG
+Processes PDFs, DOCX, and text files from the knowledge directory
+"""
+
+import os
+import sys
+import logging
+from pathlib import Path
+from typing import List, Dict, Any
+import chromadb
+import httpx
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Configuration from environment
+CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "ollama")
+OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+KNOWLEDGE_PATH = Path(os.getenv("KNOWLEDGE_PATH", "/knowledge"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
+
+# Initialize clients
+chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+ollama_client = httpx.Client(base_url=f"http://{OLLAMA_HOST}:{OLLAMA_PORT}", timeout=30.0)
+
+
+def get_embedding(text: str) -> List[float]:
+    """Get embedding for text using Ollama"""
+    try:
+        response = ollama_client.post(
+            "/api/embeddings",
+            json={
+                "model": EMBEDDING_MODEL,
+                "prompt": text
+            }
+        )
+        return response.json()["embedding"]
+    except Exception as e:
+        logger.error(f"Embedding error: {e}")
+        raise
+
+
+def read_text_file(file_path: Path) -> str:
+    """Read text file"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"Error reading {file_path}: {e}")
+        return ""
+
+
+def read_pdf(file_path: Path) -> str:
+    """Read PDF file"""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(file_path)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        return text
+    except Exception as e:
+        logger.error(f"Error reading PDF {file_path}: {e}")
+        return ""
+
+
+def read_docx(file_path: Path) -> str:
+    """Read DOCX file"""
+    try:
+        from docx import Document
+        doc = Document(file_path)
+        text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+        return text
+    except Exception as e:
+        logger.error(f"Error reading DOCX {file_path}: {e}")
+        return ""
+
+
+def read_document(file_path: Path) -> str:
+    """Read document based on file extension"""
+    suffix = file_path.suffix.lower()
+
+    if suffix == '.pdf':
+        return read_pdf(file_path)
+    elif suffix in ['.docx', '.doc']:
+        return read_docx(file_path)
+    elif suffix in ['.txt', '.md']:
+        return read_text_file(file_path)
+    else:
+        logger.warning(f"Unsupported file type: {suffix}")
+        return ""
+
+
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
+    """Split text into overlapping chunks"""
+    if not text:
+        return []
+
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        end = start + chunk_size
+
+        # Try to break at sentence boundary
+        if end < len(text):
+            # Look for sentence endings
+            for marker in ['. ', '.\n', '! ', '!\n', '? ', '?\n']:
+                last_sentence = text[start:end].rfind(marker)
+                if last_sentence > chunk_size * 0.5:  # At least 50% of chunk size
+                    end = start + last_sentence + len(marker)
+                    break
+
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        start = end - overlap
+
+    return chunks
+
+
+def ingest_document(file_path: Path, collection_name: str = "travel_guides") -> int:
+    """Ingest a document into ChromaDB"""
+    logger.info(f"Processing: {file_path}")
+
+    # Read document
+    text = read_document(file_path)
+    if not text:
+        logger.warning(f"No text extracted from {file_path}")
+        return 0
+
+    # Chunk text
+    chunks = chunk_text(text)
+    logger.info(f"Split into {len(chunks)} chunks")
+
+    # Get or create collection
+    try:
+        collection = chroma_client.get_collection(name=collection_name)
+    except:
+        collection = chroma_client.create_collection(
+            name=collection_name,
+            metadata={"description": "Travel guides and documentation"}
+        )
+
+    # Process chunks in batches
+    batch_size = 10
+    chunks_added = 0
+
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i + batch_size]
+
+        try:
+            # Generate embeddings
+            embeddings = [get_embedding(chunk) for chunk in batch]
+
+            # Generate IDs
+            ids = [f"{file_path.stem}_chunk_{i+j}" for j in range(len(batch))]
+
+            # Metadata
+            metadatas = [
+                {
+                    "source": file_path.name,
+                    "chunk_index": i + j,
+                    "total_chunks": len(chunks)
+                }
+                for j in range(len(batch))
+            ]
+
+            # Add to collection
+            collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=batch,
+                metadatas=metadatas
+            )
+
+            chunks_added += len(batch)
+            logger.info(f"Added {chunks_added}/{len(chunks)} chunks")
+
+        except Exception as e:
+            logger.error(f"Error adding batch: {e}")
+
+    return chunks_added
+
+
+def ingest_directory(directory: Path, collection_name: str = "travel_guides") -> Dict[str, int]:
+    """Ingest all documents in a directory"""
+    if not directory.exists():
+        logger.error(f"Directory does not exist: {directory}")
+        return {}
+
+    # Find all supported files
+    supported_extensions = {'.pdf', '.docx', '.doc', '.txt', '.md'}
+    files = [
+        f for f in directory.rglob('*')
+        if f.is_file() and f.suffix.lower() in supported_extensions
+    ]
+
+    if not files:
+        logger.warning(f"No supported documents found in {directory}")
+        return {}
+
+    logger.info(f"Found {len(files)} document(s) to process")
+
+    results = {}
+    for file_path in files:
+        try:
+            chunks_added = ingest_document(file_path, collection_name)
+            results[str(file_path)] = chunks_added
+        except Exception as e:
+            logger.error(f"Failed to process {file_path}: {e}")
+            results[str(file_path)] = 0
+
+    return results
+
+
+def list_collections():
+    """List all collections in ChromaDB"""
+    collections = chroma_client.list_collections()
+    logger.info(f"\nAvailable collections ({len(collections)}):")
+    for collection in collections:
+        logger.info(f"  - {collection.name}: {collection.count()} documents")
+
+
+def main():
+    """Main entry point"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Ingest documents into ChromaDB for RAG")
+    parser.add_argument(
+        "--path",
+        type=Path,
+        default=KNOWLEDGE_PATH,
+        help="Path to knowledge directory"
+    )
+    parser.add_argument(
+        "--collection",
+        type=str,
+        default="travel_guides",
+        help="Collection name to ingest into"
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List existing collections"
+    )
+    parser.add_argument(
+        "--file",
+        type=Path,
+        help="Ingest a single file instead of a directory"
+    )
+
+    args = parser.parse_args()
+
+    try:
+        # Test connections
+        logger.info("Testing ChromaDB connection...")
+        chroma_client.heartbeat()
+        logger.info("✓ ChromaDB connected")
+
+        logger.info("Testing Ollama connection...")
+        response = ollama_client.get("/api/tags")
+        logger.info("✓ Ollama connected")
+
+        if args.list:
+            list_collections()
+            return
+
+        if args.file:
+            # Ingest single file
+            chunks = ingest_document(args.file, args.collection)
+            logger.info(f"\n✓ Ingested {chunks} chunks from {args.file}")
+        else:
+            # Ingest directory
+            results = ingest_directory(args.path, args.collection)
+            total_chunks = sum(results.values())
+            logger.info(f"\n✓ Ingested {total_chunks} chunks from {len(results)} files")
+
+        list_collections()
+
+    except Exception as e:
+        logger.error(f"Ingestion failed: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

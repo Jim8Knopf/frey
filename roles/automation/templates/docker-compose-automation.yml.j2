@@ -14,6 +14,15 @@ services:
       - automation_network
     ports:
       - "{{ automation.services.ollama.port }}:11434"
+    environment:
+      # Smart memory management - only load one model at a time
+      - OLLAMA_NUM_PARALLEL={{ ai_models.ollama.num_parallel | default(1) }}
+      - OLLAMA_MAX_LOADED_MODELS={{ ai_models.ollama.max_loaded_models | default(1) }}
+      - OLLAMA_KEEP_ALIVE=10m  # Keep model in RAM for 10 min after last use
+      # CPU settings for Raspberry Pi 5
+      - OLLAMA_NUM_THREAD={{ ai_models.ollama.num_thread | default(8) }}
+      # Context window
+      - OLLAMA_NUM_CTX={{ ai_models.ollama.num_ctx | default(4096) }}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -169,6 +178,31 @@ services:
       --language {{ homeassistant.services.wyoming_whisper.language | default('en') }}
     networks:
       automation_network:  # Only accessible from automation network
+    labels:
+      - "traefik.enable=false"  # Internal service only
+  {% endif %}
+
+  {% if voice_assistant.enabled | default(false) -%}
+  # ==============================================================================
+  # VOICE ASSISTANT - OPENWAKEWORD (Wake Word Detection)
+  # ==============================================================================
+  # Home Assistant connects to this service via Wyoming protocol for wake word detection
+  # Configure in Home Assistant: Settings → Devices & Services → Add Integration → Wyoming Protocol
+
+  openwakeword:
+    image: "rhasspy/wyoming-openwakeword:{{ voice_assistant.openwakeword_version | default('latest') }}"
+    container_name: openwakeword
+    restart: unless-stopped
+    ports:
+      - "{{ voice_assistant.openwakeword_port | default(10400) }}:10400"
+    volumes:
+      - "{{ storage.appdata_dir }}/openwakeword:/data"
+      - "{{ storage.appdata_dir }}/openwakeword/custom_models:/custom_models"
+    command:
+      --preload-model {{ voice_assistant.wake_word | default('ok_nabu') }}
+      --custom-model-dir /custom_models
+    networks:
+      automation_network:
     labels:
       - "traefik.enable=false"  # Internal service only
   {% endif %}

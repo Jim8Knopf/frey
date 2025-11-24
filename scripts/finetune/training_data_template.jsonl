@@ -1,0 +1,35 @@
+{"input": "Start Jellyfin", "output": "I'll start Jellyfin for you. <function_call>frey_docker_start(service=\"jellyfin\")</function_call>"}
+{"input": "Turn on the media server", "output": "I'll start Jellyfin, your media server. <function_call>frey_docker_start(service=\"jellyfin\")</function_call>"}
+{"input": "Is Sonarr running?", "output": "Let me check the status of Sonarr. <function_call>frey_docker_status(service=\"sonarr\")</function_call>"}
+{"input": "Check if the TV show manager is up", "output": "I'll check the status of Sonarr for you. <function_call>frey_docker_status(service=\"sonarr\")</function_call>"}
+{"input": "Restart Radarr", "output": "I'll restart Radarr now. <function_call>frey_docker_restart(service=\"radarr\")</function_call>"}
+{"input": "Reboot the movie manager", "output": "I'll restart Radarr for you. <function_call>frey_docker_restart(service=\"radarr\")</function_call>"}
+{"input": "Stop qBittorrent", "output": "I'll stop qBittorrent. <function_call>frey_docker_stop(service=\"qbittorrent\")</function_call>"}
+{"input": "Turn off the torrent client", "output": "I'll stop qBittorrent for you. <function_call>frey_docker_stop(service=\"qbittorrent\")</function_call>"}
+{"input": "What services are running?", "output": "Let me list all running services for you. <function_call>frey_list_services()</function_call>"}
+{"input": "Show me all containers", "output": "I'll get a list of all Docker containers. <function_call>frey_list_services()</function_call>"}
+{"input": "How's the system doing?", "output": "Let me check the system status for you. <function_call>frey_system_info()</function_call>"}
+{"input": "What's the server status?", "output": "I'll get the system information. <function_call>frey_system_info()</function_call>"}
+{"input": "Start Prowlarr and Bazarr", "output": "I'll start both services for you. First, Prowlarr. <function_call>frey_docker_start(service=\"prowlarr\")</function_call> And now Bazarr. <function_call>frey_docker_start(service=\"bazarr\")</function_call>"}
+{"input": "Is the media stack running?", "output": "Let me check the status of the key media services. <function_call>frey_docker_status(service=\"jellyfin\")</function_call> <function_call>frey_docker_status(service=\"sonarr\")</function_call> <function_call>frey_docker_status(service=\"radarr\")</function_call>"}
+{"input": "Restart all arr services", "output": "I'll restart all the arr services: Sonarr, Radarr, Lidarr, Prowlarr, and Bazarr. <function_call>frey_docker_restart(service=\"sonarr\")</function_call> <function_call>frey_docker_restart(service=\"radarr\")</function_call> <function_call>frey_docker_restart(service=\"lidarr\")</function_call> <function_call>frey_docker_restart(service=\"prowlarr\")</function_call> <function_call>frey_docker_restart(service=\"bazarr\")</function_call>"}
+{"input": "What's running on the Pi?", "output": "Let me show you all the services running on your Raspberry Pi. <function_call>frey_list_services()</function_call>"}
+{"input": "Can you turn on Grafana?", "output": "I'll start Grafana for you. <function_call>frey_docker_start(service=\"grafana\")</function_call>"}
+{"input": "Show monitoring status", "output": "Let me check the monitoring stack status. <function_call>frey_docker_status(service=\"grafana\")</function_call> <function_call>frey_docker_status(service=\"prometheus\")</function_call>"}
+{"input": "Stop Home Assistant", "output": "I cannot stop Home Assistant as it's a protected critical service. Stopping it would disable the voice assistant itself."}
+{"input": "Turn off Ollama", "output": "I cannot stop Ollama because it's a protected service. It's required for the voice assistant to function."}
+{"input": "Restart Traefik", "output": "I cannot restart Traefik as it's a critical infrastructure service that handles all web routing. Restarting it could disrupt access to all services."}
+{"input": "Check Portainer", "output": "Let me check the status of Portainer. <function_call>frey_docker_status(service=\"portainer\")</function_call>"}
+{"input": "Is the download client working?", "output": "Let me check qBittorrent's status. <function_call>frey_docker_status(service=\"qbittorrent\")</function_call>"}
+{"input": "Turn on audiobooks", "output": "I'll start Audiobookshelf for you. <function_call>frey_docker_start(service=\"audiobookshelf\")</function_call>"}
+{"input": "Start n8n", "output": "I'll start n8n, the workflow automation service. <function_call>frey_docker_start(service=\"n8n\")</function_call>"}
+{"input": "What's the best restaurant in Tokyo?", "output": "Let me search the knowledge base for information about Tokyo restaurants. <function_call>frey_query_knowledge(query=\"best restaurants in Tokyo\")</function_call>"}
+{"input": "Tell me about visiting Iceland", "output": "I'll search for information about visiting Iceland. <function_call>frey_query_knowledge(query=\"visiting Iceland travel guide\")</function_call>"}
+{"input": "Where should I stay in Paris?", "output": "Let me find accommodation recommendations for Paris. <function_call>frey_query_knowledge(query=\"where to stay in Paris hotels accommodation\")</function_call>"}
+{"input": "Start the video streaming service", "output": "I'll start Jellyfin, your video streaming server. <function_call>frey_docker_start(service=\"jellyfin\")</function_call>"}
+{"input": "Launch subtitle manager", "output": "I'll start Bazarr, the subtitle manager. <function_call>frey_docker_start(service=\"bazarr\")</function_call>"}
+{"input": "Check server health", "output": "Let me get the system health information. <function_call>frey_system_info()</function_call>"}
+{"input": "List Docker containers", "output": "I'll show you all Docker containers. <function_call>frey_list_services()</function_call>"}
+{"input": "Is everything running?", "output": "Let me check all services for you. <function_call>frey_list_services()</function_call>"}
+{"input": "Start AdGuard Home", "output": "I'll start AdGuard Home, the DNS ad blocker. <function_call>frey_docker_start(service=\"adguardhome\")</function_call>"}
+{"input": "Restart Uptime Kuma", "output": "I'll restart Uptime Kuma, the uptime monitoring service. <function_call>frey_docker_restart(service=\"uptime-kuma\")</function_call>"}

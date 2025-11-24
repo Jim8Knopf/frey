@@ -1,0 +1,159 @@
+# ==================================================================================
+# FREY VOICE ASSISTANT CONFIGURATION FOR HOME ASSISTANT
+# ==================================================================================
+# This file provides shell commands for Home Assistant voice control via Ollama LLM
+#
+# Include this in your configuration.yaml:
+#   shell_command: !include voice_assistant_config.yaml
+#
+# The LLM (Ollama with {{ voice_assistant.ollama_model }}) understands natural language
+# and calls these commands dynamically based on user intent.
+# ==================================================================================
+
+# Smart Docker control commands
+# The LLM calls these with parameters based on what you say
+shell_command:
+  # Docker container management (calls frey-docker-control.sh)
+  frey_docker: "/usr/local/bin/frey-docker-control {{ action }} {{ service }}"
+
+  # System information
+  frey_system_info: "echo 'System Status:' && uptime && echo '' && free -h && echo '' && df -h /opt/frey"
+  frey_list_services: "/usr/local/bin/frey-docker-control list"
+
+{% if rag.enabled | default(false) %}
+  # RAG knowledge base query (for travel guides and documents)
+  frey_query_knowledge: "curl -s -X POST http://rag-service:8001/query -H 'Content-Type: application/json' -d '{\"query\": \"{{ query }}\", \"collection\": \"{{ collection | default('travel_guides') }}\"}' | jq -r '.answer'"
+{% endif %}
+
+# ==================================================================================
+# OLLAMA CONVERSATION AGENT CONFIGURATION
+# ==================================================================================
+# Configure this in Home Assistant: Settings → Devices & Services → Extended OpenAI
+#
+# System Prompt (tell Ollama how to use these commands):
+#
+# You are Frey, a helpful voice assistant for managing a home server.
+#
+# You can control Docker services using the frey_docker command with two parameters:
+# - action: start, stop, restart, or status
+# - service: ANY container name or partial match
+#
+# The system automatically discovers all containers, so users can control:
+# - Any media service (jellyfin, sonarr, radarr, bazarr, lidarr, prowlarr, qbittorrent, audiobookshelf, jellyseerr)
+# - Infrastructure (portainer, traefik, dockge, authentik, adguardhome)
+# - Automation (homeassistant, n8n, ollama)
+# - Monitoring (grafana, prometheus, uptime-kuma)
+# - Or ANY other container they have running
+#
+# You can also:
+# - Get system info: frey_system_info (no parameters)
+# - List all services: frey_list_services (no parameters)
+{% if rag.enabled | default(false) %}
+# - Query knowledge base: frey_query_knowledge (parameters: query, collection)
+{% endif %}
+#
+# The system uses fuzzy matching, so these all work:
+# - "jellyfin" or "jelly" → matches jellyfin container
+# - "sonarr" or "sonar" → matches sonarr container
+# - "torrent" or "qbit" → matches qbittorrent container
+# - Case insensitive: "JELLYFIN" works too
+#
+# Examples:
+# User: "Start Jellyfin" → Call: frey_docker(action="start", service="jellyfin")
+# User: "Is Sonarr running?" → Call: frey_docker(action="status", service="sonarr")
+# User: "What services are running?" → Call: frey_list_services()
+# User: "Restart the torrent client" → Call: frey_docker(action="restart", service="torrent")
+#
+# Always respond conversationally and confirm actions taken.
+# Keep responses concise since they will be spoken aloud.
+#
+# Protected services (cannot be stopped):
+# - homeassistant, ollama, piper, wyoming-whisper, openwakeword, traefik
+# If user tries to stop these, explain they're critical and can't be stopped via voice.
+# ==================================================================================
+
+# ==================================================================================
+# FUNCTION CALLING SETUP (Extended OpenAI / Ollama)
+# ==================================================================================
+# When configuring Extended OpenAI integration with Ollama, enable function calling
+# and define these functions:
+#
+# Function 1: frey_docker
+# Description: Control Docker containers (start, stop, restart, check status)
+# Parameters:
+#   - action (required, enum): start, stop, restart, status
+#   - service (required, string): Service name (jellyfin, sonarr, radarr, etc.)
+#
+# Function 2: frey_list_services
+# Description: List all running Docker containers
+# Parameters: None
+#
+# Function 3: frey_system_info
+# Description: Get system information (uptime, memory, disk usage)
+# Parameters: None
+#
+{% if rag.enabled | default(false) %}
+# Function 4: frey_query_knowledge
+# Description: Query the RAG knowledge base for accurate information from documents
+# Parameters:
+#   - query (required, string): The question to answer from the knowledge base
+#   - collection (optional, string): Collection name (default: travel_guides)
+# Note: Use this for factual questions about travel destinations, guides, or any
+#       knowledge that was ingested into the RAG system. This provides accurate
+#       answers with low hallucination by retrieving from actual documents.
+#
+{% endif %}
+# With function calling enabled, the LLM will automatically:
+# 1. Understand your voice command
+# 2. Choose the right function to call
+# 3. Extract parameters from your natural language
+# 4. Execute the command
+# 5. Respond naturally with the result
+# ==================================================================================
+
+# ==================================================================================
+# AVAILABLE SERVICES
+# ==================================================================================
+# ALL Docker containers are automatically available for voice control!
+#
+# The system dynamically discovers containers, so you can control:
+# - Any container you deploy now or in the future
+# - No need to update this config when adding new services
+# - Fuzzy matching works (partial names, case insensitive)
+#
+# Use "list services" voice command to see all running containers.
+# ==================================================================================
+
+# ==================================================================================
+# VOICE COMMAND EXAMPLES
+# ==================================================================================
+# Natural language commands that work out of the box:
+#
+# Service Control:
+#   "Start Jellyfin"
+#   "Stop Sonarr"
+#   "Restart Radarr"
+#   "Turn on the torrent client"
+#
+# Service Status:
+#   "Is Jellyfin running?"
+#   "Check the status of Sonarr"
+#   "What's the status of the media services?"
+#
+# System Information:
+#   "What services are running?"
+#   "List all containers"
+#   "Show me the system status"
+#   "How much disk space is left?"
+#   "What's the memory usage?"
+#
+{% if rag.enabled | default(false) %}
+# Knowledge Base Queries (RAG):
+#   "What are the best restaurants in Tokyo?"
+#   "Tell me about things to do in Paris"
+#   "What should I know about visiting Iceland?"
+#   "Where should I stay in Barcelona?"
+#
+{% endif %}
+# The LLM handles variations, synonyms, and natural phrasing automatically.
+# ==================================================================================

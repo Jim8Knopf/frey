@@ -1,0 +1,175 @@
+#!/bin/bash
+# Frey Docker Control Script
+# Smart Docker container management for voice assistant
+# Automatically discovers services - no hardcoded mappings!
+
+set -e
+
+ACTION="$1"
+SERVICE_INPUT="$2"
+
+# Protected services (cannot be stopped via voice)
+PROTECTED_SERVICES=("homeassistant" "ollama" "piper" "wyoming-whisper" "openwakeword" "traefik")
+
+# Find container by fuzzy name matching
+find_container() {
+    local search="$1"
+    local search_lower=$(echo "$search" | tr '[:upper:]' '[:lower:]' | tr -d ' -_')
+
+    # Get all container names
+    local containers=$(docker ps -a --format '{{.Names}}')
+
+    # Try exact match first (case insensitive)
+    while IFS= read -r container; do
+        local container_lower=$(echo "$container" | tr '[:upper:]' '[:lower:]')
+        if [[ "$container_lower" == "$search_lower" ]]; then
+            echo "$container"
+            return 0
+        fi
+    done <<< "$containers"
+
+    # Try partial match (search term contained in container name)
+    while IFS= read -r container; do
+        local container_lower=$(echo "$container" | tr '[:upper:]' '[:lower:]' | tr -d '-_')
+        if [[ "$container_lower" == *"$search_lower"* ]]; then
+            echo "$container"
+            return 0
+        fi
+    done <<< "$containers"
+
+    # Not found
+    return 1
+}
+
+# Check if service is protected
+is_protected() {
+    local service="$1"
+    for protected in "${PROTECTED_SERVICES[@]}"; do
+        if [[ "$service" == "$protected" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Get container status
+get_status() {
+    local service="$1"
+    if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
+        echo "running"
+    elif docker ps -a --format '{{.Names}}' | grep -q "^${service}$"; then
+        echo "stopped"
+    else
+        echo "not_found"
+    fi
+}
+
+# List running services
+list_services() {
+    local running=$(docker ps --format '{{.Names}}' | wc -l)
+    local total=$(docker ps -a --format '{{.Names}}' | wc -l)
+    echo "Running: $running of $total containers"
+    echo ""
+    docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | head -20
+}
+
+# Main logic
+case "$ACTION" in
+    start)
+        # Find container
+        SERVICE=$(find_container "$SERVICE_INPUT")
+        if [[ -z "$SERVICE" ]]; then
+            echo "Error: No container found matching '$SERVICE_INPUT'"
+            exit 1
+        fi
+
+        STATUS=$(get_status "$SERVICE")
+        if [[ "$STATUS" == "running" ]]; then
+            echo "$SERVICE is already running"
+            exit 0
+        else
+            docker start "$SERVICE" > /dev/null 2>&1
+            echo "Started $SERVICE"
+        fi
+        ;;
+
+    stop)
+        # Find container
+        SERVICE=$(find_container "$SERVICE_INPUT")
+        if [[ -z "$SERVICE" ]]; then
+            echo "Error: No container found matching '$SERVICE_INPUT'"
+            exit 1
+        fi
+
+        if is_protected "$SERVICE"; then
+            echo "Error: Cannot stop protected service '$SERVICE'"
+            exit 1
+        fi
+
+        STATUS=$(get_status "$SERVICE")
+        if [[ "$STATUS" == "stopped" ]]; then
+            echo "$SERVICE is already stopped"
+            exit 0
+        else
+            docker stop "$SERVICE" > /dev/null 2>&1
+            echo "Stopped $SERVICE"
+        fi
+        ;;
+
+    restart)
+        # Find container
+        SERVICE=$(find_container "$SERVICE_INPUT")
+        if [[ -z "$SERVICE" ]]; then
+            echo "Error: No container found matching '$SERVICE_INPUT'"
+            exit 1
+        fi
+
+        if is_protected "$SERVICE"; then
+            echo "Warning: Restarting protected service '$SERVICE'"
+        fi
+
+        docker restart "$SERVICE" > /dev/null 2>&1
+        echo "Restarted $SERVICE"
+        ;;
+
+    status)
+        if [[ -z "$SERVICE_INPUT" ]]; then
+            list_services
+        else
+            # Find container
+            SERVICE=$(find_container "$SERVICE_INPUT")
+            if [[ -z "$SERVICE" ]]; then
+                echo "No container found matching '$SERVICE_INPUT'"
+                exit 1
+            fi
+
+            STATUS=$(get_status "$SERVICE")
+            echo "$SERVICE is $STATUS"
+        fi
+        ;;
+
+    list)
+        list_services
+        ;;
+
+    *)
+        echo "Usage: $0 {start|stop|restart|status|list} [service_name]"
+        echo ""
+        echo "Service name can be:"
+        echo "  - Full container name (jellyfin)"
+        echo "  - Partial match (jelly)"
+        echo "  - Case insensitive (JELLYFIN)"
+        echo ""
+        echo "The script automatically finds the best matching container."
+        echo ""
+        echo "Examples:"
+        echo "  $0 start jellyfin"
+        echo "  $0 start jelly          # matches 'jellyfin'"
+        echo "  $0 stop sonarr"
+        echo "  $0 stop sonar           # matches 'sonarr'"
+        echo "  $0 restart torrent      # matches 'qbittorrent'"
+        echo "  $0 status jellyfin"
+        echo "  $0 list"
+        exit 1
+        ;;
+esac

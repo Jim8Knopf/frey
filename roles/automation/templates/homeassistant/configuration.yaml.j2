@@ -1,0 +1,44 @@
+# ==================================================================================
+# FREY HOME ASSISTANT CONFIGURATION
+# ==================================================================================
+# This is the main Home Assistant configuration file deployed via Ansible
+# It uses packages to organize configuration into logical groups
+
+# Default configuration
+default_config:
+
+# Enable packages (modular configuration)
+homeassistant:
+  packages: !include_dir_named packages/
+
+# HTTP configuration
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 172.16.0.0/12  # Docker networks
+    - 10.0.0.0/8     # Private networks
+{% if network.wifi.enabled | default(false) %}
+    - {{ network.wifi.subnet }}  # WiFi AP network
+{% endif %}
+
+# Text-to-speech
+tts:
+  - platform: google_translate
+
+# Automation and scripts
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# Recorder (limit database size)
+recorder:
+  purge_keep_days: 7
+  commit_interval: 30
+
+# Logger
+logger:
+  default: info
+  logs:
+    homeassistant.components.ollama: debug
+    homeassistant.components.wyoming: debug
+    custom_components.extended_openai_conversation: debug
