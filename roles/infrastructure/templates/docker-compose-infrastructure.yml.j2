@@ -89,9 +89,10 @@ services:
       - 172.19.0.2  # AdGuard on localdns network
     extra_hosts:
       "ca.{{ network.domain_name }}": "127.0.0.1"  # Required for health check
-      # Map all *.frey domains to Traefik's IP on the proxy network for ACME validation
+      # Map all *.frey domains to Traefik's IP on infrastructure_network for ACME HTTP-01 validation
+      # Both Step-CA and Traefik are on this network, so HTTP connections work
 {% for host_name in dns_hosts.values %}
-      "{{ host_name }}": "172.20.0.2"  # Traefik on proxy network
+      "{{ host_name }}": "172.20.0.4"  # Traefik on infrastructure_network
 {% endfor %}
     environment:
       - DOCKER_STEPCA_INIT_NAME={{ infrastructure.services.step_ca.ca_name }}

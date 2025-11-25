@@ -17,6 +17,10 @@ services:
       # Admin credentials
       LLDAP_LDAP_USER_DN: "{{ authentication.services.lldap.admin_username }}"
       LLDAP_LDAP_USER_PASS: "{{ lldap_admin_password }}"
+{% if authentication.services.lldap.force_password_reset | default(false) %}
+      # Optional: force-reset admin password (use for one run only)
+      LLDAP_FORCE_LDAP_USER_PASS_RESET: "true"
+{% endif %}
 
       # JWT secret for web UI authentication
       LLDAP_JWT_SECRET: "{{ lldap_jwt_secret }}"

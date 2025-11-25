@@ -97,6 +97,9 @@ services:
 {% if service_name == 'jellyfin' %}
       auth_network: {}  # Required for LLDAP authentication
 {% endif %}
+{% if service_name == 'audiobookshelf' %}
+      auth_network: {}  # Required for Authelia OIDC authentication
+{% endif %}
     ports:
 {% if service_config.ports is defined %}
 {% for port in service_config.ports %}

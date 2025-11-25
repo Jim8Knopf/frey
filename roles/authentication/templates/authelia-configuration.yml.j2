@@ -79,15 +79,60 @@ access_control:
   default_policy: deny
 
   rules:
-    # Allow access to all services for authenticated users in allowed groups
+    # Admin users have access to everything
     - domain:
         - "*.{{ network.domain_name }}"
       policy: {{ authentication.services.authelia.default_policy }}
       subject:
-        - "group:admin_users"
-        - "group:media_users"
-        - "group:monitoring_users"
-        - "group:automation_users"
+        - "group:admin"
+
+    # Regular users can access media services
+    - domain:
+        - "jellyfin.{{ network.domain_name }}"
+        - "audiobookshelf.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:user"
+        - "group:media"
+
+    # Guest users can access media services (read-only enforced by service)
+    - domain:
+        - "jellyfin.{{ network.domain_name }}"
+        - "audiobookshelf.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:guest"
+
+    # Photo users can access Immich
+    - domain:
+        - "immich.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:photo"
+        - "group:user"
+
+    # Monitoring users can access monitoring services
+    - domain:
+        - "grafana.{{ network.domain_name }}"
+        - "prometheus.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:monitoring"
+
+    # Automation users can access automation services
+    - domain:
+        - "n8n.{{ network.domain_name }}"
+        - "openwebui.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:automation"
+
+    # Cookbook users can access Mealie
+    - domain:
+        - "cookbook.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:cookbook"
 
     # Public access to landing page
     - domain:
@@ -111,7 +156,7 @@ identity_providers:
     # Lifespans
     lifespans:
       access_token: 1h
-      authorize_code: 1m
+      authorize_code: 5m
       id_token: 1h
       refresh_token: 90m
 
@@ -166,5 +211,8 @@ identity_providers:
           - query
           - fragment
         userinfo_signed_response_alg: none
+{% if client.name == 'immich' %}
+        token_endpoint_auth_method: client_secret_post
+{% endif %}
 
 {% endfor %}

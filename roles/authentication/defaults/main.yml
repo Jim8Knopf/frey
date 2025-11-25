@@ -48,10 +48,13 @@ authentication:
       redirect_uris:
         - "https://audiobookshelf.{{ network.domain_name }}/auth/openid/callback"
         - "https://audiobookshelf.{{ network.domain_name }}/auth/openid/mobile-redirect"
+        - "https://audiobookshelf.{{ network.domain_name }}/audiobookshelf/auth/openid/callback"
+        - "https://audiobookshelf.{{ network.domain_name }}/audiobookshelf/auth/openid/mobile-redirect"
       scopes:
         - openid
         - email
         - profile
+        - groups
 
     - name: grafana
       description: "Grafana Monitoring"
@@ -75,7 +78,8 @@ authentication:
     - name: mealie
       description: "Mealie Recipe Manager"
       redirect_uris:
-        - "https://mealie.{{ network.domain_name }}/login"
+        - "https://cookbook.{{ network.domain_name }}/login"
+        - "https://cookbook.{{ network.domain_name }}/login/oidc/redirect"
       scopes:
         - openid
         - email
@@ -93,11 +97,19 @@ authentication:
 
   # LDAP groups for service access control
   ldap_groups:
-    - name: media_users
-      description: "Access to media services (Jellyfin, Audiobookshelf)"
-    - name: admin_users
+    - name: admin
       description: "Administrative access to all services"
-    - name: monitoring_users
+    - name: user
+      description: "Regular user access (required for Audiobookshelf)"
+    - name: guest
+      description: "Read-only guest access (for Audiobookshelf)"
+    - name: media
+      description: "Access to media services (Jellyfin, Audiobookshelf)"
+    - name: photo
+      description: "Access to photo services (Immich)"
+    - name: cookbook
+      description: "Access to cookbook/recipe manager (Mealie)"
+    - name: monitoring
       description: "Access to monitoring services (Grafana)"
-    - name: automation_users
+    - name: automation
       description: "Access to automation services"

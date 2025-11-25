@@ -36,6 +36,14 @@
     mode: '0600'
   notify: Restart authelia
 
+- name: Template LLDAP configuration
+  template:
+    src: lldap_config.toml.j2
+    dest: "{{ storage.appdata_dir }}/lldap/lldap_config.toml"
+    owner: "{{ authentication.user.name }}"
+    group: "{{ authentication.group.name }}"
+    mode: '0600'
+
 - name: Template docker-compose file for authentication stack
   template:
     src: docker-compose-authentication.yml.j2
@@ -101,27 +109,106 @@
       delay: 10
       changed_when: false
 
+    - name: Check LLDAP admin login
+      ansible.builtin.uri:
+        url: "http://localhost:{{ authentication.services.lldap.port }}/auth/simple/login"
+        method: POST
+        headers:
+          Content-Type: application/json
+        body_format: json
+        body:
+          username: "{{ authentication.services.lldap.admin_username }}"
+          password: "{{ lldap_admin_password }}"
+        status_code: 200
+      register: lldap_login_check
+      changed_when: false
+      failed_when: false
+
+    - name: Reset LLDAP admin password when login fails
+      block:
+        - name: Stop LLDAP container (if running)
+          community.docker.docker_container:
+            name: lldap
+            state: stopped
+          ignore_errors: true
+
+        - name: Run one-time LLDAP admin password reset
+          ansible.builtin.command: >
+            docker run --rm
+            -v {{ storage.appdata_dir }}/lldap:/data
+            -e LLDAP_LDAP_BASE_DN="{{ authentication.services.lldap.base_dn }}"
+            -e LLDAP_LDAP_USER_DN="{{ authentication.services.lldap.admin_username }}"
+            -e LLDAP_LDAP_USER_PASS="{{ lldap_admin_password }}"
+            -e LLDAP_JWT_SECRET="{{ lldap_jwt_secret }}"
+            -e LLDAP_KEY_SEED="{{ lldap_key_seed }}"
+            lldap/lldap:{{ authentication.services.lldap.version }}
+            run --config-file /data/lldap_config.toml --force-ldap-user-pass-reset true
+          register: lldap_reset_result
+          changed_when: true
+          failed_when:
+            - lldap_reset_result.rc != 0
+            - "lldap_reset_result.rc != 1 or 'Successfully (re)set password' not in lldap_reset_result.stdout"
+
+        - name: Start LLDAP container after reset
+          community.docker.docker_container:
+            name: lldap
+            state: started
+
+        - name: Wait for LLDAP to be healthy after reset
+          command: docker inspect --format='{% raw %}{{.State.Health.Status}}{% endraw %}' lldap
+          register: lldap_health_after_reset
+          until: lldap_health_after_reset.stdout == 'healthy'
+          retries: 10
+          delay: 5
+          changed_when: false
+      when: lldap_login_check.status | default(0) != 200
+
+    - name: Copy LLDAP group creation script to remote
+      ansible.builtin.copy:
+        src: create_lldap_groups.py
+        dest: /tmp/create_lldap_groups.py
+        mode: '0755'
+
+    - name: Install Python requests package
+      ansible.builtin.package:
+        name: python3-requests
+        state: present
+
+    - name: Create LLDAP groups
+      ansible.builtin.shell:
+        cmd: >
+          python3 /tmp/create_lldap_groups.py
+          http://localhost:17170
+          admin
+          '{{ lldap_admin_password }}'
+          {{ authentication.ldap_groups | map(attribute='name') | join(' ') }}
+      register: lldap_groups_result
+      changed_when: (lldap_groups_result.stdout | from_json).changed
+      failed_when: lldap_groups_result.rc != 0
+
+    - name: Display group results
+      ansible.builtin.debug:
+        msg: "{{ (lldap_groups_result.stdout | from_json).msg }}"
+      when: lldap_groups_result.stdout | default('') != ''
+
   rescue:
-    - name: Capture LLDAP container logs on failure
-      command: docker logs lldap --tail 100
-      register: lldap_logs
+    - name: Get recent logs
+      command: "docker logs {{ item }} --tail 20"
+      register: container_logs
       failed_when: false
+      loop:
+        - lldap
+        - authelia
 
-    - name: Capture Authelia container logs on failure
-      command: docker logs authelia --tail 100
-      register: authelia_logs
-      failed_when: false
-
-    - name: Display LLDAP logs
+    - name: Show error summary
       debug:
-        var: lldap_logs.stdout_lines
-      when: lldap_logs is defined
-
-    - name: Display Authelia logs
-      debug:
-        var: authelia_logs.stdout_lines
-      when: authelia_logs is defined
+        msg: |
+          Authentication deployment failed. Recent logs:
+          {% for result in container_logs.results %}
+          === {{ result.item }} ===
+          {{ result.stdout_lines | last | default('No output') }}
+          {% endfor %}
 
     - name: Fail deployment
       fail:
-        msg: "Authentication stack deployment failed. Check logs above."
+        msg: "Check logs: docker logs lldap && docker logs authelia"

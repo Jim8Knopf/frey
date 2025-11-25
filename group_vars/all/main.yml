@@ -129,9 +129,11 @@ network:
     - name: portainer
     - name: dockge
     - name: auth  # Authelia/LLDAP SSO
+    - name: lldap  # LDAP server
     # Monitoring services
     - name: grafana
     - name: prometheus
+    - name: loki
     - name: metrics     # node-exporter
     - name: cadvisor
     - name: speedtest
@@ -217,6 +219,26 @@ security:
     ], [])) +
     (features.voice_assistant | ternary([
       ports.voice_assistant.piper
+    ], []))
+    }}"
+
+  # Dynamic TCP firewall ports (public access):
+  # - qbittorrent.listen_port (51234): Torrent traffic (peer connections)
+  firewall_public_tcp_ports: "{{
+    (features.media | ternary([
+      media.services.qbittorrent.listen_port
+    ], []))
+    }}"
+
+  # Dynamic UDP firewall ports:
+  # - qbittorrent.listen_port (51234): Torrent traffic
+  # - 1900: UPnP SSDP service discovery
+  # - 5351: NAT-PMP port mapping
+  firewall_udp_ports: "{{
+    (features.media | ternary([
+      media.services.qbittorrent.listen_port,
+      1900,
+      5351
     ], []))
     }}"
 
@@ -732,31 +754,8 @@ media:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
         - "{{ media.dir }}/movies:/data/movies"
-      # LDAP Configuration (enabled when features.authentication is true)
-      # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
-      # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
-      # Uses internal Docker service name for reliable communication across networks
-      # NOTE: Configuration is managed via XML file (plugin doesn't support env vars)
-      ldap_server: "lldap"           # Direct connection to LLDAP container
-      ldap_port: 3890                # LLDAP standard port
-      ldap_use_ssl: false            # No SSL for internal Docker network communication
-      ldap_use_starttls: false       # No STARTTLS needed
-      ldap_skip_ssl_verify: false    # N/A when SSL disabled
-      ldap_base_dn: "dc={{ network.domain_name }},dc=local"
-      # LLDAP uses uid as the RDN for users in ou=people
-      ldap_bind_user: "uid=admin,ou=people,dc={{ network.domain_name }},dc=local"
-      ldap_search_filter: "(memberOf=cn=media_users,ou=groups,dc={{ network.domain_name }},dc=local)"
-      ldap_admin_base_dn: ""         # Same as ldap_base_dn (empty uses default)
-      ldap_admin_filter: "(memberOf=cn=admin_users,ou=groups,dc={{ network.domain_name }},dc=local)"
-      # User creation and library access settings
-      ldap_create_users: true        # Auto-create Jellyfin users on first LDAP login
-      ldap_enable_all_folders: true  # Grant LDAP users access to all media libraries
-      # LDAP attribute mappings (standard LLDAP schema)
-      ldap_search_attributes: "uid, cn, mail, displayName"
-      ldap_uid_attribute: "uid"
-      ldap_username_attribute: "uid"
-      ldap_password_attribute: "userPassword"
-      ldap_allow_pass_change: false  # Users change passwords in LLDAP web UI, not Jellyfin
+      # LDAP Authentication: Manual configuration only (not managed by Ansible)
+      # See docs/jellyfin-ldap-setup.md for complete setup instructions
     
     jellyseerr:
       enabled: true
@@ -766,11 +765,12 @@ media:
     qbittorrent:
       enabled: true
       version: "latest"
-      port: 8080
-      ports: 
-        - "8080:8080"    # Web UI
-        - "51234:51234/tcp"    # Torrent Port
-        - "51234:51234/udp"    # Torrent Port
+      port: 8080           # Web UI port
+      listen_port: 51234   # Torrent protocol port (TCP/UDP)
+      ports:
+        - "8080:8080"          # Web UI
+        - "51234:51234/tcp"    # Torrent Port TCP
+        - "51234:51234/udp"    # Torrent Port UDP
 
     nzbget:
       enabled: true
@@ -876,7 +876,7 @@ immich:
       # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
       oidc_issuer_url: "{{ network.authelia_public_url }}"
       oidc_client_id: "immich"
-      oidc_scope: "openid profile email"
+      oidc_scope: "openid profile email groups"
       oidc_button_text: "Login with SSO"
       oidc_auto_register: true
       oidc_auto_launch: false
@@ -927,8 +927,8 @@ cookbook:
       oidc_enabled: true
       oidc_client_id: "mealie"
       oidc_configuration_url: "{{ network.authelia_public_url }}/.well-known/openid-configuration"
-      oidc_user_group: "media_users"
-      oidc_admin_group: "admin_users"
+      oidc_user_group: "cookbook"
+      oidc_admin_group: "admin"
       oidc_auto_redirect: false
       oidc_provider_name: "Authelia"
       oidc_signup_enabled: true

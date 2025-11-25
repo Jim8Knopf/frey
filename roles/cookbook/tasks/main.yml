@@ -92,6 +92,12 @@
     group: "{{ cookbook.group.name }}"
     mode: '0644'
 
+- name: Ensure cookbook network exists
+  community.docker.docker_network:
+    name: cookbook_network
+    state: present
+    driver: bridge
+
 - name: Validate Docker Compose file syntax
   ansible.builtin.command:
     cmd: docker compose -f {{ storage.stacks }}/cookbook/docker-compose.yml config

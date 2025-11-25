@@ -407,6 +407,41 @@
     - ufw
     - wifi_ap
 
+# DYNAMIC PUBLIC TCP PORTS - Publicly accessible TCP ports (e.g., torrent traffic)
+# Configured via security.firewall_public_tcp_ports variable
+- name: Allow public TCP ports for services
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    comment: "PUBLIC: TCP port {{ item }}"
+  loop: "{{ security.firewall_public_tcp_ports }}"
+  when:
+    - enable_ufw | default(true)
+    - security.firewall_public_tcp_ports is defined
+    - security.firewall_public_tcp_ports | length > 0
+  tags:
+    - firewall
+    - ufw
+
+# DYNAMIC UDP PORTS - Service-specific UDP ports
+# Configured via security.firewall_udp_ports variable
+- name: Allow UDP ports for services
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: udp
+    comment: "SERVICE: UDP port {{ item }}"
+  loop: "{{ security.firewall_udp_ports }}"
+  when:
+    - enable_ufw | default(true)
+    - security.firewall_udp_ports is defined
+    - security.firewall_udp_ports | length > 0
+  tags:
+    - firewall
+    - ufw
+    - services
+
 # TRUSTED NETWORKS - Full access to all services (including container ports)
 # Home network and auto-detected networks can access services directly
 - name: Allow all traffic from trusted networks (configured)
@@ -542,41 +577,9 @@
     - ufw
     - ssh_safety
 
-- name: Allow Docker traffic through UFW
-  ufw:
-    rule: allow
-    port: "{{ media.services.qbittorrent.listen_port | default(51234) }}"
-    proto: "{{ item }}"
-    comment: "DOCKER: qBittorrent torrent traffic"
-  loop:
-    - tcp
-    - udp
-
-# UPNP/SSDP - Universal Plug and Play for automatic port forwarding
-# Required for qBittorrent and other services to automatically configure router NAT
-- name: Allow UPnP/SSDP service discovery
-  community.general.ufw:
-    rule: allow
-    port: '1900'
-    proto: udp
-    comment: "UPNP: Service discovery (SSDP) for automatic port forwarding"
-  when: enable_ufw | default(true)
-  tags:
-    - firewall
-    - ufw
-    - upnp
-
-- name: Allow NAT-PMP port mapping
-  community.general.ufw:
-    rule: allow
-    port: '5351'
-    proto: udp
-    comment: "UPNP: NAT-PMP alternative port mapping protocol"
-  when: enable_ufw | default(true)
-  tags:
-    - firewall
-    - ufw
-    - upnp
+# NOTE: qBittorrent UDP/TCP ports, UPnP (1900), and NAT-PMP (5351) are now
+# configured via security.firewall_udp_ports in group_vars/all/main.yml
+# See "Allow UDP ports for services" task above for dynamic rule application
 
 # ------------------------------------------------------------------------------
 # 5. NAT CONFIGURATION (Internet Passthrough for WiFi AP)

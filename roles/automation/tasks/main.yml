@@ -42,7 +42,46 @@
     group: "{{ automation.group.name }}"
     mode: '0644'
 
+- name: Check docker compose JSON support for automation stack
+  ansible.builtin.command:
+    cmd: docker compose --ansi never --progress json --project-directory "{{ storage.stacks }}/automation" images --format json
+  register: automation_compose_json_check
+  changed_when: false
+  failed_when: false
+
+- name: Determine compose JSON support
+  ansible.builtin.set_fact:
+    automation_compose_json_supported: >-
+      {{ automation_compose_json_check.rc == 0 and
+         (automation_compose_json_check.stdout | default('') | trim | regex_search('^[\\[{]')) is not none }}
+
 - name: Start automation stack containers using compose
   community.docker.docker_compose_v2:
     project_src: "{{ storage.stacks }}/automation"
     state: present
+  register: automation_compose_result
+  when: automation_compose_json_supported
+
+- name: Start automation stack containers with compose CLI fallback
+  ansible.builtin.command:
+    cmd: docker compose --ansi never --project-directory "{{ storage.stacks }}/automation" up -d --quiet-pull
+  register: automation_compose_cli_result
+  changed_when: >-
+    'Recreated' in automation_compose_cli_result.stdout or
+    'Created' in automation_compose_cli_result.stdout or
+    'Pulled' in automation_compose_cli_result.stdout or
+    'Built' in automation_compose_cli_result.stdout or
+    'Creating' in automation_compose_cli_result.stdout or
+    'Starting' in automation_compose_cli_result.stdout or
+    'Restarting' in automation_compose_cli_result.stdout
+  failed_when: automation_compose_cli_result.rc != 0
+  when: not automation_compose_json_supported
+
+- name: Warn when compose CLI fallback was used
+  ansible.builtin.debug:
+    msg: >-
+      Used docker compose CLI fallback because JSON output from
+      `docker compose images` is not supported. Consider upgrading the
+      Docker compose plugin (>= 2.29) so the docker_compose_v2 module can
+      be used directly.
+  when: automation_compose_cli_result is defined

@@ -86,7 +86,7 @@ services:
 networks:
   cookbook:
     name: cookbook_network
-    driver: bridge
+    external: true
   proxy:
     external: true
   localdns:

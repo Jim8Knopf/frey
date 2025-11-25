@@ -117,14 +117,23 @@
     content: |
       [Unit]
       Description=PulseAudio System Daemon
-      After=sound.target bluetooth.target
-      Requires=bluetooth.target
+      After=sound.target bluetooth.service
+      Requires=bluetooth.service
 
       [Service]
-      Type=notify
-      ExecStart=/usr/bin/pulseaudio --system --disallow-module-loading=false
+      Type=simple
+      User=pulse
+      Group=pulse
+      SupplementaryGroups=audio bluetooth pulse-access
+      RuntimeDirectory=pulse
+      RuntimeDirectoryMode=0755
+      Environment="PULSE_RUNTIME_PATH=/run/pulse" "PULSEAUDIO_SYSTEM_START=1"
+      ExecStart=/usr/bin/pulseaudio --system --daemonize=no --log-target=journal --disallow-exit=yes --disallow-module-loading=no
       Restart=on-failure
       RestartSec=5
+      LimitRTPRIO=9
+      LimitRTTIME=infinity
+      Nice=-11
 
       [Install]
       WantedBy=multi-user.target
