@@ -175,7 +175,7 @@
     # ==========================================================================
 
     # --------------------------------------------------------------------------
-    # Infrastructure Stack (Traefik, Authentik, Portainer, Dockge, AdGuard)
+    # Infrastructure Stack (Traefik, Portainer, Dockge, AdGuard, Step-CA)
     # --------------------------------------------------------------------------
     # Deploys: Core infrastructure services that everything else depends on
     #
@@ -184,12 +184,6 @@
     #       Routes http://<service>.frey to Docker containers
     #       Automatic service discovery via Docker labels
     #       Port 80/443 (HTTP/HTTPS), Dashboard: 8082
-    #
-    #   - Authentik (Single Sign-On):
-    #       OAuth2/OIDC provider (Grafana, Home Assistant, Immich, Audiobookshelf)
-    #       LDAP provider (Jellyfin)
-    #       User/group management with blueprints
-    #       Port 9300, URL: http://auth.frey
     #
     #   - Portainer (Container Management):
     #       Web UI for Docker container management
@@ -230,6 +224,38 @@
     - role: landing_page
       tags: [landing, infrastructure]
       when: features.landing_page | default(false)
+
+    # ==========================================================================
+    # AUTHENTICATION LAYER - SSO & User Management
+    # ==========================================================================
+
+    # --------------------------------------------------------------------------
+    # Authentication Stack (LLDAP + Authelia)
+    # --------------------------------------------------------------------------
+    # Deploys: Lightweight authentication services
+    #
+    # Services:
+    #   - LLDAP (LDAP Directory):
+    #       Lightweight user/group management
+    #       Simple web UI for user creation
+    #       LDAP server for Jellyfin authentication
+    #       Port 17170, URL: http://lldap.frey
+    #       LDAP Port: 3890
+    #
+    #   - Authelia (SSO Portal):
+    #       OIDC/OAuth2 provider for services
+    #       Connects to LLDAP for user authentication
+    #       Single sign-on for 6+ services
+    #       Port 9091, URL: http://auth.frey
+    #
+    # Replaces: Authentik (too resource-heavy, unreliable IaC)
+    # User/Group: auth_manager (uid: 3000)
+    # Configuration: authentication.* in main.yml
+    # IaC: Fully configured via Ansible templates (no manual steps!)
+    # --------------------------------------------------------------------------
+    - role: authentication
+      tags: [authentication, auth, sso]
+      when: features.authentication
 
     # ==========================================================================
     # SERVICE LAYER - Application Stacks
@@ -577,20 +603,28 @@
 # DEPLOYMENT COMPLETE
 # ==============================================================================
 # Next Steps:
-#   1. Access http://auth.frey to create Authentik admin account
-#   2. Configure SSO for services (docs/POST_INSTALLATION_MANUAL_STEPS.md)
+#   1. Access http://lldap.frey to create users (no manual SSO configuration needed!)
+#   2. Create user → assign to groups → services automatically work with SSO
 #   3. Access services via http://<service>.frey domains
 #   4. (Optional) Enable WiFi roaming (docs/WIFI_ROAMING_SETUP.md)
+#
+# User Management:
+#   - LLDAP Web UI: http://lldap.frey:17170
+#   - Default admin: admin / (check secrets.yml for password)
+#   - Create users, assign to groups (media_users, admin_users, etc.)
+#   - All OIDC integration is automatic via Authelia configuration!
 #
 # Documentation:
 #   - Quick Setup: docs/QUICK_SETUP.md
 #   - User Guide: docs/USER_GUIDE.md
+#   - Auth Comparison: docs/AUTH_SOLUTION_COMPARISON.md
 #   - Troubleshooting: docs/USER_GUIDE.md#troubleshooting
 #
 # Service URLs:
 #   - Traefik Dashboard: http://traefik.frey:8082
-#   - Authentik SSO: http://auth.frey
-#   - Grafana: https://grafana.frey
+#   - LLDAP User Management: http://lldap.frey
+#   - Authelia SSO: http://auth.frey
+#   - Grafana: http://grafana.frey
 #   - Home Assistant: http://homeassistant.frey
 #   - Jellyfin: http://jellyfin.frey
 #   - Immich: http://immich.frey

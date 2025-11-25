@@ -150,12 +150,12 @@ services:
       # Works offline via AdGuard local DNS resolution
       - GF_SERVER_ROOT_URL=https://grafana.{{ network.domain_name }}
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
-{% if infrastructure.services.authentik.enabled | default(false) %}
-      # OIDC/SSO Authentication with Authentik (uses internal Docker service name)
+{% if features.authentication | default(false) %}
+      # OIDC/SSO Authentication with Authelia (uses internal Docker service name)
       - GF_AUTH_GENERIC_OAUTH_ENABLED=true
-      - GF_AUTH_GENERIC_OAUTH_NAME=Authentik
+      - GF_AUTH_GENERIC_OAUTH_NAME=Authelia
       - GF_AUTH_GENERIC_OAUTH_CLIENT_ID={{ monitoring.grafana.oidc_client_id }}
-      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET={{ grafana_oidc_client_secret }}
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET={{ grafana_oidc_secret }}
       - GF_AUTH_GENERIC_OAUTH_SCOPES={{ monitoring.grafana.oidc_scopes }}
       - GF_AUTH_GENERIC_OAUTH_AUTH_URL={{ monitoring.grafana.oidc_auth_url }}
       - GF_AUTH_GENERIC_OAUTH_TOKEN_URL={{ monitoring.grafana.oidc_token_url }}
@@ -163,7 +163,7 @@ services:
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH={{ monitoring.grafana.oidc_role_attribute_path }}
       - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
       - GF_AUTH_SIGNOUT_REDIRECT_URL={{ monitoring.grafana.oidc_auth_url }}
-      # Skip TLS certificate verification for self-signed Authentik certificate
+      # Skip TLS certificate verification for self-signed Step-CA certificate
       - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true
 {% endif %}
     networks:
@@ -302,6 +302,7 @@ services:
   {% endif %}
 
   {% if monitoring['postgres-exporter'].enabled | default(false) -%}
+{%   if authentik_db_user is defined and authentik_postgres_password is defined -%}
   postgres-exporter-authentik:
     image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
     container_name: postgres-exporter-authentik
@@ -313,6 +314,9 @@ services:
       - infrastructure_network  # Access to Authentik DB
     depends_on:
       - prometheus
+{%   else -%}
+  # Authentik not configured: postgres-exporter-authentik disabled
+{%   endif %}
 
 {%   if immich_db_password is defined %}
   postgres-exporter-immich:
@@ -330,6 +334,7 @@ services:
   # immich_db_password not defined: postgres-exporter-immich disabled (see roles/monitoring/tasks warning)
 {%   endif %}
 
+{%   if mealie_db_password is defined %}
   postgres-exporter-mealie:
     image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
     container_name: postgres-exporter-mealie
@@ -341,9 +346,13 @@ services:
       - cookbook_network  # Access to Mealie DB
     depends_on:
       - prometheus
+{%   else %}
+  # mealie_db_password not defined: postgres-exporter-mealie disabled (see roles/monitoring/tasks warning)
+{%   endif %}
   {% endif %}
 
   {% if monitoring['redis-exporter'].enabled | default(false) -%}
+{%   if authentik_db_user is defined -%}
   redis-exporter:
     image: "{{ monitoring['redis-exporter'].image }}:{{ monitoring['redis-exporter'].version }}"
     container_name: redis-exporter
@@ -355,6 +364,9 @@ services:
       - infrastructure_network  # Access to Authentik Redis
     depends_on:
       - prometheus
+{%   else -%}
+  # Authentik not configured: redis-exporter disabled (LLDAP/Authelia don't use Redis)
+{%   endif %}
   {% endif %}
 
   {% if monitoring['adguard-exporter'].enabled | default(false) -%}

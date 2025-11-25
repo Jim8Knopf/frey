@@ -53,7 +53,7 @@ providers:
     watch: true
 
 log:
-  level: INFO  # Change to DEBUG for troubleshooting
+  level: DEBUG  # Enabled for ACME troubleshooting
 
 accessLog: {}  # Enable access logs
 
@@ -70,5 +70,5 @@ metrics:
 # Provide a default TLS certificate (wildcard) as fallback
 tls:
   certificates:
-    - certFile: /certificates/frey.crt
-      keyFile: /certificates/frey.key
+    - certFile: /certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}
+      keyFile: /certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_key }}

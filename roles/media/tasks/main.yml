@@ -97,6 +97,48 @@
     - media.services.jellyfin.enabled | default(false)
   notify: Restart Jellyfin
 
+- name: Warn when Audiobookshelf API token is missing (disables audiobook-bridge integration)
+  ansible.builtin.debug:
+    msg: "audiobookshelf_api_token not defined — audiobook-bridge will deploy without API token. Add it to group_vars/all/secrets.yml to enable Audiobookshelf sync. Get token from Audiobookshelf Settings → Users → [Your User] → API Tokens."
+  when:
+    - media.services.audiobook_bridge.enabled | default(false)
+    - audiobookshelf_api_token is not defined
+
+# ==============================================================================
+# STEP-CA CERTIFICATE MOUNT FIX
+# ==============================================================================
+# Fix broken directory mounts caused by Docker creating directories when
+# certificate files don't exist yet. This happens when containers start
+# before Step-CA has generated certificates.
+
+- name: Check Step-CA root certificate file status
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+  register: step_ca_cert_check
+  when: media.services.audiobookshelf.enabled | default(false)
+
+- name: Remove broken Step-CA cert directory mount (Docker created dir instead of file)
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+    state: absent
+  when:
+    - media.services.audiobookshelf.enabled | default(false)
+    - step_ca_cert_check.stat.exists | default(false)
+    - step_ca_cert_check.stat.isdir | default(false)
+
+- name: Warn when Step-CA certificate not available for Audiobookshelf OIDC
+  ansible.builtin.debug:
+    msg: "Step-CA certificate not found — Audiobookshelf will deploy without CA trust. OIDC to https://auth.{{ network.domain_name }} may fail. Run playbook again after Step-CA initializes to add certificate mount."
+  when:
+    - media.services.audiobookshelf.enabled | default(false)
+    - infrastructure.services.step_ca.enabled | default(false)
+    - not (step_ca_cert_check.stat.exists | default(false) and step_ca_cert_check.stat.isreg | default(false))
+
+- name: Set fact for Step-CA cert availability
+  ansible.builtin.set_fact:
+    step_ca_cert_available: "{{ step_ca_cert_check.stat.exists | default(false) and step_ca_cert_check.stat.isreg | default(false) }}"
+  when: media.services.audiobookshelf.enabled | default(false)
+
 - name: Deploy media stack compose file
   ansible.builtin.template:
     src: docker-compose-media.yml.j2
@@ -160,98 +202,24 @@
     - qbittorrent_container_info.exists is defined
     - qbittorrent_container_info.exists
 
-- name: Disable qBittorrent proxy if VPN is disabled
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^Proxy\\Profiles\\BitTorrent='
-    line: 'Proxy\Profiles\BitTorrent=false'
+- name: Ensure qBittorrent config directory exists
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0775'
   when: not media.vpn.enabled
-  ignore_errors: true
 
-- name: Ensure qBittorrent proxy is fully disabled (no VPN)
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^Preferences\\Connection\\ProxyType='
-    line: 'Preferences\Connection\ProxyType=0'
-    create: yes
+- name: Deploy optimized qBittorrent configuration (only if not exists)
+  ansible.builtin.template:
+    src: qBittorrent.conf.j2
+    dest: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0644'
+    force: no
   when: not media.vpn.enabled
-  ignore_errors: true
-
-- name: Disable proxy for peer connections (no VPN)
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^Preferences\\Connection\\ProxyPeerConnections='
-    line: 'Preferences\Connection\ProxyPeerConnections=false'
-    create: yes
-  when: not media.vpn.enabled
-  ignore_errors: true
-
-- name: Disable proxy only-for-torrents (no VPN)
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^Preferences\\Connection\\ProxyOnlyForTorrents='
-    line: 'Preferences\Connection\ProxyOnlyForTorrents=false'
-    create: yes
-  when: not media.vpn.enabled
-  ignore_errors: true
-
-- name: Ensure WebUI port is consistent
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^(Preferences\\WebUI\\Port|WebUI\\Port)='
-    line: 'Preferences\WebUI\Port={{ media.services.qbittorrent.port | default(8080) }}'
-    create: yes
-  ignore_errors: true
-
-- name: Ensure qBittorrent listen port is set
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^(BitTorrent\\Session\\Port|Session\\Port|Connection\\PortRangeMin)='
-    line: 'BitTorrent\Session\Port={{ media.services.qbittorrent.listen_port | default(51234) }}'
-    create: yes
-  ignore_errors: true
-
-- name: Disable random listen port (stability)
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^(BitTorrent\\Session\\UseRandomPort|Preferences\\Connection\\UseRandomPort)='
-    line: 'BitTorrent\Session\UseRandomPort=false'
-    create: yes
-  ignore_errors: true
-
-- name: Ensure anonymous mode is disabled (improves tracker compatibility)
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^(BitTorrent\\AnonymousMode)='
-    line: 'BitTorrent\AnonymousMode=false'
-    create: yes
-  ignore_errors: true
-
-- name: Clear any interface binding (Interface/Address/Name)
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^Preferences\\Connection\\(Interface|InterfaceName|InterfaceAddress)='
-    state: absent
-  ignore_errors: true
-
-- name: Clear any session interface binding
-  ansible.builtin.lineinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    regexp: '^BitTorrent\\Session\\(Interface|InterfaceName|InterfaceAddress)='
-    state: absent
-  ignore_errors: true
-
-- name: Ensure DHT/PeX/LSD and UPnP/NAT-PMP are enabled
-  ansible.builtin.blockinfile:
-    path: "{{ storage.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
-    marker: "# {mark} ANSIBLE MANAGED QBIT SETTINGS"
-    block: |
-      BitTorrent\DHT\Enabled=true
-      BitTorrent\PeX=true
-      BitTorrent\LSD=true
-      BitTorrent\Session\UseUPnP=true
-      BitTorrent\Session\UseNAT-PMP=true
-  ignore_errors: true
 
 - name: Start qBittorrent container after config modification
   community.docker.docker_container:
@@ -279,6 +247,89 @@
   failed_when: compose_validation.rc != 0
   changed_when: false
 
+- name: Ensure Step-CA root certificate is present for media mounts
+  block:
+    - name: Check Step-CA root certificate source
+      ansible.builtin.stat:
+        path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+      register: media_step_ca_src
+
+    - name: Remove invalid Step-CA root source when it's a directory
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+        state: absent
+        recurse: yes
+      when: media_step_ca_src.stat.isdir | default(false)
+
+    - name: Check Step-CA root certificate target
+      ansible.builtin.stat:
+        path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+      register: media_step_ca_dest
+
+    - name: Remove invalid Step-CA root target when it's a directory
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+        state: absent
+        recurse: yes
+      when: media_step_ca_dest.stat.isdir | default(false)
+
+    - name: Ensure Step-CA cert directory exists
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca/certs"
+        state: directory
+        owner: 1000
+        group: 1000
+        mode: '0755'
+
+    - name: Try exporting Step-CA root certificate when missing
+      ansible.builtin.command:
+        cmd: docker exec step-ca step ca root
+      register: media_step_ca_export
+      changed_when: false
+      failed_when: false
+      when:
+        - not media_step_ca_src.stat.exists | default(false)
+
+    - name: Write exported Step-CA root certificate when available
+      ansible.builtin.copy:
+        dest: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+        content: "{{ media_step_ca_export.stdout }}"
+        owner: "{{ infrastructure.user.name }}"
+        group: "{{ infrastructure.group.name }}"
+        mode: '0644'
+      when:
+        - not media_step_ca_src.stat.exists | default(false)
+        - media_step_ca_export.rc == 0
+        - media_step_ca_export.stdout is defined
+        - media_step_ca_export.stdout | length > 0
+
+    - name: Re-check Step-CA root certificate source
+      ansible.builtin.stat:
+        path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+      register: media_step_ca_src
+
+    - name: Copy Step-CA root certificate for media mounts
+      ansible.builtin.copy:
+        src: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+        dest: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+        owner: 1000
+        group: 1000
+        mode: '0644'
+        remote_src: true
+      when: media_step_ca_src.stat.exists | default(false)
+
+    - name: Fail early when Step-CA root certificate is missing
+      ansible.builtin.fail:
+        msg: "Step-CA root certificate missing at {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}. Run the infrastructure role to generate it, then re-run media."
+      when: not media_step_ca_src.stat.exists | default(false)
+
+    - name: Verify Step-CA root certificate is a file
+      ansible.builtin.stat:
+        path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
+      register: media_step_ca_verified
+      failed_when: not media_step_ca_verified.stat.isreg
+  when: media.services.audiobookshelf.enabled | default(false)
+
 - name: Start media stack with graceful error handling
   block:
     - name: Start media stack containers using compose
@@ -292,19 +343,36 @@
       delay: 30
 
   rescue:
-    - name: Handle compose failure - gather logs
-      ansible.builtin.command:
-        cmd: docker compose -f "{{ storage.stacks }}/media/docker-compose.yml" logs --tail=50
-      register: compose_logs
+    - name: Identify failed containers
+      ansible.builtin.shell: |
+        docker compose -f "{{ storage.stacks }}/media/docker-compose.yml" ps --format '{% raw %}{{.Service}} {{.State}}{% endraw %}' \
+        | awk '$2 != "running" {printf "%s(%s) ", $1, $2}' | sed 's/ $//'
+      register: failed_containers
       failed_when: false
 
-    - name: Display compose error details
+    - name: Extract concise error message from compose failure
+      ansible.builtin.set_fact:
+        error_summary: >-
+          {% if compose_result.msg is defined %}
+          {{ compose_result.msg | regex_search('error mounting.*', ignorecase=True) | default(compose_result.msg | truncate(200)) }}
+          {% else %}
+          Unknown deployment error
+          {% endif %}
+
+    - name: Show deployment error summary
       ansible.builtin.debug:
         msg: |
-          Media stack deployment failed. Recent logs:
-          {{ compose_logs.stdout }}
-      when: compose_logs.stdout is defined
+          ❌ Media stack deployment failed
 
-    - name: Fail with helpful message
+          Failed containers: {{ failed_containers.stdout | default('none identified') }}
+
+          Error: {{ error_summary }}
+
+          💡 Common fixes:
+             • Step-CA cert issue: Re-run playbook after infrastructure role completes
+             • Volume mount errors: Check 'docker ps -a' and remove broken containers
+             • Full logs: docker compose -f {{ storage.stacks }}/media/docker-compose.yml logs
+
+    - name: Fail with concise message
       ansible.builtin.fail:
-        msg: "Media stack deployment failed. Check the logs above and ensure all required directories exist."
+        msg: "Media deployment failed - see summary above"

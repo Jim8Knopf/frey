@@ -4,13 +4,13 @@
 # ================================
 features:
   infrastructure: true
-  landing_page: true
+  landing_page: false
   networking: true
   wifi_access_point: true
   media: true
   monitoring: true
   automation: true
-  authentication: true  # Authentik SSO - enable after initial setup
+  authentication: true  # Authelia/LLDAP SSO - enable after initial setup
   file_management: false
   immich: true
   homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
@@ -52,11 +52,11 @@ storage:
 network:
   domain_name: frey
   timezone: Australia/Hobart
-  # Authentik public URL for OAuth authorization (browser redirects)
+  # Authelia public URL for OAuth authorization (browser redirects)
   # Uses DNS via Traefik for clean OAuth flow (primary access method)
   # OAuth: grafana.frey → auth.frey → grafana.frey
   # Works offline via AdGuard local DNS resolution
-  authentik_public_url: "https://auth.{{ network.domain_name }}"
+  authelia_public_url: "https://auth.{{ network.domain_name }}"
   wifi:
     # Network identification
     ssid: "FreyHub"                 # Network name visible to clients
@@ -74,7 +74,7 @@ network:
     # Interface configuration
     interface: "wlan1"             # WiFi interface for AP mode
     client_interface: "wlan0"      # Client interface for roaming
-    client_interface_ip: "192.168.0.252" #TODO Client interface IP (for authentik)
+    client_interface_ip: "192.168.0.252"
     nm_transition_delay: 5         # Seconds to wait during NetworkManager→dhcpcd transition (on fresh installs)
     roaming:
       enabled: true  # Enable wpa_supplicant with known_networks and priorities
@@ -128,10 +128,12 @@ network:
     - name: traefik
     - name: portainer
     - name: dockge
-    - name: auth  # Authentik SSO
+    - name: auth  # Authelia/LLDAP SSO
+    - name: lldap  # LDAP server
     # Monitoring services
     - name: grafana
     - name: prometheus
+    - name: loki
     - name: metrics     # node-exporter
     - name: cadvisor
     - name: speedtest
@@ -142,6 +144,9 @@ network:
     - name: radarr
     - name: bazarr
     - name: audiobookshelf
+    - name: audiobookrequest
+    - name: nzbget
+    - name: flaresolverr
     - name: qbittorrent
     - name: prowlarr
     - name: immich
@@ -214,6 +219,26 @@ security:
     ], [])) +
     (features.voice_assistant | ternary([
       ports.voice_assistant.piper
+    ], []))
+    }}"
+
+  # Dynamic TCP firewall ports (public access):
+  # - qbittorrent.listen_port (51234): Torrent traffic (peer connections)
+  firewall_public_tcp_ports: "{{
+    (features.media | ternary([
+      media.services.qbittorrent.listen_port
+    ], []))
+    }}"
+
+  # Dynamic UDP firewall ports:
+  # - qbittorrent.listen_port (51234): Torrent traffic
+  # - 1900: UPnP SSDP service discovery
+  # - 5351: NAT-PMP port mapping
+  firewall_udp_ports: "{{
+    (features.media | ternary([
+      media.services.qbittorrent.listen_port,
+      1900,
+      5351
     ], []))
     }}"
 
@@ -314,17 +339,17 @@ monitoring:
     port: 3000
     image: "grafana/grafana"
     version: "latest"
-    # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+    # OIDC/SSO Configuration (Authelia)
     # All OAuth URLs use clean DNS names without ports (http://auth.frey)
-    # Browser: auth.frey → AdGuard DNS → Traefik → Authentik
-    # Backend: auth.frey → Traefik network alias → Traefik → Authentik
+    # Browser: auth.frey → AdGuard DNS → Traefik → Authelia
+    # Backend: auth.frey → Traefik network alias → Traefik → Authelia
     # Works offline via AdGuard local DNS and Docker network aliases through Traefik
     oidc_client_id: "grafana"
-    oidc_scopes: "openid profile email"
-    oidc_auth_url: "{{ network.authentik_public_url }}/application/o/authorize/"
-    oidc_token_url: "{{ network.authentik_public_url }}/application/o/token/"
-    oidc_api_url: "{{ network.authentik_public_url }}/application/o/userinfo/"
-    oidc_role_attribute_path: "contains(groups, 'grafana_admins') && 'Admin' || contains(groups, 'grafana_editors') && 'Editor' || 'Viewer'"
+    oidc_scopes: "openid profile email groups"
+    oidc_auth_url: "{{ network.authelia_public_url }}/api/oidc/authorization"
+    oidc_token_url: "{{ network.authelia_public_url }}/api/oidc/token"
+    oidc_api_url: "{{ network.authelia_public_url }}/api/oidc/userinfo"
+    oidc_role_attribute_path: "contains(groups, 'admin_users') && 'Admin' || contains(groups, 'monitoring_users') && 'Editor' || 'Viewer'"
   loki:
     enabled: true
     port: 3100
@@ -412,28 +437,38 @@ infrastructure:
       version: "1"
       ports:
         http: 5001
-    authentik:
-      enabled: true  # Enable after initial infrastructure setup
-      version: "2024.12.3"  # Temporary downgrade to fix migration issue
-      port: 9300  # Changed from 9000 to avoid conflict with Portainer
-      port_https: 9446
-      postgres_version: "16-alpine"
-      redis_version: "alpine"
-      # Blueprint re-apply control:
-      # - Set to a list of filenames to re-apply specific blueprints
-      #   e.g., ['11-oidc-audiobookshelf.yaml', '10-oidc-immich.yaml']
-      # - Or set to 'all' to re-apply every blueprint file
-      reapply_blueprints: [
-        '11-oidc-audiobookshelf.yaml',
-        '14-oidc-mealie.yaml',
-        '15-oidc-dashy.yaml'
-      ]
     step_ca:
       enabled: true  # Enable when ready to implement ACME-based certificate management
       version: "latest"
       port: 9336  # External port mapping (maps to internal 9443)
-      # After enabling, run: docker exec -it step-ca step ca init
-      # Then configure ACME provisioner: docker exec -it step-ca step ca provisioner add acme --type ACME
+      # CA Identity Configuration
+      ca_name: "Frey CA"  # Display name for the CA
+      root_ca_cn: "Frey Root CA"  # Common Name for root certificate
+      intermediate_ca_cn: "Frey CA Intermediate CA"  # Common Name for intermediate cert
+      organization: "Frey"  # Organization name (O)
+      country: "DE"  # Country code (C)
+      # CA DNS Names
+      dns_names:
+        - "ca.{{ network.domain_name }}"
+        - "step-ca.{{ network.domain_name }}"
+        - "step-ca"
+        - "localhost"
+        - "127.0.0.1"
+      # Provisioner Configuration
+      provisioner_name: "admin"  # Default JWK provisioner name
+      acme_provisioner_name: "acme"  # ACME provisioner name
+      # Certificate Durations (for ACME provisioner)
+      default_cert_duration: "2160h"  # 90 days
+      max_cert_duration: "2160h"  # 90 days
+      min_cert_duration: "5m"  # 5 minutes
+      # Certificate Files
+      cert_files:
+        root_ca: "frey-ca.crt"
+        root_key: "frey-ca.key"
+        wildcard_cert: "frey.crt"
+        wildcard_key: "frey.key"
+        wildcard_csr: "frey.csr"
+        san_config: "san.cnf"
 
 landing_page:
   enabled: true
@@ -478,7 +513,7 @@ landing_page:
   oidc:
     enable: true
     client_id: "dashy"
-    endpoint: "{{ network.authentik_public_url }}/application/o/dashy/"
+    endpoint: "{{ network.authelia_public_url }}/api/oidc"
     scope: "openid profile email groups"
     admin_group: "frey_admins"
   certificate_guides:
@@ -507,7 +542,7 @@ landing_page:
       description: "SSO, reverse proxy, and container management."
       item_size: medium
       services:
-        - title: "Authentik Portal"
+        - title: "Authelia Portal"
           description: "Single sign-on portal and user self-service."
           url: "https://auth.{{ network.domain_name }}"
           icon: "fas fa-unlock"
@@ -673,6 +708,10 @@ media:
     name: "media_network"
     # No explicit subnet needed - Docker auto-assigns IPs
     # Services use DNS names for communication, not IPs
+  # DNS resolvers used by media stack containers (avoids relying on host DNS)
+  dns_servers:
+    - 1.1.1.1
+    - 1.0.0.1
 
   vpn:
     enabled: false
@@ -690,19 +729,19 @@ media:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
         - "{{ media.dir }}/podcasts:/podcasts"
-        # Trust Step-CA root for outbound TLS to Authentik (OIDC discovery)
+        # Trust Step-CA root for outbound TLS to OIDC provider (OIDC discovery)
         - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/etc/ssl/certs/step-ca.crt:ro"
       environment:
         # Ensure Node trusts Step-CA when calling https://auth.frey
         - "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/step-ca.crt"
-      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # OIDC/SSO Configuration (enabled when features.authentication is true)
       # NOTE: Audiobookshelf OIDC CANNOT be configured via environment variables
       # Must be configured manually via web UI: Settings → Authentication → OpenID Connect
       # Use these values when configuring in UI:
-      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/audiobookshelf/"
+      oidc_issuer_url: "{{ network.authelia_public_url }}"
       oidc_client_id: "audiobookshelf"
-      # Client secret is in secrets.yml: audiobookshelf_oidc_client_secret
-      oidc_button_text: "Login with Authentik"
+      # Client secret is in secrets.yml: audiobookshelf_oidc_secret
+      oidc_button_text: "Login with SSO"
       oidc_auto_register: true
       oidc_auto_launch: false
 
@@ -715,31 +754,8 @@ media:
         - "{{ storage.appdata_dir }}/jellyfin:/config"
         - "{{ media.dir }}/tv:/data/tvshows"
         - "{{ media.dir }}/movies:/data/movies"
-      # LDAP Configuration (enabled when infrastructure.services.authentik.enabled is true)
-      # Requires LDAP Authentication plugin from Jellyfin catalog (installed manually via UI)
-      # Plugin location: Dashboard > Plugins > Catalog > "LDAP Authentication"
-      # Uses internal Docker service name for reliable communication across networks
-      # NOTE: Configuration is managed via XML file (plugin doesn't support env vars)
-      ldap_server: "ak-outpost-jellyfin-ldap-outpost"
-      ldap_port: 3389                # Authentik LDAP outpost uses non-standard port 3389 (not 389)
-      ldap_use_ssl: false            # No SSL for internal Docker network communication
-      ldap_use_starttls: false       # No STARTTLS needed
-      ldap_skip_ssl_verify: false    # N/A when SSL disabled
-      ldap_base_dn: "dc=ldap,dc=goauthentik,dc=io"
-      # Authentik LDAP outpost uses uid as the RDN for users; DN must use uid
-      ldap_bind_user: "uid=ldap_bind,ou=users,dc=ldap,dc=goauthentik,dc=io"
-      ldap_search_filter: "(uid=*)"  # Rely on Authentik provider search_group to restrict users
-      ldap_admin_base_dn: ""         # Same as ldap_base_dn (empty uses default)
-      ldap_admin_filter: "(memberOf=cn=jellyfin_admins,ou=groups,dc=ldap,dc=goauthentik,dc=io)"
-      # User creation and library access settings
-      ldap_create_users: true        # Auto-create Jellyfin users on first LDAP login
-      ldap_enable_all_folders: true  # Grant LDAP users access to all media libraries
-      # LDAP attribute mappings (standard Authentik LDAP schema)
-      ldap_search_attributes: "uid, cn, mail, displayName"
-      ldap_uid_attribute: "uid"
-      ldap_username_attribute: "uid"
-      ldap_password_attribute: "userPassword"
-      ldap_allow_pass_change: false  # Users change passwords in Authentik, not Jellyfin
+      # LDAP Authentication: Manual configuration only (not managed by Ansible)
+      # See docs/jellyfin-ldap-setup.md for complete setup instructions
     
     jellyseerr:
       enabled: true
@@ -749,11 +765,12 @@ media:
     qbittorrent:
       enabled: true
       version: "latest"
-      port: 8080
-      ports: 
-        - "8080:8080"    # Web UI
-        - "51234:51234/tcp"    # Torrent Port
-        - "51234:51234/udp"    # Torrent Port
+      port: 8080           # Web UI port
+      listen_port: 51234   # Torrent protocol port (TCP/UDP)
+      ports:
+        - "8080:8080"          # Web UI
+        - "51234:51234/tcp"    # Torrent Port TCP
+        - "51234:51234/udp"    # Torrent Port UDP
 
     nzbget:
       enabled: true
@@ -854,13 +871,13 @@ immich:
       upload_location: "{{ storage.base_dir }}/photos/library"
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
-      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # OIDC/SSO Configuration (enabled when features.authentication is true)
       # Issuer URL uses auth.frey DNS (accessible via localdns Docker network)
       # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
-      oidc_issuer_url: "https://auth.{{ network.domain_name }}/application/o/immich/"
+      oidc_issuer_url: "{{ network.authelia_public_url }}"
       oidc_client_id: "immich"
-      oidc_scope: "openid profile email"
-      oidc_button_text: "Login with Authentik"
+      oidc_scope: "openid profile email groups"
+      oidc_button_text: "Login with SSO"
       oidc_auto_register: true
       oidc_auto_launch: false
       oidc_mobile_redirect_uri: "app.immich:/"
@@ -909,11 +926,11 @@ cookbook:
       # SSO Configuration
       oidc_enabled: true
       oidc_client_id: "mealie"
-      oidc_configuration_url: "https://auth.{{ network.domain_name }}/application/o/mealie/.well-known/openid-configuration"
-      oidc_user_group: "mealie_users"
-      oidc_admin_group: "mealie_admins"
+      oidc_configuration_url: "{{ network.authelia_public_url }}/.well-known/openid-configuration"
+      oidc_user_group: "cookbook"
+      oidc_admin_group: "admin"
       oidc_auto_redirect: false
-      oidc_provider_name: "Authentik"
+      oidc_provider_name: "Authelia"
       oidc_signup_enabled: true
       oidc_remember_me: true
       # Features
@@ -939,10 +956,10 @@ homeassistant:
       version: "stable"
       image: "ghcr.io/home-assistant/home-assistant:{{ homeassistant.services.homeassistant.version | default('stable') }}"
       port: 8123
-      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # OIDC/SSO Configuration (enabled when features.authentication is true)
       # NOTE: OIDC must be configured manually in Home Assistant UI
       # Settings → Users → Add Integration → OpenID Connect
-      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/homeassistant/"
+      oidc_issuer_url: "{{ network.authelia_public_url }}"
       oidc_client_id: "homeassistant"
 
     piper:

@@ -1,0 +1,14 @@
+jwt_secret = "{{ lldap_jwt_secret }}"
+ldap_base_dn = "{{ authentication.services.lldap.base_dn }}"
+ldap_user_dn = "{{ authentication.services.lldap.admin_username }}"
+ldap_user_pass = "{{ lldap_admin_password }}"
+key_seed = "{{ lldap_key_seed }}"
+
+# Listen on all interfaces for LDAP and HTTP
+ldap_host = "0.0.0.0"
+ldap_port = {{ authentication.services.lldap.ldap_port }}
+http_host = "0.0.0.0"
+http_port = {{ authentication.services.lldap.port }}
+
+# SQLite DB inside the mounted data directory
+database_url = "sqlite:///data/users.db?mode=rwc"

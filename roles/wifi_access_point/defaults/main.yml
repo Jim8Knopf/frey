@@ -22,7 +22,7 @@ network:
     password: "ChangeMe123"
 
     # Country and radio settings (minimal)
-    country: "US"
+    country: "AU"
     hw_mode: g
     channel: 7
     upstream_dns_servers:

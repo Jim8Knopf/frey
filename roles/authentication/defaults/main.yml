@@ -1,0 +1,115 @@
+---
+# LLDAP + Authelia Authentication Stack
+
+authentication:
+  # Stack user/group configuration
+  user:
+    name: auth_manager
+    uid: 3000
+    groups: auth
+  group:
+    name: auth
+    gid: 3000
+  dir: "{{ storage.base_dir }}/stacks/authentication"
+
+  # Services configuration
+  services:
+    lldap:
+      enabled: true
+      version: "stable"
+      port: 17170  # Web UI
+      ldap_port: 3890  # LDAP port
+      ldaps_port: 6360  # LDAPS port
+      base_dn: "dc={{ network.domain_name }},dc=local"
+      admin_username: "admin"
+
+    authelia:
+      enabled: true
+      version: "latest"
+      port: 9091
+      log_level: info
+      default_policy: "one_factor"  # or "two_factor" for MFA
+
+  # OIDC client configurations
+  oidc_clients:
+    - name: immich
+      description: "Immich Photo Management"
+      redirect_uris:
+        - "https://immich.{{ network.domain_name }}/auth/login"
+        - "https://immich.{{ network.domain_name }}/user-settings"
+      scopes:
+        - openid
+        - email
+        - profile
+        - groups
+
+    - name: audiobookshelf
+      description: "Audiobookshelf"
+      redirect_uris:
+        - "https://audiobookshelf.{{ network.domain_name }}/auth/openid/callback"
+        - "https://audiobookshelf.{{ network.domain_name }}/auth/openid/mobile-redirect"
+        - "https://audiobookshelf.{{ network.domain_name }}/audiobookshelf/auth/openid/callback"
+        - "https://audiobookshelf.{{ network.domain_name }}/audiobookshelf/auth/openid/mobile-redirect"
+      scopes:
+        - openid
+        - email
+        - profile
+        - groups
+
+    - name: grafana
+      description: "Grafana Monitoring"
+      redirect_uris:
+        - "https://grafana.{{ network.domain_name }}/login/generic_oauth"
+      scopes:
+        - openid
+        - email
+        - profile
+        - groups
+
+    - name: homeassistant
+      description: "Home Assistant"
+      redirect_uris:
+        - "https://homeassistant.{{ network.domain_name }}/auth/external/callback"
+      scopes:
+        - openid
+        - email
+        - profile
+
+    - name: mealie
+      description: "Mealie Recipe Manager"
+      redirect_uris:
+        - "https://cookbook.{{ network.domain_name }}/login"
+        - "https://cookbook.{{ network.domain_name }}/login/oidc/redirect"
+      scopes:
+        - openid
+        - email
+        - profile
+        - groups
+
+    - name: dashy
+      description: "Dashy Dashboard"
+      redirect_uris:
+        - "https://{{ network.domain_name }}/"
+      scopes:
+        - openid
+        - email
+        - profile
+
+  # LDAP groups for service access control
+  ldap_groups:
+    - name: admin
+      description: "Administrative access to all services"
+    - name: user
+      description: "Regular user access (required for Audiobookshelf)"
+    - name: guest
+      description: "Read-only guest access (for Audiobookshelf)"
+    - name: media
+      description: "Access to media services (Jellyfin, Audiobookshelf)"
+    - name: photo
+      description: "Access to photo services (Immich)"
+    - name: cookbook
+      description: "Access to cookbook/recipe manager (Mealie)"
+    - name: monitoring
+      description: "Access to monitoring services (Grafana)"
+    - name: automation
+      description: "Access to automation services"

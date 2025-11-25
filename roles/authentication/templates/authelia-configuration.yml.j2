@@ -1,0 +1,218 @@
+{% set authelia_host = 'auth.' ~ network.domain_name %}
+# Authelia Configuration
+# Docs: https://www.authelia.com/configuration/prologue/introduction/
+
+server:
+  address: tcp://0.0.0.0:9091
+
+log:
+  level: {{ authentication.services.authelia.log_level }}
+  format: text
+
+theme: dark
+
+totp:
+  disable: false
+  issuer: {{ network.domain_name }}
+
+# Session configuration
+session:
+  name: authelia_session
+  same_site: lax
+  expiration: 1h
+  inactivity: 5m
+  remember_me: 1M
+  cookies:
+    - domain: "{{ authelia_host }}"
+      name: authelia_session
+      authelia_url: "https://{{ authelia_host }}"
+      default_redirection_url: "https://{{ authelia_host }}/post-login"
+
+# Storage backend (SQLite for simplicity)
+storage:
+  local:
+    path: /config/db.sqlite3
+
+# Notification provider (file-based for now, can be extended to SMTP)
+notifier:
+  filesystem:
+    filename: /config/notification.txt
+
+identity_validation:
+  reset_password:
+    jwt_secret: {{ authelia_jwt_secret }}
+
+# Authentication backend (LLDAP)
+authentication_backend:
+  password_reset:
+    disable: false
+
+  refresh_interval: 5m
+
+  ldap:
+    implementation: lldap
+    address: ldap://lldap:3890
+    timeout: 5s
+    start_tls: false
+
+    # Base DN and search
+    base_dn: {{ authentication.services.lldap.base_dn }}
+    additional_users_dn: ou=people
+    users_filter: (&(|({username_attribute}={input})({mail_attribute}={input}))(objectClass=person))
+
+    # Groups
+    additional_groups_dn: ou=groups
+    groups_filter: (member={dn})
+
+    attributes:
+      username: uid
+      group_name: cn
+      mail: mail
+      display_name: displayName
+
+    # Service account for LDAP queries
+    user: uid={{ authentication.services.lldap.admin_username }},ou=people,{{ authentication.services.lldap.base_dn }}
+    password: {{ lldap_admin_password }}
+
+# Access control rules
+access_control:
+  default_policy: deny
+
+  rules:
+    # Admin users have access to everything
+    - domain:
+        - "*.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:admin"
+
+    # Regular users can access media services
+    - domain:
+        - "jellyfin.{{ network.domain_name }}"
+        - "audiobookshelf.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:user"
+        - "group:media"
+
+    # Guest users can access media services (read-only enforced by service)
+    - domain:
+        - "jellyfin.{{ network.domain_name }}"
+        - "audiobookshelf.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:guest"
+
+    # Photo users can access Immich
+    - domain:
+        - "immich.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:photo"
+        - "group:user"
+
+    # Monitoring users can access monitoring services
+    - domain:
+        - "grafana.{{ network.domain_name }}"
+        - "prometheus.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:monitoring"
+
+    # Automation users can access automation services
+    - domain:
+        - "n8n.{{ network.domain_name }}"
+        - "openwebui.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:automation"
+
+    # Cookbook users can access Mealie
+    - domain:
+        - "cookbook.{{ network.domain_name }}"
+      policy: {{ authentication.services.authelia.default_policy }}
+      subject:
+        - "group:cookbook"
+
+    # Public access to landing page
+    - domain:
+        - "{{ network.domain_name }}"
+      policy: bypass
+
+# Identity Providers (OIDC)
+identity_providers:
+  oidc:
+    # HMAC secret for signing tokens
+    hmac_secret: {{ authelia_oidc_hmac_secret }}
+
+    # Private key for signing JWT tokens (RS256)
+    # NOTE: The value of 'authelia_oidc_private_key' must be a valid PEM-encoded RSA private key.
+    jwks:
+      - algorithm: RS256
+        use: sig
+        key: |
+{{ authelia_oidc_private_key | indent(10, first=True) }}
+
+    # Lifespans
+    lifespans:
+      access_token: 1h
+      authorize_code: 5m
+      id_token: 1h
+      refresh_token: 90m
+
+    # Enable PKCE
+    enable_client_debug_messages: false
+    enforce_pkce: public_clients_only
+
+    # CORS settings
+    cors:
+      endpoints:
+        - authorization
+        - token
+        - revocation
+        - introspection
+      allowed_origins:
+        - https://{{ network.domain_name }}
+      allowed_origins_from_client_redirect_uris: true
+
+    # OIDC clients
+    clients:
+{% for client in authentication.oidc_clients %}
+{% set hash_key = client.name ~ '_oidc_secret_hash' %}
+{% set plain_key = client.name ~ '_oidc_secret' %}
+{% set hash_value = lookup('vars', hash_key, default='') | trim %}
+{% set plain_value = lookup('vars', plain_key, default='') | trim %}
+{% set secret_value = hash_value if hash_value and ('...' not in hash_value) else plain_value %}
+{% set client_scopes = client.scopes %}
+{% if 'offline_access' not in client_scopes %}
+{% set client_scopes = client_scopes + ['offline_access'] %}
+{% endif %}
+      # {{ client.description }}
+      - client_id: "{{ client.name }}"
+        client_name: "{{ client.description }}"
+        client_secret: '{{ secret_value }}'
+        public: false
+        authorization_policy: "{{ authentication.services.authelia.default_policy }}"
+        redirect_uris:
+{% for uri in client.redirect_uris %}
+          - {{ uri }}
+{% endfor %}
+        scopes:
+{% for scope in client_scopes %}
+          - {{ scope }}
+{% endfor %}
+        grant_types:
+          - authorization_code
+          - refresh_token
+        response_types:
+          - code
+        response_modes:
+          - form_post
+          - query
+          - fragment
+        userinfo_signed_response_alg: none
+{% if client.name == 'immich' %}
+        token_endpoint_auth_method: client_secret_post
+{% endif %}
+
+{% endfor %}

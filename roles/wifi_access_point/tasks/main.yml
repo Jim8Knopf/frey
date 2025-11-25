@@ -873,6 +873,15 @@
       register: hostapd_status
       failed_when: false
 
+    - name: Check if hostapd control interface exists
+      ansible.builtin.stat:
+        path: "/var/run/hostapd/{{ network.wifi.interface }}"
+      register: hostapd_control_socket
+      when:
+        - hostapd_status.status is defined
+        - hostapd_status.status.ActiveState == "active"
+        - hostapd_config_result is changed
+
     - name: Try graceful reconfigure if hostapd is active and config changed
       ansible.builtin.command:
         cmd: hostapd_cli -i {{ network.wifi.interface }} reconfigure
@@ -883,6 +892,7 @@
         - hostapd_status.status is defined
         - hostapd_status.status.ActiveState == "active"
         - hostapd_config_result is changed
+        - hostapd_control_socket.stat.exists | default(false)
 
     - name: Restart hostapd if reconfigure failed on active service
       ansible.builtin.systemd:
@@ -893,8 +903,10 @@
       when:
         - hostapd_status.status is defined
         - hostapd_status.status.ActiveState == "active"
+        - hostapd_config_result is changed
         - hostapd_reconf is defined
         - (hostapd_reconf.rc | default(1)) != 0
+        - hostapd_control_socket.stat.exists | default(false)
 
     - name: Start hostapd if not currently running
       ansible.builtin.systemd:
@@ -1360,7 +1372,8 @@
     src: wpa_supplicant-wlan0.conf.j2
     dest: /etc/wpa_supplicant/wpa_supplicant-{{ network.wifi.client_interface }}.conf
     mode: '0600'
-  when: 
+  notify: restart wpa_supplicant client
+  when:
     - network.wifi.roaming.enabled | default(false)
     - interface_check.rc == 0
 

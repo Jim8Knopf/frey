@@ -1,0 +1,16 @@
+---
+# Handlers for authentication stack
+
+- name: Restart authelia
+  community.docker.docker_container:
+    name: authelia
+    state: started
+    restart: true
+  ignore_errors: true
+
+- name: Restart lldap
+  community.docker.docker_container:
+    name: lldap
+    state: started
+    restart: true
+  ignore_errors: true

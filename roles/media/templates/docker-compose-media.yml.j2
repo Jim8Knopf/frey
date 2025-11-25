@@ -4,6 +4,8 @@ networks:
     external: true  # For Traefik routing
   localdns:
     external: true  # For DNS resolution
+  auth_network:
+    external: true  # For LLDAP authentication (Jellyfin)
   media_network:
     external: true  # Created ahead of time so monitoring/qB exporter can join
     name: "{{ media.network.name | default('media_network') }}"
@@ -53,6 +55,13 @@ services:
 ] + (service_config.environment | default([]))) %}
       - {{ env_var }}
 {% endfor %}
+{% set media_dns = media.dns_servers | default([]) %}
+{% if media_dns | length > 0 %}
+    dns:
+{%   for dns_server in media_dns %}
+      - {{ dns_server }}
+{%   endfor %}
+{% endif %}
 {# ==============================================================================
    AUTHENTICATION NOTES
    ==============================================================================
@@ -71,12 +80,26 @@ services:
     restart: unless-stopped
     volumes:
 {% for volume in service_config.volumes %}
+{%   if 'step-ca/certs/root_ca.crt' in volume %}
+{%     if step_ca_cert_available | default(false) %}
+      - {{ volume }}  # Step-CA cert available
+{%     else %}
+      # Skipping Step-CA cert mount (file not ready) - re-run playbook after Step-CA initializes
+{%     endif %}
+{%   else %}
       - {{ volume }}
+{%   endif %}
 {% endfor %}
     networks:
       proxy: {}        # Required for Traefik routing
       localdns: {}     # Required for DNS resolution
       media_network: {} # Service-specific network
+{% if service_name == 'jellyfin' %}
+      auth_network: {}  # Required for LLDAP authentication
+{% endif %}
+{% if service_name == 'audiobookshelf' %}
+      auth_network: {}  # Required for Authelia OIDC authentication
+{% endif %}
     ports:
 {% if service_config.ports is defined %}
 {% for port in service_config.ports %}
@@ -89,24 +112,12 @@ services:
       - deunhealth.restart.on.unhealthy=true
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
-{% if service_name == 'audiobookshelf' %}
-      # Align with other services: HTTPS via Step-CA with HTTP→HTTPS redirect
-      - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
-      - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
-      - "traefik.http.routers.{{service_name}}.tls=true"
-      - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
-      - "traefik.http.routers.{{service_name}}-http.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
-      - "traefik.http.routers.{{service_name}}-http.entrypoints=web"
-      - "traefik.http.middlewares.{{service_name}}-redirect.redirectscheme.scheme=https"
-      - "traefik.http.routers.{{service_name}}-http.middlewares={{service_name}}-redirect"
-      - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
-{% else %}
       - "traefik.http.routers.{{service_name}}.rule=Host(`{{service_name}}.{{ network.domain_name }}`)"
       - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
       - "traefik.http.routers.{{service_name}}.tls=true"
       - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
       - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
-{% endif %}
+{# Authelia forward auth removed - *arr services use built-in authentication for web UI + API access #}
 
 {% endfor -%}
 
@@ -152,7 +163,9 @@ services:
       - "{{ media.dir }}/audiobooks:/audiobooks:ro"
     environment:
       - AUDIOBOOKSHELF_URL=http://audiobookshelf:{{ media.services.audiobookshelf.port | default(13378) }}
+{%   if audiobookshelf_api_token is defined -%}
       - AUDIOBOOKSHELF_TOKEN={{ audiobookshelf_api_token }}
+{%   endif %}
       - SYNC_INTERVAL={{ media.services.audiobook_bridge.sync_interval | default(5) }}
     devices:
       - /dev/snd:/dev/snd  # Audio output for local playback
