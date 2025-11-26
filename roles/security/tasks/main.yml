@@ -407,6 +407,37 @@
     - ufw
     - wifi_ap
 
+# MDNS SERVICE - Avahi hostname resolution (frey.local)
+# Required for mDNS-based hostname resolution across all networks
+# Protocol: UDP port 5353, multicast address 224.0.0.251
+# Enables: ssh ansible@frey.local from phone hotspot, WiFi AP, any network
+- name: Allow mDNS (UDP 5353) for hostname resolution
+  community.general.ufw:
+    rule: allow
+    port: '5353'
+    proto: udp
+    comment: "MDNS: Avahi hostname resolution (frey.local)"
+  when:
+    - enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - mdns
+    - wifi_ap
+
+- name: Allow multicast traffic for mDNS service discovery
+  ansible.builtin.command: "ufw allow in from any to 224.0.0.251"
+  register: ufw_multicast
+  changed_when: "'Rule added' in ufw_multicast.stdout or 'Skipping' not in ufw_multicast.stdout"
+  failed_when: false
+  when:
+    - enable_ufw | default(true)
+  tags:
+    - firewall
+    - ufw
+    - mdns
+    - wifi_ap
+
 # DYNAMIC PUBLIC TCP PORTS - Publicly accessible TCP ports (e.g., torrent traffic)
 # Configured via security.firewall_public_tcp_ports variable
 - name: Allow public TCP ports for services
@@ -667,8 +698,7 @@
     src: jail.local.j2
     dest: /etc/fail2ban/jail.local
     mode: '0644'
-  when: enable_fail2ban | default(true)
-  notify: restart fail2ban
+  when: security.fail2ban.enable | default(true)
   tags:
     - fail2ban
 

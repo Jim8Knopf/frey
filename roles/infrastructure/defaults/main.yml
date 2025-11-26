@@ -71,8 +71,23 @@ infrastructure:
         '15-oidc-dashy.yaml'
       ]
     step_ca:
-      enabled: true  # Enable when ready to implement ACME-based certificate management
+      enabled: true
       version: "latest"
-      port: 9336  # External port mapping (maps to internal 9443)
-      # After enabling, run: docker exec -it step-ca step ca init
-      # Then configure ACME provisioner: docker exec -it step-ca step ca provisioner add acme --type ACME
+      port: 9336
+      ca_name: "Frey CA"
+      dns_names: "frey.local"
+      provisioner_name: "admin"
+      admin_password: "{{ vault_step_ca_admin_password }}"
+      cert_files:
+        root_ca: "root_ca.crt"
+        root_key: "root_ca.key"
+        wildcard_cert: "wildcard.crt"
+        wildcard_key: "wildcard.key"
+        wildcard_csr: "wildcard.csr"
+        san_config: "san.cnf"
+      default_cert_duration: "2160h" # 90 days
+      max_cert_duration: "8760h" # 1 year
+      min_cert_duration: "1h"
+      root_ca_cn: "Frey Root CA"
+      organization: "Frey"
+      country: "DE"

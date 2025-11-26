@@ -14,16 +14,16 @@ features:
   landing_page: false
   networking: true
   wifi_access_point: true
-  media: true
-  monitoring: true
-  automation: true
-  authentication: true  # Authelia/LLDAP SSO - enable after initial setup
+  media: false
+  monitoring: false
+  automation: false
+  authentication: false  # Authelia/LLDAP SSO - enable after initial setup
   file_management: false
-  immich: true
-  homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
-  bluetooth_audio: true  # Bluetooth headphones/speakers with auto-connection
+  immich: false
+  homeassistant: false  # Home Assistant + Piper TTS + Wyoming Whisper STT
+  bluetooth_audio: false  # Bluetooth headphones/speakers with auto-connection
   backup: false  # Automated backup system
-  cookbook: true
+  cookbook: false # Mealie Recipe Manager
 
 # ================================
 # GLOBAL CONFIGURATION
@@ -70,10 +70,6 @@ network:
     - name: frey
       host: "{{ network.domain_name }}"
     - name: landing
-    # Landing + apex host
-    - name: frey
-      host: "{{ network.domain_name }}"
-    - name: landing
     # Infrastructure services
     - name: traefik
     - name: portainer
@@ -107,9 +103,6 @@ network:
     # Automation + smart home
     - name: homeassistant
     - name: n8n
-    # Automation + smart home
-    - name: homeassistant
-    - name: n8n
 
 # ==============================================================================
 # SECURITY SETTINGS (GLOBAL)
@@ -123,18 +116,18 @@ security:
   ssh_port: 22
   # Dynamically computed list of TCP ports to open based on enabled features
   firewall_tcp_ports: "{{
-    [security.ssh_port, ports.infrastructure.dockge] +
+    [security.ssh_port, infrastructure.services.dockge.ports.http] +
     (features.infrastructure | ternary([
-      ports.infrastructure.traefik,
-      ports.infrastructure.traefik_dashboard,
-      ports.infrastructure.portainer
+      infrastructure.services.traefik.ports.http,
+      infrastructure.services.traefik.ports.dashboard,
+      infrastructure.services.portainer.ports.http
     ], [])) +
     (features.media | ternary([
       media.services.jellyfin.port,
       media.services.sonarr.port,
       media.services.radarr.port,
       media.services.bazarr.port,
-      media.services.audiobookshelf.port,
+      13378,  # audiobookshelf external port (mapped from internal port 80)
       media.services.qbittorrent.port,
       media.services.prowlarr.port,
       media.services.jellyseerr.port,
@@ -142,28 +135,21 @@ security:
       media.services.jellystat.port
     ], [])) +
     (features.automation | ternary([
-      automation.ollama.port,
-      automation.openwebui.port,
-      automation.n8n.port
+      automation.services.ollama.port,
+      automation.services.openwebui.port,
+      automation.services.n8n.port
     ], [])) +
     (features.immich | ternary([
-      ports.photos_home.immich
+      immich.services.immich.port
     ], [])) +
     (features.homeassistant | ternary([
-      ports.photos_home.homeassistant
+      homeassistant.services.homeassistant.port
     ], [])) +
     (features.monitoring | ternary([
-      ports.monitoring.grafana,
-      ports.monitoring.prometheus,
-      ports.monitoring.uptime_kuma,
-      ports.network_tools.speedtest
-    ], [])) +
-    (features.networking | ternary([
-      ports.network_tools.adguardhome
-    ], [])) +
-    (features.file_management | ternary([
-      ports.file_management.filebrowser,
-      ports.file_management.code_server
+      monitoring.grafana.port,
+      monitoring.prometheus.port,
+      monitoring['uptime-kuma'].port,
+      monitoring['speedtest-tracker'].port
     ], [])) +
     (features.cookbook | ternary([
       cookbook.services.mealie.port

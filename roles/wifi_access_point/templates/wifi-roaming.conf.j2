@@ -53,10 +53,10 @@ AUTO_PORTAL_AUTH=true
 # ==============================================================================
 # MQTT Configuration (Home Assistant / n8n Integration)
 # ==============================================================================
-MQTT_ENABLED=true
-MQTT_BROKER="{{ mqtt.broker | default('localhost') }}"
-MQTT_PORT={{ mqtt.port | default(1883) }}
-MQTT_TOPIC_PREFIX="frey/wifi/roaming"
+MQTT_ENABLED={{ network.wifi.roaming.mqtt.enabled | default(true) | lower }}
+MQTT_BROKER="{{ network.wifi.roaming.mqtt.broker | default('localhost') }}"
+MQTT_PORT={{ network.wifi.roaming.mqtt.port | default(1883) }}
+MQTT_TOPIC_PREFIX="{{ network.wifi.roaming.mqtt_topic | default('frey/wifi/roaming') }}"
 
 # MQTT Authentication (optional)
 # MQTT_USERNAME=""

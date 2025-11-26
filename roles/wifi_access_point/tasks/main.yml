@@ -145,6 +145,11 @@
 - name: NetworkManager Transition Block
   when: nm_transition_required | bool
   block:
+    - name: Create a fact to indicate systemd-resolved exists
+      ansible.builtin.set_fact:
+        systemd_resolved_exists: "{{ ansible_facts.services['systemd-resolved.service'] is defined and ansible_facts.services['systemd-resolved.service'].status.LoadState == \"loaded\" }}"
+      delegate_to: localhost # Run on controller
+      changed_when: false
     - name: Inform about NetworkManager transition
       ansible.builtin.debug:
         msg: |
@@ -264,6 +269,7 @@
           ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
           update_config=1
           country={{ network.wifi.country | default('AU') }}
+          ap_scan=1
 
           network={
               ssid="{{ wifi_ssid_to_use }}"
@@ -292,7 +298,8 @@
         content: |
           [Service]
           ExecStart=
-          ExecStart=/usr/sbin/wpa_supplicant -Dnl80211,wext -c/etc/wpa_supplicant/wpa_supplicant-%I.conf -i%I
+          # Add -t for timestamps and -d for debug logging so transition failures are visible in journal
+          ExecStart=/usr/sbin/wpa_supplicant -t -d -Dnl80211,wext -c/etc/wpa_supplicant/wpa_supplicant-%I.conf -i%I
         dest: "/etc/systemd/system/wpa_supplicant@{{ network.wifi.client_interface }}.service.d/override.conf"
         mode: '0644'
 
@@ -328,17 +335,25 @@
           ExecStart=/bin/systemctl stop NetworkManager
           ExecStart=/bin/bash -c 'systemctl is-active --quiet systemd-resolved && systemctl stop systemd-resolved || true'
 
+          # Phase 1.5: Unblock WiFi and bring up the interface (Critical: NetworkManager may leave it disabled)
+          ExecStart=/usr/sbin/rfkill unblock wifi
+          ExecStart=/sbin/ip link set {{ network.wifi.client_interface }} up
+          ExecStart=/bin/bash -c 'sleep 2; echo "Interface {{ network.wifi.client_interface }} state:"; ip link show {{ network.wifi.client_interface }} | grep -o "state [A-Z]*"'
+
           # Phase 2: Start wpa_supplicant for client interface
           ExecStart=/bin/systemctl start wpa_supplicant@{{ network.wifi.client_interface }}
 
-          # Phase 3: Wait for WiFi association (up to 30 seconds)
-          ExecStart=/bin/bash -c 'echo "Waiting for WiFi association..."; for i in {1..30}; do if wpa_cli -i {{ network.wifi.client_interface }} status | grep -q "wpa_state=COMPLETED"; then echo "WiFi associated!"; exit 0; fi; sleep 1; done; echo "ERROR: WiFi association failed"; exit 1'
+          # Phase 2.5: Trigger scan and show initial status
+          ExecStart=/bin/bash -c 'sleep 3; wpa_cli -i {{ network.wifi.client_interface }} reconfigure >/dev/null 2>&1; wpa_cli -i {{ network.wifi.client_interface }} scan >/dev/null 2>&1 || true; wpa_cli -i {{ network.wifi.client_interface }} status || true'
+
+          # Phase 3: Wait for WiFi association (up to 60 seconds), logging state each second
+          ExecStart=/bin/bash -c 'echo "Waiting for WiFi association..."; for i in {1..60}; do state=$(wpa_cli -i {{ network.wifi.client_interface }} status 2>/dev/null | grep "^wpa_state=" | cut -d= -f2); echo "  [$i] state=${state:-unknown}"; if [ "$state" = "COMPLETED" ]; then echo "WiFi associated!"; exit 0; fi; sleep 1; done; echo "ERROR: WiFi association failed"; exit 1'
 
           # Phase 4: Start dhcpcd
           ExecStart=/bin/systemctl start dhcpcd
 
-          # Phase 5: Wait for IP address (up to 30 seconds)
-          ExecStart=/bin/bash -c 'echo "Waiting for IP address..."; for i in {1..30}; do if ip addr show {{ network.wifi.client_interface }} | grep -q "inet "; then echo "IP acquired!"; ip addr show {{ network.wifi.client_interface }} | grep "inet "; exit 0; fi; sleep 1; done; echo "ERROR: No IP address"; exit 1'
+          # Phase 5: Wait for IP address (up to 60 seconds)
+          ExecStart=/bin/bash -c 'echo "Waiting for IP address..."; for i in {1..60}; do if ip addr show {{ network.wifi.client_interface }} | grep -q "inet "; then echo "IP acquired!"; ip addr show {{ network.wifi.client_interface }} | grep "inet "; exit 0; fi; sleep 1; done; echo "ERROR: No IP address"; exit 1'
 
           # Phase 6: Validate network connectivity
           ExecStart=/bin/bash -c 'echo "=== Network Validation ==="; echo "WiFi State:"; wpa_cli -i {{ network.wifi.client_interface }} status | grep wpa_state; echo "IP Address:"; ip addr show {{ network.wifi.client_interface }} | grep "inet "; echo "Default Route:"; ip route | grep default; echo "Internet Test:"; (ping -c 1 -W 5 8.8.8.8 && echo "Internet: OK") || echo "WARNING: No internet (may be captive portal)"; echo "=== Validation Complete ==="'
@@ -474,6 +489,37 @@
 
     - name: End playbook after staging NetworkManager transition
       ansible.builtin.meta: end_play
+  rescue:
+    - name: RESCUE - Inform about NetworkManager transition failure
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          NETWORKMANAGER TRANSITION FAILED!
+          ========================================
+          An error occurred during the NetworkManager transition block.
+          Attempting to rollback to NetworkManager to restore connectivity.
+          ========================================
+    - name: RESCUE - Ensure NetworkManager is unmasked and started
+      ansible.builtin.systemd:
+        name: NetworkManager
+        masked: no
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      ignore_errors: yes
+    - name: RESCUE - Ensure systemd-resolved is unmasked and started (if applicable)
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        masked: no
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      ignore_errors: yes
+      when: systemd_resolved_exists | default(false) | bool
+    - name: RESCUE - Fail the play after rollback attempt
+      ansible.builtin.fail:
+        msg: "NetworkManager transition failed. Attempted rollback to restore connectivity. Please investigate logs."
+
 
 - name: Check for internet connectivity
   ansible.builtin.shell: ping -c 1 8.8.8.8
@@ -666,9 +712,9 @@
       failed_when: false
       changed_when: dhcpcd_reload.rc == 0
 
-    - name: Wait for dhcpcd to reload (5 seconds)
+    - name: Wait for dhcpcd to reload (15 seconds for SSH stability)
       ansible.builtin.pause:
-        seconds: 5
+        seconds: 15
       when: dhcpcd_reload.rc == 0
 
   rescue:
@@ -996,17 +1042,27 @@
     dest: /etc/systemd/system/dnsmasq.service.d/override.conf
     mode: '0644'
 
+- name: Warn about NAT configuration
+  ansible.builtin.debug:
+    msg: |
+      NAT is enabled (network.wifi.enable_nat: {{ network.wifi.enable_nat | default(false) }})
+      This will configure iptables MASQUERADE for internet passthrough.
+      WiFi AP clients will get internet access via {{ network.wifi.client_interface }}.
+  when: network.wifi.enable_nat | default(false)
+
 - name: Deploy Frey NAT Manager script
   ansible.builtin.template:
     src: frey-nat-manager.sh.j2
     dest: /usr/local/bin/frey-nat-manager.sh
     mode: '0755'
+  when: network.wifi.enable_nat | default(false)
 
 - name: Deploy Frey NAT Manager service
   ansible.builtin.template:
     src: frey-nat-manager.service.j2
     dest: /etc/systemd/system/frey-nat-manager.service
     mode: '0644'
+  when: network.wifi.enable_nat | default(false)
 
 - name: Reload systemd daemon
   ansible.builtin.systemd:
@@ -1048,6 +1104,15 @@
     state: started
     enabled: yes
     daemon_reload: yes
+  when: network.wifi.enable_nat | default(false)
+
+- name: Stop and disable Frey NAT Manager when NAT disabled
+  ansible.builtin.systemd:
+    name: frey-nat-manager
+    state: stopped
+    enabled: no
+  when: not (network.wifi.enable_nat | default(false))
+  failed_when: false
 
 - name: Wait for dnsmasq to bind on port 53 (DNS) with retry
   ansible.builtin.wait_for:
@@ -1478,6 +1543,69 @@
 # - Detects and handles captive portals
 # - Falls back gracefully when no networks available
 
+# ------------------------------------------------------------------------------
+# Create Required Directories
+# ------------------------------------------------------------------------------
+
+- name: Create /etc/frey configuration directory
+  ansible.builtin.file:
+    path: /etc/frey
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: network.wifi.roaming.daemon_enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Create /var/lib/frey state directory
+  ansible.builtin.file:
+    path: /var/lib/frey
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: network.wifi.roaming.daemon_enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+# ------------------------------------------------------------------------------
+# Deploy Configuration Files
+# ------------------------------------------------------------------------------
+
+- name: Deploy WiFi roaming daemon configuration
+  ansible.builtin.template:
+    src: wifi-roaming.conf.j2
+    dest: /etc/frey/wifi-roaming.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: network.wifi.roaming.daemon_enabled | default(false)
+  notify: Restart frey-wifi-roaming
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Deploy known WiFi networks configuration
+  ansible.builtin.template:
+    src: known-networks.conf.j2
+    dest: /etc/frey/known-networks.conf
+    owner: root
+    group: root
+    mode: '0600'
+  when: network.wifi.roaming.daemon_enabled | default(false)
+  notify: Restart frey-wifi-roaming
+  no_log: true
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+# ------------------------------------------------------------------------------
+# Deploy Daemon Scripts
+# ------------------------------------------------------------------------------
+
 - name: Deploy WiFi roaming daemon script
   ansible.builtin.copy:
     src: frey-wifi-roaming-daemon.sh
@@ -1655,3 +1783,99 @@
   tags:
     - wifi_ap
     - hot_plug
+
+# ==============================================================================
+# MDNS HOSTNAME RESOLUTION (Avahi)
+# ==============================================================================
+# Deploy Avahi daemon for .local hostname resolution across all networks
+# Enables seamless SSH access via hostname without knowing IP address
+#
+# USE CASES:
+# - Phone hotspot (dynamic IPs): ssh ansible@frey.local
+# - FreyHub WiFi AP: ssh ansible@frey or ssh ansible@10.20.0.1
+# - Home WiFi: ssh ansible@frey.local
+# - Any network: Works universally, completely offline-capable
+#
+# PROTOCOL: mDNS (Multicast DNS) / Bonjour / Avahi
+# - Broadcasts hostname.local on all active interfaces
+# - Zero-configuration discovery (no DNS server needed)
+# - Standard protocol supported by all modern devices
+# ==============================================================================
+
+- name: Install Avahi packages for mDNS hostname resolution
+  ansible.builtin.apt:
+    name:
+      - avahi-daemon      # mDNS daemon (broadcasts hostname.local)
+      - avahi-utils       # Command-line tools (avahi-browse, avahi-resolve)
+      - libnss-mdns       # NSS module for .local domain resolution
+    state: present
+    update_cache: no
+  when: internet_connection.rc == 0
+  tags:
+    - wifi_ap
+    - mdns
+    - avahi
+
+- name: Deploy Avahi daemon configuration
+  ansible.builtin.template:
+    src: avahi-daemon.conf.j2
+    dest: /etc/avahi/avahi-daemon.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  notify: restart avahi
+  tags:
+    - wifi_ap
+    - mdns
+    - avahi
+
+- name: Configure nsswitch.conf for mDNS resolution
+  ansible.builtin.lineinfile:
+    path: /etc/nsswitch.conf
+    regexp: '^hosts:'
+    line: 'hosts:          files mdns4_minimal [NOTFOUND=return] dns mdns4'
+    backup: yes
+  notify: restart avahi
+  tags:
+    - wifi_ap
+    - mdns
+    - avahi
+
+- name: Enable and start Avahi daemon
+  ansible.builtin.systemd:
+    name: avahi-daemon
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  tags:
+    - wifi_ap
+    - mdns
+    - avahi
+
+- name: Display mDNS hostname information
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      mDNS HOSTNAME RESOLUTION ENABLED
+      ============================================
+      Hostname: {{ inventory_hostname }}.local
+
+      SSH Access (No IP needed!):
+      - ssh {{ users.default.name }}@{{ inventory_hostname }}.local
+      - ssh {{ users.default.name }}@{{ inventory_hostname }}  (via search domain)
+
+      Works on:
+      - Phone hotspot (any IP)
+      - FreyHub WiFi AP (10.20.0.1)
+      - Home WiFi (any network)
+      - Ethernet (if connected)
+
+      Test:
+      - ping {{ inventory_hostname }}.local
+      - avahi-browse -a -t  (list all mDNS services)
+      ============================================
+  tags:
+    - wifi_ap
+    - mdns
+    - avahi

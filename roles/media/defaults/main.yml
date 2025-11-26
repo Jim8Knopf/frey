@@ -107,6 +107,7 @@ media:
       enabled: true
       version: "latest"
       port: 8080
+      listen_port: 51234  # Torrent peer connection port (TCP/UDP)
       ports:
         - "8080:8080"    # Web UI
         - "51234:51234/tcp"    # Torrent Port

@@ -1,7 +1,7 @@
 [Unit]
 Description=Frey WiFi connectivity watchdog
-After=network-online.target
-Wants=network-online.target
+# Note: NO network-online.target dependency - must work offline
+After=network.target
 
 [Service]
 Type=oneshot

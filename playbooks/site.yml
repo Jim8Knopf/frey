@@ -39,6 +39,55 @@
   # ==============================================================================
   pre_tasks:
 
+    # --------------------------------------------------------------------------
+    # PRE-FLIGHT: Filesystem Health Check
+    # --------------------------------------------------------------------------
+    # This block attempts a benign write/read operation to detect critical
+    # I/O errors early. An 'Input/output error' is unrecoverable by Ansible
+    # and indicates a failing disk or corrupt filesystem.
+    # --------------------------------------------------------------------------
+    - name: Perform pre-flight filesystem health check
+      tags: always
+      block:
+        - name: Write temporary health check file
+          ansible.builtin.copy:
+            content: "health_check"
+            dest: "/tmp/frey_health_check.tmp"
+            mode: '0644'
+          changed_when: false
+
+        - name: Clean up temporary health check file
+          ansible.builtin.file:
+            path: "/tmp/frey_health_check.tmp"
+            state: absent
+          changed_when: false
+      rescue:
+        - name: Fail playbook on critical I/O error
+          ansible.builtin.fail:
+            msg: |
+              FATAL: Filesystem I/O error detected on the target host.
+              This is a critical, unrecoverable error that Ansible cannot fix.
+              It strongly indicates a hardware failure or filesystem corruption
+              (e.g., a failing SD card or SSD).
+
+              Please SSH into the host '{{ inventory_hostname }}' and run 'dmesg'
+              to check for I/O errors before re-running the deployment.
+          when: ansible_failed_result is defined and 'Input/output error' in (ansible_failed_result.msg | default('') or (ansible_failed_result.results | default([{}]))[0].msg | default(''))
+
+    # --------------------------------------------------------------------------
+    # PRE-FLIGHT: Stop Security Services
+    # --------------------------------------------------------------------------
+    # Stop fail2ban before deployment begins to prevent it from banning the
+    # controller's IP if a task fails mid-run. The service will be re-enabled
+    # at the end of a successful deployment.
+    # --------------------------------------------------------------------------
+    - name: PRE-FLIGHT - Ensure fail2ban is stopped
+      tags: always
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: stopped
+      ignore_errors: yes
+
     # TODO
     - name: Check for internet connectivity
       ansible.builtin.shell: ping -c 1 8.8.8.8
@@ -599,6 +648,20 @@
       tags: always
 
     # --------------------------------------------------------------------------
+    # FINAL STEP: Start Security Services
+    # --------------------------------------------------------------------------
+    # This task runs at the very end of a successful deployment.
+    # By waiting until all firewall and network rules are in place, we
+    # dramatically reduce the risk of accidental lockout.
+    # --------------------------------------------------------------------------
+    - name: FINAL - Enable and start fail2ban service
+      tags: always
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: started
+        enabled: yes
+      when: security.fail2ban.enable | default(true)
+
 # ==============================================================================
 # DEPLOYMENT COMPLETE
 # ==============================================================================

@@ -3,54 +3,6 @@
 # WIFI ACCESS POINT ROLE - DEFAULT VARIABLES
 # ==============================================================================
 
-    # Client/Uplink interface (the interface with internet access)
-    client_interface: "wlan0"
-
-    # AP (gateway) IP and network
-    ip: "10.20.0.1"
-    network: "10.20.0.0/24"
-
-    # DHCP pool
-    dhcp_range_start: "10.20.0.50"
-    dhcp_range_end: "10.20.0.150"
-
-    # SSID / password
-    ssid: "FreyHub"
-    password: "ChangeMe123"
-
-    # Country and radio settings (minimal)
-    country: "AU"
-    hw_mode: g
-    channel: 7
-    upstream_dns_servers:
-      - "1.1.1.1"
-      - "8.8.8.8"
-    use_system_dns: true
-    system_resolv_conf: "/etc/resolv.conf"
-    power_management:
-      disable_power_save: true
-      extra_interfaces: []
-    virtual_ap:
-      enabled: false
-      source_interface: "{{ network.wifi.client_interface }}"
-      ensure_interval: 15
-    connectivity_monitor:
-      enabled: false  # Disabled by default; enable explicitly after confirming dhcpcd is working
-      ping_target: null
-      ping_count: 3
-      failure_threshold: 1
-      interval_seconds: 60
-      restart_dhcpcd: true
-      restart_wpa_supplicant: true
-  # Enable NAT from AP network to client/uplink interface (optional)
-  enable_nat: false
-  # Method to persist NAT rules: 'iptables-persistent' or 'iptables-save'
-  nat_persist_method: 'iptables-persistent'
-
-  # DNS domain for local rewrites (top-level under network)
-  domain_name: "frey"
-  dns_rewrites: []
-
 # Packages to install (kept minimal)
 wifi_ap_packages:
   - hostapd
@@ -64,16 +16,15 @@ force_apply: false
 
 # Network configuration for WiFi Access Point
 network:
-  # DNS domain for local rewrites
+  # DNS domain for local rewrites (defaults, can be overridden in group_vars)
   domain_name: "frey"
   dns_rewrites: []
 
-  # Enable NAT from AP network to client/uplink interface
-  enable_nat: false
-  # Method to persist NAT rules: 'iptables-persistent' or 'iptables-save'
-  nat_persist_method: 'iptables-persistent'
-
   wifi:
+    # Enable NAT from AP network to client/uplink interface
+    enable_nat: true  # Enable for internet passthrough to AP clients
+    # Method to persist NAT rules: 'iptables-persistent' or 'iptables-save'
+    nat_persist_method: 'iptables-persistent'
     # Network identification
     ssid: "FreyHub"                 # Network name visible to clients
     password: "{{ wifi_ap.password }}"  # Password from secrets.yml
@@ -93,9 +44,14 @@ network:
     client_interface_ip: "192.168.0.252" #TODO Client interface IP (for authentik)
     roaming:
       enabled: true
+      daemon_enabled: true  # Enable automatic WiFi roaming daemon
       client_interface: "wlan0"  # Interface for connecting to public WiFi
       mqtt_topic: "frey/wifi/roaming"
-      known_networks: "{{ wifi_ap.known_networks }}"  # From secrets.yml
+      known_networks: "{{ network.wifi.roaming.known_networks | default([]) }}"  # From secrets.yml
+      mqtt:
+        enabled: true
+        broker: "localhost"
+        port: 1883
 
     # WiFi radio settings
     # Set hw_mode to 'auto' to prefer 5GHz when supported, else fall back to 2.4GHz
@@ -108,3 +64,31 @@ network:
     macaddr_acl: 0                 # MAC address filtering
     auth_algs: 1                   # WPA authentication
     ignore_broadcast_ssid: 0       # Broadcast SSID
+
+    # DNS configuration
+    upstream_dns_servers:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    use_system_dns: true
+    system_resolv_conf: "/etc/resolv.conf"
+
+    # Power management
+    power_management:
+      disable_power_save: true
+      extra_interfaces: []
+
+    # Virtual AP configuration (for creating AP from client interface)
+    virtual_ap:
+      enabled: false
+      source_interface: "{{ network.wifi.client_interface }}"
+      ensure_interval: 15
+
+    # Connectivity monitoring (checks if client interface has internet)
+    connectivity_monitor:
+      enabled: false  # Disabled by default; enable explicitly after confirming dhcpcd is working
+      ping_target: null
+      ping_count: 3
+      failure_threshold: 1
+      interval_seconds: 60
+      restart_dhcpcd: true
+      restart_wpa_supplicant: true

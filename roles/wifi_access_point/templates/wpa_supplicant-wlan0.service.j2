@@ -1,8 +1,8 @@
 [Unit]
 Description=WPA supplicant for {{ network.wifi.client_interface }}
 After=network.target
-Before=network-online.target frey-wifi-roaming.service
-Wants=network-online.target
+# Note: NO network-online.target dependency - must work offline
+Before=frey-wifi-roaming.service
 
 [Service]
 Type=simple

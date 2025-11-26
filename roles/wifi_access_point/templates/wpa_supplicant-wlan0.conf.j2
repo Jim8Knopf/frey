@@ -1,6 +1,7 @@
 ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
 update_config=1
 country={{ network.wifi.country | default('AU') }}
+ap_scan=1
 
 {% if network.wifi.roaming.known_networks is defined %}
 {% for wifi_network in network.wifi.roaming.known_networks %}
@@ -8,6 +9,8 @@ network={
     ssid="{{ wifi_network.ssid }}"
     {% if wifi_network.password %}psk="{{ wifi_network.password }}"
     {% else %}key_mgmt=NONE
+    {% endif %}
+    {% if wifi_network.scan_ssid is defined %}scan_ssid={{ wifi_network.scan_ssid | int }}
     {% endif %}
     priority={{ wifi_network.priority | default(1) }}
 }

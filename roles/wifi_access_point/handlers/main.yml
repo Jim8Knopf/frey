@@ -144,4 +144,17 @@
   failed_when: dnsmasq_check.rc != 0
   changed_when: false
 
+- name: restart avahi
+  ansible.builtin.systemd:
+    name: avahi-daemon
+    state: restarted
+    daemon_reload: yes
+
+- name: Restart frey-wifi-roaming
+  ansible.builtin.systemd:
+    name: frey-wifi-roaming
+    state: restarted
+    daemon_reload: yes
+  when: network.wifi.roaming.daemon_enabled | default(false)
+
 # End of handlers
