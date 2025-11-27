@@ -1,0 +1,36 @@
+---
+# Main validation tasks - orchestrates all validation checks
+# This role should be run as a pre-task to catch configuration errors early
+
+- name: Validation | Display validation start message
+  ansible.builtin.debug:
+    msg: "Starting input validation checks to prevent misconfigurations..."
+
+- name: Validation | Check required variables are defined
+  include_tasks: validate_variables.yml
+  tags: [validate, validate_vars]
+
+- name: Validation | Validate network configuration
+  include_tasks: validate_network.yml
+  tags: [validate, validate_network]
+  when: features.wifi_access_point | default(false)
+
+- name: Validation | Validate storage paths
+  include_tasks: validate_storage.yml
+  tags: [validate, validate_storage]
+
+- name: Validation | Validate port assignments
+  include_tasks: validate_ports.yml
+  tags: [validate, validate_ports]
+
+- name: Validation | Validate secrets existence
+  include_tasks: validate_secrets.yml
+  tags: [validate, validate_secrets]
+
+- name: Validation | Validate feature flags and dependencies
+  include_tasks: validate_features.yml
+  tags: [validate, validate_features]
+
+- name: Validation | Display validation success message
+  ansible.builtin.debug:
+    msg: "✓ All validation checks passed successfully!"

@@ -1,0 +1,100 @@
+---
+# Validate port assignments to prevent conflicts
+
+- name: Validation | Collect all ports from enabled services across all stacks
+  set_fact:
+    all_configured_ports: "{{ all_configured_ports | default([]) + [item.port | string] }}"
+  loop: |
+    {% set ports = [] -%}
+    {% for stack in validation_stacks -%}
+      {% if vars[stack.name] is defined and features[stack.feature_flag] | default(false) and stack.has_services | default(false) and vars[stack.name].services is defined -%}
+        {% for svc_name, svc_config in vars[stack.name].services.items() -%}
+          {% if svc_config.enabled | default(false) and svc_config.port is defined -%}
+            {% set _ = ports.append({'stack': stack.name, 'service': svc_name, 'port': svc_config.port}) -%}
+          {% endif -%}
+        {% endfor -%}
+      {% endif -%}
+    {% endfor -%}
+    {{ ports }}
+  loop_control:
+    label: "{{ item.stack }}/{{ item.service }}: {{ item.port }}"
+
+- name: Validation | Add additional system ports (Traefik HTTP/HTTPS)
+  set_fact:
+    all_configured_ports: "{{ all_configured_ports | default([]) + ['80', '443'] }}"
+  when: features.infrastructure | default(false)
+
+- name: Validation | Display collected ports for debugging
+  ansible.builtin.debug:
+    msg: "Configured ports: {{ all_configured_ports | sort }}"
+    verbosity: 1
+
+- name: Validation | Check for duplicate port assignments
+  block:
+    - name: Validation | Count port occurrences
+      set_fact:
+        port_counts: {}
+
+    - name: Validation | Build port frequency map
+      set_fact:
+        port_counts: "{{ port_counts | combine({item: (port_counts[item] | default(0)) + 1}) }}"
+      loop: "{{ all_configured_ports }}"
+
+    - name: Validation | Find duplicate ports
+      set_fact:
+        duplicate_ports: "{{ port_counts | dict2items | selectattr('value', 'gt', 1) | map(attribute='key') | list }}"
+
+    - name: Validation | Assert no duplicate ports
+      ansible.builtin.assert:
+        that:
+          - duplicate_ports | length == 0
+        fail_msg: "Port conflict detected! The following ports are assigned to multiple services: {{ duplicate_ports | join(', ') }}"
+        success_msg: "✓ No port conflicts detected"
+  when: all_configured_ports | length > 0
+
+- name: Validation | Validate port numbers are in valid range
+  ansible.builtin.assert:
+    that:
+      - item | int >= 1
+      - item | int <= 65535
+    fail_msg: "Invalid port number: {{ item }}. Ports must be between 1-65535"
+    success_msg: "✓ Port {{ item }} is in valid range"
+  loop: "{{ all_configured_ports }}"
+  loop_control:
+    label: "Port {{ item }}"
+  when: all_configured_ports | length > 0
+
+- name: Validation | Validate privileged ports (< 1024) are intentional
+  ansible.builtin.debug:
+    msg: "WARNING: Privileged port {{ item }} (<1024) is configured. Ensure Docker has appropriate permissions."
+  loop: "{{ all_configured_ports }}"
+  loop_control:
+    label: "Port {{ item }}"
+  when:
+    - all_configured_ports | length > 0
+    - item | int < 1024
+
+- name: Validation | Validate firewall ports configuration
+  block:
+    - name: Validation | Check firewall ports list is defined
+      ansible.builtin.assert:
+        that:
+          - security.firewall_tcp_ports is defined
+          - security.firewall_tcp_ports is sequence
+        fail_msg: "security.firewall_tcp_ports must be defined as a list"
+        success_msg: "✓ Firewall ports configuration is defined"
+
+    - name: Validation | Validate firewall port numbers
+      ansible.builtin.assert:
+        that:
+          - item | int >= 1
+          - item | int <= 65535
+        fail_msg: "Invalid firewall port: {{ item }}"
+      loop: "{{ security.firewall_tcp_ports }}"
+      loop_control:
+        label: "Port {{ item }}"
+  when: features.security | default(false)
+
+- name: Validation | Display port validation success
+  ansible.builtin.debug:
+    msg: "✓ Port configuration is valid ({{ all_configured_ports | length }} ports checked)"

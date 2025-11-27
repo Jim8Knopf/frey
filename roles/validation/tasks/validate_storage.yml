@@ -1,0 +1,95 @@
+---
+# Validate storage paths, permissions, and disk space
+
+- name: Validation | Check if base directory exists
+  ansible.builtin.stat:
+    path: "{{ storage.base_dir }}"
+  register: base_dir_stat
+
+- name: Validation | Validate base directory exists or parent is writable
+  block:
+    - name: Validation | Check base directory exists
+      ansible.builtin.assert:
+        that:
+          - base_dir_stat.stat.exists
+        fail_msg: "Base directory {{ storage.base_dir }} does not exist. It will be created, but ensure the parent directory exists."
+        success_msg: "✓ Base directory exists"
+      when: base_dir_stat.stat.exists
+
+    - name: Validation | Check parent directory exists if base doesn't
+      ansible.builtin.stat:
+        path: "{{ storage.base_dir | dirname }}"
+      register: parent_dir_stat
+      when: not base_dir_stat.stat.exists
+
+    - name: Validation | Ensure parent directory exists
+      ansible.builtin.assert:
+        that:
+          - parent_dir_stat.stat.exists
+          - parent_dir_stat.stat.isdir
+          - parent_dir_stat.stat.writeable
+        fail_msg: "Parent directory {{ storage.base_dir | dirname }} must exist and be writable to create {{ storage.base_dir }}"
+        success_msg: "✓ Parent directory is writable"
+      when: not base_dir_stat.stat.exists
+
+- name: Validation | Get disk space information
+  ansible.builtin.shell: df -BG {{ storage.base_dir if base_dir_stat.stat.exists else (storage.base_dir | dirname) }} | tail -1 | awk '{print $4}' | sed 's/G//'
+  register: available_space_gb
+  changed_when: false
+
+- name: Validation | Validate sufficient disk space (minimum 10GB recommended)
+  ansible.builtin.assert:
+    that:
+      - available_space_gb.stdout | int >= 10
+    fail_msg: "WARNING: Only {{ available_space_gb.stdout }}GB available. Minimum 10GB recommended for Frey services."
+    success_msg: "✓ Sufficient disk space available ({{ available_space_gb.stdout }}GB)"
+  ignore_errors: yes
+
+- name: Validation | Validate appdata directory path is under base_dir
+  ansible.builtin.assert:
+    that:
+      - storage.appdata_dir is match(storage.base_dir)
+    fail_msg: "appdata_dir ({{ storage.appdata_dir }}) should be under base_dir ({{ storage.base_dir }})"
+    success_msg: "✓ Appdata directory path is correctly nested"
+
+- name: Validation | Validate stacks directory path is under base_dir
+  ansible.builtin.assert:
+    that:
+      - storage.stacks is match(storage.base_dir)
+    fail_msg: "stacks ({{ storage.stacks }}) should be under base_dir ({{ storage.base_dir }})"
+    success_msg: "✓ Stacks directory path is correctly nested"
+
+- name: Validation | Check media directory configuration
+  block:
+    - name: Validation | Validate media subdirectories are defined
+      ansible.builtin.assert:
+        that:
+          - media.movies is defined
+          - media.tv is defined
+          - media.downloads is defined
+        fail_msg: "Media directory configuration incomplete. Check media.movies, media.tv, media.downloads"
+        success_msg: "✓ Media directory configuration is complete"
+      when: features.media | default(false)
+
+    - name: Validation | Validate media paths are absolute
+      ansible.builtin.assert:
+        that:
+          - media.movies is match('^/')
+          - media.tv is match('^/')
+          - media.downloads is match('^/')
+        fail_msg: "Media paths must be absolute (start with /)"
+        success_msg: "✓ Media paths are absolute"
+      when: features.media | default(false)
+
+- name: Validation | Validate directory paths don't contain invalid characters
+  ansible.builtin.assert:
+    that:
+      - storage.base_dir is not search('[;&|`$]')
+      - storage.appdata_dir is not search('[;&|`$]')
+      - storage.stacks is not search('[;&|`$]')
+    fail_msg: "Storage paths contain potentially dangerous characters (;&|`$)"
+    success_msg: "✓ Storage paths are safe"
+
+- name: Validation | Display storage validation success
+  ansible.builtin.debug:
+    msg: "✓ Storage configuration is valid"

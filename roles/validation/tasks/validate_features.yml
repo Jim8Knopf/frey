@@ -1,0 +1,156 @@
+---
+# Validate feature flags and service dependencies
+
+- name: Validation | Check at least one feature is enabled
+  ansible.builtin.assert:
+    that:
+      - features.infrastructure | default(false) or
+        features.media | default(false) or
+        features.monitoring | default(false) or
+        features.automation | default(false) or
+        features.wifi_access_point | default(false) or
+        features.bluetooth_audio | default(false) or
+        features.immich | default(false)
+    fail_msg: "No features are enabled. Enable at least one feature in group_vars/all/main.yml"
+    success_msg: "✓ At least one feature is enabled"
+
+- name: Validation | Display enabled features
+  ansible.builtin.debug:
+    msg: |
+      Enabled features:
+      - Infrastructure: {{ features.infrastructure | default(false) }}
+      - Media: {{ features.media | default(false) }}
+      - Monitoring: {{ features.monitoring | default(false) }}
+      - Automation: {{ features.automation | default(false) }}
+      - WiFi Access Point: {{ features.wifi_access_point | default(false) }}
+      - Bluetooth Audio: {{ features.bluetooth_audio | default(false) }}
+      - Immich: {{ features.immich | default(false) }}
+      - Security: {{ features.security | default(false) }}
+
+- name: Validation | Validate Traefik is enabled when infrastructure is enabled
+  ansible.builtin.assert:
+    that:
+      - infrastructure.services.traefik.enabled | default(false)
+    fail_msg: "Traefik must be enabled when infrastructure feature is enabled (required for reverse proxy)"
+    success_msg: "✓ Traefik is enabled"
+  when: features.infrastructure | default(false)
+
+- name: Validation | Check if enabled stacks have at least one service active
+  block:
+    - name: Validation | Count enabled services in each stack
+      set_fact:
+        enabled_services_count: "{{ vars[item.name].services | default({}) | dict2items | selectattr('value.enabled', 'equalto', true) | list | length }}"
+      loop: "{{ validation_stacks | selectattr('has_services', 'equalto', true) | list }}"
+      when:
+        - vars[item.name] is defined
+        - features[item.feature_flag] | default(false)
+      loop_control:
+        label: "{{ item.name }}"
+      register: service_counts
+
+    - name: Validation | Warn if stack enabled but no services active
+      ansible.builtin.debug:
+        msg: "WARNING: {{ item.item.name }} feature is enabled but no services are enabled"
+      loop: "{{ service_counts.results | default([]) }}"
+      when:
+        - not item.skipped | default(false)
+        - item.ansible_facts.enabled_services_count | default(0) | int == 0
+      loop_control:
+        label: "{{ item.item.name | default('unknown') }}"
+
+    - name: Validation | Validate download client for *arr services
+      ansible.builtin.debug:
+        msg: "INFO: *arr services (Sonarr/Radarr) are enabled. Ensure a download client (qBittorrent) is configured"
+      when:
+        - features.media | default(false)
+        - media.services.sonarr.enabled | default(false) or
+          media.services.radarr.enabled | default(false) or
+          media.services.lidarr.enabled | default(false) or
+          media.services.readarr.enabled | default(false)
+
+- name: Validation | Validate Authentik dependencies for LDAP/OAuth services
+  block:
+    - name: Validation | Check if Authentik is enabled
+      set_fact:
+        authentik_enabled: "{{ infrastructure.services.authentik.enabled | default(false) }}"
+      when: features.infrastructure | default(false)
+
+    - name: Validation | Warn if services need Authentik but it's disabled
+      ansible.builtin.debug:
+        msg: "WARNING: {{ item.key }} has LDAP/OAuth enabled but Authentik is not enabled"
+      when:
+        - not (authentik_enabled | default(false))
+        - item.value.ldap_enabled | default(false) or item.value.oauth_enabled | default(false)
+      loop: "{{ (media.services | default({})) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+  when: features.media | default(false)
+
+- name: Validation | Validate monitoring stack dependencies
+  block:
+    - name: Validation | Check Prometheus is enabled for Grafana
+      ansible.builtin.debug:
+        msg: "INFO: Grafana is enabled. Ensure Prometheus is enabled as a data source"
+      when:
+        - monitoring.services.grafana.enabled | default(false)
+        - not (monitoring.services.prometheus.enabled | default(false))
+
+    - name: Validation | Check Loki is enabled for log aggregation
+      ansible.builtin.debug:
+        msg: "INFO: For complete monitoring, consider enabling Loki for log aggregation"
+      when:
+        - monitoring.services.grafana.enabled | default(false)
+        - not (monitoring.services.loki.enabled | default(false))
+  when: features.monitoring | default(false)
+
+- name: Validation | Validate automation stack configuration
+  block:
+    - name: Validation | Check Ollama for Open WebUI
+      ansible.builtin.debug:
+        msg: "WARNING: Open WebUI is enabled but Ollama is not. Open WebUI requires Ollama for LLM functionality"
+      when:
+        - automation.services.open_webui.enabled | default(false)
+        - not (automation.services.ollama.enabled | default(false))
+  when: features.automation | default(false)
+
+- name: Validation | Validate Immich stack configuration
+  block:
+    - name: Validation | Check required Immich services
+      ansible.builtin.assert:
+        that:
+          - immich.services.server.enabled | default(false)
+          - immich.services.database.enabled | default(false)
+          - immich.services.redis.enabled | default(false)
+        fail_msg: "Immich requires server, database, and redis to be enabled"
+        success_msg: "✓ All required Immich services are enabled"
+      when: features.immich | default(false)
+  when: features.immich | default(false)
+
+- name: Validation | Validate WiFi AP doesn't conflict with management interface
+  block:
+    - name: Validation | Get ansible management interface
+      ansible.builtin.debug:
+        msg: "Ansible is using interface: {{ ansible_default_ipv4.interface | default('unknown') }}"
+      when: ansible_default_ipv4 is defined
+
+    - name: Validation | Warn if WiFi interface matches management interface
+      ansible.builtin.fail:
+        msg: "CRITICAL: WiFi AP interface ({{ network.wifi.interface }}) matches management interface ({{ ansible_default_ipv4.interface }}). This will break connectivity!"
+      when:
+        - ansible_default_ipv4 is defined
+        - network.wifi.interface == ansible_default_ipv4.interface
+  when: features.wifi_access_point | default(false)
+
+- name: Validation | Validate Docker is implied by any stack
+  ansible.builtin.debug:
+    msg: "INFO: Docker will be installed/configured as it's required by enabled services"
+  when:
+    - features.infrastructure | default(false) or
+      features.media | default(false) or
+      features.monitoring | default(false) or
+      features.automation | default(false) or
+      features.immich | default(false)
+
+- name: Validation | Display feature validation success
+  ansible.builtin.debug:
+    msg: "✓ Feature configuration and dependencies are valid"

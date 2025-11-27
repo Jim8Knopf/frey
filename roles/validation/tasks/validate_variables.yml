@@ -1,0 +1,73 @@
+---
+# Validate that all required variables are defined and have valid values
+
+- name: Validation | Validate core storage variables are defined
+  ansible.builtin.assert:
+    that:
+      - storage is defined
+      - storage.base_dir is defined
+      - storage.appdata_dir is defined
+      - storage.stacks is defined
+      - storage.media_dir is defined
+    fail_msg: "Required storage configuration variables are missing. Check group_vars/all/main.yml"
+    success_msg: "✓ Core storage variables are defined"
+
+- name: Validation | Validate storage paths are absolute
+  ansible.builtin.assert:
+    that:
+      - storage.base_dir is match('^/')
+      - storage.appdata_dir is match('^/')
+      - storage.stacks is match('^/')
+      - storage.media_dir is match('^/')
+    fail_msg: "Storage paths must be absolute (start with /). Found: base_dir={{ storage.base_dir }}, appdata_dir={{ storage.appdata_dir }}"
+    success_msg: "✓ Storage paths are absolute"
+
+- name: Validation | Validate network domain configuration
+  ansible.builtin.assert:
+    that:
+      - network is defined
+      - network.domain_name is defined
+      - network.domain_name is match('^[a-zA-Z0-9.-]+$')
+    fail_msg: "network.domain_name must be defined and contain valid domain characters"
+    success_msg: "✓ Network domain configuration is valid"
+
+- name: Validation | Validate features dictionary exists
+  ansible.builtin.assert:
+    that:
+      - features is defined
+      - features is mapping
+    fail_msg: "features dictionary must be defined in group_vars/all/main.yml"
+    success_msg: "✓ Features dictionary is defined"
+
+- name: Validation | Validate feature flags are boolean
+  ansible.builtin.assert:
+    that:
+      - features.infrastructure is boolean or features.infrastructure is undefined
+      - features.media is boolean or features.media is undefined
+      - features.monitoring is boolean or features.monitoring is undefined
+      - features.automation is boolean or features.automation is undefined
+      - features.wifi_access_point is boolean or features.wifi_access_point is undefined
+      - features.bluetooth_audio is boolean or features.bluetooth_audio is undefined
+      - features.security is boolean or features.security is undefined
+    fail_msg: "All feature flags must be boolean (true/false) values"
+    success_msg: "✓ Feature flags are valid boolean values"
+
+- name: Validation | Validate user/group configuration for enabled stacks (dynamic)
+  ansible.builtin.assert:
+    that:
+      - vars[item.name].user.name is defined
+      - vars[item.name].user.uid is defined
+      - vars[item.name].group.name is defined
+      - vars[item.name].group.gid is defined
+    fail_msg: "{{ item.name }} user/group configuration is incomplete. Check {{ item.name }}.user.* and {{ item.name }}.group.* variables"
+    success_msg: "✓ {{ item.name }} user/group configuration is complete"
+  loop: "{{ validation_stacks | selectattr('has_user_group', 'equalto', true) | list }}"
+  when:
+    - vars[item.name] is defined
+    - features[item.feature_flag] | default(false)
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Validation | Display variables validation success
+  ansible.builtin.debug:
+    msg: "✓ All required variables are defined and valid"

@@ -1,0 +1,47 @@
+---
+# Default variables for validation role
+
+# Minimum disk space required (in GB)
+validation_min_disk_space_gb: 10
+
+# Skip specific validation checks (set to true to skip)
+skip_network_validation: false
+skip_storage_validation: false
+skip_port_validation: false
+skip_secrets_validation: false
+skip_features_validation: false
+
+# Validation verbosity level (0=normal, 1=verbose)
+validation_verbosity: 0
+
+# List of stacks to validate dynamically
+# Add new stacks here and they will be automatically validated
+validation_stacks:
+  - name: infrastructure
+    feature_flag: infrastructure
+    has_services: true
+    has_user_group: true
+  - name: media
+    feature_flag: media
+    has_services: true
+    has_user_group: true
+  - name: monitoring
+    feature_flag: monitoring
+    has_services: true
+    has_user_group: true
+  - name: automation
+    feature_flag: automation
+    has_services: true
+    has_user_group: true
+  - name: immich
+    feature_flag: immich
+    has_services: true
+    has_user_group: false  # Immich uses photos_manager, not immich_manager
+  - name: cookbook
+    feature_flag: cookbook
+    has_services: true
+    has_user_group: true
+  - name: homeassistant
+    feature_flag: homeassistant
+    has_services: true
+    has_user_group: true

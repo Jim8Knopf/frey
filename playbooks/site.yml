@@ -105,6 +105,35 @@
 
   roles:
     # ==========================================================================
+    # VALIDATION LAYER - Input Validation & Configuration Checks
+    # ==========================================================================
+
+    # --------------------------------------------------------------------------
+    # Configuration Validation
+    # --------------------------------------------------------------------------
+    # Validates: All configuration before deployment to prevent misconfigurations
+    #
+    # Checks performed:
+    #   - Required variables are defined (storage, network, features)
+    #   - Network configuration is valid (IP addresses, WiFi settings, DNS)
+    #   - Storage paths are valid and accessible
+    #   - Port assignments have no conflicts
+    #   - Required secrets are defined (without exposing values)
+    #   - Feature flags and service dependencies are valid
+    #
+    # Benefits:
+    #   - Catches configuration errors before deployment
+    #   - Provides clear error messages for misconfigurations
+    #   - Validates WiFi AP won't disrupt SSH connection
+    #   - Checks for duplicate port assignments
+    #   - Ensures sufficient disk space
+    #
+    # Configuration: Runs automatically, can be skipped with --skip-tags validate
+    # --------------------------------------------------------------------------
+    - role: validation
+      tags: [validate, always]
+
+    # ==========================================================================
     # NETWORK LAYER - WiFi Access Point & Security
     # ==========================================================================
 
