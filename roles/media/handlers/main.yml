@@ -35,9 +35,3 @@
     name: "{{ media.services.lidarr.container_name }}"
     state: started
     restart: true
-
-- name: Restart Jellyfin
-  community.docker.docker_container:
-    name: jellyfin
-    state: started
-    restart: true

@@ -14,8 +14,8 @@ features:
   landing_page: false
   networking: true
   wifi_access_point: true
-  media: false
-  monitoring: false
+  media: true
+  monitoring: true
   automation: false
   authentication: false  # Authelia/LLDAP SSO - enable after initial setup
   file_management: false
@@ -210,3 +210,9 @@ optimization:
   german_content:
     locale: de_DE.UTF-8
     enable_indexers: true
+
+
+infrastructure:
+  services:
+    step_ca:
+      force_reinit: false

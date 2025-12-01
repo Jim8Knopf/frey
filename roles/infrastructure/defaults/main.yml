@@ -77,7 +77,13 @@ infrastructure:
       version: "latest"
       port: 9336
       ca_name: "Frey CA"
-      dns_names: "frey.local"
+      # DNS names used by Step-CA for its own TLS certificate
+      # First entry becomes the primary URL (e.g. https://ca.frey:9443)
+      dns_names:
+        - "step-ca"
+        - "ca.{{ network.domain_name }}"
+        - "step-ca.{{ network.domain_name }}"
+        - "{{ network.domain_name }}"
       provisioner_name: "admin"
       admin_password: "{{ vault_step_ca_admin_password }}"
       cert_files:
@@ -93,3 +99,4 @@ infrastructure:
       root_ca_cn: "Frey Root CA"
       organization: "Frey"
       country: "DE"
+      force_reinit: false

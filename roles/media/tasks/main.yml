@@ -9,13 +9,17 @@
 
 - name: Pre-pull all enabled media stack images
   community.docker.docker_image:
-    name: "{{ item.image }}"
+    name: "{{ item.value.image }}"
     source: pull
     state: present
     timeout: 300
-  loop: "{{ media.services.values() | selectattr('enabled', 'equalto', true) | list }}"
+  loop: "{{ media.services | dict2items }}"
   loop_control:
-    label: "{{ item.image }}"
+    label: "{{ item.value.image | default(item.key) }}"
+  when:
+    - item.value.enabled | default(false)
+    - item.value.image is defined
+    - item.key not in ['mopidy', 'audiobook_bridge', 'jellystat_db']
   register: image_pull_results
   retries: 2
   delay: 10
@@ -23,7 +27,7 @@
 
 - name: Set failed pulls fact
   ansible.builtin.set_fact:
-    failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item.image') | list }}"
+    failed_pulls: "{{ image_pull_results.results | default([]) | select('failed') | map(attribute='item.value.image') | list }}"
 
 - name: Report failed image pulls
   ansible.builtin.debug:
@@ -38,64 +42,6 @@
     group: "{{ media.group.name }}"
     mode: '0755'
   when: media.services.audiobook_bridge.enabled | default(false)
-
-# ==============================================================================
-# JELLYFIN LDAP AUTHENTICATION CONFIGURATION
-# ==============================================================================
-# Deploy LDAP-Auth plugin configuration for unified authentication via Authentik
-# NOTE: LDAP Authentication plugin must be installed manually first via Jellyfin UI
-#       (Dashboard > Plugins > Catalog > "LDAP Authentication")
-# This task manages the plugin's XML configuration file automatically
-
-- name: Ensure Jellyfin plugins/configurations directory exists
-  ansible.builtin.file:
-    path: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations"
-    state: directory
-    owner: "{{ media.user.name }}"
-    group: "{{ media.group.name }}"
-    mode: '0755'
-  when:
-    - infrastructure.services.authentik.enabled | default(false)
-    - media.services.jellyfin.enabled | default(false)
-
-- name: Deploy Jellyfin LDAP-Auth plugin configuration
-  ansible.builtin.template:
-    src: jellyfin-ldap-auth.xml.j2
-    dest: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations/LDAP-Auth.xml"
-    owner: "{{ media.user.name }}"
-    group: "{{ media.group.name }}"
-    mode: '0600'
-    backup: yes
-  when:
-    - infrastructure.services.authentik.enabled | default(false)
-    - media.services.jellyfin.enabled | default(false)
-  notify: Restart Jellyfin
-
-- name: Deploy Jellyfin LDAP-Auth plugin configuration (assembly filename)
-  ansible.builtin.template:
-    src: jellyfin-ldap-auth.xml.j2
-    dest: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations/Jellyfin.Plugin.LDAP-Auth.xml"
-    owner: "{{ media.user.name }}"
-    group: "{{ media.group.name }}"
-    mode: '0600'
-    backup: yes
-  when:
-    - infrastructure.services.authentik.enabled | default(false)
-    - media.services.jellyfin.enabled | default(false)
-  notify: Restart Jellyfin
-
-- name: Deploy Jellyfin LDAP-Auth plugin configuration (alternate assembly filename)
-  ansible.builtin.template:
-    src: jellyfin-ldap-auth.xml.j2
-    dest: "{{ storage.appdata_dir }}/jellyfin/plugins/configurations/Jellyfin.Plugin.LDAPAuth.xml"
-    owner: "{{ media.user.name }}"
-    group: "{{ media.group.name }}"
-    mode: '0600'
-    backup: yes
-  when:
-    - infrastructure.services.authentik.enabled | default(false)
-    - media.services.jellyfin.enabled | default(false)
-  notify: Restart Jellyfin
 
 - name: Warn when Audiobookshelf API token is missing (disables audiobook-bridge integration)
   ansible.builtin.debug:
@@ -258,7 +204,10 @@
       ansible.builtin.file:
         path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
         state: absent
-      when: media_step_ca_src.stat.isdir | default(false)
+      when:
+        - media_step_ca_src.stat.isdir | default(false)
+          or (media_step_ca_src.stat.exists | default(false)
+              and (media_step_ca_src.stat.size | default(0) == 0))
 
     - name: Check Step-CA root certificate target
       ansible.builtin.stat:
@@ -269,7 +218,10 @@
       ansible.builtin.file:
         path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
         state: absent
-      when: media_step_ca_dest.stat.isdir | default(false)
+      when:
+        - media_step_ca_dest.stat.isdir | default(false)
+          or (media_step_ca_dest.stat.exists | default(false)
+              and (media_step_ca_dest.stat.size | default(0) == 0))
 
     - name: Ensure Step-CA cert directory exists
       ansible.builtin.file:

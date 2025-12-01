@@ -40,6 +40,8 @@
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_root.stat.isdir | default(false)
+      or (step_ca_root.stat.exists | default(false)
+          and (step_ca_root.stat.size | default(0) == 0))
 
 - name: Remove invalid Step CA intermediate entry
   ansible.builtin.file:
@@ -48,6 +50,8 @@
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_intermediate.stat.isdir | default(false)
+      or (step_ca_intermediate.stat.exists | default(false)
+          and (step_ca_intermediate.stat.size | default(0) == 0))
 
 - name: Ensure Step CA cert directory has proper ownership
   ansible.builtin.file:
@@ -64,7 +68,9 @@
   register: step_ca_root_export
   changed_when: false
   failed_when: false
-  when: infrastructure.services.step_ca.enabled | default(false)
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_config.stat.exists
 
 - name: Publish Step CA root certificate for download
   ansible.builtin.copy:
@@ -75,7 +81,10 @@
     mode: '0644'
   when:
     - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_config.stat.exists
     - step_ca_root_export.rc == 0
+    - step_ca_root_export.stdout is defined
+    - step_ca_root_export.stdout | length > 0
 
 - name: Enforce 90-day certificates for Step CA ACME provisioner
   ansible.builtin.shell: |
@@ -139,7 +148,10 @@
   ansible.builtin.file:
     path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
     state: absent
-  when: traefik_root_entry.stat.isdir | default(false)
+  when:
+    - traefik_root_entry.stat.isdir | default(false)
+      or (traefik_root_entry.stat.exists | default(false)
+          and (traefik_root_entry.stat.size | default(0) == 0))
 
 - name: Check if CA certificate exists
   ansible.builtin.stat:
@@ -254,7 +266,9 @@
     src: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
     dest: "{{ lookup('env', 'HOME') }}/Downloads/Cert/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
     flat: yes
-  when: frey_ca_published.stat.exists
+  when:
+    - frey_ca_published.stat.exists
+    - frey_ca_published.stat.size | default(0) > 0
 
 - name: Check source Step-CA root certificate
   ansible.builtin.stat:
@@ -272,7 +286,10 @@
       ansible.builtin.file:
         path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
         state: absent
-      when: step_ca_root_mount.stat.isdir | default(false)
+      when:
+        - step_ca_root_mount.stat.isdir | default(false)
+          or (step_ca_root_mount.stat.exists | default(false)
+              and (step_ca_root_mount.stat.size | default(0) == 0))
 
     - name: Ensure Step-CA certs directory exists
       ansible.builtin.file:
@@ -333,6 +350,32 @@
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - not step_ca_config_check.stat.exists
+
+- name: Reset Step-CA when root certificate is missing
+  block:
+    - name: Stop and remove Step-CA container for CA reset
+      community.docker.docker_container:
+        name: step-ca
+        state: absent
+      failed_when: false
+
+    - name: Remove existing Step-CA data for CA reset
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca"
+        state: absent
+
+    - name: Recreate Step-CA data directory for CA reset
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/step-ca"
+        state: directory
+        owner: 1000  # step user inside container
+        group: 1000
+        mode: '0755'
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_config_check.stat.exists | default(false)
+    - (not step_ca_root.stat.exists | default(false)
+       or infrastructure.services.step_ca.force_reinit | default(false))
 
 # ==============================================================================
 # DOCKER NETWORK PREPARATION
@@ -451,7 +494,27 @@
   failed_when: false
   when: infrastructure.services.step_ca.enabled | default(false)
 
-- name: Export Step-CA root certificate after successful initialization
+- name: Check Step-CA root certificate on host
+  ansible.builtin.stat:
+    path: "{{ storage.appdata_dir }}/step-ca/certs/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+  register: step_ca_host_root
+  when: infrastructure.services.step_ca.enabled | default(false)
+
+- name: Publish Step-CA root certificate for Traefik and client download (from host)
+  ansible.builtin.copy:
+    src: "{{ storage.appdata_dir }}/step-ca/certs/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    dest: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0644'
+    remote_src: true
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_health is succeeded
+    - step_ca_host_root.stat.exists | default(false)
+    - step_ca_host_root.stat.size | default(0) > 0
+
+- name: Export Step-CA root certificate after successful initialization (fallback via CLI)
   ansible.builtin.command:
     cmd: docker exec step-ca step ca root
   register: step_ca_root_export_post
@@ -460,8 +523,9 @@
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_health is succeeded
+    - not (step_ca_host_root.stat.exists | default(false) and step_ca_host_root.stat.size | default(0) > 0)
 
-- name: Publish Step-CA root certificate for Traefik and client download
+- name: Publish Step-CA root certificate for Traefik and client download (from CLI)
   ansible.builtin.copy:
     dest: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
     content: "{{ step_ca_root_export_post.stdout }}"
@@ -472,6 +536,7 @@
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_root_export_post is succeeded
     - step_ca_root_export_post.stdout is defined
+    - step_ca_root_export_post.stdout | length > 0
 
 - name: Copy Step-CA certificate to local Downloads directory
   ansible.builtin.fetch:
@@ -482,3 +547,4 @@
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_root_export_post is succeeded
     - step_ca_root_export_post.stdout is defined
+    - step_ca_root_export_post.stdout | length > 0

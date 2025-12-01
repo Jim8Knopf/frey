@@ -4,8 +4,10 @@ networks:
     external: true  # For Traefik routing
   localdns:
     external: true  # For DNS resolution
+{% if features.authentication | default(false) %}
   auth_network:
     external: true  # For LLDAP authentication (Jellyfin)
+{% endif %}
   media_network:
     external: true  # Created ahead of time so monitoring/qB exporter can join
     name: "{{ media.network.name | default('media_network') }}"
@@ -78,26 +80,29 @@ services:
    - Use values from media.services.audiobookshelf.oidc_* variables
    ============================================================================== #}
     restart: unless-stopped
+{% set service_volumes = service_config.volumes | default([]) %}
+{% if service_volumes | length > 0 %}
     volumes:
-{% for volume in service_config.volumes %}
-{%   if 'step-ca/certs/root_ca.crt' in volume %}
-{%     if step_ca_cert_available | default(false) %}
+{%   for volume in service_volumes %}
+{%     if 'step-ca/certs/root_ca.crt' in volume %}
+{%       if step_ca_cert_available | default(false) %}
       - {{ volume }}  # Step-CA cert available
-{%     else %}
+{%       else %}
       # Skipping Step-CA cert mount (file not ready) - re-run playbook after Step-CA initializes
-{%     endif %}
-{%   else %}
+{%       endif %}
+{%     else %}
       - {{ volume }}
-{%   endif %}
-{% endfor %}
+{%     endif %}
+{%   endfor %}
+{% endif %}
     networks:
       proxy: {}        # Required for Traefik routing
       localdns: {}     # Required for DNS resolution
       media_network: {} # Service-specific network
-{% if service_name == 'jellyfin' %}
+{% if service_name == 'jellyfin' and features.authentication | default(false) %}
       auth_network: {}  # Required for LLDAP authentication
 {% endif %}
-{% if service_name == 'audiobookshelf' %}
+{% if service_name == 'audiobookshelf' and features.authentication | default(false) %}
       auth_network: {}  # Required for Authelia OIDC authentication
 {% endif %}
     ports:
