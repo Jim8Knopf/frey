@@ -1,0 +1,78 @@
+#!/bin/bash
+# ==============================================================================
+# FREY - Network & Service Management Tool
+# ==============================================================================
+# Main command dispatcher for FreyHub management tools
+#
+# USAGE:
+#   frey <category> <command> [arguments]
+#
+# CATEGORIES:
+#   wifi    WiFi connection and roaming management
+#   ap      Access point management
+#   net     Network utilities (NAT, routing, connectivity)
+# ==============================================================================
+
+FREY_LIB_DIR="/usr/local/lib/frey"
+
+show_help() {
+    cat <<EOF
+Frey - Network & Service Management Tool
+
+Usage: frey <category> <command> [arguments]
+
+Categories:
+  wifi    WiFi connection and roaming management
+  ap      Access point management
+  net     Network utilities (NAT, routing, connectivity)
+
+Examples:
+  frey wifi connect "MyNetwork" "password123"
+  frey wifi disconnect
+  frey wifi menu              # Interactive TUI
+  frey wifi status
+  frey wifi pause             # Pause roaming daemon
+  frey wifi resume
+
+  frey ap status              # Check AP health
+  frey ap ensure              # Ensure AP interface exists
+
+  frey net status             # Network connectivity check
+  frey net nat start          # Start NAT manager
+
+For detailed help on a category:
+  frey wifi --help
+  frey ap --help
+  frey net --help
+
+Version: 1.0.0
+Project: FreyHub - Self-hosted network and media hub
+EOF
+}
+
+case "$1" in
+    wifi)
+        shift
+        exec "$FREY_LIB_DIR/wifi-commands.sh" "$@"
+        ;;
+    ap)
+        shift
+        exec "$FREY_LIB_DIR/ap-commands.sh" "$@"
+        ;;
+    net)
+        shift
+        exec "$FREY_LIB_DIR/net-commands.sh" "$@"
+        ;;
+    --help|-h|help|"")
+        show_help
+        ;;
+    --version|-v|version)
+        echo "Frey version 1.0.0"
+        ;;
+    *)
+        echo "Unknown category: $1"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac

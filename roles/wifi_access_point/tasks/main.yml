@@ -1057,10 +1057,10 @@
     mode: '0755'
   when: network.wifi.enable_nat | default(false)
 
-- name: Deploy Frey NAT Manager service
+- name: Deploy Frey NAT Daemon service
   ansible.builtin.template:
-    src: frey-nat-manager.service.j2
-    dest: /etc/systemd/system/frey-nat-manager.service
+    src: frey-natd.service.j2
+    dest: /etc/systemd/system/frey-natd.service
     mode: '0644'
   when: network.wifi.enable_nat | default(false)
 
@@ -1098,17 +1098,17 @@
     - dnsmasq_test.rc == 0
     - dnsmasq_config_result is not changed
 
-- name: Enable and start Frey NAT Manager service
+- name: Enable and start Frey NAT Daemon service
   ansible.builtin.systemd:
-    name: frey-nat-manager
+    name: frey-natd
     state: started
     enabled: yes
     daemon_reload: yes
   when: network.wifi.enable_nat | default(false)
 
-- name: Stop and disable Frey NAT Manager when NAT disabled
+- name: Stop and disable Frey NAT Daemon when NAT disabled
   ansible.builtin.systemd:
-    name: frey-nat-manager
+    name: frey-natd
     state: stopped
     enabled: no
   when: not (network.wifi.enable_nat | default(false))
@@ -1277,6 +1277,37 @@
   register: dhcp_leases
   changed_when: false
   failed_when: false
+
+- name: Ensure /usr/local/lib/frey directory exists
+  ansible.builtin.file:
+    path: /usr/local/lib/frey
+    state: directory
+    mode: '0755'
+
+- name: Deploy Frey WiFi shared library
+  ansible.builtin.template:
+    src: frey-wifi-lib.sh.j2
+    dest: /usr/local/lib/frey/frey-wifi-lib.sh
+    mode: '0644'
+  tags: [wifi_library]
+
+- name: Deploy main Frey command dispatcher
+  ansible.builtin.template:
+    src: frey.sh.j2
+    dest: /usr/local/bin/frey
+    mode: '0755'
+  tags: [frey_cli]
+
+- name: Deploy Frey category command handlers
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/lib/frey/{{ item }}"
+    mode: '0755'
+  loop:
+    - wifi-commands.sh
+    - ap-commands.sh
+    - net-commands.sh
+  tags: [frey_cli]
 
 - name: Deploy WiFi connection helper script
   ansible.builtin.template:
@@ -1554,7 +1585,7 @@
     owner: root
     group: root
     mode: '0755'
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -1566,7 +1597,7 @@
     owner: root
     group: root
     mode: '0755'
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -1582,8 +1613,8 @@
     owner: root
     group: root
     mode: '0644'
-  when: network.wifi.roaming.daemon_enabled | default(false)
-  notify: Restart frey-wifi-roaming
+  when: network.wifi.roaming.enabled | default(false)
+  notify: Restart frey-wifid
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -1595,8 +1626,8 @@
     owner: root
     group: root
     mode: '0600'
-  when: network.wifi.roaming.daemon_enabled | default(false)
-  notify: Restart frey-wifi-roaming
+  when: network.wifi.roaming.enabled | default(false)
+  notify: Restart frey-wifid
   no_log: true
   tags:
     - wifi_roaming
@@ -1613,7 +1644,7 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -1625,7 +1656,7 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -1637,7 +1668,7 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -1649,40 +1680,54 @@
     mode: '0755'
     owner: root
     group: root
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
 
-- name: Deploy WiFi roaming systemd service
+- name: Deploy WiFi roaming pause/resume control script
+  ansible.builtin.copy:
+    src: frey-wifi-pause.sh
+    dest: /usr/local/bin/frey-wifi-pause
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - roaming_daemon
+
+- name: Deploy WiFi roaming daemon systemd service
   ansible.builtin.template:
-    src: frey-wifi-roaming.service.j2
-    dest: /etc/systemd/system/frey-wifi-roaming.service
+    src: frey-wifid.service.j2
+    dest: /etc/systemd/system/frey-wifid.service
     mode: '0644'
     owner: root
     group: root
-  when: network.wifi.roaming.daemon_enabled | default(false)
-  notify: Reload systemd
+  when: network.wifi.roaming.enabled | default(false)
+  notify:
+    - reload systemd
+    - Restart frey-wifid
   tags:
     - wifi_roaming
     - roaming_daemon
 
 - name: Enable and start WiFi roaming daemon
   ansible.builtin.systemd:
-    name: frey-wifi-roaming
+    name: frey-wifid
     enabled: yes
     state: started
     daemon_reload: yes
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
 
 - name: Check WiFi roaming daemon status
   ansible.builtin.systemd:
-    name: frey-wifi-roaming
+    name: frey-wifid
   register: roaming_daemon_status
-  when: network.wifi.roaming.daemon_enabled | default(false)
+  when: network.wifi.roaming.enabled | default(false)
   tags:
     - wifi_roaming
     - roaming_daemon
@@ -1691,7 +1736,7 @@
   ansible.builtin.debug:
     msg: "WiFi roaming daemon is {{ roaming_daemon_status.status.ActiveState }}"
   when:
-    - network.wifi.roaming.daemon_enabled | default(false)
+    - network.wifi.roaming.enabled | default(false)
     - roaming_daemon_status is defined
   tags:
     - wifi_roaming
@@ -1879,3 +1924,188 @@
     - wifi_ap
     - mdns
     - avahi
+
+# ==============================================================================
+# CAPTIVE PORTAL DEPENDENCIES (PYTHON + SELENIUM)
+# ==============================================================================
+
+- name: Install dependencies for Selenium-based captive portal bypass
+  tags:
+    - wifi_roaming
+    - captive_portal
+  when: network.wifi.roaming.enabled | default(false)
+  block:
+    - name: Install base packages for portal bypass
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - firefox-esr
+          - lynx  # Terminal browser for simple accept-button portals
+        state: present
+        update_cache: yes
+      register: apt_result
+      retries: 3
+      until: apt_result is succeeded
+
+    - name: Install Python libraries for Selenium
+      ansible.builtin.apt:
+        name: python3-selenium
+        state: present
+
+    - name: Set geckodriver facts
+      ansible.builtin.set_fact:
+        geckodriver_version: "v0.36.0"
+        arch_map:
+          aarch64: "linux-aarch64"
+          armv7l: "linux-arm7hf"
+          x86_64: "linux64"
+
+    - name: Determine geckodriver architecture for download
+      ansible.builtin.set_fact:
+        geckodriver_arch: "{{ arch_map[ansible_architecture] | default('linux64') }}"
+
+    - name: Download and unarchive geckodriver
+      ansible.builtin.unarchive:
+        src: "https://github.com/mozilla/geckodriver/releases/download/{{ geckodriver_version }}/geckodriver-{{ geckodriver_version }}-{{ geckodriver_arch }}.tar.gz"
+        dest: /usr/local/bin
+        remote_src: yes
+        creates: /usr/local/bin/geckodriver
+      become: yes
+
+# ==============================================================================
+# CAPTIVE PORTAL AUTOMATION DAEMON
+# ==============================================================================
+# Automatically accepts login pages and verifies internet connectivity
+# when connecting to public WiFi networks (library, airport, coffee shops, etc.)
+#
+# This daemon runs in the background and:
+# - Monitors for captive portal detection
+# - Automatically submits login forms
+# - Verifies internet connectivity
+# - Logs activity for debugging
+
+- name: Deploy captive portal shell bypass script (primary method)
+  ansible.builtin.copy:
+    src: frey-wifi-portal-shell-bypass.sh
+    dest: /usr/local/bin/frey-wifi-portal-shell-bypass.sh
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Deploy captive portal bypasser python script (fallback method)
+  ansible.builtin.copy:
+    src: frey-wifi-portal-bypasser.py
+    dest: /usr/local/bin/frey-wifi-portal-bypasser.py
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Deploy captive portal automation helper script
+  ansible.builtin.copy:
+    src: frey-wifi-captive-portal-auto.sh
+    dest: /usr/local/bin/frey-wifi-captive-portal-auto
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Deploy captive portal daemon wrapper script
+  ansible.builtin.copy:
+    src: frey-wifi-captive-portal-daemon.sh
+    dest: /usr/local/bin/frey-wifi-captive-portal-daemon
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Deploy captive portal test script
+  ansible.builtin.copy:
+    src: test-portal-bypass.sh
+    dest: /usr/local/bin/test-portal-bypass
+    mode: '0755'
+    owner: root
+    group: root
+  tags:
+    - portal_test
+    - captive_portal
+
+- name: Deploy portal debug script
+  ansible.builtin.copy:
+    src: debug-portal.sh
+    dest: /usr/local/bin/debug-portal
+    mode: '0755'
+    owner: root
+    group: root
+  tags:
+    - portal_test
+    - captive_portal
+
+- name: Deploy DHCP debug script with auto-reconnect
+  ansible.builtin.copy:
+    src: dhcp-debug-auto.sh
+    dest: /usr/local/bin/dhcp-debug-auto
+    mode: '0755'
+    owner: root
+    group: root
+  tags:
+    - portal_test
+    - captive_portal
+    - dhcp_debug
+
+- name: Deploy captive portal daemon service
+  ansible.builtin.template:
+    src: frey-wifi-captive-portal-daemon.service.j2
+    dest: /etc/systemd/system/frey-wifi-captive-portal-daemon.service
+    mode: '0644'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  notify: Reload systemd
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Enable and start captive portal daemon
+  ansible.builtin.systemd:
+    name: frey-wifi-captive-portal-daemon
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: network.wifi.roaming.enabled | default(false)
+  register: portal_daemon_status
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Display captive portal daemon status
+  ansible.builtin.debug:
+    msg: |
+      Captive Portal Daemon Status: {{ portal_daemon_status.status.ActiveState if portal_daemon_status.status is defined else 'unknown' }}
+      
+      Logs:
+      - sudo systemctl status frey-wifi-captive-portal-daemon
+      - sudo journalctl -u frey-wifi-captive-portal-daemon -f
+      
+      To run manually for testing:
+      - sudo /usr/local/bin/frey-wifi-captive-portal-auto
+  when:
+    - network.wifi.roaming.enabled | default(false)
+    - portal_daemon_status is defined
+  tags:
+    - wifi_roaming
+    - captive_portal

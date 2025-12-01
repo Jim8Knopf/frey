@@ -9,10 +9,12 @@ deploy_infrastructure: true
 infrastructure_networks:
   # Shared networks (created by this role, used by others)
   proxy:
+    name: proxy
     description: "Main network for Traefik routing - all web-accessible services join this"
     external: true    # Other services reference this network
 
   localdns:
+    name: localdns
     description: "Network for DNS resolution between containers"
     external: true    # Other services reference this network
 
@@ -43,7 +45,7 @@ infrastructure:
         https: 443
         dashboard: 8082
       config:
-        acme_email: "{{ admin_email }}"  # Using admin email for Let's Encrypt notifications
+        acme_email: "{{ admin.email }}"  # Using admin email for Let's Encrypt notifications
     portainer:
       enabled: true
       version: "latest"

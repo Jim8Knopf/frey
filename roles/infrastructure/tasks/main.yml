@@ -37,7 +37,6 @@
   ansible.builtin.file:
     path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
     state: absent
-    recurse: yes
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_root.stat.isdir | default(false)
@@ -46,7 +45,6 @@
   ansible.builtin.file:
     path: "{{ storage.appdata_dir }}/step-ca/certs/intermediate_ca.crt"
     state: absent
-    recurse: yes
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - step_ca_intermediate.stat.isdir | default(false)
@@ -141,7 +139,6 @@
   ansible.builtin.file:
     path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
     state: absent
-    recurse: yes
   when: traefik_root_entry.stat.isdir | default(false)
 
 - name: Check if CA certificate exists
@@ -336,6 +333,54 @@
   when:
     - infrastructure.services.step_ca.enabled | default(false)
     - not step_ca_config_check.stat.exists
+
+# ==============================================================================
+# DOCKER NETWORK PREPARATION
+# ==============================================================================
+- name: Build infrastructure network definitions
+  ansible.builtin.set_fact:
+    infrastructure_network_definitions: >-
+      {{
+        [
+          {'name': infrastructure_networks.proxy.name | default('proxy')},
+          {'name': infrastructure_networks.localdns.name | default('localdns')},
+          (
+            {'name': infrastructure_networks.infrastructure_network.name | default('infrastructure_network')}
+            | combine(
+                (
+                  {
+                    'ipam_config': [
+                      {
+                        'subnet': infrastructure_networks.infrastructure_network.subnet
+                      }
+                      | combine(
+                          (
+                            {'gateway': infrastructure_networks.infrastructure_network.gateway}
+                            if (infrastructure_networks.infrastructure_network.gateway is defined)
+                            else {}
+                          ),
+                          recursive=True
+                        )
+                    ]
+                  }
+                  if (infrastructure_networks.infrastructure_network.subnet is defined)
+                  else {}
+                ),
+                recursive=True
+              )
+          )
+        ]
+      }}
+
+- name: Ensure infrastructure Docker networks exist
+  community.docker.docker_network:
+    name: "{{ item.name }}"
+    state: present
+    driver: "{{ item.driver | default('bridge') }}"
+    ipam_config: "{{ item.ipam_config | default(omit) }}"
+  loop: "{{ infrastructure_network_definitions }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 # ==============================================================================
 # DOCKER COMPOSE DEPLOYMENT

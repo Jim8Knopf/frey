@@ -10,6 +10,8 @@ wifi_ap_packages:
   - dhcpcd5
   - iw
   - rfkill
+  - wpasupplicant
+  - jq
 
 # Safety guard: set to true to force apply even if the AP interface equals the control interface
 force_apply: false
@@ -49,7 +51,7 @@ network:
       mqtt_topic: "frey/wifi/roaming"
       known_networks: "{{ network.wifi.roaming.known_networks | default([]) }}"  # From secrets.yml
       mqtt:
-        enabled: true
+        enabled: false
         broker: "localhost"
         port: 1883
 

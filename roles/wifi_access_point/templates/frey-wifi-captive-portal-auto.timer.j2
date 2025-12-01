@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Frey Automatic WiFi Connector every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=frey-wifi-captive-portal-auto.service
+
+[Install]
+WantedBy=timers.target

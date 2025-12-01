@@ -46,6 +46,7 @@ MQTT_ENABLED=true
 MQTT_BROKER="localhost"
 MQTT_PORT=1883
 MQTT_TOPIC_PREFIX="frey/wifi/roaming"
+SWITCH_THRESHOLD_NO_INTERNET=0
 
 # Runtime state
 CURRENT_SSID=""
@@ -55,6 +56,40 @@ SCAN_INTERVAL=$SCAN_INTERVAL_DEFAULT
 DAEMON_ENABLED=true
 VERBOSE=false
 FOREGROUND=false
+PORTAL_FAIL_BACKOFF=60
+PORTAL_FAIL_BACKOFF_OPEN=30
+SCANNING_PAUSED=false  # Signal-based pause/resume control
+
+# ==============================================================================
+# Signal Handlers for Pause/Resume Control
+# ==============================================================================
+# SIGUSR1 = pause scanning, SIGUSR2 = resume scanning
+# Usage: kill -SIGUSR1 <pid>  (pause)
+#        kill -SIGUSR2 <pid>  (resume)
+
+handle_pause() {
+    SCANNING_PAUSED=true
+    log INFO "🔇 WiFi roaming PAUSED by user signal (SIGUSR1)"
+    log INFO "Send SIGUSR2 to resume scanning"
+}
+
+handle_resume() {
+    SCANNING_PAUSED=false
+    log INFO "🔊 WiFi roaming RESUMED by user signal (SIGUSR2)"
+}
+
+# Register signal handlers
+trap handle_pause SIGUSR1
+trap handle_resume SIGUSR2
+LAST_CONNECTED_OPEN=false
+OPEN_FAIL_BLACKLIST=60
+DEFAULT_IGNORE_SSIDS=("FreyHub")
+
+# Connection stability
+INTERNET_CHECK_FAILURES=0
+MAX_INTERNET_CHECK_FAILURES=2  # Allow up to 2 failures before treating as no-internet
+LAST_SCAN_ON_KNOWN_NETWORK=0
+MIN_KNOWN_NETWORK_SCAN_INTERVAL=600  # Only scan every 10 mins when on stable known network
 
 # Colors
 GREEN='\033[0;32m'
@@ -121,6 +156,11 @@ load_config() {
         # shellcheck disable=SC1090
         source "$CONFIG_FILE" 2>/dev/null || true
     fi
+
+    # Default ignore SSIDs if not set in config
+    if ! declare -p IGNORE_SSIDS >/dev/null 2>&1; then
+        IGNORE_SSIDS=("${DEFAULT_IGNORE_SSIDS[@]}")
+    fi
 }
 
 # ==============================================================================
@@ -184,9 +224,15 @@ get_current_status() {
 verify_internet() {
     if /usr/local/bin/frey-wifi-internet-verify --interface "$INTERFACE_CLIENT" &>/dev/null; then
         HAS_INTERNET=true
+        INTERNET_CHECK_FAILURES=0  # Reset failure counter on success
         return 0
     else
-        HAS_INTERNET=false
+        # Allow transient failures
+        INTERNET_CHECK_FAILURES=$((INTERNET_CHECK_FAILURES + 1))
+        
+        if [ $INTERNET_CHECK_FAILURES -ge $MAX_INTERNET_CHECK_FAILURES ]; then
+            HAS_INTERNET=false
+        fi
         return 1
     fi
 }
@@ -294,16 +340,63 @@ connect_to_network() {
     wpa_cli -i "$INTERFACE_CLIENT" enable_network "$network_id" &>/dev/null
     wpa_cli -i "$INTERFACE_CLIENT" select_network "$network_id" &>/dev/null
 
+    # Track whether this is an open network (for portal/backoff logic)
+    LAST_CONNECTED_OPEN=false
+    if [ -z "$password" ]; then
+        LAST_CONNECTED_OPEN=true
+    fi
+
     # Wait for connection
     local attempts=0
-    while [ $attempts -lt 10 ]; do
+    while [ $attempts -lt 15 ]; do
         sleep 1
         if wpa_cli -i "$INTERFACE_CLIENT" status | grep -q "wpa_state=COMPLETED"; then
             log INFO "✓ Connected to WiFi: '$ssid'"
 
-            # Request IP address
-            dhcpcd "$INTERFACE_CLIENT" &>/dev/null || true
-            sleep 2
+            # Request IP address, retrying with dhcpcd then dhclient
+            local dh_attempt=0
+            while [ $dh_attempt -lt 3 ]; do
+                if ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                    break
+                fi
+
+                if command -v dhcpcd &>/dev/null; then
+                    dhcpcd -n "$INTERFACE_CLIENT" &>/dev/null || dhcpcd "$INTERFACE_CLIENT" &>/dev/null || true
+                fi
+                sleep 2
+
+                if ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                    break
+                fi
+
+                if command -v dhclient &>/dev/null; then
+                    timeout 15 dhclient -1 -v "$INTERFACE_CLIENT" &>/dev/null || true
+                fi
+                sleep 3
+
+                dh_attempt=$((dh_attempt + 1))
+            done
+
+            if ! ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                log WARN "Failed to obtain IPv4 lease after multiple attempts"
+                
+                # For open networks, try portal bypass before giving up
+                if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
+                    log INFO "Open network with DHCP failure - attempting captive portal bypass..."
+                    if handle_captive_portal "$ssid"; then
+                        # Portal was bypassed - try DHCP again
+                        if command -v dhcpcd &>/dev/null; then
+                            dhcpcd -n "$INTERFACE_CLIENT" &>/dev/null || dhcpcd "$INTERFACE_CLIENT" &>/dev/null || true
+                        fi
+                        sleep 2
+                        if ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                            return 0
+                        fi
+                    fi
+                fi
+                
+                return 1
+            fi
 
             return 0
         fi
@@ -328,8 +421,17 @@ handle_captive_portal() {
         return 0
     else
         log WARN "⚠ Automatic captive portal bypass failed"
-        # Blacklist this network temporarily
-        blacklist_network "$ssid" 300  # 5 minutes
+        # For open networks, apply short blacklist to rotate candidates; record failure
+        if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
+            log INFO "Open network; short blacklist to rotate candidates"
+            update_network_history "$ssid" false
+            blacklist_network "$ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+            wpa_cli -i "$INTERFACE_CLIENT" disconnect &>/dev/null || true
+            CURRENT_SSID=""
+        else
+            local backoff="${PORTAL_FAIL_BACKOFF:-60}"
+            blacklist_network "$ssid" "$backoff"
+        fi
         return 1
     fi
 }
@@ -340,6 +442,19 @@ handle_captive_portal() {
 blacklist_network() {
     local ssid="$1"
     local duration="${2:-300}"  # Default: 5 minutes
+    local allow_open="${3:-false}"
+
+    # Do not blacklist known networks to preserve preferred connectivity
+    if is_known_ssid "$ssid"; then
+        log INFO "Skipping blacklist for known network '$ssid'"
+        return
+    fi
+
+    # Avoid blacklisting open networks unless explicitly allowed
+    if [ "${LAST_CONNECTED_OPEN:-false}" = true ] && [ "$allow_open" != true ]; then
+        log INFO "Skipping blacklist for open network '$ssid'"
+        return
+    fi
 
     if ! command -v jq &>/dev/null; then
         log WARN "jq not installed - cannot blacklist networks"
@@ -404,54 +519,94 @@ get_network_password() {
     echo "$password"
 }
 
+# Check if an SSID is configured as known
+is_known_ssid() {
+    local ssid="$1"
+
+    if [ ! -f "$KNOWN_NETWORKS_FILE" ]; then
+        return 1
+    fi
+
+    if grep -q "^${ssid}|" "$KNOWN_NETWORKS_FILE" 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
 # ==============================================================================
 # Main roaming logic
 # ==============================================================================
 roaming_cycle() {
     log DEBUG "Starting roaming cycle..."
 
+    # Skip scanning if paused by user signal
+    if [ "$SCANNING_PAUSED" = true ]; then
+        log DEBUG "Scanning paused - sleeping"
+        sleep 10  # Short sleep to keep daemon responsive
+        return
+    fi
+
     # Get current status
-    get_current_status
+    get_current_status || true
 
     # Publish current status
     mqtt_publish "status/current_ssid" "${CURRENT_SSID:-disconnected}"
     mqtt_publish "status/signal_dbm" "$CURRENT_SIGNAL"
 
     # Verify internet
-    verify_internet
+    verify_internet || true
     mqtt_publish "status/has_internet" "$HAS_INTERNET"
 
     # Determine scan interval based on current state
     if [ -z "$CURRENT_SSID" ]; then
         # No connection - scan aggressively
         SCAN_INTERVAL=$SCAN_INTERVAL_NO_CONNECTION
+        INTERNET_CHECK_FAILURES=0
+        LAST_SCAN_ON_KNOWN_NETWORK=0
         mqtt_publish "status/state" "no_connection"
         log INFO "State: NO_CONNECTION - Scan interval: ${SCAN_INTERVAL}s"
     elif [ "$HAS_INTERNET" = false ]; then
         # Connected but no internet - scan moderately
         SCAN_INTERVAL=$SCAN_INTERVAL_NO_INTERNET
+        LAST_SCAN_ON_KNOWN_NETWORK=0
         mqtt_publish "status/state" "no_internet"
         log INFO "State: NO_INTERNET (SSID: $CURRENT_SSID) - Scan interval: ${SCAN_INTERVAL}s"
 
         # Try to handle captive portal
         if handle_captive_portal "$CURRENT_SSID"; then
-            verify_internet
+            verify_internet || true
         fi
     elif [ "$CURRENT_SIGNAL" -lt -75 ]; then
         # Weak signal - scan moderately
         SCAN_INTERVAL=$SCAN_INTERVAL_NO_INTERNET
+        LAST_SCAN_ON_KNOWN_NETWORK=0
         mqtt_publish "status/state" "weak_signal"
         log INFO "State: WEAK_SIGNAL (SSID: $CURRENT_SSID, Signal: ${CURRENT_SIGNAL} dBm) - Scan interval: ${SCAN_INTERVAL}s"
     else
-        # Good connection - scan conservatively
-        SCAN_INTERVAL=$SCAN_INTERVAL_GOOD
+        # Good connection - scan very conservatively on known networks
+        local current_is_known=false
+        if is_known_ssid "$CURRENT_SSID"; then
+            current_is_known=true
+        fi
+        
+        if [ "$current_is_known" = true ]; then
+            # On a known network with good internet - scan very infrequently
+            SCAN_INTERVAL=$SCAN_INTERVAL_GOOD
+            LAST_SCAN_ON_KNOWN_NETWORK=$(date +%s)
+            log DEBUG "State: CONNECTED_GOOD (Known: YES, SSID: $CURRENT_SSID, Signal: ${CURRENT_SIGNAL} dBm) - Scan interval: ${SCAN_INTERVAL}s"
+        else
+            # On unknown network with good internet
+            SCAN_INTERVAL=$SCAN_INTERVAL_GOOD
+            LAST_SCAN_ON_KNOWN_NETWORK=0
+            log DEBUG "State: CONNECTED_GOOD (Known: NO, SSID: $CURRENT_SSID, Signal: ${CURRENT_SIGNAL} dBm) - Scan interval: ${SCAN_INTERVAL}s"
+        fi
         mqtt_publish "status/state" "connected_good"
-        log DEBUG "State: CONNECTED_GOOD (SSID: $CURRENT_SSID, Signal: ${CURRENT_SIGNAL} dBm) - Scan interval: ${SCAN_INTERVAL}s"
     fi
 
     # Scan for available networks
     local scan_results
-    scan_results=$(scan_networks)
+    scan_results=$(scan_networks) || true
 
     if [ -z "$scan_results" ]; then
         log WARN "Scan returned no results"
@@ -462,14 +617,59 @@ roaming_cycle() {
     local ranked_networks
     ranked_networks=$(rank_networks "$scan_results")
 
+    # Filter: allow known networks always; allow open networks; skip secured unknown networks
+    local filtered_networks
+    filtered_networks=$(echo "$ranked_networks" | while IFS='|' read -r score ssid signal security; do
+        [ -z "$ssid" ] && continue
+
+        # Skip ignored SSIDs
+        for ignore in "${IGNORE_SSIDS[@]}"; do
+            if [ "$ssid" = "$ignore" ]; then
+                continue 2
+            fi
+        done
+
+        if [ "$security" != "Open" ] && ! is_known_ssid "$ssid"; then
+            continue
+        fi
+        echo "${score}|${ssid}|${signal}|${security}"
+    done)
+
+    if [ -z "$filtered_networks" ]; then
+        log WARN "No eligible networks after filtering"
+        return
+    fi
+
+    # Optionally prefer known networks first
+    local candidate_networks
+    candidate_networks="$filtered_networks"
+    if [ "${PREFER_KNOWN_NETWORKS:-true}" = true ]; then
+        local known_candidates
+        known_candidates=$(echo "$ranked_networks" | while IFS='|' read -r score ssid signal security; do
+            [ -z "$ssid" ] && continue
+            if is_known_ssid "$ssid"; then
+                echo "${score}|${ssid}|${signal}|${security}"
+            fi
+        done)
+
+        if [ -n "$known_candidates" ]; then
+            local known_count
+            known_count=$(echo "$known_candidates" | wc -l)
+            log INFO "Preferring known networks first (${known_count} available)"
+            candidate_networks="$known_candidates"
+        else
+            log INFO "No known networks available; considering all candidates"
+        fi
+    fi
+
     local network_count
-    network_count=$(echo "$ranked_networks" | wc -l)
-    log INFO "Found $network_count scorable networks"
+    network_count=$(echo "$candidate_networks" | wc -l)
+    log INFO "Evaluating $network_count candidate networks"
     mqtt_publish "status/networks_found" "$network_count"
 
     # Get best available network
     local best_network
-    best_network=$(echo "$ranked_networks" | head -1)
+    best_network=$(echo "$candidate_networks" | head -1)
 
     if [ -z "$best_network" ]; then
         log WARN "No suitable networks found"
@@ -481,7 +681,7 @@ roaming_cycle() {
 
     log INFO "Best available: '$best_ssid' (score: $best_score, signal: ${best_signal} dBm)"
 
-    # Decide whether to switch
+    # Decide whether to switch or iterate candidates
     if [ -n "$CURRENT_SSID" ]; then
         # Already connected - check if we should switch
         local current_score
@@ -489,37 +689,85 @@ roaming_cycle() {
 
         log INFO "Current network: '$CURRENT_SSID' (score: $current_score)"
 
-        local score_diff=$((best_score - current_score))
+        # If no internet on current network, treat current score as 0 to encourage switching
+        if [ "$HAS_INTERNET" = false ]; then
+            current_score=0
+        fi
 
-        if [ "$score_diff" -lt "$SWITCH_THRESHOLD" ]; then
-            log INFO "No switch needed (score difference: $score_diff < threshold: $SWITCH_THRESHOLD)"
+        local current_is_known=false
+        if is_known_ssid "$CURRENT_SSID"; then
+            current_is_known=true
+        fi
+
+        # ===== CRITICAL: NEVER LEAVE A KNOWN NETWORK WITH INTERNET =====
+        if [ "$HAS_INTERNET" = true ] && [ "$current_is_known" = true ] && [ "${PREFER_KNOWN_NETWORKS:-true}" = true ]; then
+            log INFO "🔒 STAYING on known network '$CURRENT_SSID' (has internet, never switching)"
             return
         fi
 
-        log INFO "Switching networks (score improvement: $score_diff >= threshold: $SWITCH_THRESHOLD)"
+        # ===== NEVER SWITCH IF ON GOOD KNOWN NETWORK =====
+        if [ "$current_is_known" = true ] && [ "$CURRENT_SIGNAL" -gt -75 ]; then
+            # Only scan infrequently on known networks
+            local time_since_known_scan=$(($(date +%s) - LAST_SCAN_ON_KNOWN_NETWORK))
+            if [ $time_since_known_scan -lt $MIN_KNOWN_NETWORK_SCAN_INTERVAL ]; then
+                log DEBUG "On good known network, skipping scan (last scan: ${time_since_known_scan}s ago)"
+                return
+            fi
+        fi
+
+        # Lower the switch threshold when current network lacks internet
+        local effective_threshold="$SWITCH_THRESHOLD"
+        if [ "$HAS_INTERNET" = false ]; then
+            effective_threshold="${SWITCH_THRESHOLD_NO_INTERNET:-0}"
+        fi
+
+        local score_diff=$((best_score - current_score))
+
+        # ===== CRITICAL: NEVER DOWNGRADE FROM KNOWN NETWORK TO PUBLIC WIFI =====
+        # Check if candidate network is known
+        local candidate_is_known=false
+        if is_known_ssid "$best_ssid"; then
+            candidate_is_known=true
+        fi
+
+        # If currently on known network, NEVER switch to unknown/public network
+        # This enforces strict priority hierarchy: known networks >> public WiFi
+        if [ "$current_is_known" = true ] && [ "$candidate_is_known" = false ]; then
+            log INFO "🔒 REFUSING to switch from known network '$CURRENT_SSID' to public WiFi '$best_ssid'"
+            log INFO "Known networks always preferred over public WiFi (priority enforcement)"
+            return
+        fi
+
+        # ===== NEVER SWITCH TO THE SAME NETWORK WE'RE ALREADY ON =====
+        if [ "$best_ssid" = "$CURRENT_SSID" ]; then
+            log INFO "Already connected to best network '$CURRENT_SSID' - staying put"
+            return
+        fi
+
+        if [ "$score_diff" -lt "$effective_threshold" ]; then
+            log INFO "No switch needed (score difference: $score_diff < threshold: $effective_threshold)"
+            return
+        fi
+
+        log INFO "Switching networks (score improvement: $score_diff >= threshold: $effective_threshold)"
         mqtt_publish "events" "{\"event\":\"switching\",\"from\":\"$CURRENT_SSID\",\"to\":\"$best_ssid\",\"reason\":\"better_score\"}"
-    else
-        log INFO "No current connection - connecting to best network"
-        mqtt_publish "events" "{\"event\":\"connecting\",\"to\":\"$best_ssid\"}"
-    fi
 
-    # Get password for known networks
-    local password
-    password=$(get_network_password "$best_ssid")
+        # Try the top candidate only when switching from an active connection
+        local password
+        password=$(get_network_password "$best_ssid")
 
-    # Attempt connection
     if connect_to_network "$best_ssid" "$password"; then
-        # Verify internet
         sleep 2
         if verify_internet; then
             log INFO "✅ Successfully connected with internet access: '$best_ssid'"
             update_network_history "$best_ssid" true
+            INTERNET_CHECK_FAILURES=0
             mqtt_publish "events" "{\"event\":\"connected_success\",\"ssid\":\"$best_ssid\"}"
         else
             log WARN "⚠ Connected but no internet: '$best_ssid'"
-            # Try captive portal
             if handle_captive_portal "$best_ssid"; then
                 update_network_history "$best_ssid" true
+                INTERNET_CHECK_FAILURES=0
                 mqtt_publish "events" "{\"event\":\"portal_bypassed\",\"ssid\":\"$best_ssid\"}"
             else
                 update_network_history "$best_ssid" false
@@ -528,8 +776,59 @@ roaming_cycle() {
     else
         log ERROR "❌ Failed to connect to: '$best_ssid'"
         update_network_history "$best_ssid" false
-        blacklist_network "$best_ssid" 300
+        if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
+            blacklist_network "$best_ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+        else
+            blacklist_network "$best_ssid" "${BLACKLIST_DURATION:-300}"
+        fi
         mqtt_publish "events" "{\"event\":\"connection_failed\",\"ssid\":\"$best_ssid\"}"
+    fi
+    else
+        log INFO "No current connection - testing candidate networks"
+        mqtt_publish "events" "{\"event\":\"connecting\",\"to\":\"candidates\"}"
+
+        local connected=false
+        while IFS='|' read -r candidate_score candidate_ssid candidate_signal candidate_security; do
+            [ -z "$candidate_ssid" ] && continue
+
+            log INFO "Attempting to connect to: '$candidate_ssid' (score: $candidate_score, signal: ${candidate_signal} dBm)"
+            local password
+            password=$(get_network_password "$candidate_ssid")
+
+            if connect_to_network "$candidate_ssid" "$password"; then
+                sleep 2
+                if verify_internet; then
+                    log INFO "✅ Successfully connected with internet access: '$candidate_ssid'"
+                    update_network_history "$candidate_ssid" true
+                    INTERNET_CHECK_FAILURES=0
+                    mqtt_publish "events" "{\"event\":\"connected_success\",\"ssid\":\"$candidate_ssid\"}"
+                else
+                    log WARN "⚠ Connected but no internet: '$candidate_ssid'"
+                    if handle_captive_portal "$candidate_ssid"; then
+                        update_network_history "$candidate_ssid" true
+                        INTERNET_CHECK_FAILURES=0
+                        mqtt_publish "events" "{\"event\":\"portal_bypassed\",\"ssid\":\"$candidate_ssid\"}"
+                    else
+                        update_network_history "$candidate_ssid" false
+                    fi
+                fi
+                connected=true
+                break
+            else
+                log ERROR "❌ Failed to connect to: '$candidate_ssid'"
+                update_network_history "$candidate_ssid" false
+                if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
+                    blacklist_network "$candidate_ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+                else
+                    blacklist_network "$candidate_ssid" "${BLACKLIST_DURATION:-300}"
+                fi
+                mqtt_publish "events" "{\"event\":\"connection_failed\",\"ssid\":\"$candidate_ssid\"}"
+            fi
+        done <<< "$candidate_networks"
+
+        if [ "$connected" = false ]; then
+            log WARN "No candidate networks succeeded this cycle"
+        fi
     fi
 }
 

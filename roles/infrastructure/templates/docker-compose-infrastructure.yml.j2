@@ -129,7 +129,10 @@ services:
 networks:
   proxy:
     external: true            # Main network for Traefik routing
+    name: "{{ infrastructure_networks.proxy.name | default('proxy') }}"
   localdns:
     external: true           # For DNS resolution
+    name: "{{ infrastructure_networks.localdns.name | default('localdns') }}"
   infrastructure_network:    # Service-specific network
     external: true           # For DNS resolution
+    name: "{{ infrastructure_networks.infrastructure_network.name | default('infrastructure_network') }}"

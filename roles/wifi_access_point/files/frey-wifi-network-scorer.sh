@@ -311,6 +311,22 @@ score_failures() {
 
     local penalty=$((failures * -10))
 
+    # Cap penalty for open networks to avoid permanently burying them
+    if [ -n "${SECURITY:-}" ] && echo "$SECURITY" | grep -qi "open"; then
+        local min_penalty=-40
+        if [ "$penalty" -lt "$min_penalty" ]; then
+            penalty=$min_penalty
+        fi
+    fi
+
+    # Reduce penalty for known networks to avoid starving them
+    if is_known_network "$ssid"; then
+        local min_penalty=-30
+        if [ "$penalty" -lt "$min_penalty" ]; then
+            penalty=$min_penalty
+        fi
+    fi
+
     if [ "$failures" -gt 0 ]; then
         log "Recent failures: ${failures}, penalty: ${penalty}"
     fi
@@ -324,18 +340,25 @@ score_failures() {
 matches_blacklist_pattern() {
     local ssid="$1"
 
-    # Common patterns to avoid
-    local patterns=(
-        ".*-printer.*"
-        ".*-iot.*"
-        ".*-setup.*"
-        "HP-.*"
-        "Canon_.*"
-        "Brother_.*"
-        "DIRECT-.*"
-        ".*_nomap"
-        ".*\[hidden\].*"
-    )
+    local patterns=()
+
+    # Common patterns to avoid (prefer config if available)
+    if declare -p BLACKLIST_PATTERNS >/dev/null 2>&1; then
+        eval "patterns=(\"\${BLACKLIST_PATTERNS[@]}\")"
+    else
+        patterns=(
+            ".*-printer.*"
+            ".*-iot.*"
+            ".*-setup.*"
+            "HP-.*"
+            "Canon_.*"
+            "Brother_.*"
+            "DIRECT-.*"
+            ".*_nomap"
+            ".*\\[hidden\\].*"
+            "^FreyHub$"
+        )
+    fi
 
     for pattern in "${patterns[@]}"; do
         if echo "$ssid" | grep -qiE "$pattern"; then
@@ -379,6 +402,26 @@ main() {
         exit 0
     fi
 
+    # If a whitelist is defined, require a match
+    if declare -p WHITELIST_PATTERNS >/dev/null 2>&1; then
+        eval "local whitelist=(\"\${WHITELIST_PATTERNS[@]}\")"
+        if [ "${#whitelist[@]}" -gt 0 ]; then
+            local matched=false
+            for pattern in "${whitelist[@]}"; do
+                if echo "$SSID" | grep -qiE "$pattern"; then
+                    matched=true
+                    break
+                fi
+            done
+
+            if [ "$matched" = false ]; then
+                log "❌ Network does not match whitelist"
+                echo "0"
+                exit 0
+            fi
+        fi
+    fi
+
     # Calculate individual scores
     local signal_score
     local known_score
@@ -395,11 +438,23 @@ main() {
     # Calculate total score
     local total_score=$((signal_score + known_score + history_score + security_score + failure_penalty))
 
-    # Ensure score is within bounds (0-100)
-    if [ "$total_score" -lt 0 ]; then
-        total_score=0
+    # Allow negative scores to penalize repeated failures and deprioritize bad opens
+    if [ "$total_score" -lt -100 ]; then
+        total_score=-100
     elif [ "$total_score" -gt 100 ]; then
         total_score=100
+    fi
+
+    # Ensure known networks keep a minimal score floor
+    if is_known_network "$SSID" && [ "$total_score" -lt 10 ]; then
+        total_score=10
+    fi
+
+    # Ensure open networks have a small floor so they remain selectable
+    if [ -n "${SECURITY:-}" ] && echo "$SECURITY" | grep -qi "open"; then
+        if [ "$total_score" -lt 5 ]; then
+            total_score=5
+        fi
     fi
 
     log "--------------------------------"

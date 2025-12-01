@@ -13,17 +13,18 @@ INTERFACE_CLIENT="{{ network.wifi.client_interface | default('wlan0') }}"
 # ==============================================================================
 # Scanning Behavior (seconds)
 # ==============================================================================
+# Configurable from group_vars/all/main.yml (network.wifi.roaming.scan_intervals)
 # Default scan interval (used in most situations)
-SCAN_INTERVAL_DEFAULT=120
+SCAN_INTERVAL_DEFAULT={{ network.wifi.roaming.scan_intervals.default | default(120) }}
 
-# Aggressive scanning when no WiFi connection
-SCAN_INTERVAL_NO_CONNECTION=30
+# Balanced scanning when no WiFi connection (was 30s - too aggressive)
+SCAN_INTERVAL_NO_CONNECTION={{ network.wifi.roaming.scan_intervals.no_connection | default(120) }}
 
-# Medium scanning when connected but no internet (captive portal, etc.)
-SCAN_INTERVAL_NO_INTERNET=60
+# Balanced scanning when connected but no internet (captive portal, etc.)
+SCAN_INTERVAL_NO_INTERNET={{ network.wifi.roaming.scan_intervals.no_internet | default(180) }}
 
 # Conservative scanning when everything is working well
-SCAN_INTERVAL_GOOD=600
+SCAN_INTERVAL_GOOD={{ network.wifi.roaming.scan_intervals.good | default(900) }}
 
 # ==============================================================================
 # Connection Thresholds
@@ -53,7 +54,7 @@ AUTO_PORTAL_AUTH=true
 # ==============================================================================
 # MQTT Configuration (Home Assistant / n8n Integration)
 # ==============================================================================
-MQTT_ENABLED={{ network.wifi.roaming.mqtt.enabled | default(true) | lower }}
+MQTT_ENABLED={{ network.wifi.roaming.mqtt.enabled | default(false) | lower }}
 MQTT_BROKER="{{ network.wifi.roaming.mqtt.broker | default('localhost') }}"
 MQTT_PORT={{ network.wifi.roaming.mqtt.port | default(1883) }}
 MQTT_TOPIC_PREFIX="{{ network.wifi.roaming.mqtt_topic | default('frey/wifi/roaming') }}"
@@ -83,6 +84,12 @@ BLACKLIST_PATTERNS=(
     "DIRECT-.*"              # WiFi Direct devices
     ".*_nomap"              # Privacy-focused networks asking not to be mapped
     ".*\[hidden\].*"        # Hidden SSIDs
+{% if network.wifi.ssid is defined and (network.wifi.ssid | string | length) > 0 %}
+    "{{ network.wifi.ssid }}"       # Avoid connecting to our own AP
+{% endif %}
+{% if network.wifi.virtual_ap is defined and (network.wifi.virtual_ap.ssid | default('') | string | length) > 0 %}
+    "{{ network.wifi.virtual_ap.ssid }}"  # Avoid connecting to any virtual AP SSID
+{% endif %}
 )
 
 # ==============================================================================

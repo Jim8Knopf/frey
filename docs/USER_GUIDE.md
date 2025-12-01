@@ -103,7 +103,31 @@ Frey uses a layered architecture with Docker containers orchestrated by Ansible:
 
 **WiFi Networks:**
 - **wlan1** (AP mode) - FreyHub access point (10.20.0.1)
-- **eth0/wlan0** (Client mode) - Internet connection interface
+  - Always-on WiFi for local service access
+  - Provides DHCP (10.20.0.50-150) and DNS resolution
+  - NAT/routing to internet via client interface
+- **wlan0** (Client mode) - Automatic WiFi roaming interface
+  - Connects to best available public/known WiFi
+  - Automatic captive portal detection and bypass
+  - Intelligent network scoring and selection
+  - Signal-based pause/resume control
+- **eth0/wlan0** (Client mode) - Primary internet connection interface
+
+**WiFi Roaming Features:**
+- **Multi-layered Portal Detection:**
+  - HTTP redirect detection (traditional portals)
+  - Ping-based internet verification (non-redirecting portals)
+  - Content verification (interception detection)
+  - Successfully detects LibrariesSA-Free and similar portals
+- **Automatic Portal Bypass:**
+  - Shell-based bypass (lightweight, fast)
+  - Selenium-based bypass (fallback for complex portals)
+  - 80-90% success rate on common portals
+- **Roaming Control:**
+  - Signal-based pause/resume (SIGUSR1/SIGUSR2)
+  - Command: `frey-wifi-pause pause|resume|status`
+  - Instant response, no file I/O overhead
+  - Daemon continues running when paused
 
 **Service Discovery:**
 - Traefik routes `http://<service>.frey` to appropriate containers
@@ -631,13 +655,32 @@ cookbook:
 - **Status:** See [WIFI_ROAMING_SETUP.md](WIFI_ROAMING_SETUP.md)
 
 **Key Features:**
-- Internet verification (filters non-internet networks)
-- Automatic captive portal bypass (80-90% success rate)
-- Intelligent network scoring and selection
-- Adaptive scanning (30s aggressive → 10min stable)
-- MQTT integration for Home Assistant control
-- Network history and blacklisting
-- Always keeps FreyHub AP running
+- **Internet verification** - Filters non-internet networks (smart TVs, IoT devices)
+- **Multi-layered captive portal detection**:
+  - HTTP redirect detection (traditional portals)
+  - Ping-based verification (non-redirecting portals like LibrariesSA-Free)
+  - Content verification (interception detection)
+- **Automatic captive portal bypass** - 80-90% success rate
+  - Shell-based bypass (fast, lightweight)
+  - Selenium-based bypass (fallback for complex portals)
+- **Intelligent network scoring and selection** - Ranks networks 0-100
+- **Adaptive scanning** - 30s aggressive → 10min stable
+- **Signal-based pause/resume control** - Instant pause without stopping daemon
+- **MQTT integration** - Home Assistant control and monitoring
+- **Network history and blacklisting** - Learns from connection failures
+- **Always keeps FreyHub AP running** - No disruption to local services
+
+**Roaming Control:**
+```bash
+# Pause scanning (keeps daemon running)
+sudo frey-wifi-pause pause
+
+# Resume scanning
+sudo frey-wifi-pause resume
+
+# Check daemon status
+sudo frey-wifi-pause status
+```
 
 **Configuration:**
 ```yaml
@@ -740,19 +783,46 @@ Ensures connected networks actually provide internet (not just WiFi):
 - IoT networks without internet
 - Networks with DNS but no routing
 
-#### 2. Automatic Captive Portal Bypass
-Automatically authenticates with common captive portals:
+#### 2. Automatic Captive Portal Detection & Bypass
 
-**5 Authentication Methods:**
-1. Simple visit (many portals auto-authenticate)
-2. Form auto-submit (find and submit forms)
-3. API endpoints (try common auth APIs)
-4. Button detection (click "Accept"/"Agree" buttons)
-5. Generic form submission (fallback)
+**Multi-Layered Portal Detection:**
 
-**Success Rate:** 80-90% on common portals (Starbucks, hotels, airports)
+The system uses three detection methods to catch all types of captive portals:
 
-If automatic bypass fails, network is temporarily blacklisted.
+1. **HTTP Redirect Detection** (Traditional)
+   - Monitors URL changes when accessing http://neverssl.com
+   - Detects portals that redirect to authentication page
+   - Works for: Starbucks, airports, most hotels
+
+2. **Ping-Based Internet Verification** (Non-Redirecting)
+   - Pings 1.1.1.1 to verify real internet access
+   - Detects portals that intercept traffic WITHOUT redirecting
+   - Works for: LibrariesSA-Free, university networks, enterprise portals
+
+3. **Content Verification** (Interception)
+   - Verifies HTTP response contains expected content
+   - Detects portals that return custom HTML without redirect
+   - Catches edge cases missed by other methods
+
+**Portal Bypass Strategies:**
+
+Once a portal is detected, the system attempts bypass using:
+
+1. **Shell-Based Bypass** (Lightweight, Fast)
+   - cURL-based form submission
+   - Common API endpoint attempts
+   - Button click simulation
+   - Success rate: ~70%
+
+2. **Selenium-Based Bypass** (Fallback, Comprehensive)
+   - Browser automation for complex portals
+   - JavaScript interaction support
+   - Multi-step authentication flows
+   - Success rate: ~20% additional
+
+**Overall Success Rate:** 80-90% on common portals (Starbucks, hotels, airports, libraries)
+
+If automatic bypass fails, network is temporarily blacklisted and user is notified.
 
 #### 3. Intelligent Network Scoring
 Ranks networks 0-100 based on multiple factors:
@@ -780,9 +850,44 @@ Adjusts scan frequency based on connection state:
 | **Weak Signal** | Signal < -75 dBm | Every 2 minutes |
 | **Good Connection** | Connected, good signal, internet OK | Every 10 minutes |
 
+#### 5. Signal-Based Pause/Resume Control
+
+The roaming daemon can be instantly paused and resumed without stopping the service:
+
+**Usage:**
+```bash
+# Pause WiFi scanning (daemon keeps running but skips scans)
+sudo frey-wifi-pause pause
+
+# Resume WiFi scanning
+sudo frey-wifi-pause resume
+
+# Check daemon status and pause state
+sudo frey-wifi-pause status
+```
+
+**How It Works:**
+- Uses Unix signals (SIGUSR1 for pause, SIGUSR2 for resume)
+- Instant response with no file I/O overhead
+- Daemon stays running and responsive
+- When paused, daemon sleeps but remains ready
+
+**When to Use:**
+- Temporary network troubleshooting
+- Staying connected to specific network for testing
+- Reducing power usage during stationary periods
+- Manual network selection without daemon interference
+
+**Technical Details:**
+- Signal handler registered in daemon process
+- `SIGUSR1` → sets `SCANNING_PAUSED=true`
+- `SIGUSR2` → sets `SCANNING_PAUSED=false`
+- Main loop checks flag before each scan cycle
+- No systemctl restart required
+
 **MQTT Control:**
 
-Change scan behavior via Home Assistant or n8n:
+Change scan behavior dynamically via Home Assistant or n8n:
 
 ```bash
 # Publish to MQTT to control roaming
@@ -791,7 +896,7 @@ mosquitto_pub -h localhost -t "frey/wifi/roaming/control/scan_interval" -m "60"
 mosquitto_pub -h localhost -t "frey/wifi/roaming/control/rescan" -m "true"
 ```
 
-#### 5. Network History & Learning
+#### 6. Network History & Learning
 Tracks connection success rates:
 
 ```json
@@ -1194,6 +1299,9 @@ sudo journalctl -u dnsmasq -f
 # WiFi roaming daemon
 sudo journalctl -u frey-wifi-roaming -f
 
+# Check roaming daemon status and pause state
+sudo frey-wifi-pause status
+
 # System logs
 sudo journalctl -f
 ```
@@ -1457,7 +1565,22 @@ automation:
 
 ### Custom WiFi Roaming Behavior
 
-**Edit on Pi:** `/etc/frey/wifi-roaming.conf`
+**Quick Control (No Configuration Changes):**
+
+```bash
+# Pause roaming when you want to stay on current network
+sudo frey-wifi-pause pause
+
+# Resume roaming when you want automatic switching
+sudo frey-wifi-pause resume
+
+# Check current state
+sudo frey-wifi-pause status
+```
+
+**Advanced Configuration:**
+
+Edit on Pi: `/etc/frey/wifi-roaming.conf`
 
 ```bash
 # Aggressive switching (for travel)
@@ -1620,6 +1743,60 @@ sudo rfkill unblock wifi
 
 # Restart services
 sudo systemctl restart hostapd dnsmasq
+```
+
+### WiFi Roaming Not Working
+
+**Check roaming daemon:**
+```bash
+# Check service status
+sudo systemctl status frey-wifi-roaming
+
+# Check daemon status and pause state
+sudo frey-wifi-pause status
+
+# View recent logs
+sudo journalctl -u frey-wifi-roaming -n 50
+```
+
+**Common issues:**
+
+1. **Daemon is paused:**
+   - Check: `sudo frey-wifi-pause status`
+   - Solution: `sudo frey-wifi-pause resume`
+
+2. **Not connecting to any networks:**
+   - Check logs: `sudo journalctl -u frey-wifi-roaming -f`
+   - Verify wlan0 interface exists: `ip link show wlan0`
+   - Check known networks: `cat /etc/frey/known-networks.conf`
+
+3. **Captive portal detection failing:**
+   - Network might be blacklisted after failed bypass
+   - Check blacklist: `cat /var/lib/frey/wifi-blacklist.json`
+   - Clear blacklist: `sudo rm /var/lib/frey/wifi-blacklist.json`
+   - Restart daemon: `sudo systemctl restart frey-wifi-roaming`
+
+4. **Constantly switching networks:**
+   - Pause roaming temporarily: `sudo frey-wifi-pause pause`
+   - Increase switch threshold in config
+   - Add problematic networks to blacklist
+
+**Debugging commands:**
+```bash
+# Check current WiFi connection
+wpa_cli -i wlan0 status
+
+# Manual network scan
+sudo nmcli dev wifi list
+
+# Test internet connectivity
+ping -c 3 1.1.1.1
+
+# Test captive portal detection
+curl -I http://neverssl.com
+
+# Force immediate rescan (via MQTT)
+mosquitto_pub -h localhost -t "frey/wifi/roaming/control/rescan" -m "true"
 ```
 
 ### Authentik SSO Not Working
@@ -1889,6 +2066,12 @@ Internet
 
 ---
 
-**Version:** 1.0
-**Last Updated:** 2024-10-31
+**Version:** 1.1
+**Last Updated:** 2025-11-28
 **For:** Frey Raspberry Pi 5 Home Server System
+
+**Changelog:**
+- Added multi-layered captive portal detection (HTTP redirect, ping, content verification)
+- Added signal-based pause/resume control for WiFi roaming
+- Added WiFi roaming troubleshooting section
+- Enhanced network architecture documentation

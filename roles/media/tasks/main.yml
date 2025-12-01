@@ -258,7 +258,6 @@
       ansible.builtin.file:
         path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.root_ca }}"
         state: absent
-        recurse: yes
       when: media_step_ca_src.stat.isdir | default(false)
 
     - name: Check Step-CA root certificate target
@@ -270,7 +269,6 @@
       ansible.builtin.file:
         path: "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt"
         state: absent
-        recurse: yes
       when: media_step_ca_dest.stat.isdir | default(false)
 
     - name: Ensure Step-CA cert directory exists

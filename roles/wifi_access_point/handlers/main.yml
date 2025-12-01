@@ -150,9 +150,9 @@
     state: restarted
     daemon_reload: yes
 
-- name: Restart frey-wifi-roaming
+- name: Restart frey-wifid
   ansible.builtin.systemd:
-    name: frey-wifi-roaming
+    name: frey-wifid
     state: restarted
     daemon_reload: yes
   when: network.wifi.roaming.daemon_enabled | default(false)

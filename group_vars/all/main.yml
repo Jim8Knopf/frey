@@ -29,7 +29,8 @@ features:
 # GLOBAL CONFIGURATION
 # ================================
 # Admin contact information
-admin_email: "Jason.Kolb@ik.me"
+admin:
+  email: "Jason.Kolb@ik.me"
 
 # Global user definitions
 users:
@@ -103,6 +104,29 @@ network:
     # Automation + smart home
     - name: homeassistant
     - name: n8n
+
+  # WiFi Roaming Configuration (wlan0 client interface)
+  wifi:
+    roaming:
+      enabled: true  # Toggle for automatic WiFi roaming service
+      scan_intervals:
+        default: 120         # Default scan interval (seconds) - 2 minutes for quick network discovery
+        no_connection: 120   # Scan interval when no connection (seconds) - 2 minutes, reduced from 30s
+        no_internet: 180     # Scan interval when no internet (seconds) - 3 minutes, reduced from 60s
+        good: 900            # Scan interval on stable connection (seconds) - 15 minutes
+
+    # Known networks - networks that should skip captive portal bypass
+    # Add your personal hotspots, home WiFi, or other trusted networks here
+    known_networks:
+      # Personal hotspot - provides direct internet without captive portal
+      - ssid: "NOTHING by JK"
+        skip_portal_bypass: true
+
+      # Future: Networks with known portal credentials can be added like this:
+      # - ssid: "Library WiFi"
+      #   portal_credentials:
+      #     username: "guest"
+      #     password: "password123"
 
 # ==============================================================================
 # SECURITY SETTINGS (GLOBAL)

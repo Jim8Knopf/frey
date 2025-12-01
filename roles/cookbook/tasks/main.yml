@@ -38,6 +38,7 @@
 - name: Align Mealie application data ownership with container user
   ansible.builtin.file:
     path: "{{ cookbook.services.mealie.data_dir }}"
+    state: directory
     owner: "{{ cookbook.services.mealie.container_uid | default(1000) }}"
     group: "{{ cookbook.services.mealie.container_gid | default(1000) }}"
     recurse: true
@@ -47,6 +48,7 @@
 - name: Align Mealie Postgres data ownership with database user
   ansible.builtin.file:
     path: "{{ cookbook.services.mealie.db_data_location }}"
+    state: directory
     owner: "{{ cookbook.services.mealie.postgres_uid | default(999) }}"
     group: "{{ cookbook.services.mealie.postgres_gid | default(999) }}"
     recurse: true

@@ -1,5 +1,5 @@
 # ==============================================================================
-# FREY NAT MANAGER SERVICE - Dynamic Internet Passthrough
+# FREY NAT DAEMON SERVICE - Dynamic Internet Passthrough
 # ==============================================================================
 # Automatically enables NAT when upstream internet connection appears
 # (LAN cable or public WiFi), and disables it when offline.
@@ -12,7 +12,7 @@
 # ==============================================================================
 
 [Unit]
-Description=Frey NAT Manager - Dynamic Internet Passthrough for WiFi AP
+Description=Frey NAT Daemon - Dynamic Internet Passthrough for WiFi AP
 Documentation=https://github.com/jim/frey
 # Note: NO network-online.target dependency - must work offline
 After=network.target hostapd.service dhcpcd.service
@@ -31,7 +31,7 @@ PrivateTmp=yes
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=frey-nat-manager
+SyslogIdentifier=frey-natd
 
 [Install]
 WantedBy=multi-user.target

@@ -1,412 +1,204 @@
 #!/bin/bash
+
 # ==============================================================================
-# FREY WIFI AUTOMATIC CAPTIVE PORTAL AUTHENTICATION
-# ==============================================================================
-# Automatically detects and attempts to bypass captive portals using common
-# patterns without requiring user interaction
+# Freya-WiFi-Captive-Portal-Auto
 #
-# USAGE:
-#   frey-wifi-captive-portal-auto [--interface wlan0] [--verbose]
+# A script to automatically connect to open Wi-Fi networks and handle
+# basic captive portals.
 #
-# EXIT CODES:
-#   0  = Portal bypassed successfully
-#   1  = No portal detected or bypass failed
-#   2  = Portal detected but automatic bypass failed (manual intervention needed)
+# This script is designed to be run periodically by a scheduler like systemd/cron.
+#
+# Dependencies:
+# - wpa_cli (wpa_supplicant command-line tool)
+# - curl
 # ==============================================================================
 
-set -euo pipefail
+# --- Configuration ---
 
-# Configuration
-INTERFACE="${1:-wlan0}"
-VERBOSE=false
-MAX_ATTEMPTS=5
-ATTEMPT_DELAY=2
+# List of known SSIDs to NOT auto-connect to (e.g., private networks).
+# Add your home Wi-Fi, phone hotspot, etc. here.
+# Example: KNOWN_SSIDS=("MyHome" "MyPhoneHotspot")
+KNOWN_SSIDS=()
 
-# Colors
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+# Log file for debugging and history.
+LOG_FILE="/var/log/frey-wifi-auto-connect.log"
 
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --interface|-i)
-            INTERFACE="$2"
-            shift 2
-            ;;
-        --verbose|-v)
-            VERBOSE=true
-            shift
-            ;;
-        --help|-h)
-            echo "Usage: $0 [--interface wlan0] [--verbose]"
-            echo "Exit codes: 0=success, 1=no portal, 2=manual needed"
-            exit 0
-            ;;
-        *)
-            shift
-            ;;
-    esac
-done
+# URL to test for captive portal detection.
+# Should be a non-HTTPS URL that returns a predictable response.
+PORTAL_TEST_URL="http://neverssl.com"
 
+# --- Script Logic ---
+
+# Function to write log messages to LOG_FILE and stdout.
 log() {
-    if [ "$VERBOSE" = true ]; then
-        echo -e "${GREEN}[INFO]${NC} $1" >&2
-    fi
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
 }
 
-info() {
-    echo -e "${BLUE}[INFO]${NC} $1" >&2
-}
+# Checks if the device is currently connected to one of the KNOWN_SSIDS.
+# Returns 0 if connected to a known network, 1 otherwise.
+is_connected_to_known_network() {
+    # Get the SSID of the active Wi-Fi connection.
+    # Using wpa_cli instead of nmcli to match Pi's actual network stack (wpa_supplicant)
+    local current_ssid
+    current_ssid=$(wpa_cli -i wlan0 status | grep '^ssid=' | cut -d'=' -f2)
 
-warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1" >&2
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-}
-
-# ==============================================================================
-# Detect Captive Portal
-# ==============================================================================
-detect_portal() {
-    log "Detecting captive portal..."
-
-    local portal_url
-
-    # Method 1: Check Firefox captive portal detection
-    local response
-    response=$(curl -s --interface "$INTERFACE" --max-time 3 http://detectportal.firefox.com/success.txt 2>/dev/null || echo "")
-
-    if [ "$response" = "success" ]; then
-        log "No captive portal detected (Firefox test passed)"
-        return 1
+    if [ -z "$current_ssid" ]; then
+        return 1 # Not connected to any Wi-Fi.
     fi
 
-    # Method 2: Check Apple captive portal detection
-    portal_url=$(curl -sI --interface "$INTERFACE" --max-time 3 http://captive.apple.com/hotspot-detect.html 2>/dev/null | grep -i "^Location:" | head -1 | cut -d' ' -f2 | tr -d '\r')
+    for ssid in "${KNOWN_SSIDS[@]}"; do
+        if [ "$current_ssid" == "$ssid" ]; then
+            return 0 # Connected to a known network.
+        fi
+    done
 
-    if [ -n "$portal_url" ] && [[ "$portal_url" != *"apple.com"* ]]; then
-        log "Captive portal detected: $portal_url"
-        echo "$portal_url"
-        return 0
-    fi
-
-    # Method 3: Try to get redirected from any HTTP request
-    portal_url=$(curl -sI --interface "$INTERFACE" --max-time 3 -L http://neverssl.com 2>/dev/null | grep -i "^Location:" | tail -1 | cut -d' ' -f2 | tr -d '\r')
-
-    if [ -n "$portal_url" ] && [[ "$portal_url" =~ ^http ]]; then
-        log "Captive portal detected (redirect): $portal_url"
-        echo "$portal_url"
-        return 0
-    fi
-
-    log "No captive portal detected"
+    # Connected, but not to a network in our known list.
+    # We'll treat this as a public network we might need to check for a portal.
     return 1
 }
 
-# ==============================================================================
-# Verify Internet Access
-# ==============================================================================
-verify_internet() {
-    local response
-    response=$(curl -s --interface "$INTERFACE" --max-time 3 http://detectportal.firefox.com/success.txt 2>/dev/null || echo "")
+# Scans for and connects to the strongest open Wi-Fi network.
+connect_to_open_network() {
+    log "Scanning for open Wi-Fi networks..."
 
-    if [ "$response" = "success" ]; then
-        return 0
-    else
-        return 1
-    fi
-}
+    # Find the strongest open (no security) network.
+    # Format: SSID,SECURITY,SIGNAL
+    local best_ssid
+    best_ssid=$(nmcli --terse --fields SSID,SECURITY,SIGNAL dev wifi list | grep ':$' | sort -t: -k3 -n -r | head -n1 | cut -d':' -f1)
 
-# ==============================================================================
-# Method 1: Simple GET Request (many portals authenticate just by visiting)
-# ==============================================================================
-method_simple_visit() {
-    local portal_url="$1"
-    log "Method 1: Simple visit to portal page..."
-
-    curl -s -L --interface "$INTERFACE" --max-time 5 "$portal_url" -o /dev/null 2>&1
-    sleep "$ATTEMPT_DELAY"
-
-    if verify_internet; then
-        info "✓ Portal bypassed with simple visit"
-        return 0
-    fi
-
-    log "✗ Simple visit failed"
-    return 1
-}
-
-# ==============================================================================
-# Method 2: Auto-submit common button patterns
-# ==============================================================================
-method_auto_submit() {
-    local portal_url="$1"
-    log "Method 2: Parsing and auto-submitting forms..."
-
-    # Download the portal page
-    local page
-    page=$(curl -s -L --interface "$INTERFACE" --max-time 5 "$portal_url" 2>/dev/null || echo "")
-
-    if [ -z "$page" ]; then
-        log "✗ Failed to download portal page"
-        return 1
-    fi
-
-    # Extract form action URL
-    local form_action
-    form_action=$(echo "$page" | grep -oP 'action=["'\'']\K[^"'\'']+' | head -1)
-
-    if [ -z "$form_action" ]; then
-        log "No form action found"
-        return 1
-    fi
-
-    # Make absolute URL if relative
-    if [[ "$form_action" != http* ]]; then
-        local base_url
-        base_url=$(echo "$portal_url" | sed -E 's|(https?://[^/]+).*|\1|')
-        if [[ "$form_action" == /* ]]; then
-            form_action="${base_url}${form_action}"
+    if [ -n "$best_ssid" ]; then
+        log "Found open network: '$best_ssid'. Attempting to connect."
+        
+        # Attempt to connect. nmcli will create and manage the connection profile.
+        if nmcli dev wifi connect "$best_ssid"; then
+            log "Successfully initiated connection to '$best_ssid'."
+            return 0
         else
-            form_action="${portal_url%/*}/${form_action}"
+            log "Failed to connect to '$best_ssid'."
+            return 1
         fi
-    fi
-
-    log "Form action: $form_action"
-
-    # Try common form data patterns
-    local form_data_patterns=(
-        "accept=true&agree=1"
-        "accept=1&terms=1"
-        "agree=true"
-        "accept=yes"
-        "terms=accepted"
-        "submit=Accept"
-        "action=accept"
-        "continue=true"
-    )
-
-    for data in "${form_data_patterns[@]}"; do
-        log "Trying form data: $data"
-        curl -s -X POST --interface "$INTERFACE" --max-time 5 "$form_action" -d "$data" -o /dev/null 2>&1
-        sleep "$ATTEMPT_DELAY"
-
-        if verify_internet; then
-            info "✓ Portal bypassed with form submission"
-            return 0
-        fi
-    done
-
-    log "✗ Form submission failed"
-    return 1
-}
-
-# ==============================================================================
-# Method 3: Try common API endpoints
-# ==============================================================================
-method_api_endpoints() {
-    local portal_url="$1"
-    log "Method 3: Trying common API endpoints..."
-
-    local base_url
-    base_url=$(echo "$portal_url" | sed -E 's|(https?://[^/]+).*|\1|')
-
-    local api_endpoints=(
-        "/login?accept=true"
-        "/auth/accept"
-        "/api/v1/auth"
-        "/api/auth"
-        "/authenticate"
-        "/accept"
-        "/continue"
-        "/agree"
-    )
-
-    for endpoint in "${api_endpoints[@]}"; do
-        local url="${base_url}${endpoint}"
-        log "Trying: $url"
-
-        # Try GET
-        curl -s --interface "$INTERFACE" --max-time 3 "$url" -o /dev/null 2>&1
-        sleep 1
-
-        if verify_internet; then
-            info "✓ Portal bypassed with API endpoint (GET): $endpoint"
-            return 0
-        fi
-
-        # Try POST with JSON
-        curl -s -X POST --interface "$INTERFACE" --max-time 3 "$url" \
-            -H "Content-Type: application/json" \
-            -d '{"accept":true,"agree":true}' \
-            -o /dev/null 2>&1
-        sleep 1
-
-        if verify_internet; then
-            info "✓ Portal bypassed with API endpoint (POST): $endpoint"
-            return 0
-        fi
-    done
-
-    log "✗ API endpoint method failed"
-    return 1
-}
-
-# ==============================================================================
-# Method 4: Click first button/link with accept/agree/continue keywords
-# ==============================================================================
-method_button_click() {
-    local portal_url="$1"
-    log "Method 4: Finding and clicking buttons/links..."
-
-    local page
-    page=$(curl -s -L --interface "$INTERFACE" --max-time 5 "$portal_url" 2>/dev/null || echo "")
-
-    if [ -z "$page" ]; then
-        log "✗ Failed to download portal page"
+    else
+        log "No open Wi-Fi networks found."
         return 1
     fi
+}
 
-    # Extract links that contain accept/agree/continue keywords (case-insensitive)
-    local button_urls
-    button_urls=$(echo "$page" | grep -oiP 'href=["'\'']\K[^"'\'']*(?=[^>]*(?:accept|agree|continue|proceed))' | head -5)
+# Detects and attempts to handle a captive portal using multiple bypass strategies.
+# Uses multi-layered detection: HTTP redirect, ping test, and content verification.
+check_captive_portal() {
+    log "Checking for captive portal..."
+    local portal_detected=false
+    local portal_url=""
 
-    if [ -z "$button_urls" ]; then
-        log "No button URLs found"
-        return 1
+    # Test 1: Check for HTTP redirect (traditional method)
+    local final_url
+    final_url=$(curl -s -w "%{url_effective}" -o /dev/null --max-time 10 "$PORTAL_TEST_URL" 2>/dev/null)
+
+    if [[ -n "$final_url" ]] && [[ "$final_url" != "$PORTAL_TEST_URL"* ]]; then
+        log "Portal detected (Test 1): HTTP redirect to $final_url"
+        portal_detected=true
+        portal_url="$final_url"
     fi
 
-    local base_url
-    base_url=$(echo "$portal_url" | sed -E 's|(https?://[^/]+).*|\1|')
+    # Test 2: Verify real internet with ping (catches non-redirecting portals)
+    if [ "$portal_detected" = false ]; then
+        if ! ping -c 2 -W 3 1.1.1.1 >/dev/null 2>&1; then
+            log "Portal detected (Test 2): Ping to 1.1.1.1 failed (no real internet)"
+            portal_detected=true
+            # Try to find portal URL from gateway
+            local gateway
+            gateway=$(ip route | grep default | awk '{print $3}' | head -n1)
+            [ -n "$gateway" ] && portal_url="http://$gateway/"
+        fi
+    fi
 
-    while IFS= read -r url; do
-        # Make absolute URL
-        if [[ "$url" != http* ]]; then
-            if [[ "$url" == /* ]]; then
-                url="${base_url}${url}"
+    # Test 3: Verify HTTP response content (catches interception without redirect)
+    if [ "$portal_detected" = false ]; then
+        local response
+        response=$(curl -s --max-time 10 "$PORTAL_TEST_URL" 2>/dev/null)
+        # neverssl.com should contain "NeverSSL" in the response
+        if [ -n "$response" ] && ! echo "$response" | grep -q "NeverSSL"; then
+            log "Portal detected (Test 3): Unexpected HTTP response content"
+            portal_detected=true
+            # Response might be portal HTML - try to extract form action URL
+            local form_action
+            form_action=$(echo "$response" | grep -oP 'action="\K[^"]+' | head -n1)
+            [ -n "$form_action" ] && portal_url="$form_action"
+        fi
+    fi
+
+    # If portal detected, attempt bypass
+    if [ "$portal_detected" = true ]; then
+        log "Captive portal confirmed. Attempting bypass..."
+        [ -n "$portal_url" ] && log "Portal URL: $portal_url"
+
+        # Strategy 1: Try shell-based bypass first (fast and lightweight)
+        local shell_bypasser="/usr/local/bin/frey-wifi-portal-shell-bypass.sh"
+        if [ -x "$shell_bypasser" ]; then
+            log "Attempting shell-based portal bypass..."
+            if "$shell_bypasser" "${portal_url:-$PORTAL_TEST_URL}"; then
+                log "Shell-based bypass succeeded!"
+                return 0
             else
-                url="${portal_url%/*}/${url}"
+                log "Shell-based bypass failed, trying fallback methods..."
             fi
+        else
+            log "WARNING: Shell bypass script not found at $shell_bypasser"
         fi
 
-        log "Clicking: $url"
-        curl -s -L --interface "$INTERFACE" --max-time 5 "$url" -o /dev/null 2>&1
-        sleep "$ATTEMPT_DELAY"
-
-        if verify_internet; then
-            info "✓ Portal bypassed by clicking button"
-            return 0
-        fi
-    done <<< "$button_urls"
-
-    log "✗ Button click method failed"
-    return 1
-}
-
-# ==============================================================================
-# Method 5: Try to extract and submit any form automatically
-# ==============================================================================
-method_auto_form() {
-    local portal_url="$1"
-    log "Method 5: Auto-submitting any detected forms..."
-
-    local page
-    page=$(curl -s -L --interface "$INTERFACE" --max-time 5 "$portal_url" 2>/dev/null || echo "")
-
-    if [ -z "$page" ]; then
-        log "✗ Failed to download portal page"
-        return 1
-    fi
-
-    # Look for forms and try to submit them
-    local form_count
-    form_count=$(echo "$page" | grep -c "<form" || echo "0")
-
-    if [ "$form_count" -eq 0 ]; then
-        log "No forms found"
-        return 1
-    fi
-
-    log "Found $form_count form(s)"
-
-    # Extract first form action
-    local form_action
-    form_action=$(echo "$page" | grep -oP '<form[^>]*action=["'\'']\K[^"'\'']+' | head -1)
-
-    if [ -n "$form_action" ]; then
-        # Make absolute URL
-        if [[ "$form_action" != http* ]]; then
-            local base_url
-            base_url=$(echo "$portal_url" | sed -E 's|(https?://[^/]+).*|\1|')
-            if [[ "$form_action" == /* ]]; then
-                form_action="${base_url}${form_action}"
+        # Strategy 2: Fall back to Selenium/Python if shell bypass failed
+        local python_bypasser="/usr/local/bin/frey-wifi-portal-bypasser.py"
+        if [ -x "$python_bypasser" ]; then
+            log "Attempting Selenium-based bypass..."
+            # Call the Python script with the detected portal URL.
+            # The Python script will print its own logs to stderr.
+            if "$python_bypasser" "${portal_url:-$PORTAL_TEST_URL}"; then
+                log "Selenium-based bypass succeeded!"
+                return 0
             else
-                form_action="${portal_url%/*}/${form_action}"
+                log "Selenium-based bypass failed."
             fi
+        else
+            log "WARNING: Selenium bypass script not found at $python_bypasser"
         fi
 
-        log "Submitting form to: $form_action"
-        curl -s -X POST --interface "$INTERFACE" --max-time 5 "$form_action" -o /dev/null 2>&1
-        sleep "$ATTEMPT_DELAY"
-
-        if verify_internet; then
-            info "✓ Portal bypassed by auto-form submission"
-            return 0
-        fi
+        log "ERROR: All portal bypass strategies failed"
+        return 1
+    else
+        log "No captive portal detected. Internet access verified."
+        return 0
     fi
-
-    log "✗ Auto-form submission failed"
-    return 1
 }
 
-# ==============================================================================
-# Main Authentication Logic
-# ==============================================================================
+# --- Main Execution ---
+
 main() {
-    info "🔍 Starting automatic captive portal authentication..."
+    touch "$LOG_FILE"
+    log "--- Running WiFi Auto-Connect Check ---"
 
-    # First, detect if there's actually a portal
-    local portal_url
-    portal_url=$(detect_portal)
-    local detect_result=$?
+    # Don't do anything if we are connected to a trusted network.
+    if is_connected_to_known_network; then
+        log "Connected to a known network. Exiting."
+        exit 0
+    fi
+    
+    # Check current connection status.
+    # Using wpa_cli instead of nmcli to match Pi's actual network stack
+    local active_con
+    active_con=$(wpa_cli -i wlan0 status | grep '^wpa_state=' | cut -d'=' -f2)
 
-    if [ $detect_result -ne 0 ]; then
-        log "No captive portal detected"
-        return 1
+    if [ "$active_con" != "COMPLETED" ]; then
+        log "Not connected to any Wi-Fi network."
+        if connect_to_open_network; then
+            sleep 10 # Give the connection time to establish and get an IP.
+            check_captive_portal
+        fi
+    else
+        log "Connected to an unknown/public network: '$active_con'."
+        check_captive_portal
     fi
 
-    info "📡 Portal detected: $portal_url"
-    info "⚡ Attempting automatic bypass..."
-
-    # Try each method in order
-    local methods=(
-        "method_simple_visit"
-        "method_auto_submit"
-        "method_button_click"
-        "method_api_endpoints"
-        "method_auto_form"
-    )
-
-    for method in "${methods[@]}"; do
-        if $method "$portal_url"; then
-            info "✅ Captive portal bypassed successfully!"
-            info "🌐 Internet access confirmed"
-            return 0
-        fi
-    done
-
-    warn "❌ All automatic bypass methods failed"
-    warn "📝 Manual authentication required"
-    warn "Portal URL: $portal_url"
-
-    return 2  # Manual intervention needed
+    log "--- WiFi Auto-Connect Check Finished ---"
 }
 
-# Run main function
 main
-exit $?
