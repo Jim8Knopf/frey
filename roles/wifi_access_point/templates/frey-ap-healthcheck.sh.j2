@@ -6,60 +6,43 @@
 # Runs every 5 minutes via systemd timer.
 # ==============================================================================
 
+# Source shared library
+source /usr/local/lib/frey/frey-wifi-lib.sh
+
 LOG_TAG="frey-ap-healthcheck"
-
-log() {
-    logger -t "${LOG_TAG}" "$*"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
-}
-
-# Check if service is active
-check_service() {
-    local service=$1
-    if ! systemctl is-active --quiet "$service"; then
-        log "ERROR: $service is NOT active - restarting..."
-        systemctl restart "$service"
-        sleep 2
-        if systemctl is-active --quiet "$service"; then
-            log "SUCCESS: $service restarted successfully"
-        else
-            log "CRITICAL: $service restart FAILED - requires manual intervention"
-        fi
-        return 1
-    fi
-    return 0
-}
+AP_INTERFACE="{{ network.wifi.interface }}"
+AP_IP="{{ network.wifi.ip }}"
 
 # Check critical services
 FAILED=0
-check_service hostapd || FAILED=$((FAILED + 1))
-check_service dnsmasq || FAILED=$((FAILED + 1))
-check_service dhcpcd || FAILED=$((FAILED + 1))
+check_and_restart_service hostapd "$LOG_TAG" || FAILED=$((FAILED + 1))
+check_and_restart_service dnsmasq "$LOG_TAG" || FAILED=$((FAILED + 1))
+check_and_restart_service dhcpcd "$LOG_TAG" || FAILED=$((FAILED + 1))
 
 # Check AP interface exists and has IP
-if ! ip addr show {{ network.wifi.interface }} | grep -q "{{ network.wifi.ip }}"; then
-    log "ERROR: AP interface {{ network.wifi.interface }} missing or no IP"
-    systemctl restart dhcpcd
+if ! has_ip_address "$AP_INTERFACE" "$AP_IP"; then
+    log_to_system "$LOG_TAG" "ERROR: AP interface $AP_INTERFACE missing or no IP"
+    restart_service_safe dhcpcd "$LOG_TAG"
     FAILED=$((FAILED + 1))
 fi
 
 # Check dnsmasq is actually listening on port 53
 if ! ss -ulnp | grep -q ':53.*dnsmasq'; then
-    log "ERROR: dnsmasq not listening on port 53"
-    systemctl restart dnsmasq
+    log_to_system "$LOG_TAG" "ERROR: dnsmasq not listening on port 53"
+    restart_service_safe dnsmasq "$LOG_TAG"
     FAILED=$((FAILED + 1))
 fi
 
 # Check hostapd is broadcasting (has connected stations or at least is running)
-if ! hostapd_cli -i {{ network.wifi.interface }} ping >/dev/null 2>&1; then
-    log "WARNING: hostapd_cli ping failed - hostapd may not be responding"
+if ! is_hostapd_responding "$AP_INTERFACE"; then
+    log_to_system "$LOG_TAG" "WARNING: hostapd_cli ping failed - hostapd may not be responding"
     FAILED=$((FAILED + 1))
 fi
 
 if [ "$FAILED" -eq 0 ]; then
-    log "Health check PASSED - all services operational"
+    log_to_system "$LOG_TAG" "Health check PASSED - all services operational"
 else
-    log "Health check found $FAILED issues - attempted automatic recovery"
+    log_to_system "$LOG_TAG" "Health check found $FAILED issues - attempted automatic recovery"
 fi
 
 exit 0

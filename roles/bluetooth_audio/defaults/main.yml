@@ -4,19 +4,19 @@
 # ==============================================================================
 
 bluetooth_audio:
-  enabled: false
+  enabled: true  # Enable for Bluetooth audio support
+
+  # Automatic connection settings
   auto_connect: true
+  scan_interval: 10  # seconds between device scans
 
-  # Scan interval for available devices (seconds)
-  scan_interval: 10
-
-  # Device list (populated during pairing)
+  # Paired devices (populated by frey-bluetooth-pair script)
   devices: []
-    # Example:
+    # Example devices (add via frey-bluetooth-pair):
     # - name: "Headphones"
     #   mac_address: "AA:BB:CC:DD:EE:FF"
-    #   priority: 100
-    #   profiles: [a2dp_sink, hsp_hs]  # Audio output + mic
+    #   priority: 100  # Higher = more preferred
+    #   profiles: [a2dp_sink, hsp_hs]  # Audio output + microphone
     # - name: "Car Radio"
     #   mac_address: "11:22:33:44:55:66"
     #   priority: 50
@@ -25,18 +25,18 @@ bluetooth_audio:
   # Audio routing configuration
   audio_routing:
     default_sink: "bluetooth"    # bluetooth | local | auto
-    fallback_to_local: true      # Use Pi audio if no BT connected
-    auto_switch: true            # Automatically switch to BT when connected
+    fallback_to_local: true      # Use Pi speakers if no Bluetooth connected
+    auto_switch: true            # Automatically switch to Bluetooth when connected
 
   # Home Assistant integration
   homeassistant:
-    integration: true                  # Enable HA Bluetooth integration
-    tts_to_bluetooth: true             # Route Piper TTS to BT speakers
-    voice_from_bluetooth: true         # Use BT mic for Whisper STT
+    integration: true                  # Enable MQTT sensors/controls
+    tts_to_bluetooth: true             # Route Piper TTS to Bluetooth speakers
+    voice_from_bluetooth: true         # Use Bluetooth mic for Whisper STT
     mqtt_topic: "frey/bluetooth"       # MQTT topic prefix
 
   # Connection settings
   connection:
     retry_attempts: 3
-    retry_delay: 5    # seconds
-    connection_timeout: 15  # seconds
+    retry_delay: 5           # seconds between retries
+    connection_timeout: 15   # seconds to wait for connection

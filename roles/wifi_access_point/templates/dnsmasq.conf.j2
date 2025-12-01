@@ -77,6 +77,28 @@ expand-hosts
 local=/{{ network.domain_name }}/
 
 # ------------------------------------------------------------------------------
+# HOSTNAME RESOLUTION - Enable short hostname (frey instead of frey.local)
+# ------------------------------------------------------------------------------
+# Allow clients to use "ssh ansible@frey" instead of "ssh ansible@frey.local"
+#
+# MECHANISM:
+# 1. FreyHub AP clients: Direct DNS resolution (frey → 10.20.0.1)
+# 2. Phone hotspot clients: Search domain appends .local → mDNS resolves
+# 3. Works universally on both networks with no client configuration
+
+# DHCP Option 15: DNS search domain (appends .local to bare hostnames)
+# When client types "frey", resolver auto-tries "frey.local"
+# This works on phone hotspot networks where mDNS resolves the .local name
+dhcp-option=15,local
+
+# Direct DNS records for fast resolution on FreyHub AP network
+# Short hostname "frey" → Pi's IP (immediate resolution, no mDNS query)
+host-record={{ inventory_hostname }},{{ network.wifi.ip }}
+
+# Explicit .local record for mDNS compatibility (redundant but clear)
+host-record={{ inventory_hostname }}.local,{{ network.wifi.ip }}
+
+# ------------------------------------------------------------------------------
 # HOST RECORDS - Specific service DNS entries
 # ------------------------------------------------------------------------------
 # These map service names to the Pi's IP address

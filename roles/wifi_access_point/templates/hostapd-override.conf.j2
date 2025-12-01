@@ -1,7 +1,0 @@
-[Unit]
-After=dhcpcd.service frey-ensure-ap-interface.service
-Requires=frey-ensure-ap-interface.service
-Wants=dhcpcd.service
-
-[Service]
-ExecStartPre=/usr/local/bin/frey-ensure-ap-interface

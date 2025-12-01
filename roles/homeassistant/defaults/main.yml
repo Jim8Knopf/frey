@@ -1,0 +1,44 @@
+---
+# ==============================================================================
+# HOME ASSISTANT ROLE - DEFAULT VARIABLES
+# ==============================================================================
+
+homeassistant:
+  group:
+    name: homeassistant
+    gid: 8123
+  user:
+    name: homeassistant_manager
+    uid: 8123
+    groups: "{{ homeassistant.group.name }}"
+  dir: "{{ storage.base_dir }}/homeassistant"
+
+  services:
+    homeassistant:
+      enabled: true  # Enable after initial setup
+      version: "stable"
+      image: "ghcr.io/home-assistant/home-assistant:{{ homeassistant.services.homeassistant.version | default('stable') }}"
+      port: 8123
+      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
+      # NOTE: OIDC must be configured manually in Home Assistant UI
+      # Settings → Users → Add Integration → OpenID Connect
+      oidc_issuer_url: "{{ network.authentik_public_url }}/application/o/homeassistant/"
+      oidc_client_id: "homeassistant"
+
+    piper:
+      enabled: true  # Text-to-Speech via Wyoming protocol
+      version: "latest"
+      image: "rhasspy/wyoming-piper:{{ homeassistant.services.piper.version | default('latest') }}"
+      port: 10200
+      default_voice: "en_US-lessac-medium"
+      voices:
+        - "en_US-lessac-medium"
+        - "en_AU-southern-female"
+
+    wyoming_whisper:
+      enabled: true  # Speech-to-Text (optional, resource-intensive)
+      version: "latest"
+      image: "rhasspy/wyoming-whisper:{{ homeassistant.services.wyoming_whisper.version | default('latest') }}"
+      port: 10300
+      model: "tiny-int8"  # tiny-int8, base-int8, small-int8
+      language: "en"

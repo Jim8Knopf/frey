@@ -1,0 +1,55 @@
+---
+# ==============================================================================
+# COOKBOOK ROLE - DEFAULT VARIABLES
+# ==============================================================================
+
+cookbook:
+  group:
+    name: cookbook
+    gid: 74690
+  user:
+    name: cookbook_manager
+    uid: 74690
+    groups: "{{ cookbook.group.name }}"
+  dir: "{{ storage.base_dir }}/cookbook"
+
+  # Database credentials
+  db_user: mealie
+  db_password: "{{ mealie_db_password }}"
+  db_name: mealie
+
+  services:
+    mealie:
+      enabled: true
+      version: "latest"
+      port: 9900
+      ports:
+        - "9900:9000"
+      image: "hay-kot/mealie"
+      # Database
+      db_type: "postgres"
+      # Storage paths
+      data_dir: "{{ storage.appdata_dir }}/mealie/data"
+      db_data_location: "{{ storage.appdata_dir }}/mealie/db"
+      container_uid: 911
+      container_gid: 911
+      postgres_uid: 999
+      postgres_gid: 999
+      # API settings
+      api_docs: true
+      base_url: "https://cookbook.{{ network.domain_name }}"
+      # Security
+      allow_signup: false
+      # SSO Configuration
+      oidc_enabled: true
+      oidc_client_id: "mealie"
+      oidc_configuration_url: "https://auth.{{ network.domain_name }}/application/o/mealie/.well-known/openid-configuration"
+      oidc_user_group: "mealie_users"
+      oidc_admin_group: "mealie_admins"
+      oidc_auto_redirect: false
+      oidc_provider_name: "Authentik"
+      oidc_signup_enabled: true
+      oidc_remember_me: true
+      # Features
+      enable_meal_planner: true
+      recipe_scraping: true

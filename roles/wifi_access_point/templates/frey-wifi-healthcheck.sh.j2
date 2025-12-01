@@ -2,6 +2,9 @@
 # Auto-generated: monitors upstream connectivity for the WiFi client interface.
 set -euo pipefail
 
+# Source shared library
+source /usr/local/lib/frey/frey-wifi-lib.sh
+
 TARGET="{{ network.wifi.connectivity_monitor.ping_target | default(ansible_default_ipv4.gateway | default('1.1.1.1')) }}"
 PING_COUNT={{ network.wifi.connectivity_monitor.ping_count | default(3) }}
 INTERFACE="{{ network.wifi.client_interface }}"
@@ -10,13 +13,14 @@ STATE_DIR="/run/frey"
 STATE_FILE="$STATE_DIR/wifi-healthcheck.failures"
 LOGGER_TAG="frey-wifi-healthcheck"
 
-mkdir -p "$STATE_DIR"
+ensure_directory "$STATE_DIR" 0755
+
 current_failures=0
 if [ -f "$STATE_FILE" ]; then
   current_failures=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
 fi
 
-if ping -I "$INTERFACE" -c "$PING_COUNT" -W 3 "$TARGET" >/dev/null 2>&1; then
+if check_internet_connectivity "$TARGET" "$INTERFACE" "$PING_COUNT"; then
   echo 0 >"$STATE_FILE"
   exit 0
 fi
@@ -25,26 +29,26 @@ current_failures=$((current_failures + 1))
 echo "$current_failures" >"$STATE_FILE"
 
 if [ "$current_failures" -lt "$FAIL_THRESHOLD" ]; then
-  logger -t "$LOGGER_TAG" "Ping to $TARGET via $INTERFACE failed ($current_failures/$FAIL_THRESHOLD)"
+  log_to_system "$LOGGER_TAG" "Ping to $TARGET via $INTERFACE failed ($current_failures/$FAIL_THRESHOLD)"
   exit 0
 fi
 
-logger -t "$LOGGER_TAG" "Connectivity lost via $INTERFACE; applying recovery actions"
+log_to_system "$LOGGER_TAG" "Connectivity lost via $INTERFACE; applying recovery actions"
 echo 0 >"$STATE_FILE"
 
-if ip link show "$INTERFACE" >/dev/null 2>&1; then
-  ip link set "$INTERFACE" down >/dev/null 2>&1 || true
+if interface_exists "$INTERFACE"; then
+  bring_interface_down "$INTERFACE"
   sleep 1
   ip -4 addr flush dev "$INTERFACE" >/dev/null 2>&1 || true
-  ip link set "$INTERFACE" up >/dev/null 2>&1 || true
+  bring_interface_up "$INTERFACE"
 fi
 
 if command -v wpa_cli >/dev/null 2>&1; then
-  wpa_cli -i "$INTERFACE" reconnect >/dev/null 2>&1 || true
+  wpa_reconnect "$INTERFACE"
 fi
 
 # Only restart services if dhcpcd is active (safety check for NetworkManager systems)
-if systemctl is-active --quiet dhcpcd; then
+if check_service_active dhcpcd; then
   {% if network.wifi.connectivity_monitor.restart_wpa_supplicant | default(true) %}
   SERVICE_NAME="wpa_supplicant-{{ network.wifi.client_interface }}.service"
   if systemctl list-unit-files "$SERVICE_NAME" >/dev/null 2>&1; then
@@ -55,5 +59,5 @@ if systemctl is-active --quiet dhcpcd; then
   systemctl restart dhcpcd || true
   {% endif %}
 else
-  logger -t "$LOGGER_TAG" "Skipping service restart - dhcpcd not active (NetworkManager may be in use)"
+  log_to_system "$LOGGER_TAG" "Skipping service restart - dhcpcd not active (NetworkManager may be in use)"
 fi

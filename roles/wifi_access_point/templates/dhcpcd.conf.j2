@@ -61,11 +61,12 @@ metric 100
 # This prevents dhcpcd from interfering with the roaming service.
 nohook wpa_supplicant
 
-# BACKGROUND DHCP CLIENT
-# Don't block dhcpcd startup waiting for this interface to get an IP
-# This allows the AP interface to come up even if client interface has no connection
-# The client interface will get an IP in the background when WiFi connects
-background
+# WAIT FOR IP ADDRESS
+# Block until IPv4 address is obtained or timeout occurs
+# This ensures proper DHCP completion and prevents silent failures
+# The AP interface (wlan1) can still come up independently
+waitip 4
+timeout 180  # 180 seconds for slow public WiFi DHCP servers
 
 # DISABLE LINK-LOCAL FALLBACK
 # Don't fall back to 169.254.x.x if DHCP fails

@@ -17,6 +17,15 @@
 enable_ufw: true                 # Use UFW (Uncomplicated Firewall) for all rules
 enable_fail2ban: true           # Enable fail2ban for brute-force protection
 
+# Security configuration
+security:
+  fail2ban:
+    enable: true
+  ufw:
+    enable: true
+  ssh_port: 22
+  # Note: firewall_tcp_ports is computed dynamically in group_vars based on enabled features
+
 # ------------------------------------------------------------------------------
 # NETWORK SECURITY CONFIGURATION
 # ------------------------------------------------------------------------------
@@ -31,11 +40,12 @@ network_security:
   # PERFORMANCE: Direct container access is faster than going through Traefik
   trusted_networks:
     - "192.168.0.0/24"          # Home network - full access to all services
+    - "10.20.0.0/24"            # FreyHub WiFi AP - whitelisted in Fail2Ban (SSH access)
     - "10.20.30.0/24"           # Secondary management network (if needed)
     - "10.139.57.149/24"        # CMF hotspot network
     # Note: Current upstream network will be auto-detected and added at runtime
-    # Note: WiFi AP network (10.20.0.0/24) gets restricted access via protected_ports
-    # Note: SSH access from WiFi AP is explicitly allowed via dedicated firewall rule
+    # Note: WiFi AP network (10.20.0.0/24) gets restricted access via protected_ports for containers
+    # Note: SSH and mDNS access from WiFi AP is explicitly allowed via firewall rules
 
   # TRUSTED DEVICES - Never Banned by Fail2ban
   # ------------------------------------------------------------------------------

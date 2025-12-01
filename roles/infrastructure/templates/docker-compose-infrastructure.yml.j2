@@ -92,18 +92,22 @@ services:
       # Map all *.frey domains to Traefik's IP on infrastructure_network for ACME HTTP-01 validation
       # Both Step-CA and Traefik are on this network, so HTTP connections work
 {% for host_name in dns_hosts.values %}
-      "{{ host_name }}": "172.20.0.4"  # Traefik on infrastructure_network
+      "{{ host_name }}": "10.20.3.3"  # Traefik on infrastructure_network
 {% endfor %}
     environment:
       - DOCKER_STEPCA_INIT_NAME={{ infrastructure.services.step_ca.ca_name }}
+{% if infrastructure.services.step_ca.dns_names is string %}
+      - DOCKER_STEPCA_INIT_DNS_NAMES={{ infrastructure.services.step_ca.dns_names }}
+{% else %}
       - DOCKER_STEPCA_INIT_DNS_NAMES={{ infrastructure.services.step_ca.dns_names | join(',') }}
+{% endif %}
       - DOCKER_STEPCA_INIT_PROVISIONER_NAME={{ infrastructure.services.step_ca.provisioner_name }}
       - DOCKER_STEPCA_INIT_PASSWORD={{ infrastructure.services.step_ca.admin_password }}
       - STEPCA_EXTERNAL_PORT=9336  # External port for reference
       - STEPCA_DEFAULT_CNS=ca.{{ network.domain_name }}
       - DOCKER_STEPCA_INIT_ACME=true
       - DOCKER_STEPCA_INIT_SSH=false
-      - SSL_CERT_FILE=/etc/ssl/step-ca/root_ca.crt  # Trust our own CA certificate
+      - SSL_CERT_FILE=/home/step/certs/root_ca.crt  # Trust our own CA certificate
       - STEPCLI_PASSWORD={{ infrastructure.services.step_ca.admin_password }}
       - CERTIFICATE_PASSWORD={{ infrastructure.services.step_ca.admin_password }}
       - SECRETS_PASSWORD={{infrastructure.services.step_ca.admin_password }}
@@ -129,7 +133,10 @@ services:
 networks:
   proxy:
     external: true            # Main network for Traefik routing
+    name: "{{ infrastructure_networks.proxy.name | default('proxy') }}"
   localdns:
     external: true           # For DNS resolution
+    name: "{{ infrastructure_networks.localdns.name | default('localdns') }}"
   infrastructure_network:    # Service-specific network
     external: true           # For DNS resolution
+    name: "{{ infrastructure_networks.infrastructure_network.name | default('infrastructure_network') }}"

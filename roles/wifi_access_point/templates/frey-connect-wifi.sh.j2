@@ -17,44 +17,92 @@
 
 set -e
 
+# Source shared library
+source /usr/local/lib/frey/frey-wifi-lib.sh
+
 # Configuration
-INTERFACE="wlan0"
-WPA_CONF="/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"
+INTERFACE="{{ network.wifi.client_interface }}"
+WPA_CONF="/etc/wpa_supplicant/wpa_supplicant-{{ network.wifi.client_interface }}.conf"
 WPA_CTRL="/var/run/wpa_supplicant"
+LOG_FILE="/var/log/frey-wifi-connect.log"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# ==============================================================================
+# Portal Detection and Bypass Functions
+# ==============================================================================
 
-# Logging function
-log() {
-    echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $1"
+# Detect captive portal URL using HTTP redirect detection
+# NOTE: This function must not output anything except the URL via echo
+# to avoid corrupting the variable when called via command substitution
+detect_portal_url() {
+    local test_url="http://neverssl.com"
+    local final_url
+
+    # Method 1: HTTP redirect detection
+    final_url=$(curl -s -w "%{url_effective}" -o /dev/null --max-time 10 "$test_url" 2>/dev/null || true)
+
+    if [[ -n "$final_url" ]] && [[ "$final_url" != "$test_url"* ]]; then
+        # Portal detected via redirect
+        echo "$final_url"
+        return 0
+    fi
+
+    # Method 2: Gateway fallback
+    local gateway
+    gateway=$(ip route | grep "default.*$INTERFACE" | awk '{print $3}' | head -n1)
+
+    if [ -n "$gateway" ]; then
+        echo "http://$gateway/"
+        return 0
+    fi
+
+    return 1
 }
 
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
+# Attempt portal bypass using lynx terminal browser
+attempt_lynx_bypass() {
+    local portal_url="$1"
+
+    # Remove trailing slash from portal URL to avoid double slashes
+    portal_url="${portal_url%/}"
+
+    log "Attempting portal bypass with lynx (terminal browser)..."
+
+    # Try main portal URL with automatic cookie acceptance
+    # Use 'yes Y' to send infinite 'Y' responses for cookie prompts
+    # Timeout after 10 seconds to prevent hanging
+    if yes Y | timeout 10 lynx -accept_all_cookies -crawl -dump "$portal_url" >/dev/null 2>&1; then
+        sleep 2
+        if check_internet_connectivity "8.8.8.8" "" 2; then
+            return 0
+        fi
+    fi
+
+    # Try common accept endpoints with automatic cookie acceptance (clean concatenation, no double slashes)
+    for endpoint in "/accept" "/login?accept=true" "/connect?accept=1" "/success"; do
+        local accept_url="${portal_url}${endpoint}"
+        log_info "Trying: $accept_url"
+
+        if yes Y | timeout 10 lynx -accept_all_cookies -dump "$accept_url" >/dev/null 2>&1; then
+            sleep 2
+            if check_internet_connectivity "8.8.8.8" "" 2; then
+                return 0
+            fi
+        fi
+    done
+
+    return 1
 }
 
-warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+# ==============================================================================
+# Main Script
+# ==============================================================================
 
 # Check if running as root
-if [ "$EUID" -ne 0 ]; then
-    error "Please run as root: sudo $0"
-    exit 1
-fi
+require_root
 
 # Check arguments
 if [ $# -lt 1 ]; then
-    error "Usage: $0 <SSID> [password]"
+    log_error "Usage: $0 <SSID> [password]"
     echo ""
     echo "Examples:"
     echo "  $0 \"CafeWiFi\" \"password123\"    # WPA2/WPA3 network"
@@ -67,33 +115,23 @@ PASSWORD="${2:-}"
 
 log "FreyHub WiFi Connector"
 echo "========================================"
-info "Target network: $SSID"
-info "Interface: $INTERFACE"
+log_info "Target network: $SSID"
+log_info "Interface: $INTERFACE"
 echo ""
 
-# Check if wlan0 exists
-if ! ip link show "$INTERFACE" &>/dev/null; then
-    error "Interface $INTERFACE not found!"
-    info "Available interfaces:"
-    ip link show | grep -E '^[0-9]+: ' | awk '{print "  " $2}'
-    exit 1
-fi
+# Check if interface exists
+validate_interface "$INTERFACE" || exit 1
 
 # Bring interface up
-log "Bringing $INTERFACE up..."
-ip link set "$INTERFACE" up
+bring_interface_up "$INTERFACE"
 
 # Kill existing wpa_supplicant on this interface
-if pgrep -f "wpa_supplicant.*$INTERFACE" >/dev/null; then
-    warn "Stopping existing wpa_supplicant on $INTERFACE..."
-    pkill -f "wpa_supplicant.*$INTERFACE" || true
-    sleep 1
-fi
+kill_wpa_supplicant "$INTERFACE"
 
 # Create wpa_supplicant config if it doesn't exist
 if [ ! -f "$WPA_CONF" ]; then
     log "Creating wpa_supplicant configuration..."
-    mkdir -p "$(dirname "$WPA_CONF")"
+    ensure_directory "$(dirname "$WPA_CONF")" 0755
     cat > "$WPA_CONF" << EOF
 ctrl_interface=$WPA_CTRL
 update_config=1
@@ -104,45 +142,50 @@ fi
 
 # Start wpa_supplicant
 log "Starting wpa_supplicant on $INTERFACE..."
-wpa_supplicant -B -i "$INTERFACE" -c "$WPA_CONF" -P /var/run/wpa_supplicant-wlan0.pid
+wpa_supplicant -B -i "$INTERFACE" -c "$WPA_CONF" -P /var/run/wpa_supplicant-{{ network.wifi.client_interface }}.pid
 
 # Wait for wpa_supplicant to be ready
 sleep 2
+
+# Disable power management on interface to prevent disconnections
+log "Disabling power management..."
+iw dev "$INTERFACE" set power_save off 2>/dev/null || true
+iwconfig "$INTERFACE" power off 2>/dev/null || true
 
 # Add network using wpa_cli
 log "Configuring network..."
 
 # Add new network
-NETWORK_ID=$(wpa_cli -i "$INTERFACE" add_network | tail -1)
+NETWORK_ID=$(wpa_cli_cmd "$INTERFACE" add_network | tail -1)
 
 if [ -z "$NETWORK_ID" ] || ! [[ "$NETWORK_ID" =~ ^[0-9]+$ ]]; then
-    error "Failed to add network"
+    log_error "Failed to add network"
     exit 1
 fi
 
-info "Network ID: $NETWORK_ID"
+log_info "Network ID: $NETWORK_ID"
 
 # Set SSID
-wpa_cli -i "$INTERFACE" set_network "$NETWORK_ID" ssid "\"$SSID\"" >/dev/null
+wpa_cli_cmd "$INTERFACE" set_network "$NETWORK_ID" ssid "\"$SSID\"" >/dev/null
 
 # Set password or open network
 if [ -n "$PASSWORD" ]; then
-    info "Security: WPA2/WPA3 (password protected)"
-    wpa_cli -i "$INTERFACE" set_network "$NETWORK_ID" psk "\"$PASSWORD\"" >/dev/null
+    log_info "Security: WPA2/WPA3 (password protected)"
+    wpa_cli_cmd "$INTERFACE" set_network "$NETWORK_ID" psk "\"$PASSWORD\"" >/dev/null
 else
-    info "Security: Open network (no password)"
-    wpa_cli -i "$INTERFACE" set_network "$NETWORK_ID" key_mgmt NONE >/dev/null
+    log_info "Security: Open network (no password)"
+    wpa_cli_cmd "$INTERFACE" set_network "$NETWORK_ID" key_mgmt NONE >/dev/null
 fi
 
 # Enable and save
 log "Connecting to $SSID..."
-wpa_cli -i "$INTERFACE" enable_network "$NETWORK_ID" >/dev/null
-wpa_cli -i "$INTERFACE" save_config >/dev/null
+wpa_cli_cmd "$INTERFACE" enable_network "$NETWORK_ID" >/dev/null
+wpa_cli_cmd "$INTERFACE" save_config >/dev/null
 
 # Wait for connection
 echo -n "Waiting for connection"
 for i in {1..30}; do
-    if wpa_cli -i "$INTERFACE" status | grep -q "wpa_state=COMPLETED"; then
+    if get_wpa_status "$INTERFACE" | grep -q "wpa_state=COMPLETED"; then
         echo ""
         log "Connected to WiFi!"
         break
@@ -151,58 +194,167 @@ for i in {1..30}; do
     sleep 1
     if [ $i -eq 30 ]; then
         echo ""
-        error "Connection timeout. Check SSID and password."
-        wpa_cli -i "$INTERFACE" remove_network "$NETWORK_ID" >/dev/null
+        log_error "Connection timeout. Check SSID and password."
+        wpa_cli_cmd "$INTERFACE" remove_network "$NETWORK_ID" >/dev/null
         exit 1
     fi
 done
 
 # Get IP address via DHCP
 log "Requesting IP address..."
-dhcpcd "$INTERFACE" >/dev/null 2>&1 || true
 
-# Wait for IP
+# Kill any existing dhcpcd on this interface to prevent conflicts
+kill_dhcpcd "$INTERFACE"
+sleep 2
+
+# Request IP with proper error handling
+if ! dhcpcd --rebind --timeout 180 "$INTERFACE" 2>&1 | tee -a "$LOG_FILE"; then
+    log_warning "dhcpcd command failed, trying alternative method..."
+    # Fallback: force release and renew
+    release_dhcp "$INTERFACE"
+    sleep 2
+    dhcpcd --rebind --timeout 180 "$INTERFACE" 2>&1 | tee -a "$LOG_FILE" || true
+fi
+
+# Wait for IP with longer timeout and verification
 echo -n "Waiting for IP address"
-for i in {1..20}; do
+for i in {1..180}; do  # 180 seconds for slow public WiFi
     if ip addr show "$INTERFACE" | grep -q "inet "; then
-        echo ""
-        break
+        # Verify IP is not link-local (169.254.x.x)
+        IP_CHECK=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | cut -d/ -f1)
+        if [[ ! "$IP_CHECK" =~ ^169\.254\. ]]; then
+            echo ""
+            break
+        fi
     fi
     echo -n "."
     sleep 1
+
+    # Retry dhcpcd at 90 seconds if still no IP
+    if [ $i -eq 90 ]; then  # Retry at 90 seconds (halfway through 180s)
+        echo ""
+        log_warning "No IP after 90s, retrying DHCP..."
+        release_dhcp "$INTERFACE"
+        sleep 2
+        dhcpcd -4 --waitip "$INTERFACE" >/dev/null 2>&1 &
+        echo -n "Waiting for IP address"
+    fi
 done
 echo ""
 
 # Display connection info
-IP_ADDR=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | cut -d/ -f1)
+IP_ADDR=$(get_interface_ip "$INTERFACE")
 GATEWAY=$(ip route | grep "default.*$INTERFACE" | awk '{print $3}')
 
 if [ -n "$IP_ADDR" ]; then
     log "Connection successful!"
     echo ""
     echo "========================================"
-    info "Interface: $INTERFACE"
-    info "SSID: $SSID"
-    info "IP Address: $IP_ADDR"
-    info "Gateway: ${GATEWAY:-N/A}"
+    log_info "Interface: $INTERFACE"
+    log_info "SSID: $SSID"
+    log_info "IP Address: $IP_ADDR"
+    log_info "Gateway: ${GATEWAY:-N/A}"
     echo "========================================"
     echo ""
 
+    # Verify gateway is reachable
+    if [ -n "$GATEWAY" ]; then
+        log "Verifying gateway connectivity..."
+        if ! ping -c 2 -W 5 "$GATEWAY" >/dev/null 2>&1; then
+            log_warning "Gateway $GATEWAY is not responding"
+            log_warning "Connection may be unstable"
+        else
+            log "Gateway ${GREEN}✓ Reachable${NC}"
+        fi
+    fi
+
+    # Check if this is a known network (for whitelist check)
+    KNOWN_NETWORK_SKIP_PORTAL=false
+
+{% if network.wifi.known_networks is defined %}
+{% for known_net in network.wifi.known_networks %}
+    if [ "$SSID" = "{{ known_net.ssid }}" ]; then
+        {% if known_net.skip_portal_bypass | default(false) %}
+        KNOWN_NETWORK_SKIP_PORTAL=true
+        {% endif %}
+    fi
+{% endfor %}
+{% endif %}
+
     # Test internet connectivity
     log "Testing internet connectivity..."
-    if ping -c 2 -W 3 8.8.8.8 >/dev/null 2>&1; then
+    if check_internet_connectivity "8.8.8.8" "" 2; then
         log "Internet access: ${GREEN}✓ Working${NC}"
-        info "NAT Manager will automatically enable passthrough for FreyHub clients"
+        log_info "NAT Manager will automatically enable passthrough for FreyHub clients"
         echo ""
-        info "Check NAT status: sudo journalctl -u frey-nat-manager -n 10"
+        log_info "Check NAT status: sudo journalctl -u frey-natd -n 10"
     else
-        warn "Internet access: ${YELLOW}✗ Not working${NC}"
-        warn "Connected to WiFi but no internet access"
-        warn "This might be a captive portal - open browser to sign in"
+        log_warning "Internet access: ${YELLOW}✗ Not working${NC}"
+        log_warning "Connected to WiFi but no internet access"
+
+        # Skip portal bypass for known networks
+        if [ "$KNOWN_NETWORK_SKIP_PORTAL" = "true" ]; then
+            echo ""
+            log_warning "This is a known network without captive portal - skipping bypass"
+            log_warning "If internet is not working, check the network configuration or credentials"
+        else
+            # Try automatic captive portal bypass for unknown networks
+            echo ""
+            log "Attempting automatic captive portal bypass..."
+
+            # Detect portal URL (function returns clean URL without log messages)
+            portal_url=$(detect_portal_url)
+
+            if [ -z "$portal_url" ]; then
+                log_warning "Could not detect portal URL"
+                log_warning "Manual login may be required - open browser to sign in"
+            else
+                log_info "Portal URL detected: $portal_url"
+                echo ""
+
+                # Strategy 1: Shell-based bypass (curl-based, 3 methods)
+                if [ -x /usr/local/bin/frey-wifi-portal-shell-bypass.sh ]; then
+                    log "Strategy 1: Shell-based bypass (curl)..."
+                    if /usr/local/bin/frey-wifi-portal-shell-bypass.sh "$portal_url"; then
+                        log_success "Portal bypass ${GREEN}✓ Successful${NC}"
+                        log "Internet access should now be working"
+                        exit 0
+                    fi
+                    log_warning "Shell-based bypass ${YELLOW}✗ Failed${NC}"
+                fi
+
+                # Strategy 2: Lynx terminal browser (for simple portals)
+                if command -v lynx &>/dev/null; then
+                    log "Strategy 2: Lynx terminal browser..."
+                    if attempt_lynx_bypass "$portal_url"; then
+                        log_success "Portal bypass via lynx ${GREEN}✓ Successful${NC}"
+                        log "Internet access should now be working"
+                        exit 0
+                    fi
+                    log_warning "Lynx bypass ${YELLOW}✗ Failed${NC}"
+                fi
+
+                # Strategy 3: Python/Selenium (for complex portals)
+                if [ -x /usr/local/bin/frey-wifi-portal-bypasser.py ]; then
+                    log "Strategy 3: Python/Selenium bypass..."
+                    if /usr/local/bin/frey-wifi-portal-bypasser.py "$portal_url"; then
+                        log_success "Portal bypass ${GREEN}✓ Successful${NC}"
+                        log "Internet access should now be working"
+                        exit 0
+                    fi
+                    log_warning "Selenium bypass ${YELLOW}✗ Failed${NC}"
+                fi
+
+                echo ""
+                log_error "All bypass attempts failed ${YELLOW}✗${NC}"
+                log_warning "Manual login required - open browser and navigate to:"
+                log_warning "  $portal_url"
+            fi
+        fi
     fi
 else
-    error "Failed to get IP address"
-    warn "Connected to WiFi but DHCP failed"
+    log_error "Failed to get IP address"
+    log_warning "Connected to WiFi but DHCP failed"
     exit 1
 fi
 

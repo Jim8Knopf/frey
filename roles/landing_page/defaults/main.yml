@@ -1,0 +1,216 @@
+---
+# ==============================================================================
+# LANDING PAGE ROLE - DEFAULT VARIABLES
+# ==============================================================================
+
+landing_page:
+  enabled: true
+  hostname: "{{ network.domain_name }}"
+  alt_hostname: "landing.{{ network.domain_name }}"
+  public_url: "https://{{ network.domain_name }}"
+  allowed_origins:
+    - "https://{{ network.domain_name }}"
+    - "https://landing.{{ network.domain_name }}"
+  group:
+    name: landing
+    gid: 77310
+  user:
+    name: landing_manager
+    uid: 77310
+    groups: "{{ landing_page.group.name }}"
+  dir: "{{ storage.base_dir }}/landing"
+  data_dir: "{{ storage.appdata_dir }}/landing"
+  user_data_dir: "{{ storage.appdata_dir }}/landing/user-data"
+  config_path: "{{ storage.appdata_dir }}/landing/user-data/conf.yml"
+  assets_dir: "{{ storage.appdata_dir }}/landing/user-data/assets"
+  docs_dir: "{{ storage.appdata_dir }}/landing/user-data/assets/docs"
+  overrides_dir: "{{ storage.appdata_dir }}/landing/user-data/overrides"
+  image: "ghcr.io/lissy93/dashy"
+  version: "latest"
+  container_name: landing-page
+  compose_project: landing_page
+  port: 8080
+  allow_guest_access: false
+  nav_links:
+    - title: "User Guide"
+      url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.user_guide.docs_filename }}"
+    - title: "Certificate Guide"
+      url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.certificate.docs_filename }}"
+    - title: "Download Root CA"
+      url: "https://{{ landing_page.hostname }}/assets/{{ landing_page.certificate.download_name }}"
+  certificate:
+    source_path: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
+    download_name: "frey-root-ca.crt"
+    docs_filename: "frey-ca.html"
+  user_guide:
+    docs_filename: "frey-user-guide.html"
+  oidc:
+    enable: true
+    client_id: "dashy"
+    endpoint: "{{ network.authentik_public_url }}/application/o/dashy/"
+    scope: "openid profile email groups"
+    admin_group: "frey_admins"
+  certificate_guides:
+    - slug: android
+      title: "Android 14/15"
+      icon: "fab fa-android"
+      steps:
+        - "Download {{ landing_page.certificate.download_name }} from the landing page."
+        - "Open Settings -> Security & privacy -> More security settings -> Encryption & credentials."
+        - "Tap Install certificate -> CA certificate, approve the warning, and pick the Frey file."
+        - "Reboot the device to make Chrome, Firefox, and installed apps trust *.{{ network.domain_name }}."
+      verify:
+        - "Settings -> Security -> Encryption & credentials -> Trusted credentials (User tab) shows Frey Root CA."
+    - slug: manjaro
+      title: "Manjaro / Arch Linux"
+      icon: "fas fa-linux"
+      steps:
+        - "Copy {{ landing_page.certificate.download_name }} to /usr/local/share/ca-certificates/frey-root-ca.crt (sudo install -m 644 ...)."
+        - "Run sudo update-ca-trust (or sudo trust extract-compat) to refresh the system trust store."
+        - "Restart browsers or dockerized services that should trust *.{{ network.domain_name }}."
+      verify:
+        - "`trust list | grep \"Frey Root\"` prints the certificate fingerprint."
+  sections:
+    - name: "Core Access"
+      icon: "fas fa-sitemap"
+      description: "SSO, reverse proxy, and container management."
+      item_size: medium
+      services:
+        - title: "Authentik Portal"
+          description: "Single sign-on portal and user self-service."
+          url: "https://auth.{{ network.domain_name }}"
+          icon: "fas fa-unlock"
+          tags: ["sso", "identity"]
+        - title: "Traefik Dashboard"
+          description: "Reverse proxy routing, TLS status, and middleware."
+          url: "https://traefik.{{ network.domain_name }}"
+          icon: "fas fa-route"
+          tags: ["infrastructure"]
+          groups: ["traefik_admins"]
+        - title: "Portainer"
+          description: "Visual Docker lifecycle management."
+          url: "https://portainer.{{ network.domain_name }}"
+          icon: "fas fa-toolbox"
+          groups: ["portainer_admins"]
+        - title: "Dockge"
+          description: "Compose stack editor with live logs."
+          url: "https://dockge.{{ network.domain_name }}"
+          icon: "fas fa-terminal"
+          groups: ["dockge_users"]
+        - title: "AdGuard Home"
+          description: "DNS, DHCP, and content filtering policies."
+          url: "https://adguard.{{ network.domain_name }}"
+          icon: "fas fa-shield-alt"
+          groups: ["adguard_admins"]
+    - name: "Media & Requests"
+      icon: "fas fa-film"
+      description: "Streaming, automation, and request workflows."
+      item_size: medium
+      services:
+        - title: "Jellyfin"
+          description: "Personal streaming server for music and video."
+          url: "https://jellyfin.{{ network.domain_name }}"
+          icon: "fas fa-play-circle"
+          groups: ["jellyfin_users"]
+        - title: "Jellyseerr"
+          description: "Request management for movies and series."
+          url: "https://jellyseerr.{{ network.domain_name }}"
+          icon: "fas fa-clipboard-list"
+          groups: ["jellyseerr_users"]
+        - title: "Audiobookshelf"
+          description: "Audiobook and podcast streaming."
+          url: "https://audiobookshelf.{{ network.domain_name }}"
+          icon: "fas fa-headphones"
+          groups: ["audiobookshelf_users"]
+        - title: "Sonarr"
+          description: "Automated TV library management."
+          url: "https://sonarr.{{ network.domain_name }}"
+          icon: "fas fa-tv"
+          groups: ["sonarr_users"]
+        - title: "Radarr"
+          description: "Automated movie downloads."
+          url: "https://radarr.{{ network.domain_name }}"
+          icon: "fas fa-film"
+          groups: ["radarr_users"]
+        - title: "Bazarr"
+          description: "Subtitle sync across libraries."
+          url: "https://bazarr.{{ network.domain_name }}"
+          icon: "fas fa-closed-captioning"
+          groups: ["bazarr_users"]
+        - title: "Lidarr"
+          description: "Music downloads and tagging."
+          url: "https://lidarr.{{ network.domain_name }}"
+          icon: "fas fa-music"
+          groups: ["lidarr_users"]
+        - title: "qBittorrent"
+          description: "Seedbox dashboard and transfer queue."
+          url: "https://qbittorrent.{{ network.domain_name }}"
+          icon: "fas fa-download"
+          groups: ["qbittorrent_users"]
+        - title: "Prowlarr"
+          description: "Indexer and automation brain for the *arr suite."
+          url: "https://prowlarr.{{ network.domain_name }}"
+          icon: "fas fa-satellite-dish"
+          groups: ["prowlarr_users"]
+    - name: "Monitoring & Diagnostics"
+      icon: "fas fa-chart-line"
+      description: "Observability, uptime, and diagnostics."
+      item_size: medium
+      services:
+        - title: "Grafana"
+          description: "Dashboards for system and application metrics."
+          url: "https://grafana.{{ network.domain_name }}"
+          icon: "fas fa-chart-area"
+          groups: ["grafana_viewers"]
+        - title: "Prometheus"
+          description: "Long-term metrics storage and alerting."
+          url: "https://prometheus.{{ network.domain_name }}"
+          icon: "fas fa-fire"
+          groups: ["prometheus_users"]
+        - title: "Uptime Kuma"
+          description: "HTTP, TCP, and heartbeat monitoring."
+          url: "https://uptime-kuma.{{ network.domain_name }}"
+          icon: "fas fa-heartbeat"
+          groups: ["uptime_kuma_users"]
+        - title: "Speedtest Tracker"
+          description: "Historical ISP performance reports."
+          url: "https://speedtest.{{ network.domain_name }}"
+          icon: "fas fa-tachometer-alt"
+          groups: ["speedtest_users"]
+        - title: "cAdvisor"
+          description: "Per-container resource metrics."
+          url: "https://cadvisor.{{ network.domain_name }}"
+          icon: "fas fa-server"
+          groups: ["metrics_users"]
+    - name: "Automation & Apps"
+      icon: "fas fa-home"
+      description: "Smart home, photos, and workflow automation."
+      item_size: medium
+      services:
+        - title: "Home Assistant"
+          description: "Central smart-home automation."
+          url: "https://homeassistant.{{ network.domain_name }}"
+          icon: "fas fa-house-chimney"
+          groups: ["homeassistant_users"]
+        - title: "Immich"
+          description: "Private photo and video backup with AI search."
+          url: "https://immich.{{ network.domain_name }}"
+          icon: "fas fa-camera-retro"
+          groups: ["immich_users"]
+        - title: "Cookbook"
+          description: "Mealie recipe manager with meal plans."
+          url: "https://cookbook.{{ network.domain_name }}"
+          icon: "fas fa-utensils"
+          groups: ["mealie_users"]
+        - title: "n8n"
+          description: "Workflow and automation builder."
+          url: "https://n8n.{{ network.domain_name }}"
+          icon: "fas fa-code-branch"
+          groups: ["n8n_admins"]
+  # Dashy source overrides applied inside the container (relative to /app)
+  source_overrides:
+    - src/utils/OidcAuth.js
+    - src/utils/Auth.js
+    - src/views/Login.vue
+    - src/components/Settings/AuthButtons.vue
+    - src/assets/interface-icons/user-login.svg

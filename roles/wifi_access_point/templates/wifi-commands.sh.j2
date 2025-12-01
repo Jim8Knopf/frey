@@ -1,0 +1,117 @@
+#!/bin/bash
+# ==============================================================================
+# FREY WIFI COMMANDS - WiFi Management Category Handler
+# ==============================================================================
+# Handles all WiFi-related subcommands for the Frey CLI
+# ==============================================================================
+
+# Source shared library
+source /usr/local/lib/frey/frey-wifi-lib.sh
+
+show_help() {
+    cat <<EOF
+Frey WiFi Management
+
+Usage: frey wifi <command> [arguments]
+
+Commands:
+  connect <ssid> [password]   Connect to WiFi network
+  disconnect                  Disconnect from current network
+  menu                        Interactive network selection (TUI)
+  status                      Show current connection status
+  pause                       Pause roaming daemon
+  resume                      Resume roaming daemon
+  power on|off                Enable/disable WiFi power saving
+
+Examples:
+  frey wifi connect "My Network" "password123"
+  frey wifi connect "OpenWiFi"     # Open network
+  frey wifi disconnect
+  frey wifi menu
+  frey wifi status
+  frey wifi pause
+  frey wifi resume
+  frey wifi power off              # Disable power saving
+
+Notes:
+  - Connection commands affect {{ network.wifi.client_interface }} only
+  - Access Point ({{ network.wifi.interface }}) is not affected
+  - Roaming daemon automatically switches to best network
+EOF
+}
+
+case "$1" in
+    connect)
+        shift
+        exec /usr/local/bin/frey-connect-wifi "$@"
+        ;;
+    disconnect)
+        exec /usr/local/bin/frey-disconnect-wifi
+        ;;
+    menu)
+        exec /usr/local/bin/frey-wifi-tui
+        ;;
+    status)
+        # Show wpa_cli status + roaming daemon state
+        INTERFACE="{{ network.wifi.client_interface }}"
+
+        if ! validate_interface "$INTERFACE"; then
+            log_error "WiFi interface $INTERFACE not found"
+            exit 1
+        fi
+
+        echo "WiFi Client Status"
+        echo "========================================"
+
+        # Show WPA supplicant status
+        if is_wpa_supplicant_running "$INTERFACE"; then
+            get_wpa_status "$INTERFACE"
+        else
+            log_warning "wpa_supplicant not running on $INTERFACE"
+        fi
+
+        echo ""
+        echo "Interface Information"
+        echo "========================================"
+        IP_ADDR=$(get_interface_ip "$INTERFACE")
+        STATE=$(get_interface_state "$INTERFACE")
+
+        log_info "Interface: $INTERFACE"
+        log_info "State: $STATE"
+        log_info "IP Address: ${IP_ADDR:-Not assigned}"
+
+        echo ""
+        echo "Roaming Daemon Status"
+        echo "========================================"
+        systemctl status frey-wifid.service --no-pager -l -n 5 || true
+        ;;
+    pause)
+        exec /usr/local/bin/frey-wifi-pause pause
+        ;;
+    resume)
+        exec /usr/local/bin/frey-wifi-pause resume
+        ;;
+    power)
+        SETTING="${2:-}"
+        if [ -z "$SETTING" ]; then
+            log_error "Usage: frey wifi power <on|off>"
+            exit 1
+        fi
+        exec /usr/local/bin/frey-disable-wifi-power-save "$SETTING"
+        ;;
+    --help|-h|help)
+        show_help
+        ;;
+    "")
+        log_error "No command specified"
+        echo ""
+        show_help
+        exit 1
+        ;;
+    *)
+        log_error "Unknown command: $1"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac

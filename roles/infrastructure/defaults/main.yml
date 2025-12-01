@@ -1,14 +1,20 @@
 ---
-# Infrastructure role default variables
+# ==============================================================================
+# INFRASTRUCTURE ROLE - DEFAULT VARIABLES
+# ==============================================================================
+
+deploy_infrastructure: true
 
 # Network Architecture (as defined in roles/wifi_access_point/network-architecture-guide.md)
 infrastructure_networks:
   # Shared networks (created by this role, used by others)
   proxy:
+    name: proxy
     description: "Main network for Traefik routing - all web-accessible services join this"
     external: true    # Other services reference this network
 
   localdns:
+    name: localdns
     description: "Network for DNS resolution between containers"
     external: true    # Other services reference this network
 
@@ -18,4 +24,79 @@ infrastructure_networks:
     subnet: "10.20.3.0/24"  # As specified in architecture guide
     description: "Network for infrastructure services"
 
-deploy_infrastructure: true
+# ==============================================================================
+# INFRASTRUCTURE STACK CONFIGURATION
+# ==============================================================================
+infrastructure:
+  group:
+    name: infrastructure
+    gid: 46372
+  user:
+    name: infrastructure_manager
+    uid: 46372
+    groups: "{{ infrastructure.group.name }}"
+  dir: "{{ storage.base_dir }}/infrastructure"
+  services:
+    traefik:
+      enabled: true
+      version: "latest"
+      ports:
+        http: 80
+        https: 443
+        dashboard: 8082
+      config:
+        acme_email: "{{ admin.email }}"  # Using admin email for Let's Encrypt notifications
+    portainer:
+      enabled: true
+      version: "latest"
+      ports:
+        http: 9000
+    dockge:
+      enabled: true
+      version: "1"
+      ports:
+        http: 5001
+    authentik:
+      enabled: true  # Enable after initial infrastructure setup
+      version: "2025.2.4"  # Pinned version for reproducible deployments
+      port: 9300  # Changed from 9000 to avoid conflict with Portainer
+      port_https: 9446
+      postgres_version: "16-alpine"
+      redis_version: "alpine"
+      # Blueprint re-apply control:
+      # - Set to a list of filenames to re-apply specific blueprints
+      #   e.g., ['11-oidc-audiobookshelf.yaml', '10-oidc-immich.yaml']
+      # - Or set to 'all' to re-apply every blueprint file
+      reapply_blueprints: [
+        '11-oidc-audiobookshelf.yaml',
+        '14-oidc-mealie.yaml',
+        '15-oidc-dashy.yaml'
+      ]
+    step_ca:
+      enabled: true
+      version: "latest"
+      port: 9336
+      ca_name: "Frey CA"
+      # DNS names used by Step-CA for its own TLS certificate
+      # First entry becomes the primary URL (e.g. https://ca.frey:9443)
+      dns_names:
+        - "step-ca"
+        - "ca.{{ network.domain_name }}"
+        - "step-ca.{{ network.domain_name }}"
+        - "{{ network.domain_name }}"
+      provisioner_name: "admin"
+      admin_password: "{{ vault_step_ca_admin_password }}"
+      cert_files:
+        root_ca: "root_ca.crt"
+        root_key: "root_ca.key"
+        wildcard_cert: "wildcard.crt"
+        wildcard_key: "wildcard.key"
+        wildcard_csr: "wildcard.csr"
+        san_config: "san.cnf"
+      default_cert_duration: "2160h" # 90 days
+      max_cert_duration: "8760h" # 1 year
+      min_cert_duration: "1h"
+      root_ca_cn: "Frey Root CA"
+      organization: "Frey"
+      country: "DE"
+      force_reinit: false

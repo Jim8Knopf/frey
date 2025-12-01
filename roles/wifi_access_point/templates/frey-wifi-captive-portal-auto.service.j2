@@ -1,0 +1,10 @@
+[Unit]
+Description=Frey Automatic WiFi Connector
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-wifi-captive-portal-auto.sh
+
+[Install]
+WantedBy=multi-user.target

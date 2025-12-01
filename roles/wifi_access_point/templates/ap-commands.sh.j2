@@ -1,0 +1,100 @@
+#!/bin/bash
+# ==============================================================================
+# FREY AP COMMANDS - Access Point Management Category Handler
+# ==============================================================================
+# Handles all Access Point-related subcommands for the Frey CLI
+# ==============================================================================
+
+# Source shared library
+source /usr/local/lib/frey/frey-wifi-lib.sh
+
+show_help() {
+    cat <<EOF
+Frey Access Point Management
+
+Usage: frey ap <command>
+
+Commands:
+  status      Show AP health and connected clients
+  ensure      Ensure AP interface exists
+  restart     Restart AP services (hostapd, dnsmasq)
+  clients     Show connected clients
+
+Examples:
+  frey ap status
+  frey ap ensure
+  frey ap restart
+  frey ap clients
+
+Notes:
+  - Access Point runs on {{ network.wifi.interface }}
+  - SSID: {{ network.wifi.ssid }}
+  - IP: {{ network.wifi.ip }}
+EOF
+}
+
+AP_INTERFACE="{{ network.wifi.interface }}"
+
+case "$1" in
+    status)
+        exec /usr/local/bin/frey-ap-healthcheck
+        ;;
+    ensure)
+        exec /usr/local/bin/frey-ensure-ap-interface
+        ;;
+    restart)
+        require_root
+
+        log_info "Restarting AP services..."
+
+        if restart_service_safe hostapd "frey-ap"; then
+            log_success "hostapd restarted"
+        fi
+
+        if restart_service_safe dnsmasq "frey-ap"; then
+            log_success "dnsmasq restarted"
+        fi
+
+        log_success "AP services restarted successfully"
+        ;;
+    clients)
+        if ! validate_interface "$AP_INTERFACE"; then
+            log_error "AP interface $AP_INTERFACE not found"
+            exit 1
+        fi
+
+        echo "Connected Clients"
+        echo "========================================"
+
+        if is_hostapd_responding "$AP_INTERFACE"; then
+            CLIENT_COUNT=$(count_hostapd_stations "$AP_INTERFACE")
+            log_info "Connected clients: $CLIENT_COUNT"
+            echo ""
+
+            if [ "$CLIENT_COUNT" -gt 0 ]; then
+                get_hostapd_stations "$AP_INTERFACE"
+            else
+                log_info "No clients currently connected"
+            fi
+        else
+            log_error "hostapd is not responding"
+            log_info "Try: frey ap restart"
+            exit 1
+        fi
+        ;;
+    --help|-h|help)
+        show_help
+        ;;
+    "")
+        log_error "No command specified"
+        echo ""
+        show_help
+        exit 1
+        ;;
+    *)
+        log_error "Unknown command: $1"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac

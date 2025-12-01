@@ -1,0 +1,109 @@
+#!/bin/bash
+# ==============================================================================
+# FREY NET COMMANDS - Network Utilities Category Handler
+# ==============================================================================
+# Handles all network-related subcommands for the Frey CLI
+# ==============================================================================
+
+# Source shared library
+source /usr/local/lib/frey/frey-wifi-lib.sh
+
+show_help() {
+    cat <<EOF
+Frey Network Utilities
+
+Usage: frey net <command>
+
+Commands:
+  status      Check network connectivity
+  nat start   Start NAT manager for internet passthrough
+  nat stop    Stop NAT manager
+  nat status  Show NAT status
+
+Examples:
+  frey net status
+  frey net nat start
+  frey net nat stop
+  frey net nat status
+
+Notes:
+  - NAT manager enables internet passthrough for AP clients
+  - Requires WiFi client ({{ network.wifi.client_interface }}) to be connected
+  - Routes traffic from AP ({{ network.wifi.interface }}) through client interface
+EOF
+}
+
+case "$1" in
+    status)
+        exec /usr/local/bin/frey-wifi-healthcheck
+        ;;
+    nat)
+        shift
+        case "$1" in
+            start)
+                require_root
+                log_info "Starting NAT manager..."
+
+                if systemctl start frey-natd.service; then
+                    log_success "NAT manager started"
+                    log_info "Check status: frey net nat status"
+                else
+                    log_error "Failed to start NAT manager"
+                    exit 1
+                fi
+                ;;
+            stop)
+                require_root
+                log_info "Stopping NAT manager..."
+
+                if systemctl stop frey-natd.service; then
+                    log_success "NAT manager stopped"
+                else
+                    log_error "Failed to stop NAT manager"
+                    exit 1
+                fi
+                ;;
+            status)
+                echo "NAT Manager Status"
+                echo "========================================"
+                systemctl status frey-natd.service --no-pager -l -n 20 || true
+                ;;
+            restart)
+                require_root
+                log_info "Restarting NAT manager..."
+
+                if restart_service_safe frey-natd "frey-nat"; then
+                    log_success "NAT manager restarted"
+                else
+                    log_error "Failed to restart NAT manager"
+                    exit 1
+                fi
+                ;;
+            "")
+                log_error "NAT command requires an action"
+                echo "Usage: frey net nat <start|stop|status|restart>"
+                exit 1
+                ;;
+            *)
+                log_error "Unknown NAT command: $1"
+                echo "Usage: frey net nat <start|stop|status|restart>"
+                exit 1
+                ;;
+        esac
+        ;;
+    --help|-h|help)
+        show_help
+        ;;
+    "")
+        log_error "No command specified"
+        echo ""
+        show_help
+        exit 1
+        ;;
+    *)
+        log_error "Unknown command: $1"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac

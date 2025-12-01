@@ -1,7 +1,14 @@
 ---
+# ==============================================================================
+# GLOBAL CONFIGURATION VARIABLES
+# ==============================================================================
+# This file contains only truly global variables that affect multiple roles.
+# Role-specific variables have been moved to roles/*/defaults/main.yml
+
 # ================================
 # FEATURE TOGGLES
 # ================================
+# Control which roles are enabled/disabled
 features:
   infrastructure: true
   landing_page: false
@@ -9,25 +16,25 @@ features:
   wifi_access_point: true
   media: true
   monitoring: true
-  automation: true
-  authentication: true  # Authelia/LLDAP SSO - enable after initial setup
+  automation: false
+  authentication: false  # Authelia/LLDAP SSO - enable after initial setup
   file_management: false
-  immich: true
-  homeassistant: true  # Home Assistant + Piper TTS + Wyoming Whisper STT
-  bluetooth_audio: true  # Bluetooth headphones/speakers with auto-connection
+  immich: false
+  homeassistant: false  # Home Assistant + Piper TTS + Wyoming Whisper STT
+  bluetooth_audio: false  # Bluetooth headphones/speakers with auto-connection
   backup: false  # Automated backup system
-  cookbook: true
-  power_monitoring: false  # Deprecated - use system.power_monitoring.enabled instead
-  voice_assistant: false  # Deprecated - integrated into homeassistant role
+  cookbook: false # Mealie Recipe Manager
 
 # ================================
-# CONFIGURATION
+# GLOBAL CONFIGURATION
 # ================================
 # Admin contact information
-admin_email: "Jason.Kolb@ik.me"
+admin:
+  email: "Jason.Kolb@ik.me"
 
+# Global user definitions
 users:
-  default: 
+  default:
     name: else
     uid: 1000
     gid: 1000
@@ -36,18 +43,17 @@ users:
     uid: 362537
     groups: docker
 
-
-
 # ================================
 # STORAGE PATHS
 # ================================
+# Global storage paths used across all roles
 storage:
   base_dir: /opt/frey
   appdata_dir: "{{ storage.base_dir }}/appdata"
   stacks: "{{ storage.base_dir }}/stacks"
 
 # ==============================================================================
-# ROLE: INFRASTRUCTURE & NETWORKING
+# NETWORK CONFIGURATION (GLOBAL)
 # ==============================================================================
 network:
   domain_name: frey
@@ -56,70 +62,11 @@ network:
   # Uses DNS via Traefik for clean OAuth flow (primary access method)
   # OAuth: grafana.frey → auth.frey → grafana.frey
   # Works offline via AdGuard local DNS resolution
-  authelia_public_url: "https://auth.{{ network.domain_name }}"
-  wifi:
-    # Network identification
-    ssid: "FreyHub"                 # Network name visible to clients
-    password: "{{ wifi_ap.password }}"  # Password from secrets.yml
-    
-    # Geographic settings (affects channels and power levels)
-    country: "AU"                   # Two-letter country code
-    
-    # Network configuration
-    ip: "10.20.0.1"                # AP's IP address
-    network: "10.20.0.0/24"        # Network subnet for WiFi clients
-    dhcp_range_start: "10.20.0.50" # Start of DHCP address pool
-    dhcp_range_end: "10.20.0.150"  # End of DHCP address pool
-    
-    # Interface configuration
-    interface: "wlan1"             # WiFi interface for AP mode
-    client_interface: "wlan0"      # Client interface for roaming
-    client_interface_ip: "192.168.0.252"
-    nm_transition_delay: 5         # Seconds to wait during NetworkManager→dhcpcd transition (on fresh installs)
-    roaming:
-      enabled: true  # Enable wpa_supplicant with known_networks and priorities
-      daemon_enabled: false  # Disable roaming daemon (was causing connection instability)
-      client_interface: "wlan0"  # Interface for connecting to public WiFi
-      mqtt_topic: "frey/wifi/roaming"
-      known_networks: "{{ network.wifi.roaming.known_networks }}"  # From secrets.yml
-
-    # WiFi power management
-    power_management:
-      disable_power_save: true
-      extra_interfaces: []
-    virtual_ap:
-      enabled: false  # Using physical adapters (wlan0/wlan1), not virtual interfaces
-      source_interface: "{{ network.wifi.client_interface }}"
-      ensure_interval: 10
-
-    # Connectivity monitor - DISABLED to prevent connection cycling
-    connectivity_monitor:
-      enabled: false  # DISABLED: Was causing disconnections by restarting services
-      ping_target: null
-      ping_count: 3
-      failure_threshold: 1
-      interval_seconds: 60
-      restart_dhcpcd: true
-      restart_wpa_supplicant: true
-
-    # WiFi radio settings
-    # Set hw_mode to 'auto' to prefer 5GHz when supported, else fall back to 2.4GHz
-    hw_mode: auto                  # auto: prefer 5GHz (a) if supported; else 2.4GHz (g)
-    # channel: 7                     # Desired channel; auto logic overrides to 36 on 5GHz if invalid
-    ieee80211n: 1                  # Enable 802.11n features
-    wmm_enabled: 1                 # Enable WiFi multimedia (QoS)
-    
-    # Security settings
-    macaddr_acl: 0                 # MAC address filtering
-    auth_algs: 1                   # WPA authentication
-    ignore_broadcast_ssid: 0       # Broadcast SSID
+  authentik_public_url: "https://auth.{{ network.domain_name }}"
 
   # DNS Service Resolution
+  # Services configured here will be accessible via DNS (e.g., http://jellyfin.frey)
   dns_rewrites:
-    # Landing + apex host
-    - name: frey
-      host: "{{ network.domain_name }}"
-    - name: landing
     # Landing + apex host
     - name: frey
       host: "{{ network.domain_name }}"
@@ -157,33 +104,54 @@ network:
     # Automation + smart home
     - name: homeassistant
     - name: n8n
-    # Automation + smart home
-    - name: homeassistant
-    - name: n8n
 
+  # WiFi Roaming Configuration (wlan0 client interface)
+  wifi:
+    roaming:
+      enabled: true  # Toggle for automatic WiFi roaming service
+      scan_intervals:
+        default: 120         # Default scan interval (seconds) - 2 minutes for quick network discovery
+        no_connection: 120   # Scan interval when no connection (seconds) - 2 minutes, reduced from 30s
+        no_internet: 180     # Scan interval when no internet (seconds) - 3 minutes, reduced from 60s
+        good: 900            # Scan interval on stable connection (seconds) - 15 minutes
+
+    # Known networks - networks that should skip captive portal bypass
+    # Add your personal hotspots, home WiFi, or other trusted networks here
+    known_networks:
+      # Personal hotspot - provides direct internet without captive portal
+      - ssid: "NOTHING by JK"
+        skip_portal_bypass: true
+
+      # Future: Networks with known portal credentials can be added like this:
+      # - ssid: "Library WiFi"
+      #   portal_credentials:
+      #     username: "guest"
+      #     password: "password123"
 
 # ==============================================================================
-# SECURITY SETTINGS
+# SECURITY SETTINGS (GLOBAL)
 # ==============================================================================
+# Dynamic firewall port configuration based on enabled features
 security:
   fail2ban:
     enable: true
   ufw:
     enable: true
   ssh_port: 22
+  # Dynamically computed list of TCP ports to open based on enabled features
   firewall_tcp_ports: "{{
-    [security.ssh_port, ports.infrastructure.dockge] +
+    [security.ssh_port, infrastructure.services.dockge.ports.http] +
     (features.infrastructure | ternary([
-      ports.infrastructure.traefik, 
-      ports.infrastructure.traefik_dashboard, 
-      ports.infrastructure.portainer
+      infrastructure.services.traefik.ports.http,
+      infrastructure.services.traefik.ports.dashboard,
+      infrastructure.services.portainer.ports.http
     ], [])) +
     (features.media | ternary([
       media.services.jellyfin.port,
       media.services.sonarr.port,
       media.services.radarr.port,
       media.services.bazarr.port,
-      media.services.audiobookshelf.port,
+      13378,  # audiobookshelf external port (mapped from internal port 80)
       media.services.qbittorrent.port,
       media.services.prowlarr.port,
       media.services.jellyseerr.port,
@@ -191,34 +159,24 @@ security:
       media.services.jellystat.port
     ], [])) +
     (features.automation | ternary([
-      automation.ollama.port,
-      automation.openwebui.port,
-      automation.n8n.port
+      automation.services.ollama.port,
+      automation.services.openwebui.port,
+      automation.services.n8n.port
     ], [])) +
     (features.immich | ternary([
-      ports.photos_home.immich
+      immich.services.immich.port
     ], [])) +
     (features.homeassistant | ternary([
-      ports.photos_home.homeassistant
+      homeassistant.services.homeassistant.port
     ], [])) +
     (features.monitoring | ternary([
-      ports.monitoring.grafana, 
-      ports.monitoring.prometheus, 
-      ports.monitoring.uptime_kuma, 
-      ports.network_tools.speedtest
-    ], [])) +
-    (features.networking | ternary([
-      ports.network_tools.adguardhome
-    ], [])) +
-    (features.file_management | ternary([
-      ports.file_management.filebrowser, 
-      ports.file_management.code_server
+      monitoring.grafana.port,
+      monitoring.prometheus.port,
+      monitoring['uptime-kuma'].port,
+      monitoring['speedtest-tracker'].port
     ], [])) +
     (features.cookbook | ternary([
       cookbook.services.mealie.port
-    ], [])) +
-    (features.voice_assistant | ternary([
-      ports.voice_assistant.piper
     ], []))
     }}"
 
@@ -243,7 +201,7 @@ security:
     }}"
 
 # ==============================================================================
-# OPTIMIZATION SETTINGS
+# OPTIMIZATION SETTINGS (GLOBAL)
 # ==============================================================================
 optimization:
   ssd:
@@ -253,795 +211,8 @@ optimization:
     locale: de_DE.UTF-8
     enable_indexers: true
 
-# ==============================================================================
-# POWER MANAGEMENT (12V setup)
-# ==============================================================================
-power:
-  low_threshold: 11.8
-  critical_threshold: 11.0
-  enable_graceful_shutdown: false
 
-# ================================
-# AUTOMATION SETTINGS
-# ================================
-automation:
-  watchtower_interval: 86400 #?
-  backup_retention_days: 7  #?
-  group:
-    name: automation
-    gid: 2886
-  user:
-    name: automation_manager
-    uid: 463288672
-    groups: "{{ automation.group.name }}"
-  dir: "{{ storage.base_dir }}/automation"
-
-  services:
-    ollama:
-      enabled: true
-      image: "ollama/ollama:latest"
-      port: 11434
-      gpu_enabled: false
-    openwebui:
-      enabled: true
-      image: "ghcr.io/open-webui/open-webui:main"
-      port: 3002
-    n8n:
-      enabled: true
-      image: "n8nio/n8n:latest"
-      port: 5678
-
-# ================================
-# VOICE ASSISTANT
-# ================================
-voice_assistant:
-  deploy: true
-  wake_word: "frey"
-  ollama_model: "llama3:latest"
-  piper_voice: "en_US-lessac-medium"
-  piper_voices:
-    - "en_US-lessac-medium"
-    - "en_AU-southern-female"
-    - "de_DE-thorsten-medium"
-
-
-monitoring:
-  group:
-    name: monitoring
-    gid: 12341
-  user:
-    name: monitoring_manager
-    uid: 12341
-    groups: "{{ monitoring.group.name }}"
-  dir: "{{ storage.base_dir }}/monitoring"
-  dockge:
-    enabled: true
-    port: 5001
-    image: "louislam/dockge"
-    version: 1
-  prometheus:
-    enabled: true
-    port: 9090
-    image: "prom/prometheus"
-    version: "latest"
-  node-exporter:
-    enabled: true
-    port: 9100
-    image: "prom/node-exporter"
-    version: "latest"
-  cadvisor:
-    enabled: true
-    port: 8081
-    image: "gcr.io/cadvisor/cadvisor"
-    version: "latest"
-  grafana:
-    enabled: true
-    port: 3000
-    image: "grafana/grafana"
-    version: "latest"
-    # OIDC/SSO Configuration (Authelia)
-    # All OAuth URLs use clean DNS names without ports (http://auth.frey)
-    # Browser: auth.frey → AdGuard DNS → Traefik → Authelia
-    # Backend: auth.frey → Traefik network alias → Traefik → Authelia
-    # Works offline via AdGuard local DNS and Docker network aliases through Traefik
-    oidc_client_id: "grafana"
-    oidc_scopes: "openid profile email groups"
-    oidc_auth_url: "{{ network.authelia_public_url }}/api/oidc/authorization"
-    oidc_token_url: "{{ network.authelia_public_url }}/api/oidc/token"
-    oidc_api_url: "{{ network.authelia_public_url }}/api/oidc/userinfo"
-    oidc_role_attribute_path: "contains(groups, 'admin_users') && 'Admin' || contains(groups, 'monitoring_users') && 'Editor' || 'Viewer'"
-  loki:
-    enabled: true
-    port: 3100
-    image: "grafana/loki"
-    version: "latest"
-  promtail:
-    enabled: true
-    image: "grafana/promtail"
-    version: "latest"
-  uptime-kuma:
-    enabled: true
-    port: 3001
-    image: "louislam/uptime-kuma"
-    version: 1
-  watchtower:
-    enabled: true
-    image: "containrrr/watchtower"
-    version: "latest"
-  speedtest-tracker:
-    enabled: true
-    port: 8181
-    image: "lscr.io/linuxserver/speedtest-tracker"
-    version: "latest"
-  # Application-specific exporters for comprehensive monitoring
-  postgres-exporter:
-    enabled: true
-    port: 9187
-    image: "prometheuscommunity/postgres-exporter"
-    version: "latest"
-  redis-exporter:
-    enabled: true
-    port: 9121
-    image: "oliver006/redis_exporter"
-    version: "latest"
-  adguard-exporter:
-    enabled: true
-    port: 9617
-    image: "ebrianne/adguard-exporter"
-    version: "latest"
-  qbittorrent-exporter:
-    enabled: true
-    port: 9022
-    image: "esanchezm/prometheus-qbittorrent-exporter"
-    version: "latest"
-  # Dashboard auto-provisioning
-  dashboard_provisioning:
-    enabled: true
-  # Alerting configuration
-  alerting:
-    enabled: true
-
-
-# ===================================================================
-# INFRASTRUCTURE - REFACTORED FOR DYNAMIC COMPOSE GENERATION
-# ===================================================================
 infrastructure:
-  group:
-    name: infrastructure
-    gid: 46372
-  user:
-    name: infrastructure_manager
-    uid: 46372
-    groups: "{{ infrastructure.group.name }}"
-  dir: "{{ storage.base_dir }}/infrastructure"
   services:
-    traefik:
-      enabled: true
-      version: "latest"
-      ports:
-        http: 80
-        https: 443
-        dashboard: 8082
-      config:
-        acme_email: "{{ admin_email }}"  # Using admin email for Let's Encrypt notifications
-      metrics:
-        enabled: true
-        port: 8083
-    portainer:
-      enabled: true
-      version: "latest"
-      ports:
-        http: 9000
-    dockge:
-      enabled: true
-      version: "1"
-      ports:
-        http: 5001
     step_ca:
-      enabled: true  # Enable when ready to implement ACME-based certificate management
-      version: "latest"
-      port: 9336  # External port mapping (maps to internal 9443)
-      # CA Identity Configuration
-      ca_name: "Frey CA"  # Display name for the CA
-      root_ca_cn: "Frey Root CA"  # Common Name for root certificate
-      intermediate_ca_cn: "Frey CA Intermediate CA"  # Common Name for intermediate cert
-      organization: "Frey"  # Organization name (O)
-      country: "DE"  # Country code (C)
-      # CA DNS Names
-      dns_names:
-        - "ca.{{ network.domain_name }}"
-        - "step-ca.{{ network.domain_name }}"
-        - "step-ca"
-        - "localhost"
-        - "127.0.0.1"
-      # Provisioner Configuration
-      provisioner_name: "admin"  # Default JWK provisioner name
-      acme_provisioner_name: "acme"  # ACME provisioner name
-      # Certificate Durations (for ACME provisioner)
-      default_cert_duration: "2160h"  # 90 days
-      max_cert_duration: "2160h"  # 90 days
-      min_cert_duration: "5m"  # 5 minutes
-      # Certificate Files
-      cert_files:
-        root_ca: "frey-ca.crt"
-        root_key: "frey-ca.key"
-        wildcard_cert: "frey.crt"
-        wildcard_key: "frey.key"
-        wildcard_csr: "frey.csr"
-        san_config: "san.cnf"
-
-landing_page:
-  enabled: true
-  hostname: "{{ network.domain_name }}"
-  alt_hostname: "landing.{{ network.domain_name }}"
-  public_url: "https://{{ network.domain_name }}"
-  allowed_origins:
-    - "https://{{ network.domain_name }}"
-    - "https://landing.{{ network.domain_name }}"
-  group:
-    name: landing
-    gid: 77310
-  user:
-    name: landing_manager
-    uid: 77310
-    groups: "{{ landing_page.group.name }}"
-  dir: "{{ storage.base_dir }}/landing"
-  data_dir: "{{ storage.appdata_dir }}/landing"
-  user_data_dir: "{{ storage.appdata_dir }}/landing/user-data"
-  config_path: "{{ storage.appdata_dir }}/landing/user-data/conf.yml"
-  assets_dir: "{{ storage.appdata_dir }}/landing/user-data/assets"
-  docs_dir: "{{ storage.appdata_dir }}/landing/user-data/assets/docs"
-  overrides_dir: "{{ storage.appdata_dir }}/landing/overrides"
-  source_overrides: []
-  image: "ghcr.io/lissy93/dashy"
-  version: "latest"
-  container_name: landing-page
-  compose_project: landing_page
-  port: 8080
-  allow_guest_access: true
-  nav_links:
-    - title: "User Guide"
-      url: "https://cookbook.{{ network.domain_name }}"
-    - title: "Certificate Guide"
-      url: "https://{{ landing_page.hostname }}/assets/docs/{{ landing_page.certificate.docs_filename }}"
-  certificate:
-    source_path: "{{ storage.appdata_dir }}/traefik/certificates/frey-ca.crt"
-    download_name: "frey-root-ca.crt"
-    docs_filename: "frey-ca.html"
-  user_guide:
-    docs_filename: "frey-user-guide.html"
-  oidc:
-    enable: true
-    client_id: "dashy"
-    endpoint: "{{ network.authelia_public_url }}/api/oidc"
-    scope: "openid profile email groups"
-    admin_group: "frey_admins"
-  certificate_guides:
-    - slug: android
-      title: "Android 14/15"
-      icon: "fab fa-android"
-      steps:
-        - "Download {{ landing_page.certificate.download_name }} from the landing page."
-        - "Open Settings -> Security & privacy -> More security settings -> Encryption & credentials."
-        - "Tap Install certificate -> CA certificate, approve the warning, and pick the Frey file."
-        - "Reboot the device to make Chrome, Firefox, and installed apps trust *.{{ network.domain_name }}."
-      verify:
-        - "Settings -> Security -> Encryption & credentials -> Trusted credentials (User tab) shows Frey Root CA."
-    - slug: manjaro
-      title: "Manjaro / Arch Linux"
-      icon: "fas fa-linux"
-      steps:
-        - "Copy {{ landing_page.certificate.download_name }} to /usr/local/share/ca-certificates/frey-root-ca.crt (sudo install -m 644 ...)."
-        - "Run sudo update-ca-trust (or sudo trust extract-compat) to refresh the system trust store."
-        - "Restart browsers or dockerized services that should trust *.{{ network.domain_name }}."
-      verify:
-        - "`trust list | grep \"Frey Root\"` prints the certificate fingerprint."
-  sections:
-    - name: "Core Access"
-      icon: "fas fa-sitemap"
-      description: "SSO, reverse proxy, and container management."
-      item_size: medium
-      services:
-        - title: "Authelia Portal"
-          description: "Single sign-on portal and user self-service."
-          url: "https://auth.{{ network.domain_name }}"
-          icon: "fas fa-unlock"
-          tags: ["sso", "identity"]
-        - title: "Traefik Dashboard"
-          description: "Reverse proxy routing, TLS status, and middleware."
-          url: "https://traefik.{{ network.domain_name }}"
-          icon: "fas fa-route"
-          tags: ["infrastructure"]
-          groups: ["traefik_admins"]
-        - title: "Portainer"
-          description: "Visual Docker lifecycle management."
-          url: "https://portainer.{{ network.domain_name }}"
-          icon: "fas fa-toolbox"
-          groups: ["portainer_admins"]
-        - title: "Dockge"
-          description: "Compose stack editor with live logs."
-          url: "https://dockge.{{ network.domain_name }}"
-          icon: "fas fa-terminal"
-          groups: ["dockge_users"]
-        - title: "AdGuard Home"
-          description: "DNS, DHCP, and content filtering policies."
-          url: "https://adguard.{{ network.domain_name }}"
-          icon: "fas fa-shield-alt"
-          groups: ["adguard_admins"]
-    - name: "Media & Requests"
-      icon: "fas fa-film"
-      description: "Streaming, automation, and request workflows."
-      item_size: medium
-      services:
-        - title: "Jellyfin"
-          description: "Personal streaming server for music and video."
-          url: "https://jellyfin.{{ network.domain_name }}"
-          icon: "fas fa-play-circle"
-          groups: ["jellyfin_users"]
-        - title: "Jellyseerr"
-          description: "Request management for movies and series."
-          url: "https://jellyseerr.{{ network.domain_name }}"
-          icon: "fas fa-clipboard-list"
-          groups: ["jellyseerr_users"]
-        - title: "Audiobookshelf"
-          description: "Audiobook and podcast streaming."
-          url: "https://audiobookshelf.{{ network.domain_name }}"
-          icon: "fas fa-headphones"
-          groups: ["audiobookshelf_users"]
-        - title: "Sonarr"
-          description: "Automated TV library management."
-          url: "https://sonarr.{{ network.domain_name }}"
-          icon: "fas fa-tv"
-          groups: ["sonarr_users"]
-        - title: "Radarr"
-          description: "Automated movie downloads."
-          url: "https://radarr.{{ network.domain_name }}"
-          icon: "fas fa-film"
-          groups: ["radarr_users"]
-        - title: "Bazarr"
-          description: "Subtitle sync across libraries."
-          url: "https://bazarr.{{ network.domain_name }}"
-          icon: "fas fa-closed-captioning"
-          groups: ["bazarr_users"]
-        - title: "Lidarr"
-          description: "Music downloads and tagging."
-          url: "https://lidarr.{{ network.domain_name }}"
-          icon: "fas fa-music"
-          groups: ["lidarr_users"]
-        - title: "qBittorrent"
-          description: "Seedbox dashboard and transfer queue."
-          url: "https://qbittorrent.{{ network.domain_name }}"
-          icon: "fas fa-download"
-          groups: ["qbittorrent_users"]
-        - title: "Prowlarr"
-          description: "Indexer and automation brain for the *arr suite."
-          url: "https://prowlarr.{{ network.domain_name }}"
-          icon: "fas fa-satellite-dish"
-          groups: ["prowlarr_users"]
-    - name: "Monitoring & Diagnostics"
-      icon: "fas fa-chart-line"
-      description: "Observability, uptime, and diagnostics."
-      item_size: medium
-      services:
-        - title: "Grafana"
-          description: "Dashboards for system and application metrics."
-          url: "https://grafana.{{ network.domain_name }}"
-          icon: "fas fa-chart-area"
-          groups: ["grafana_viewers"]
-        - title: "Prometheus"
-          description: "Long-term metrics storage and alerting."
-          url: "https://prometheus.{{ network.domain_name }}"
-          icon: "fas fa-fire"
-          groups: ["prometheus_users"]
-        - title: "Uptime Kuma"
-          description: "HTTP, TCP, and heartbeat monitoring."
-          url: "https://uptime-kuma.{{ network.domain_name }}"
-          icon: "fas fa-heartbeat"
-          groups: ["uptime_kuma_users"]
-        - title: "Speedtest Tracker"
-          description: "Historical ISP performance reports."
-          url: "https://speedtest.{{ network.domain_name }}"
-          icon: "fas fa-tachometer-alt"
-          groups: ["speedtest_users"]
-        - title: "cAdvisor"
-          description: "Per-container resource metrics."
-          url: "https://cadvisor.{{ network.domain_name }}"
-          icon: "fas fa-server"
-          groups: ["metrics_users"]
-    - name: "Automation & Apps"
-      icon: "fas fa-home"
-      description: "Smart home, photos, and workflow automation."
-      item_size: medium
-      services:
-        - title: "Home Assistant"
-          description: "Central smart-home automation."
-          url: "https://homeassistant.{{ network.domain_name }}"
-          icon: "fas fa-house-chimney"
-          groups: ["homeassistant_users"]
-        - title: "Immich"
-          description: "Private photo and video backup with AI search."
-          url: "https://immich.{{ network.domain_name }}"
-          icon: "fas fa-camera-retro"
-          groups: ["immich_users"]
-        - title: "Cookbook"
-          description: "Mealie recipe manager with meal plans."
-          url: "https://cookbook.{{ network.domain_name }}"
-          icon: "fas fa-utensils"
-          groups: ["mealie_users"]
-        - title: "n8n"
-          description: "Workflow and automation builder."
-          url: "https://n8n.{{ network.domain_name }}"
-          icon: "fas fa-code-branch"
-          groups: ["n8n_admins"]
-    - name: "Trust & Documentation"
-      type: certificate
-      icon: "fas fa-certificate"
-      description: "Install the Frey CA to trust every *.{{ network.domain_name }} service."
-      item_size: small
-      services:
-        - title: "Download Frey Root CA"
-          description: "Install this certificate on every device before using services."
-          url: "https://frey/assets/{{ landing_page.certificate.download_name }}"
-          icon: "fas fa-download"
-          tags: ["certificate"]
-        - title: "Detailed Instructions"
-          description: "Android and Manjaro/Linux walkthrough."
-          url: "https://frey/assets/docs/{{ landing_page.certificate.docs_filename }}"
-          icon: "fas fa-book-reader"
-          tags: ["how-to"]
-
-# ===================================================================
-# MEDIA STACK - REFACTORED FOR DYNAMIC COMPOSE GENERATION
-# ===================================================================
-media:
-  group:
-    name: media
-    gid: 63342
-  user:
-    name: media_manager
-    uid: 63342
-    groups: "{{ media.group.name }}"
-  dir: "{{ storage.base_dir }}/media"
-  downloads: "{{ storage.base_dir }}/downloads"
-
-  network:
-    name: "media_network"
-    # No explicit subnet needed - Docker auto-assigns IPs
-    # Services use DNS names for communication, not IPs
-  # DNS resolvers used by media stack containers (avoids relying on host DNS)
-  dns_servers:
-    - 1.1.1.1
-    - 1.0.0.1
-
-  vpn:
-    enabled: false
-    port: 8888
-
-  services:
-    audiobookshelf:
-      enabled: true
-      version: "latest"
-      image: "ghcr.io/advplyr/audiobookshelf"
-      port: 80  # Internal container port for Traefik routing
-      ports:
-        - 13378:80  # External:Internal port mapping
-      volumes:
-        - "{{ storage.appdata_dir }}/audiobookshelf:/config"
-        - "{{ media.dir }}/audiobooks:/audiobooks"
-        - "{{ media.dir }}/podcasts:/podcasts"
-        # Trust Step-CA root for outbound TLS to OIDC provider (OIDC discovery)
-        - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/etc/ssl/certs/step-ca.crt:ro"
-      environment:
-        # Ensure Node trusts Step-CA when calling https://auth.frey
-        - "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/step-ca.crt"
-      # OIDC/SSO Configuration (enabled when features.authentication is true)
-      # NOTE: Audiobookshelf OIDC CANNOT be configured via environment variables
-      # Must be configured manually via web UI: Settings → Authentication → OpenID Connect
-      # Use these values when configuring in UI:
-      oidc_issuer_url: "{{ network.authelia_public_url }}"
-      oidc_client_id: "audiobookshelf"
-      # Client secret is in secrets.yml: audiobookshelf_oidc_secret
-      oidc_button_text: "Login with SSO"
-      oidc_auto_register: true
-      oidc_auto_launch: false
-
-    jellyfin:
-      enabled: true
-      version: "latest"
-      image: "lscr.io/linuxserver/jellyfin"
-      port: 8096
-      volumes:
-        - "{{ storage.appdata_dir }}/jellyfin:/config"
-        - "{{ media.dir }}/tv:/data/tvshows"
-        - "{{ media.dir }}/movies:/data/movies"
-      # LDAP Authentication: Manual configuration only (not managed by Ansible)
-      # See docs/jellyfin-ldap-setup.md for complete setup instructions
-    
-    jellyseerr:
-      enabled: true
-      version: "latest"
-      port: 5055
-    
-    qbittorrent:
-      enabled: true
-      version: "latest"
-      port: 8080           # Web UI port
-      listen_port: 51234   # Torrent protocol port (TCP/UDP)
-      ports:
-        - "8080:8080"          # Web UI
-        - "51234:51234/tcp"    # Torrent Port TCP
-        - "51234:51234/udp"    # Torrent Port UDP
-
-    nzbget:
-      enabled: true
-      version: "latest"
-      port: 6789
-
-    prowlarr:
-      enabled: true
-      version: "latest"
-      port: 9696
-
-    flaresolverr:
-      enabled: true
-      version: "latest"
-      port: 8191
-
-    sonarr:
-      enabled: true
-      version: "latest"
-      port: 8989
-
-    radarr:
-      enabled: true
-      version: "latest"
-      port: 7878
-
-    bazarr:
-      enabled: true
-      version: "latest"
-      port: 6767
-
-    lidarr:
-      enabled: true
-      version: "latest"
-      port: 8686
-        
-    audiobookrequest:
-      enabled: true
-      version: "latest"
-      port: 5432
-
-    jellystat:
-      enabled: false
-      version: "latest"
-      port: 8086
-
-    jellystat_db:
-      enabled: "{{ media.services.jellystat.enabled }}" # Jellystat dependency
-      version: 15
-      image: "postgres"
-      environment:
-        - "POSTGRES_DB=jellystat"
-        - "POSTGRES_USER=jellystat"
-        - "POSTGRES_PASSWORD=jellystat"
-
-    ytdl-sub:
-      enabled: false
-      version: "latest"
-
-    mopidy:
-      enabled: false  # DISABLED: No ARM64-compatible image available
-      # TODO: Build custom ARM64 Mopidy image or use alternative music player
-      # For now, use Jellyfin directly for music playback
-      version: "latest"
-      image: "wernight/mopidy"  # Note: Only supports AMD64
-      port: 6680  # Required for pre-pull task (web interface port)
-      mpd_port: 6600  # MPD protocol for Home Assistant integration
-      http_port: 6680  # Web interface
-
-    audiobook_bridge:
-      enabled: true  # Enable for local audiobook playback with progress sync
-      version: "3.11-slim"
-      image: "python"
-      port: 0  # No port exposed (internal service only)
-      sync_interval: 5  # Progress sync interval in seconds
-
-# ===================================================================
-# PHOTO MANAGEMENT - IMMICH STACK
-# ===================================================================
-immich:
-  group:
-    name: photos
-    gid: 74686
-  user:
-    name: photos_manager
-    uid: 74686
-    groups: "{{ immich.group.name }}"
-  dir: "{{ storage.base_dir }}/photos"
-
-  services:
-    immich:
-      enabled: true
-      version: "release"
-      port: 2283
-      # Hardware acceleration for Pi 5
-      hw_accel: "rkmpp"  # RK3588 hardware acceleration
-      # Storage paths
-      upload_location: "{{ storage.base_dir }}/photos/library"
-      db_data_location: "{{ storage.appdata_dir }}/immich-db"
-      ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
-      # OIDC/SSO Configuration (enabled when features.authentication is true)
-      # Issuer URL uses auth.frey DNS (accessible via localdns Docker network)
-      # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
-      oidc_issuer_url: "{{ network.authelia_public_url }}"
-      oidc_client_id: "immich"
-      oidc_scope: "openid profile email groups"
-      oidc_button_text: "Login with SSO"
-      oidc_auto_register: true
-      oidc_auto_launch: false
-      oidc_mobile_redirect_uri: "app.immich:/"
-      oidc_signing_algorithm: "RS256"
-
-# ===================================================================
-# COOKBOOK - MEALIE RECIPE MANAGER
-# ===================================================================
-cookbook:
-  group:
-    name: cookbook
-    gid: 74690
-  user:
-    name: cookbook_manager
-    uid: 74690
-    groups: "{{ cookbook.group.name }}"
-  dir: "{{ storage.base_dir }}/cookbook"
-
-  # Database credentials
-  db_user: mealie
-  db_password: "{{ mealie_db_password }}"
-  db_name: mealie
-
-  services:
-    mealie:
-      enabled: true
-      version: "latest"
-      port: 9900
-      ports:
-        - "9900:9000"
-      image: "hay-kot/mealie"
-      # Database
-      db_type: "postgres"
-      # Storage paths
-      data_dir: "{{ storage.appdata_dir }}/mealie/data"
-      db_data_location: "{{ storage.appdata_dir }}/mealie/db"
-      container_uid: 911
-      container_gid: 911
-      postgres_uid: 999
-      postgres_gid: 999
-      # API settings
-      api_docs: true
-      base_url: "https://cookbook.{{ network.domain_name }}"
-      # Security
-      allow_signup: false
-      # SSO Configuration
-      oidc_enabled: true
-      oidc_client_id: "mealie"
-      oidc_configuration_url: "{{ network.authelia_public_url }}/.well-known/openid-configuration"
-      oidc_user_group: "cookbook"
-      oidc_admin_group: "admin"
-      oidc_auto_redirect: false
-      oidc_provider_name: "Authelia"
-      oidc_signup_enabled: true
-      oidc_remember_me: true
-      # Features
-      enable_meal_planner: true
-      recipe_scraping: true
-
-# ===================================================================
-# HOME ASSISTANT - HOME AUTOMATION PLATFORM
-# ===================================================================
-homeassistant:
-  group:
-    name: homeassistant
-    gid: 8123
-  user:
-    name: homeassistant_manager
-    uid: 8123
-    groups: "{{ homeassistant.group.name }}"
-  dir: "{{ storage.base_dir }}/homeassistant"
-
-  services:
-    homeassistant:
-      enabled: true  # Enable after initial setup
-      version: "stable"
-      image: "ghcr.io/home-assistant/home-assistant:{{ homeassistant.services.homeassistant.version | default('stable') }}"
-      port: 8123
-      # OIDC/SSO Configuration (enabled when features.authentication is true)
-      # NOTE: OIDC must be configured manually in Home Assistant UI
-      # Settings → Users → Add Integration → OpenID Connect
-      oidc_issuer_url: "{{ network.authelia_public_url }}"
-      oidc_client_id: "homeassistant"
-
-    piper:
-      enabled: true  # Text-to-Speech via Wyoming protocol
-      version: "latest"
-      image: "rhasspy/wyoming-piper:{{ homeassistant.services.piper.version | default('latest') }}"
-      port: 10200
-      default_voice: "en_US-lessac-medium"
-      voices:
-        - "en_US-lessac-medium"
-        - "en_AU-southern-female"
-
-    wyoming_whisper:
-      enabled: true  # Speech-to-Text (optional, resource-intensive)
-      version: "latest"
-      image: "rhasspy/wyoming-whisper:{{ homeassistant.services.wyoming_whisper.version | default('latest') }}"
-      port: 10300
-      model: "tiny-int8"  # tiny-int8, base-int8, small-int8
-      language: "en"
-
-# ===================================================================
-# SYSTEM - SYSTEM-LEVEL OPTIMIZATIONS
-# ===================================================================
-system:
-  power_monitoring:
-    enabled: false  # Enable for 12V battery-powered setups
-    low_threshold: 11.8
-    critical_threshold: 11.0
-    enable_graceful_shutdown: false
-
-  ssd_optimization:
-    enabled: false  # Enable if running on SSD
-    trim: true
-
-# ===================================================================
-# BLUETOOTH AUDIO - AUTOMATIC DEVICE CONNECTION
-# ===================================================================
-bluetooth_audio:
-  enabled: true  # Enable for Bluetooth audio support
-
-  # Automatic connection settings
-  auto_connect: true
-  scan_interval: 10  # seconds between device scans
-
-  # Paired devices (populated by frey-bluetooth-pair script)
-  devices: []
-    # Example devices (add via frey-bluetooth-pair):
-    # - name: "Headphones"
-    #   mac_address: "AA:BB:CC:DD:EE:FF"
-    #   priority: 100  # Higher = more preferred
-    #   profiles: [a2dp_sink, hsp_hs]  # Audio output + microphone
-    # - name: "Car Radio"
-    #   mac_address: "11:22:33:44:55:66"
-    #   priority: 50
-    #   profiles: [a2dp_sink]  # Audio output only
-
-  # Audio routing configuration
-  audio_routing:
-    default_sink: "bluetooth"    # bluetooth | local | auto
-    fallback_to_local: true      # Use Pi speakers if no Bluetooth connected
-    auto_switch: true            # Automatically switch to Bluetooth when connected
-
-  # Home Assistant integration
-  homeassistant:
-    integration: true                  # Enable MQTT sensors/controls
-    tts_to_bluetooth: true             # Route Piper TTS to Bluetooth speakers
-    voice_from_bluetooth: true         # Use Bluetooth mic for Whisper STT
-    mqtt_topic: "frey/bluetooth"       # MQTT topic prefix
-
-  # Connection settings
-  connection:
-    retry_attempts: 3
-    retry_delay: 5           # seconds between retries
-    connection_timeout: 15   # seconds to wait for connection
-
-# ===================================================================
-# BACKUP - AUTOMATED BACKUP SYSTEM
-# ===================================================================
-backup:
-  enabled: false  # Enable after initial setup
-  schedule:
-    minute: "0"
-    hour: "3"  # 3 AM daily
-  retention_days: 7
-  backup_dir: "{{ storage.base_dir }}/backups"
+      force_reinit: false

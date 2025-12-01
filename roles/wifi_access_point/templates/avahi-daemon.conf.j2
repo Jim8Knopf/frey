@@ -1,0 +1,70 @@
+# ==============================================================================
+# AVAHI DAEMON CONFIGURATION - mDNS Hostname Resolution
+# ==============================================================================
+# Broadcasts hostname.local on all networks for seamless SSH access
+# Enables: ssh ansible@frey (via search domain) or ssh ansible@frey.local
+#
+# USE CASES:
+# - Phone hotspot with dynamic IPs: ssh ansible@frey.local (no IP needed)
+# - FreyHub AP: ssh ansible@frey (direct DNS or mDNS)
+# - Home WiFi: ssh ansible@frey.local (works on any network)
+# - Completely offline-capable (no external dependencies)
+# ==============================================================================
+
+[server]
+# Use system hostname (frey0 → frey0.local)
+use-ipv4=yes
+use-ipv6=no
+
+# Rate limiting for multicast traffic
+ratelimit-interval-usec=1000000
+ratelimit-burst=1000
+
+# Publish on ALL interfaces for maximum accessibility
+# - {{ network.wifi.client_interface }}: Phone hotspot, home WiFi, cafe WiFi
+# - {{ network.wifi.interface }}: FreyHub WiFi AP
+# - eth0: Ethernet (if connected)
+allow-interfaces={% if network.wifi.client_interface is defined %}{{ network.wifi.client_interface }}{% endif %}{% if network.wifi.interface is defined %},{{ network.wifi.interface }}{% endif %}{% if ansible_eth0 is defined %},eth0{% endif %}
+
+# Deny loopback (automatic, but explicit for clarity)
+deny-interfaces=lo
+
+# Enable dbus API for system integration
+enable-dbus=yes
+
+# Allow point-to-point interfaces (VPN, PPP)
+allow-point-to-point=yes
+
+# Don't conflict with other mDNS stacks
+disallow-other-stacks=no
+
+[wide-area]
+# Disable wide-area DNS-SD (not needed for local networks)
+enable-wide-area=no
+
+[publish]
+# Publish this host's addresses and services
+publish-addresses=yes
+publish-hinfo=yes
+publish-workstation=yes
+publish-domain=yes
+
+# IPv4/IPv6 publishing preferences
+publish-aaaa-on-ipv4=no
+publish-a-on-ipv6=no
+
+[reflector]
+# Enable mDNS reflector to bridge between interfaces
+# Allows phone on wlan0 to discover services advertised on wlan1 (FreyHub AP)
+# Example: Phone hotspot client can discover jellyfin.frey even though it's on wlan1
+enable-reflector=yes
+reflect-ipv=no
+
+[rlimits]
+# Resource limits for security and stability
+rlimit-core=0
+rlimit-data=4194304
+rlimit-fsize=0
+rlimit-nofile=768
+rlimit-stack=4194304
+rlimit-nproc=3
