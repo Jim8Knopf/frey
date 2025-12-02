@@ -300,8 +300,7 @@ services:
     environment:
       - DATA_SOURCE_NAME=postgresql://{{ authentik_db_user }}:{{ authentik_postgres_password }}@authentik-db:5432/{{ authentik_db_name }}?sslmode=disable
     networks:
-      - monitoring_network
-      - infrastructure_network  # Access to Authentik DB
+      backend:
     depends_on:
       - prometheus
 {%   else -%}
@@ -316,8 +315,7 @@ services:
     environment:
       - DATA_SOURCE_NAME=postgresql://immich:{{ immich_db_password }}@immich_postgres:5432/immich?sslmode=disable
     networks:
-      - monitoring_network
-      - photos_network  # Access to Immich DB
+      backend:
     depends_on:
       - prometheus
 {%   else %}
@@ -332,8 +330,7 @@ services:
     environment:
       - DATA_SOURCE_NAME=postgresql://{{ cookbook.db_user | default('mealie') }}:{{ cookbook.db_password }}@mealie-db:5432/{{ cookbook.db_name | default('mealie') }}?sslmode=disable
     networks:
-      - monitoring_network
-      - cookbook_network  # Access to Mealie DB
+      backend:
     depends_on:
       - prometheus
 {%   else %}
@@ -350,8 +347,7 @@ services:
     environment:
       - REDIS_ADDR=authentik-redis:6379
     networks:
-      - monitoring_network
-      - infrastructure_network  # Access to Authentik Redis
+      backend:
     depends_on:
       - prometheus
 {%   else -%}
@@ -375,8 +371,7 @@ services:
       - LOG_LIMIT=10000
       - SERVER_PORT=9617
     networks:
-      - monitoring_network
-      - localdns  # Access to AdGuard Home
+      backend:
     depends_on:
       - prometheus
   {%   else %}
@@ -398,8 +393,8 @@ services:
       - EXPORTER_PORT=9022
       - EXPORTER_LOG_LEVEL=INFO
     networks:
-      - monitoring_network
-      - media_network  # Access to qBittorrent
+      proxy:              # For Traefik access / discovery
+      backend:            # Access to qBittorrent and Prometheus
     depends_on:
       - prometheus
   {%   else %}

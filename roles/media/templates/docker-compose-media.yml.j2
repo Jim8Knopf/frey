@@ -37,7 +37,7 @@ services:
       restart: unless-stopped
   {% endif %}
 
-{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined and service_name not in ['mopidy', 'audiobook_bridge'] %}
+{% for service_name, service_config in media.services.items() if service_config.enabled and service_config.port is defined and service_config.port > 0 and service_name not in ['mopidy', 'audiobook_bridge'] %}
   {{ service_name }}:
     image: "{{ service_config.image }}:{{ service_config.version }}"
     container_name: {{ service_name }}
@@ -56,21 +56,6 @@ services:
       - {{ dns_server }}
 {%   endfor %}
 {% endif %}
-{# ==============================================================================
-   AUTHENTICATION NOTES
-   ==============================================================================
-
-   JELLYFIN LDAP: Configuration managed via XML file (not environment variables)
-   - The LDAP-Auth plugin does NOT support environment variables
-   - Configuration is deployed via Ansible template: jellyfin-ldap-auth.xml.j2
-   - Location: /config/plugins/configurations/LDAP-Auth.xml
-   - Requires plugin installed manually first via Jellyfin UI
-
-   AUDIOBOOKSHELF OIDC: Must be configured via web UI (not environment variables)
-   - Cannot be automated via docker-compose environment variables
-   - Manual setup: Settings → Authentication → OpenID Connect
-   - Use values from media.services.audiobookshelf.oidc_* variables
-   ============================================================================== #}
     restart: unless-stopped
 {% set service_volumes = service_config.volumes | default([]) %}
 {% if service_volumes | length > 0 %}
@@ -106,14 +91,14 @@ services:
       - "traefik.http.routers.{{service_name}}.entrypoints=web,websecure"
       - "traefik.http.routers.{{service_name}}.tls=true"
       - "traefik.http.routers.{{service_name}}.tls.certresolver=step-ca"
-      - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.port }}"
+      - "traefik.http.services.{{service_name}}.loadbalancer.server.port={{ service_config.internal_port | default(service_config.port) }}"
 {# Authelia forward auth removed - *arr services use built-in authentication for web UI + API access #}
 
 {% endfor -%}
 
   {% if media.services.mopidy.enabled | default(false) -%}
   # Mopidy - Music Player Daemon with Jellyfin integration for tag-based playback
-  mopidy:
+  mopidy1:
     image: "{{ media.services.mopidy.image | default('wernight/mopidy') }}:{{ media.services.mopidy.version | default('latest') }}"
     container_name: mopidy
     restart: unless-stopped
@@ -143,7 +128,7 @@ services:
   {% if media.services.audiobook_bridge.enabled | default(false) -%}
   # Audiobook Bridge - Local audiobook playback with progress sync to Audiobookshelf
   # Usage: docker exec audiobook-bridge python3 /app/play_book.py --book-id <ID>
-  audiobook-bridge:
+  audiobook-bridge1:
     image: "{{ media.services.audiobook_bridge.image }}:{{ media.services.audiobook_bridge.version }}"
     container_name: audiobook-bridge
     restart: unless-stopped

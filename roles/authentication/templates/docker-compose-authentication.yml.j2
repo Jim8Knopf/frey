@@ -36,9 +36,8 @@ services:
     volumes:
       - "{{ storage.appdata_dir }}/lldap:/data"
     networks:
-      - proxy
-      - localdns
-      - auth_network
+      proxy: {}
+      backend: {}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -81,9 +80,8 @@ services:
       - "{{ storage.appdata_dir }}/authelia/configuration.yml:/config/configuration.yml:ro"
       - "{{ storage.appdata_dir }}/authelia:/config"
     networks:
-      - proxy
-      - localdns
-      - auth_network
+      proxy: {}
+      backend: {}
     depends_on:
       lldap:
         condition: service_healthy
@@ -108,12 +106,9 @@ services:
       start_period: 30s
 {% endif %}
 
-# Network definitions
+# Network definitions - simplified architecture
 networks:
   proxy:
     external: true
-  localdns:
+  backend:
     external: true
-  auth_network:
-    external: true
-    name: auth_network

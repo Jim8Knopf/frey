@@ -56,7 +56,7 @@ services:
       - "traefik.http.routers.portainer.tls.certresolver=step-ca"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
-
+{% if infrastructure.services.authentik.enabled | default(false) and authentik_postgres_password is defined %}
   authentik-server:
     image: ghcr.io/goauthentik/server:{{ infrastructure.services.authentik.version | default('latest') }}
     container_name: authentik_server
