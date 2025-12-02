@@ -18,10 +18,16 @@
 # ==============================================================================
 
 - name: Setup photo management stack user and directories
-  include_tasks: "../playbooks/templates/create_user.yml"
+  include_tasks: "{{ playbook_dir }}/templates/create_user.yml"
   vars:
-    stack: "immich"
     folders: [library, backups]
+    create_user:
+      stack_name: "immich"
+      user: "{{ immich.user }}"
+      group: "{{ immich.group }}"
+      dirs:
+        base: "{{ [storage.stacks ~ '/immich'] + (folders | default([]) | map('regex_replace', '^(.*)$', immich.dir ~ '/\\1') | list) }}"
+        appdata: "{{ folders | default([]) | map('regex_replace', '^(.*)$', storage.appdata_dir ~ '/\\1') | list }}"
 
 - name: Create additional Immich directories
   ansible.builtin.file:

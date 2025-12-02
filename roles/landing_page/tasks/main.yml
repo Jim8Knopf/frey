@@ -1,8 +1,14 @@
 ---
 - name: Ensure landing page system user exists
-  include_tasks: "../playbooks/templates/create_user.yml"
+  include_tasks: "{{ playbook_dir }}/templates/create_user.yml"
   vars:
-    stack: "landing_page"
+    create_user:
+      stack_name: "landing_page"
+      user: "{{ landing_page.user }}"
+      group: "{{ landing_page.group }}"
+      dirs:
+        base:
+          - "{{ storage.stacks }}/landing_page"
 
 - name: Ensure landing page directories exist
   ansible.builtin.file:

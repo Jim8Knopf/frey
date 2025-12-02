@@ -1,10 +1,15 @@
 ---
 - name: Setup intfrasructure stack user
-  include_tasks: "templates/create_user.yml"
+  include_tasks: "{{ playbook_dir }}/templates/create_user.yml"
   vars:
-    stack: "infrastructure"
     folders: [traefik, traefik/certificates, portainer, authentik, authentik/database, authentik/redis, authentik/media, authentik/certs, authentik/custom-templates, authentik/blueprints, step-ca]
-    checkVar: [infrastructure, storage.base_dir, infrastructure.user.name, infrastructure.group.name, storage.stacks]
+    create_user:
+      stack_name: "infrastructure"
+      user: "{{ infrastructure.user }}"
+      group: "{{ infrastructure.group }}"
+      dirs:
+        base: "{{ [storage.stacks ~ '/infrastructure'] + (folders | default([]) | map('regex_replace', '^(.*)$', infrastructure.dir ~ '/\\1') | list) }}"
+        appdata: "{{ folders | default([]) | map('regex_replace', '^(.*)$', storage.appdata_dir ~ '/\\1') | list }}"
 
 - name: Fix Step CA directory ownership for container user
   ansible.builtin.file:

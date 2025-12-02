@@ -1,10 +1,15 @@
 ---
 - name: Setup media stack user
-  include_tasks: "templates/create_user.yml"
+  include_tasks: "{{ playbook_dir }}/templates/create_user.yml"
   vars:
-    stack: "media"  
-    folders: [movies, tv, music, audiobooks, podcasts,audiobook-bridge]
-    checkVar: [media, storage.base_dir, media.user.name]
+    folders: [movies, tv, music, audiobooks, podcasts, audiobook-bridge]
+    create_user:
+      stack_name: "media"
+      user: "{{ media.user }}"
+      group: "{{ media.group }}"
+      dirs:
+        base: "{{ [storage.stacks ~ '/media'] + (folders | default([]) | map('regex_replace', '^(.*)$', media.dir ~ '/\\1') | list) }}"
+        appdata: "{{ folders | default([]) | map('regex_replace', '^(.*)$', storage.appdata_dir ~ '/\\1') | list }}"
 
 
 - name: Pre-pull all enabled media stack images

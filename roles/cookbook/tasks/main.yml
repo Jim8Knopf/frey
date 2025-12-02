@@ -17,10 +17,16 @@
 # ==============================================================================
 
 - name: Setup cookbook stack user and directories
-  include_tasks: "../playbooks/templates/create_user.yml"
+  include_tasks: "{{ playbook_dir }}/templates/create_user.yml"
   vars:
-    stack: "cookbook"
     folders: []
+    create_user:
+      stack_name: "cookbook"
+      user: "{{ cookbook.user }}"
+      group: "{{ cookbook.group }}"
+      dirs:
+        base: "{{ [storage.stacks ~ '/cookbook'] + (folders | default([]) | map('regex_replace', '^(.*)$', cookbook.dir ~ '/\\1') | list) }}"
+        appdata: "{{ folders | default([]) | map('regex_replace', '^(.*)$', storage.appdata_dir ~ '/\\1') | list }}"
 
 - name: Create Mealie data directories
   ansible.builtin.file:

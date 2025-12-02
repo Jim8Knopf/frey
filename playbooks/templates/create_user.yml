@@ -1,42 +1,44 @@
 ---
-- name: Create the {{stack}} group
+# Variables (defaults):
+# create_user:
+#   stack_name: "{{ create_user.user.name }}"  # Label for task names
+#   user:                                      # Required: name; Optional: uid, groups
+#   group:                                     # Required: name; Optional: gid
+#   dirs:
+#     base: []                                 # Directories to create (e.g., stacks, base data)
+#     appdata: []                              # Additional data directories to create
+#   default_mode: '0755'                       # Directory mode for created paths
+
+- name: Create the {{ create_user.stack_name | default(create_user.user.name) }} group
   ansible.builtin.group:
-    name: "{{ vars[stack].group.name }}"
-    gid: "{{ vars[stack].group.gid }}"
+    name: "{{ create_user.group.name }}"
+    gid: "{{ create_user.group.gid | default(omit) }}"
     state: present
 
-- name: Create the {{stack}}_management user
+- name: Create the {{ create_user.stack_name | default(create_user.user.name) }} user
   ansible.builtin.user:
-    name: "{{ vars[stack].user.name }}"
-    uid: "{{ vars[stack].user.uid }}"
-    group: "{{ vars[stack].group.name }}"
+    name: "{{ create_user.user.name }}"
+    uid: "{{ create_user.user.uid | default(omit) }}"
+    group: "{{ create_user.group.name }}"
+    groups: "{{ create_user.user.groups | default(omit) }}"
     state: present
 
-
-- name: Create docker stacks directory
+- name: Create {{ create_user.stack_name | default(create_user.user.name) }} base directories
   ansible.builtin.file:
-    path: "{{ storage.stacks }}/{{ stack }}"
+    path: "{{ item }}"
     state: directory
-    owner: "{{ vars[stack].user.name }}"
-    group: "{{ vars[stack].group.name }}"
-    mode: '0755'
+    owner: "{{ create_user.user.uid | default(create_user.user.name) }}"
+    group: "{{ create_user.user.groups | default(create_user.group.name) }}"
+    mode: "{{ create_user.default_mode | default('0755') }}"
+  loop: "{{ create_user.dirs.base | default([]) }}"
+  when: (create_user.dirs.base | default([])) | length > 0
 
-- name: Create {{stack}} subdirectories in base dir
+- name: Create {{ create_user.stack_name | default(create_user.user.name) }} appdata directories
   ansible.builtin.file:
-    path: "{{ vars[stack].dir }}/{{ item }}"
+    path: "{{ item }}"
     state: directory
-    owner: "{{ vars[stack].user.uid }}"
-    group: "{{ vars[stack].user.groups }}"
-    mode: '0755'
-  loop: "{{ folders }}"
-  when: folders is defined
-
-- name: Create {{stack}} subdirectories in appdata
-  ansible.builtin.file:
-    path: "{{ storage.appdata_dir }}/{{ item }}"
-    state: directory
-    owner: "{{ vars[stack].user.name }}"
-    group: "{{ vars[stack].group.name }}"
-    mode: '0755'
-  loop: "{{ folders }}"
-  when: folders is defined
+    owner: "{{ create_user.user.name }}"
+    group: "{{ create_user.group.name }}"
+    mode: "{{ create_user.default_mode | default('0755') }}"
+  loop: "{{ create_user.dirs.appdata | default([]) }}"
+  when: (create_user.dirs.appdata | default([])) | length > 0

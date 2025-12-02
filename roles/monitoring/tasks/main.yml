@@ -1,9 +1,15 @@
 ---
 - name: Setup media stack user
-  include_tasks: "templates/create_user.yml"
+  include_tasks: "{{ playbook_dir }}/templates/create_user.yml"
   vars:
-    stack: "monitoring" 
     folders: [logs, prometheus, grafana, loki, promtail, uptime-kuma, speedtest]
+    create_user:
+      stack_name: "monitoring"
+      user: "{{ monitoring.user }}"
+      group: "{{ monitoring.group }}"
+      dirs:
+        base: "{{ [storage.stacks ~ '/monitoring'] + (folders | default([]) | map('regex_replace', '^(.*)$', monitoring.dir ~ '/\\1') | list) }}"
+        appdata: "{{ folders | default([]) | map('regex_replace', '^(.*)$', storage.appdata_dir ~ '/\\1') | list }}"
 
 - name: Ensure logs directory exists for promtail
   ansible.builtin.file:
