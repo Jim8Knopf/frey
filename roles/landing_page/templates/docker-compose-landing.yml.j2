@@ -7,7 +7,7 @@
 networks:
   proxy:
     external: true
-  localdns:
+  backend:
     external: true
 
 services:
@@ -28,7 +28,7 @@ services:
 {% endfor %}
     networks:
       proxy: {}
-      localdns: {}
+      backend: {}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"

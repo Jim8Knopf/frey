@@ -10,8 +10,7 @@ services:
     restart: unless-stopped
     networks:
       - proxy
-      - localdns
-      - automation_network
+      - backend
     ports:
       - "{{ automation.services.ollama.port }}:11434"
     labels:
@@ -36,8 +35,7 @@ services:
     restart: unless-stopped
     networks:
       - proxy
-      - localdns
-      - automation_network
+      - backend
     ports:
       - "{{ automation.services.openwebui.port }}:8080"
     labels:
@@ -75,8 +73,7 @@ services:
       retries: 3
     networks:
       - proxy
-      - localdns
-      - automation_network
+      - backend
     ports:
       - "{{ automation.services.n8n.port }}:5678"
     labels:
@@ -127,8 +124,7 @@ services:
     privileged: true  # Required for USB device access (Zigbee, Z-Wave, etc.)
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      automation_network:  # Automation services network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -153,7 +149,7 @@ services:
       --voice {{ homeassistant.services.piper.default_voice | default('en_US-lessac-medium') }}
       --download-dir /data
     networks:
-      automation_network:  # Only accessible from automation network
+      backend:  # Only accessible from backend network
     labels:
       - "traefik.enable=false"  # Internal service only
   {% endif %}
@@ -172,7 +168,7 @@ services:
       --model {{ homeassistant.services.wyoming_whisper.model | default('tiny-int8') }}
       --language {{ homeassistant.services.wyoming_whisper.language | default('en') }}
     networks:
-      automation_network:  # Only accessible from automation network
+      backend:  # Only accessible from backend network
     labels:
       - "traefik.enable=false"  # Internal service only
   {% endif %}
@@ -181,10 +177,5 @@ services:
 networks:
   proxy:
     external: true
-  localdns:
+  backend:
     external: true
-  automation_network:
-    name: automation_network
-    ipam:
-      config:
-        - subnet: 10.20.2.0/24

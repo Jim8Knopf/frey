@@ -95,35 +95,6 @@
     backup: yes
   register: compose_template_result
 
-- name: Ensure media Docker network exists
-  vars:
-    media_network_cfg: "{{ media.network | default({}) }}"
-    media_network_ipam: >-
-      {{
-        (
-          [
-            {
-              'subnet': media_network_cfg.subnet
-            }
-            | combine(
-                (
-                  {'gateway': media_network_cfg.gateway}
-                  if (media_network_cfg.gateway is defined)
-                  else {}
-                ),
-                recursive=True
-              )
-          ]
-        )
-        if (media_network_cfg.subnet is defined)
-        else []
-      }}
-  community.docker.docker_network:
-    name: "{{ media_network_cfg.name | default('media_network') }}"
-    driver: "{{ media_network_cfg.driver | default('bridge') }}"
-    state: present
-    ipam_config: "{{ media_network_ipam | default(omit) }}"
-
 - name: Ensure downloads directory exists with proper permissions
   ansible.builtin.file:
     path: "{{ media.downloads }}"

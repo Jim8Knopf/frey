@@ -14,8 +14,7 @@ services:
       - DOCKGE_ENABLE_CONSOLE=true
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -51,8 +50,7 @@ services:
       - '--web.enable-admin-api'
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -84,8 +82,7 @@ services:
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -116,8 +113,7 @@ services:
       - /dev/disk/:/dev/disk:ro
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -168,8 +164,7 @@ services:
 {% endif %}
     networks:
       proxy:              # For Traefik access (resolves auth.frey via Traefik's network alias)
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -194,8 +189,7 @@ services:
       - "{{ storage.appdata_dir }}/loki:/loki"
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -222,8 +216,7 @@ services:
       - "{{ storage.appdata_dir }}/promtail:/etc/promtail"
     command: -config.file=/etc/promtail/config.yml
     networks:
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
   {% endif %}
 
   {% if monitoring['uptime-kuma'].enabled | default(false) -%}
@@ -237,8 +230,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -266,8 +258,7 @@ services:
       - WATCHTOWER_INCLUDE_RESTARTING=true
     command: --schedule "0 0 2 * * *"  # 2 AM daily
     networks:
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
   {% endif %}
 
   {% if monitoring['speedtest-tracker'].enabled | default(false) -%}
@@ -285,8 +276,7 @@ services:
     restart: unless-stopped
     networks:
       proxy:              # For Traefik access
-      localdns:          # For DNS resolution
-      monitoring_network: # Service-specific network
+      backend:            # Internal service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -310,8 +300,7 @@ services:
     environment:
       - DATA_SOURCE_NAME=postgresql://{{ authentik_db_user }}:{{ authentik_postgres_password }}@authentik-db:5432/{{ authentik_db_name }}?sslmode=disable
     networks:
-      - monitoring_network
-      - infrastructure_network  # Access to Authentik DB
+      backend:
     depends_on:
       - prometheus
 {%   else -%}
@@ -326,8 +315,7 @@ services:
     environment:
       - DATA_SOURCE_NAME=postgresql://immich:{{ immich_db_password }}@immich_postgres:5432/immich?sslmode=disable
     networks:
-      - monitoring_network
-      - photos_network  # Access to Immich DB
+      backend:
     depends_on:
       - prometheus
 {%   else %}
@@ -342,8 +330,7 @@ services:
     environment:
       - DATA_SOURCE_NAME=postgresql://{{ cookbook.db_user | default('mealie') }}:{{ cookbook.db_password }}@mealie-db:5432/{{ cookbook.db_name | default('mealie') }}?sslmode=disable
     networks:
-      - monitoring_network
-      - cookbook_network  # Access to Mealie DB
+      backend:
     depends_on:
       - prometheus
 {%   else %}
@@ -360,8 +347,7 @@ services:
     environment:
       - REDIS_ADDR=authentik-redis:6379
     networks:
-      - monitoring_network
-      - infrastructure_network  # Access to Authentik Redis
+      backend:
     depends_on:
       - prometheus
 {%   else -%}
@@ -385,8 +371,7 @@ services:
       - LOG_LIMIT=10000
       - SERVER_PORT=9617
     networks:
-      - monitoring_network
-      - localdns  # Access to AdGuard Home
+      backend:
     depends_on:
       - prometheus
   {%   else %}
@@ -408,8 +393,8 @@ services:
       - EXPORTER_PORT=9022
       - EXPORTER_LOG_LEVEL=INFO
     networks:
-      - monitoring_network
-      - media_network  # Access to qBittorrent
+      proxy:              # For Traefik access / discovery
+      backend:            # Access to qBittorrent and Prometheus
     depends_on:
       - prometheus
   {%   else %}
@@ -418,36 +403,8 @@ services:
   {% endif %}
 
 networks:
-  # Traefik routing - all web-accessible services join this
+  # Simplified network architecture
   proxy:
     external: true
-  # DNS resolution between containers
-  localdns:
+  backend:
     external: true
-  # Infrastructure network for DB/Redis access
-  infrastructure_network:
-    external: true
-  # Photos network for Immich DB access
-  photos_network:
-    external: true
-  # Cookbook network for Mealie DB access
-  cookbook_network:
-    external: true
-  # Media network for qBittorrent access
-  media_network:
-    external: true
-
-  # Service-specific network for monitoring
-  monitoring_network:
-    name: monitoring_network
-    driver: bridge
-    enable_ipv6: false
-    internal: false
-    attachable: true
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.20.5.0/24  # Monitoring services subnet
-    labels:
-      com.docker.compose.network: monitoring_network
-      com.docker.compose.project: monitoring

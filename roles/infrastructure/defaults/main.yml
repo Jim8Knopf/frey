@@ -5,25 +5,6 @@
 
 deploy_infrastructure: true
 
-# Network Architecture (as defined in roles/wifi_access_point/network-architecture-guide.md)
-infrastructure_networks:
-  # Shared networks (created by this role, used by others)
-  proxy:
-    name: proxy
-    description: "Main network for Traefik routing - all web-accessible services join this"
-    external: true    # Other services reference this network
-
-  localdns:
-    name: localdns
-    description: "Network for DNS resolution between containers"
-    external: true    # Other services reference this network
-
-  # Role-specific network
-  infrastructure_network:
-    name: infrastructure_network
-    subnet: "10.20.3.0/24"  # As specified in architecture guide
-    description: "Network for infrastructure services"
-
 # ==============================================================================
 # INFRASTRUCTURE STACK CONFIGURATION
 # ==============================================================================

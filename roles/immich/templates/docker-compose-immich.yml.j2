@@ -54,10 +54,8 @@ services:
       - database
     restart: unless-stopped
     networks:
-      - photos_network
-      - infrastructure_network
       - proxy
-      - localdns
+      - backend
     labels:
       # Traefik routing configuration
       - "traefik.enable=true"
@@ -92,7 +90,7 @@ services:
       - .env
     restart: unless-stopped
     networks:
-      - photos_network
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import requests; requests.get(\"http://localhost:3003/ping\", timeout=10)'"]
       interval: 30s
@@ -110,7 +108,7 @@ services:
     image: docker.io/valkey/valkey:8-alpine
     restart: unless-stopped
     networks:
-      - photos_network
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "valkey-cli ping || exit 1"]
       interval: 30s
@@ -135,7 +133,7 @@ services:
       - "{{ immich.services.immich.db_data_location }}:/var/lib/postgresql/data"
     restart: unless-stopped
     networks:
-      - photos_network
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready --dbname='${DB_DATABASE_NAME}' --username='${DB_USERNAME}' || exit 1"]
       interval: 30s
@@ -196,16 +194,10 @@ services:
 
 
 # ==============================================================================
-# NETWORKS
-# ==============================================================================
+# NETWORKS - Simplified Architecture
 # ==============================================================================
 networks:
-  photos_network:
-    external: true
-    driver: bridge
-  infrastructure_network:
-    external: true
   proxy:
     external: true
-  localdns:
+  backend:
     external: true
