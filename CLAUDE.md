@@ -231,6 +231,18 @@ All roles use shared task: `include_tasks: "templates/create_user.yml"` with var
 - `stack`: Stack name (media, infrastructure, etc.)
 - `folders`: List of subdirectories to create
 - `checkVar`: List of required variables to verify
+- `prepull_images` (optional): List of Docker images to pre-pull asynchronously; jobs are polled after kickoff and use `force_source: false` to skip images already present.
+
+Example usage when including the shared task:
+
+```yaml
+- name: Setup <stack> user and pre-pull images
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "<stack>"
+    folders: [subdir_one, subdir_two]
+    prepull_images: ["my/image:tag", "ghcr.io/example/app:latest"]
+```
 
 **Service Stack Deployment Pattern**:
 1. Create dedicated user/group for stack

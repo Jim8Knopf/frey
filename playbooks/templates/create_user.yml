@@ -40,3 +40,31 @@
     mode: '0755'
   loop: "{{ folders }}"
   when: folders is defined
+
+- name: Pre-pull Docker images for the {{ stack }} stack
+  when: prepull_images | default([]) | length > 0
+  block:
+    - name: Start async Docker image pre-pulls
+      community.docker.docker_image:
+        name: "{{ item }}"
+        source: pull
+        state: present
+        force_source: false
+      async: 3600
+      poll: 0
+      loop: "{{ prepull_images }}"
+      loop_control:
+        label: "{{ item }}"
+      register: prepull_image_jobs
+
+    - name: Wait for Docker image pre-pulls to finish
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      register: prepull_image_status
+      until: prepull_image_status.finished
+      retries: 120
+      delay: 5
+      loop: "{{ prepull_image_jobs.results | selectattr('ansible_job_id', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: prepull_image_jobs.results | selectattr('ansible_job_id', 'defined') | length > 0
