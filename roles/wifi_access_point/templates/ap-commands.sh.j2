@@ -15,16 +15,18 @@ Frey Access Point Management
 Usage: frey ap <command>
 
 Commands:
-  status      Show AP health and connected clients
-  ensure      Ensure AP interface exists
-  restart     Restart AP services (hostapd, dnsmasq)
-  clients     Show connected clients
+  status            Show AP health and connected clients
+  ensure            Ensure AP interface exists
+  restart           Restart AP services (hostapd, dnsmasq)
+  clients           Show connected clients
+  clients --watch   Monitor clients in real-time (refreshes every 2s)
 
 Examples:
   frey ap status
   frey ap ensure
   frey ap restart
   frey ap clients
+  frey ap clients --watch    # Real-time monitoring
 
 Notes:
   - Access Point runs on {{ network.wifi.interface }}
@@ -63,23 +65,55 @@ case "$1" in
             exit 1
         fi
 
-        echo "Connected Clients"
-        echo "========================================"
+        # Check for --watch flag
+        if [ "$2" = "--watch" ]; then
+            # Watch mode - refresh every 2 seconds
+            while true; do
+                clear
+                echo "FreyHub AP - Connected Clients (Live)"
+                echo "========================================"
+                echo "Press Ctrl+C to exit"
+                echo ""
+                echo "Last updated: $(date '+%Y-%m-%d %H:%M:%S')"
+                echo ""
 
-        if is_hostapd_responding "$AP_INTERFACE"; then
-            CLIENT_COUNT=$(count_hostapd_stations "$AP_INTERFACE")
-            log_info "Connected clients: $CLIENT_COUNT"
-            echo ""
+                if is_hostapd_responding "$AP_INTERFACE"; then
+                    CLIENT_COUNT=$(count_hostapd_stations "$AP_INTERFACE")
+                    echo "Connected clients: $CLIENT_COUNT"
+                    echo ""
 
-            if [ "$CLIENT_COUNT" -gt 0 ]; then
-                get_hostapd_stations "$AP_INTERFACE"
-            else
-                log_info "No clients currently connected"
-            fi
+                    if [ "$CLIENT_COUNT" -gt 0 ]; then
+                        get_hostapd_stations "$AP_INTERFACE"
+                    else
+                        echo "No clients currently connected"
+                    fi
+                else
+                    echo "ERROR: hostapd is not responding"
+                    echo "Try: frey ap restart"
+                fi
+
+                sleep 2
+            done
         else
-            log_error "hostapd is not responding"
-            log_info "Try: frey ap restart"
-            exit 1
+            # Normal mode - single output
+            echo "Connected Clients"
+            echo "========================================"
+
+            if is_hostapd_responding "$AP_INTERFACE"; then
+                CLIENT_COUNT=$(count_hostapd_stations "$AP_INTERFACE")
+                log_info "Connected clients: $CLIENT_COUNT"
+                echo ""
+
+                if [ "$CLIENT_COUNT" -gt 0 ]; then
+                    get_hostapd_stations "$AP_INTERFACE"
+                else
+                    log_info "No clients currently connected"
+                fi
+            else
+                log_error "hostapd is not responding"
+                log_info "Try: frey ap restart"
+                exit 1
+            fi
         fi
         ;;
     --help|-h|help)

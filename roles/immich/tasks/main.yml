@@ -17,6 +17,29 @@
 # - Hardware acceleration on Pi 5
 # ==============================================================================
 
+# ==============================================================================
+# PHASE 1: START IMAGE DOWNLOADS IN BACKGROUND
+# ==============================================================================
+# Kickoff downloads of large images (especially 4GB ML model) immediately.
+# These run in the background while we do setup work below.
+
+- name: Start background image pulls for Immich stack
+  include_tasks: "../playbooks/templates/async_prepull_start.yml"
+  vars:
+    stack: "immich"
+    image_list:
+      - "ghcr.io/immich-app/immich-server:release"
+      - "ghcr.io/immich-app/immich-machine-learning:release"  # 4GB+ ML model
+      - "docker.io/valkey/valkey:8"
+      - "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0"
+    prepull_timeout: 600  # Allow 10 minutes for large ML image
+  tags:
+    - images
+
+# ==============================================================================
+# PHASE 2: SETUP WORK (RUNS WHILE IMAGES DOWNLOAD)
+# ==============================================================================
+
 - name: Setup photo management stack user and directories
   include_tasks: "../playbooks/templates/create_user.yml"
   vars:
@@ -37,33 +60,6 @@
   tags:
     - directories
 
-- name: Pre-pull Immich images
-  community.docker.docker_image:
-    name: "{{ item }}"
-    source: pull
-    state: present
-    timeout: 300
-  loop:
-    - "ghcr.io/immich-app/immich-server:release"
-    - "ghcr.io/immich-app/immich-machine-learning:release"
-    - "docker.io/valkey/valkey:8"
-    - "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0"
-  register: image_pull_results
-  retries: 2
-  delay: 10
-  failed_when: false
-  tags:
-    - images
-
-- name: Set failed pulls fact
-  ansible.builtin.set_fact:
-    failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item') | list }}"
-
-- name: Report failed image pulls
-  ansible.builtin.debug:
-    msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
-  when: failed_pulls | length > 0
-
 - name: Deploy .env file for Immich
   ansible.builtin.template:
     src: .env.j2
@@ -74,72 +70,46 @@
   tags:
     - config
 
-- name: Deploy Immich docker-compose file
-  ansible.builtin.template:
-    src: docker-compose-immich.yml.j2
-    dest: "{{ storage.stacks }}/immich/docker-compose.yml"
-    owner: "{{ immich.user.name }}"
-    group: "{{ immich.group.name }}"
-    mode: '0644'
-    backup: yes
-  register: compose_template_result
+# ==============================================================================
+# PHASE 3: WAIT FOR IMAGE DOWNLOADS TO COMPLETE
+# ==============================================================================
+# Now wait for the background downloads started in Phase 1 to finish.
+
+- name: Wait for Immich stack images to finish downloading
+  include_tasks: "../playbooks/templates/async_prepull_wait.yml"
+  vars:
+    stack: "immich"
+    prepull_retries: 120  # 120 * 5s = 10 minutes for large ML image
+    prepull_delay: 5
   tags:
-    - config
+    - images
+
+# ==============================================================================
+# PHASE 4: DEPLOY STACK
+# ==============================================================================
 
 - name: Ensure required Docker networks for Immich exist
-  community.docker.docker_network:
-    name: "{{ item }}"
-    state: present
-    driver: bridge
-  loop:
-    - proxy     # For Traefik routing (created by infrastructure role, ensured here)
-    - backend   # Internal service communication (created by infrastructure role, ensured here)
+  include_tasks: "../playbooks/templates/create_networks.yml"
+  vars:
+    networks: [proxy, backend]
   tags:
     - config
 
-- name: Validate Docker Compose file syntax
-  ansible.builtin.command:
-    cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" config --quiet
-  register: compose_validation
-  failed_when: compose_validation.rc != 0
-  changed_when: false
+- name: Deploy Immich stack
+  include_tasks: "../playbooks/templates/deploy_compose_stack.yml"
+  vars:
+    stack: "immich"
+    compose_template: "docker-compose-immich.yml.j2"
+    error_handling: "rescue"
+    deploy_timeout: 300
+    deploy_retries: 2
   tags:
-    - config
+    - deploy
 
-- name: Start Immich stack with graceful error handling
-  block:
-    - name: Start Immich stack containers using compose
-      community.docker.docker_compose_v2:
-        project_src: "{{ storage.stacks }}/immich"
-        state: present
-        remove_orphans: true
-        timeout: 300
-      register: compose_result
-      retries: 2
-      delay: 30
-
-  rescue:
-    - name: Handle compose failure - gather logs
-      ansible.builtin.command:
-        cmd: docker compose -f "{{ storage.stacks }}/immich/docker-compose.yml" logs --tail=50
-      register: compose_logs
-      failed_when: false
-
-    - name: Display compose error details
-      ansible.builtin.debug:
-        msg: |
-          Immich stack deployment failed. Recent logs:
-          {{ compose_logs.stdout_lines[-20:] | join('\n') }}
-
-    - name: Fail deployment with helpful message
-      ansible.builtin.fail:
-        msg: |
-          Immich stack deployment failed. Check the logs above for details.
-          Common issues:
-          - Database initialization (wait 2-3 minutes on first start)
-          - Port {{ immich.services.immich.port }} already in use
-          - Insufficient disk space or memory
-          - Image pull failures (check internet connection)
+# ==============================================================================
+# PHASE 5: HEALTH CHECK WITH DETAILED DIAGNOSTICS
+# ==============================================================================
+# Immich requires custom health check with detailed diagnostics on failure
 
 - name: Wait for Immich server to be ready and collect diagnostics on failure
   block:
@@ -233,7 +203,7 @@
          - postgres: Database with VectorChord
 
       🔧 MANAGEMENT:
-         - Logs: docker compose -C {{ storage.stacks }}/immich logs -f
-         - Restart: docker compose -C {{ storage.stacks }}/immich restart
-         - Update: docker compose -C {{ storage.stacks }}/immich pull && docker compose -C {{ storage.stacks }}/immich up -d
+         - Logs: docker compose -f {{ storage.stacks }}/immich/docker-compose.yml logs -f
+         - Restart: docker compose -f {{ storage.stacks }}/immich/docker-compose.yml restart
+         - Update: docker compose -f {{ storage.stacks }}/immich/docker-compose.yml pull && docker compose -f {{ storage.stacks }}/immich/docker-compose.yml up -d
   when: immich_health.status == 200

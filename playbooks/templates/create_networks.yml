@@ -1,0 +1,48 @@
+---
+# create_networks.yml - Create Docker Networks
+#
+# This template creates Docker networks with bridge driver.
+#
+# Parameters:
+#   networks (required): List of network names OR list of dicts with name/driver/ipam_config
+#   driver (optional): Default driver (default: "bridge")
+#
+# Usage with simple list:
+#   - include_tasks: create_networks.yml
+#     vars:
+#       networks: [proxy, backend, localdns]
+#
+# Usage with detailed configuration:
+#   - include_tasks: create_networks.yml
+#     vars:
+#       networks:
+#         - name: proxy
+#           driver: bridge
+#         - name: media_network
+#           driver: bridge
+#           ipam_config:
+#             - subnet: 10.20.0.0/24
+#               gateway: 10.20.0.1
+
+- name: Create Docker networks from simple list
+  community.docker.docker_network:
+    name: "{{ item }}"
+    state: present
+    driver: "{{ driver | default('bridge') }}"
+  loop: "{{ networks }}"
+  when:
+    - networks is defined
+    - networks | length > 0
+    - networks[0] is string
+
+- name: Create Docker networks from detailed list
+  community.docker.docker_network:
+    name: "{{ item.name }}"
+    state: present
+    driver: "{{ item.driver | default(driver) | default('bridge') }}"
+    ipam_config: "{{ item.ipam_config | default(omit) }}"
+  loop: "{{ networks }}"
+  when:
+    - networks is defined
+    - networks | length > 0
+    - networks[0] is mapping

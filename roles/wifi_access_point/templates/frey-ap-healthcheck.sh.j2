@@ -39,6 +39,32 @@ if ! is_hostapd_responding "$AP_INTERFACE"; then
     FAILED=$((FAILED + 1))
 fi
 
+# ==============================================================================
+# Service Restart Monitoring (Stability)
+# ==============================================================================
+# Check for frequent service restarts which indicate instability
+
+# Check hostapd restarts in last 10 minutes
+HOSTAPD_RESTARTS=$(journalctl -u hostapd --since "10 minutes ago" | grep -c "Started\|Starting" || echo 0)
+if [ "$HOSTAPD_RESTARTS" -gt 2 ]; then
+    log_to_system "$LOG_TAG" "WARNING: hostapd restarted $HOSTAPD_RESTARTS times in 10 minutes - possible instability"
+    FAILED=$((FAILED + 1))
+fi
+
+# Check dnsmasq restarts in last 10 minutes
+DNSMASQ_RESTARTS=$(journalctl -u dnsmasq --since "10 minutes ago" | grep -c "Started\|Starting" || echo 0)
+if [ "$DNSMASQ_RESTARTS" -gt 2 ]; then
+    log_to_system "$LOG_TAG" "WARNING: dnsmasq restarted $DNSMASQ_RESTARTS times in 10 minutes - possible instability"
+    FAILED=$((FAILED + 1))
+fi
+
+# Check dhcpcd restarts in last 10 minutes
+DHCPCD_RESTARTS=$(journalctl -u dhcpcd --since "10 minutes ago" | grep -c "Started\|Starting" || echo 0)
+if [ "$DHCPCD_RESTARTS" -gt 2 ]; then
+    log_to_system "$LOG_TAG" "WARNING: dhcpcd restarted $DHCPCD_RESTARTS times in 10 minutes - possible instability"
+    FAILED=$((FAILED + 1))
+fi
+
 if [ "$FAILED" -eq 0 ]; then
     log_to_system "$LOG_TAG" "Health check PASSED - all services operational"
 else

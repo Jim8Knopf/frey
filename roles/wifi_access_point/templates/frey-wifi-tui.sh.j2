@@ -89,6 +89,24 @@ EOF
     sleep 2
 fi
 
+# ==============================================================================
+# Load Known Networks for Password Prefill
+# ==============================================================================
+# Loads known networks from /etc/frey/known-networks.conf into associative array
+# Format: SSID|PASSWORD|PRIORITY
+
+declare -A KNOWN_PASSWORDS
+KNOWN_NETWORKS_FILE="/etc/frey/known-networks.conf"
+
+if [ -f "$KNOWN_NETWORKS_FILE" ]; then
+    while IFS='|' read -r ssid password priority; do
+        # Skip comments and empty lines
+        [[ "$ssid" =~ ^#.*$ || -z "$ssid" ]] && continue
+        # Store password for this SSID (even if empty for open networks)
+        KNOWN_PASSWORDS["$ssid"]="$password"
+    done < "$KNOWN_NETWORKS_FILE"
+fi
+
 # Main menu loop
 while true; do
     # Show main menu
@@ -169,16 +187,25 @@ while true; do
             selected_ssid=$(echo "$network_info" | cut -d'|' -f1)
             selected_security=$(echo "$network_info" | cut -d'|' -f2)
 
-            # Get password if needed
+            # Get password (check known networks first)
             password=""
             if [ "$selected_security" != "Open" ]; then
-                password=$(dialog --clear --title "WiFi Password" \
-                    --insecure --passwordbox "Enter password for:\n$selected_ssid" 10 60 \
-                    2>&1 >/dev/tty)
+                # Check if this network is known
+                if [[ -n "${KNOWN_PASSWORDS[$selected_ssid]}" ]]; then
+                    # Use saved password from known networks
+                    password="${KNOWN_PASSWORDS[$selected_ssid]}"
+                    dialog --title "Connecting" --infobox "Using saved password for:\n$selected_ssid\n\nConnecting..." 8 50
+                    sleep 1
+                else
+                    # Unknown network - prompt for password
+                    password=$(dialog --clear --title "WiFi Password" \
+                        --insecure --passwordbox "Enter password for:\n$selected_ssid\n\n(Will be saved for future use)" 12 60 \
+                        2>&1 >/dev/tty)
 
-                if [ -z "$password" ]; then
-                    dialog --title "Cancelled" --msgbox "Connection cancelled." 6 40
-                    continue
+                    if [ -z "$password" ]; then
+                        dialog --title "Cancelled" --msgbox "Connection cancelled." 6 40
+                        continue
+                    fi
                 fi
             fi
 
@@ -229,6 +256,17 @@ while true; do
 
                 if [ -n "$ip_addr" ]; then
                     dialog --title "Success!" --msgbox "Connected to: $selected_ssid\n\nIP Address: $ip_addr\n\nInternet passthrough will be enabled automatically by the NAT Manager." 12 60
+
+                    # Offer to save password for unknown networks
+                    if [[ -z "${KNOWN_PASSWORDS[$selected_ssid]}" && -n "$password" ]]; then
+                        if dialog --title "Save Network" --yesno "Would you like to save this network and password?\n\nNetwork: $selected_ssid\n\nSaved networks will:\n- Auto-connect via roaming daemon\n- Skip password prompt in future" 12 60; then
+                            # Append to known networks file with priority 50 (mid-range)
+                            echo "$selected_ssid|$password|50" >> "$KNOWN_NETWORKS_FILE"
+                            # Add to current session cache
+                            KNOWN_PASSWORDS["$selected_ssid"]="$password"
+                            dialog --title "Saved" --msgbox "Network saved successfully!\n\nThe roaming daemon will automatically connect to this network in the future." 9 60
+                        fi
+                    fi
                 else
                     dialog --title "Warning" --msgbox "Connected to WiFi but no IP address.\n\nTry running: sudo dhcpcd $INTERFACE" 10 60
                 fi

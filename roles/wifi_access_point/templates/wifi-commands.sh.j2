@@ -18,6 +18,7 @@ Commands:
   connect <ssid> [password]   Connect to WiFi network
   disconnect                  Disconnect from current network
   menu                        Interactive network selection (TUI)
+  list [--simple] [--open]    Scan and list available networks
   status                      Show current connection status
   pause                       Pause roaming daemon
   resume                      Resume roaming daemon
@@ -28,6 +29,9 @@ Examples:
   frey wifi connect "OpenWiFi"     # Open network
   frey wifi disconnect
   frey wifi menu
+  frey wifi list                   # Scan networks (detailed)
+  frey wifi list --simple          # SSID only
+  frey wifi list --open            # Open networks only
   frey wifi status
   frey wifi pause
   frey wifi resume
@@ -50,6 +54,10 @@ case "$1" in
         ;;
     menu)
         exec /usr/local/bin/frey-wifi-tui
+        ;;
+    list)
+        shift
+        exec /usr/local/bin/frey-wifi-list "$@"
         ;;
     status)
         # Show wpa_cli status + roaming daemon state

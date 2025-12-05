@@ -1,0 +1,103 @@
+---
+# deploy_compose_stack.yml - Deploy Docker Compose Stack with Error Handling
+#
+# This template handles the complete Docker Compose deployment workflow:
+# 1. Template the docker-compose.yml file
+# 2. Validate compose syntax
+# 3. Deploy with docker_compose_v2
+# 4. Comprehensive error handling with diagnostics
+#
+# Parameters:
+#   stack (required): Stack name (e.g., "media", "automation")
+#   compose_template (required): Template file name (e.g., "docker-compose-media.yml.j2")
+#   error_handling (optional): "rescue" (full diagnostics) or "simple" (default: "rescue")
+#   remove_orphans (optional): Remove orphaned containers (default: true)
+#   deploy_timeout (optional): Compose timeout in seconds (default: 300)
+#   deploy_retries (optional): Deployment retries (default: 2)
+#   backup (optional): Backup compose file on changes (default: true)
+#
+# Usage:
+#   - include_tasks: deploy_compose_stack.yml
+#     vars:
+#       stack: "media"
+#       compose_template: "docker-compose-media.yml.j2"
+#       error_handling: "rescue"
+
+- name: Deploy {{ stack }} stack with error handling
+  block:
+    - name: Deploy {{ stack }} compose file
+      ansible.builtin.template:
+        src: "{{ compose_template }}"
+        dest: "{{ storage.stacks }}/{{ stack }}/docker-compose.yml"
+        owner: "{{ vars[stack].user.name }}"
+        group: "{{ vars[stack].group.name }}"
+        mode: '0644'
+
+    - name: Validate {{ stack }} compose syntax
+      ansible.builtin.command:
+        cmd: docker compose -f "{{ storage.stacks }}/{{ stack }}/docker-compose.yml" config --quiet
+      changed_when: false
+
+    - name: Start {{ stack }} containers
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/{{ stack }}"
+        state: present
+        remove_orphans: "{{ remove_orphans | default(true) }}"
+        timeout: "{{ deploy_timeout | default(300) }}"
+      register: _compose_result_temp
+      retries: "{{ deploy_retries | default(2) }}"
+      delay: 30
+
+    - name: Store compose result for {{ stack }} stack
+      ansible.builtin.set_fact:
+        "{{ stack }}_compose_result": "{{ _compose_result_temp }}"
+
+    - name: Report successful {{ stack }} deployment
+      ansible.builtin.debug:
+        msg: "✅ {{ stack }} stack deployed successfully"
+
+  rescue:
+    - name: Identify failed containers in {{ stack }}
+      ansible.builtin.shell: |
+        docker compose -f "{{ storage.stacks }}/{{ stack }}/docker-compose.yml" ps --format '{% raw %}{{.Service}} {{.State}}{% endraw %}' | awk '$2 != "running" {printf "%s(%s) ", $1, $2}'
+      register: _failed_containers_temp
+      failed_when: false
+      when: error_handling | default('rescue') == 'rescue'
+
+    - name: Store failed containers result for {{ stack }}
+      ansible.builtin.set_fact:
+        "{{ stack }}_failed_containers": "{{ _failed_containers_temp }}"
+      when:
+        - error_handling | default('rescue') == 'rescue'
+        - _failed_containers_temp is defined
+
+    - name: Extract error message from {{ stack }} deployment failure
+      ansible.builtin.set_fact:
+        "{{ stack }}_error_summary": >-
+          {% if vars[stack + '_compose_result'].msg is defined %}
+          {{ vars[stack + '_compose_result'].msg | regex_search('error.*', ignorecase=True) | default(vars[stack + '_compose_result'].msg | truncate(200)) }}
+          {% else %}
+          Unknown deployment error
+          {% endif %}
+      when: error_handling | default('rescue') == 'rescue'
+
+    - name: Show {{ stack }} deployment error summary
+      ansible.builtin.debug:
+        msg: |
+          ❌ {{ stack }} stack deployment failed
+
+          Failed containers: {{ vars[stack + '_failed_containers'].stdout | default('unknown') }}
+
+          Error: {{ vars[stack + '_error_summary'] | default('Unknown error') }}
+
+          💡 Troubleshooting:
+             • Check logs: docker compose -f {{ storage.stacks }}/{{ stack }}/docker-compose.yml logs
+             • Check disk space: df -h
+             • Check permissions: ls -la {{ storage.stacks }}/{{ stack }}
+             • Check container status: docker ps -a | grep {{ stack }}
+             • Validate compose: docker compose -f {{ storage.stacks }}/{{ stack }}/docker-compose.yml config
+      when: error_handling | default('rescue') == 'rescue'
+
+    - name: Fail with concise message
+      ansible.builtin.fail:
+        msg: "{{ stack }} deployment failed - see error summary above"

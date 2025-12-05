@@ -83,6 +83,7 @@ trap handle_pause SIGUSR1
 trap handle_resume SIGUSR2
 LAST_CONNECTED_OPEN=false
 OPEN_FAIL_BLACKLIST=60
+# Ignore FreyHub AP to prevent wlan0 from connecting to own wlan1 (routing loop prevention)
 DEFAULT_IGNORE_SSIDS=("FreyHub")
 
 # Connection stability

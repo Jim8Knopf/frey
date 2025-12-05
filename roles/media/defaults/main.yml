@@ -89,6 +89,7 @@ media:
       volumes:
         - "{{ storage.appdata_dir }}/qbittorrent:/config"
         - "{{ media.downloads }}:/downloads"
+        - "{{ monitoring.dir }}/logs/qbittorrent:/logs"
       environment:
         - "WEBUI_PORT=8080"
         

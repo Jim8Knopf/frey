@@ -41,10 +41,15 @@ except-interface=lo
 # DHCP range: {{ network.wifi.dhcp_range_start }} to {{ network.wifi.dhcp_range_end }}
 # Netmask: 255.255.255.0 (10.20.0.0/24)
 # Lease time: 12 hours (clients keep their IP for 12h even if disconnected briefly)
+# STABILITY: Long lease time prevents frequent re-authentication and disconnections
 dhcp-range={{ network.wifi.dhcp_range_start }},{{ network.wifi.dhcp_range_end }},255.255.255.0,12h
 
 # We are the authoritative DHCP server on this network (faster DHCP, no delays)
 dhcp-authoritative
+
+# Maximum number of concurrent DHCP leases
+# Prevents resource exhaustion with many clients
+dhcp-lease-max=100
 
 # Store DHCP leases persistently (survives dnsmasq restart)
 dhcp-leasefile=/var/lib/misc/dnsmasq.leases

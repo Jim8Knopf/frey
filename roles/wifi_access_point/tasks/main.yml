@@ -526,6 +526,7 @@
   register: internet_connection
   failed_when: false
   changed_when: false
+  tags: always  # Always run to ensure variable is defined
 
 - name: Temporarily stop AP interface ensure timer during deployment
   ansible.builtin.systemd:
@@ -994,6 +995,61 @@
       ansible.builtin.fail:
         msg: "hostapd failed to start - see logs above"
 
+# ==============================================================================
+# AP Power Save Disable (Stability Fix)
+# ==============================================================================
+# Disables power saving on the AP interface to prevent client disconnections
+
+- name: Create AP interface power save disable script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/frey-ap-disable-power-save
+    content: |
+      #!/bin/bash
+      # Disable power management on AP interface to prevent disconnections
+      iw dev {{ network.wifi.interface }} set power_save off 2>/dev/null || true
+      iwconfig {{ network.wifi.interface }} power off 2>/dev/null || true
+    owner: root
+    group: root
+    mode: '0755'
+  tags:
+    - wifi_ap
+
+- name: Create systemd service to disable AP power saving
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/frey-ap-power-save-disable.service
+    content: |
+      [Unit]
+      Description=Disable power saving on FreyHub AP interface
+      After=hostapd.service
+      BindsTo=hostapd.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/frey-ap-disable-power-save
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload systemd
+  tags:
+    - wifi_ap
+
+- name: Enable and start AP power save disable service
+  ansible.builtin.systemd:
+    name: frey-ap-power-save-disable.service
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  tags:
+    - wifi_ap
+
+# ==============================================================================
+# DNS and DHCP Configuration (dnsmasq)
+# ==============================================================================
+
 - name: Backup and disable main dnsmasq.conf to prevent conflicts
   ansible.builtin.copy:
     content: |
@@ -1326,6 +1382,32 @@
     src: frey-wifi-tui.sh.j2
     dest: /usr/local/bin/frey-wifi-tui
     mode: '0755'
+
+- name: Deploy WiFi list/scan script
+  ansible.builtin.template:
+    src: frey-wifi-list.sh.j2
+    dest: /usr/local/bin/frey-wifi-list
+    mode: '0755'
+  tags: [frey_cli]
+
+- name: Install frey bash completion
+  ansible.builtin.template:
+    src: frey-completion.bash.j2
+    dest: /etc/bash_completion.d/frey
+    owner: root
+    group: root
+    mode: '0644'
+  tags: [frey_cli]
+
+- name: Create sudoers file for passwordless frey commands
+  ansible.builtin.template:
+    src: frey-sudoers.j2
+    dest: /etc/sudoers.d/10-frey-wifi
+    owner: root
+    group: root
+    mode: '0440'
+    validate: 'visudo -cf %s'
+  tags: [frey_cli, security]
 
 - name: Ensure base directory for WiFi connection guide exists
   ansible.builtin.file:

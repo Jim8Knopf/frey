@@ -13,6 +13,11 @@
 #   net     Network utilities (NAT, routing, connectivity)
 # ==============================================================================
 
+# Automatically use sudo if not root (passwordless via /etc/sudoers.d/10-frey-wifi)
+if [ "$EUID" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
+
 FREY_LIB_DIR="/usr/local/lib/frey"
 
 show_help() {

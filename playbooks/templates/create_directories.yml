@@ -1,0 +1,60 @@
+---
+# create_directories.yml - Create Directories with Ownership
+#
+# This template creates a list of directories with specified ownership and permissions.
+#
+# Parameters:
+#   directories (required): List of paths OR list of dicts with path/owner/group/mode
+#   owner (optional): Default owner (used if not specified per-directory)
+#   group (optional): Default group (used if not specified per-directory)
+#   mode (optional): Default permissions (default: '0755')
+#   recurse (optional): Apply ownership recursively (default: false)
+#
+# Usage with simple list:
+#   - include_tasks: create_directories.yml
+#     vars:
+#       directories: ["/opt/frey/data", "/opt/frey/config"]
+#       owner: "media_manager"
+#       group: "media"
+#       mode: '0755'
+#
+# Usage with detailed list:
+#   - include_tasks: create_directories.yml
+#     vars:
+#       directories:
+#         - path: "/opt/frey/data"
+#           owner: "media_manager"
+#           group: "media"
+#           mode: '0755'
+#         - path: "/opt/frey/secure"
+#           owner: "root"
+#           group: "root"
+#           mode: '0700'
+
+- name: Create directories from simple list
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ owner | default(omit) }}"
+    group: "{{ group | default(omit) }}"
+    mode: "{{ mode | default('0755') }}"
+    recurse: "{{ recurse | default(false) }}"
+  loop: "{{ directories }}"
+  when:
+    - directories is defined
+    - directories | length > 0
+    - directories[0] is string
+
+- name: Create directories from detailed list
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(owner) | default(omit) }}"
+    group: "{{ item.group | default(group) | default(omit) }}"
+    mode: "{{ item.mode | default(mode) | default('0755') }}"
+    recurse: "{{ item.recurse | default(recurse) | default(false) }}"
+  loop: "{{ directories }}"
+  when:
+    - directories is defined
+    - directories | length > 0
+    - directories[0] is mapping

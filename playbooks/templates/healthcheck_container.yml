@@ -1,0 +1,39 @@
+---
+# healthcheck_container.yml - Docker Container Health Check
+#
+# This template checks Docker container health status until healthy.
+#
+# Parameters:
+#   container (required): Container name or ID
+#   health_status (optional): Expected health status (default: "healthy")
+#   retries (optional): Maximum retry attempts (default: 30)
+#   delay (optional): Seconds between retries (default: 10)
+#   service_name (optional): Service name for logging (default: container name)
+#
+# Usage:
+#   - include_tasks: healthcheck_container.yml
+#     vars:
+#       container: "immich-server"
+#       health_status: "healthy"
+#       retries: 30
+#       delay: 10
+
+- name: Wait for {{ service_name | default(container) }} container to be {{ health_status | default('healthy') }}
+  ansible.builtin.command:
+    cmd: docker inspect --format='{% raw %}{{.State.Health.Status}}{% endraw %}' {{ container }}
+  register: container_health_check
+  until: container_health_check.stdout == (health_status | default('healthy'))
+  retries: "{{ retries | default(30) }}"
+  delay: "{{ delay | default(10) }}"
+  changed_when: false
+  failed_when: false
+
+- name: Report {{ service_name | default(container) }} container health status
+  ansible.builtin.debug:
+    msg: "✅ {{ service_name | default(container) }} container is {{ container_health_check.stdout }}"
+  when: container_health_check is succeeded
+
+- name: Warn on {{ service_name | default(container) }} container health check failure
+  ansible.builtin.debug:
+    msg: "⚠️  {{ service_name | default(container) }} container health check failed (status: {{ container_health_check.stdout | default('unknown') }})"
+  when: container_health_check is failed

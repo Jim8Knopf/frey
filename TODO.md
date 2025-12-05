@@ -164,3 +164,18 @@ note tool for whatever:
 
 
 dialog neds to be instled somwher. is dependency for wifi tui
+
+
+## Next claude when wifi with login
+a view tings to the wifi problem again. first i would like to have autocompletion for my
+frey command. i ned a new command that lists me all avaiable networks. and also an option
+for that with just the public ones without login. in the wifi task dialog needs to be
+installed so i can use the menue.
+
+and then to the real problem. i'm at a new public wifi and there it seems that there are
+several accepts i need to doo in lynx and then i get to the first page but maybe i did
+then something wrong because i should be forwarded to the acctual login page with an
+accept and decline button. this didnt worked. in addition to that i have problems to stay
+connected to my hotspot. investigate also this.
+
+use agents where when possibel 

@@ -1,0 +1,73 @@
+---
+# async_prepull_start.yml - Start Image Downloads in Background
+#
+# This template kicks off Docker image downloads WITHOUT waiting for completion.
+# The downloads run in the background while other tasks execute.
+#
+# Parameters:
+#   stack (required): Stack name (e.g., "media", "automation")
+#   service_dict (optional): Dictionary of services with .image field
+#   image_list (optional): Static list of image names
+#   exclude_services (optional): List of service keys to skip when using service_dict
+#   prepull_timeout (optional): Pull timeout in seconds (default: 300)
+#   force_source (optional): Force pull even if image exists (default: false)
+#
+# Usage with service dictionary:
+#   - include_tasks: async_prepull_start.yml
+#     vars:
+#       stack: "media"
+#       service_dict: "{{ media.services }}"
+#       exclude_services: [mopidy, audiobook_bridge]
+#
+# Usage with static image list:
+#   - include_tasks: async_prepull_start.yml
+#     vars:
+#       stack: "immich"
+#       image_list: ["ghcr.io/immich-app/immich-server:release", "redis:alpine"]
+#
+# Returns immediately after starting downloads. Call async_prepull_wait.yml later to wait for completion.
+
+- name: Build image list from service dictionary for {{ stack }}
+  ansible.builtin.set_fact:
+    "{{ stack }}_images_to_pull": >-
+      {{
+        service_dict | dict2items
+        | selectattr('value.enabled', 'equalto', true)
+        | selectattr('value.image', 'defined')
+        | rejectattr('key', 'in', exclude_services | default([]))
+        | map(attribute='value.image')
+        | list
+      }}
+  when: service_dict is defined
+
+- name: Use static image list for {{ stack }}
+  ansible.builtin.set_fact:
+    "{{ stack }}_images_to_pull": "{{ image_list }}"
+  when:
+    - image_list is defined
+    - service_dict is not defined
+
+- name: Start async Docker image pre-pulls for {{ stack }}
+  community.docker.docker_image:
+    name: "{{ item }}"
+    source: pull
+    state: present
+    force_source: "{{ force_source | default(false) }}"
+    timeout: "{{ prepull_timeout | default(300) }}"
+  async: 3600  # Allow up to 1 hour for large images
+  poll: 0      # KEY: Don't wait, return immediately for TRUE async
+  loop: "{{ vars[stack + '_images_to_pull'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _prepull_jobs_temp
+  when: (vars[stack + '_images_to_pull'] | default([])) | length > 0
+
+- name: Store image pull jobs for {{ stack }} stack
+  ansible.builtin.set_fact:
+    "{{ stack }}_image_jobs": "{{ _prepull_jobs_temp }}"
+  when: _prepull_jobs_temp is defined
+
+- name: Report pre-pull kickoff for {{ stack }}
+  ansible.builtin.debug:
+    msg: "Started {{ (vars[stack + '_image_jobs'].results | default([])) | length }} image downloads in background for {{ stack }} stack"
+  when: vars[stack + '_image_jobs'] is defined
