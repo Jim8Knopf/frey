@@ -146,7 +146,7 @@ services:
       # Works offline via AdGuard local DNS resolution
       - GF_SERVER_ROOT_URL=https://grafana.{{ network.domain_name }}
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
-{% if features.authentication | default(false) %}
+{% if features.authentication | default(false) and monitoring.grafana.oidc_client_id is defined %}
       # OIDC/SSO Authentication with Authelia (uses internal Docker service name)
       - GF_AUTH_GENERIC_OAUTH_ENABLED=true
       - GF_AUTH_GENERIC_OAUTH_NAME=Authelia
@@ -240,8 +240,7 @@ services:
       - "traefik.http.routers.uptime.tls.certresolver=step-ca"
       - "traefik.http.routers.uptime-http.rule=Host(`uptime.{{ network.domain_name }}`)"
       - "traefik.http.routers.uptime-http.entrypoints=web"
-      - "traefik.http.middlewares.uptime-redirect.redirectscheme.scheme=https"
-      - "traefik.http.routers.uptime-http.middlewares=uptime-redirect"
+      # Removed HTTP→HTTPS redirect to allow ACME HTTP-01 challenges
       - "traefik.http.services.uptime.loadbalancer.server.port=3001"
   {% endif %}
 
@@ -292,20 +291,7 @@ services:
   {% endif %}
 
   {% if monitoring['postgres-exporter'].enabled | default(false) -%}
-{%   if authentik_db_user is defined and authentik_postgres_password is defined -%}
-  postgres-exporter-authentik:
-    image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
-    container_name: postgres-exporter-authentik
-    restart: unless-stopped
-    environment:
-      - DATA_SOURCE_NAME=postgresql://{{ authentik_db_user }}:{{ authentik_postgres_password }}@authentik-db:5432/{{ authentik_db_name }}?sslmode=disable
-    networks:
-      backend:
-    depends_on:
-      - prometheus
-{%   else -%}
-  # Authentik not configured: postgres-exporter-authentik disabled
-{%   endif %}
+  # Authentik postgres exporter removed - Authentik replaced with Authelia
 
 {%   if immich_db_password is defined %}
   postgres-exporter-immich:

@@ -44,12 +44,8 @@ landing_page:
     docs_filename: "frey-ca.html"
   user_guide:
     docs_filename: "frey-user-guide.html"
-  oidc:
-    enable: true
-    client_id: "dashy"
-    endpoint: "{{ network.authentik_public_url }}/application/o/dashy/"
-    scope: "openid profile email groups"
-    admin_group: "frey_admins"
+  # OIDC configuration removed - Authentik replaced with Authelia
+  # TODO: Configure Authelia OIDC for Dashy
   certificate_guides:
     - slug: android
       title: "Android 14/15"
@@ -76,11 +72,16 @@ landing_page:
       description: "SSO, reverse proxy, and container management."
       item_size: medium
       services:
-        - title: "Authentik Portal"
-          description: "Single sign-on portal and user self-service."
+        - title: "Authelia Portal"
+          description: "Single sign-on portal and user authentication."
           url: "https://auth.{{ network.domain_name }}"
-          icon: "fas fa-unlock"
+          icon: "fas fa-shield-alt"
           tags: ["sso", "identity"]
+        - title: "LLDAP Directory"
+          description: "Lightweight LDAP user directory management."
+          url: "https://lldap.{{ network.domain_name }}"
+          icon: "fas fa-users"
+          tags: ["identity", "ldap"]
         - title: "Traefik Dashboard"
           description: "Reverse proxy routing, TLS status, and middleware."
           url: "https://traefik.{{ network.domain_name }}"

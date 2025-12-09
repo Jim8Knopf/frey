@@ -2015,7 +2015,10 @@
   tags:
     - wifi_roaming
     - captive_portal
-  when: network.wifi.roaming.enabled | default(false)
+    - packages
+  when:
+    - network.wifi.roaming.enabled | default(false)
+    - internet_connection.rc == 0  # Only attempt if internet is available
   block:
     - name: Install base packages for portal bypass
       ansible.builtin.apt:
@@ -2026,8 +2029,10 @@
           - lynx  # Terminal browser for simple accept-button portals
         state: present
         update_cache: yes
+        cache_valid_time: 3600  # Only update cache if older than 1 hour
       register: apt_result
       retries: 3
+      delay: 5
       until: apt_result is succeeded
 
     - name: Install Python libraries for Selenium
@@ -2055,6 +2060,16 @@
         creates: /usr/local/bin/geckodriver
       become: yes
 
+- name: Log portal package installation status
+  ansible.builtin.debug:
+    msg: >
+      Portal packages installation: {{ 'SUCCESS' if (apt_result is defined and apt_result is succeeded) else ('SKIPPED - No internet connection' if internet_connection.rc != 0 else 'SKIPPED (failed)') }}
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
+    - packages
+
 # ==============================================================================
 # CAPTIVE PORTAL AUTOMATION DAEMON
 # ==============================================================================
@@ -2066,6 +2081,42 @@
 # - Automatically submits login forms
 # - Verifies internet connectivity
 # - Logs activity for debugging
+
+- name: Create captive portal state directory
+  ansible.builtin.file:
+    path: /var/lib/frey/captive-portal
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Create MOTD directory for portal notifications
+  ansible.builtin.file:
+    path: /etc/motd.d
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
+
+- name: Deploy manual captive portal login tool
+  ansible.builtin.copy:
+    src: frey-portal-login.sh
+    dest: /usr/local/bin/frey-portal-login
+    mode: '0755'
+    owner: root
+    group: root
+  when: network.wifi.roaming.enabled | default(false)
+  tags:
+    - wifi_roaming
+    - captive_portal
 
 - name: Deploy captive portal shell bypass script (primary method)
   ansible.builtin.copy:
@@ -2103,9 +2154,9 @@
     - wifi_roaming
     - captive_portal
 
-- name: Deploy captive portal daemon wrapper script
-  ansible.builtin.copy:
-    src: frey-wifi-captive-portal-daemon.sh
+- name: Deploy captive portal daemon wrapper script (adaptive intervals)
+  ansible.builtin.template:
+    src: frey-wifi-captive-portal-daemon.sh.j2
     dest: /usr/local/bin/frey-wifi-captive-portal-daemon
     mode: '0755'
     owner: root

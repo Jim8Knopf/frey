@@ -108,6 +108,15 @@
     mode: '0775'
   when: not media.vpn.enabled
 
+- name: Deploy qBittorrent healthcheck script
+  ansible.builtin.copy:
+    src: qbittorrent_healthcheck.sh
+    dest: "{{ storage.appdata_dir }}/qbittorrent/healthcheck.sh"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when: not media.vpn.enabled
+
 - name: Deploy optimized qBittorrent configuration (only if not exists)
   ansible.builtin.template:
     src: qBittorrent.conf.j2

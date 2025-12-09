@@ -33,6 +33,8 @@ BLACKLIST_FILE="/var/lib/frey/wifi-blacklist.json"
 STATE_FILE="/var/run/frey-wifi-roaming.state"
 LOG_FILE="/var/log/frey-wifi-roaming.log"
 PID_FILE="/var/run/frey-wifi-roaming.pid"
+PORTAL_STATE_FILE="/var/lib/frey/captive-portal/portal.state"
+LOCKED_SSID_FILE="/var/run/frey-wifi-locked-ssid"
 
 # Default settings (overridden by config file)
 INTERFACE_CLIENT="wlan0"
@@ -354,22 +356,39 @@ connect_to_network() {
         if wpa_cli -i "$INTERFACE_CLIENT" status | grep -q "wpa_state=COMPLETED"; then
             log INFO "✓ Connected to WiFi: '$ssid'"
 
-            # Request IP address, retrying with dhcpcd then dhclient
+            # Request IP address, retrying with dhcpcd then dhclient (skip if dhcpcd already managing interface)
             local dh_attempt=0
             while [ $dh_attempt -lt 3 ]; do
-                if ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                local current_ip
+                current_ip=$(ip -4 addr show "$INTERFACE_CLIENT" | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -1)
+
+                # If we have a non-link-local IP, leave DHCP alone (whether or not dhcpcd is running)
+                if [ -n "$current_ip" ] && [[ ! "$current_ip" =~ ^169\.254\. ]]; then
+                    if pgrep -f "dhcpcd.*$INTERFACE_CLIENT" >/dev/null 2>&1; then
+                        break
+                    fi
                     break
                 fi
 
+                # No valid IP yet; if dhcpcd is already working on it, wait and retry
+                if pgrep -f "dhcpcd.*$INTERFACE_CLIENT" >/dev/null 2>&1; then
+                    sleep 2
+                    dh_attempt=$((dh_attempt + 1))
+                    continue
+                fi
+
+                # No IP and no dhcpcd running - try dhcpcd first
                 if command -v dhcpcd &>/dev/null; then
                     dhcpcd -n "$INTERFACE_CLIENT" &>/dev/null || dhcpcd "$INTERFACE_CLIENT" &>/dev/null || true
                 fi
                 sleep 2
 
-                if ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                current_ip=$(ip -4 addr show "$INTERFACE_CLIENT" | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -1)
+                if [ -n "$current_ip" ] && [[ ! "$current_ip" =~ ^169\.254\. ]]; then
                     break
                 fi
 
+                # dhcpcd failed, try dhclient as backup
                 if command -v dhclient &>/dev/null; then
                     timeout 15 dhclient -1 -v "$INTERFACE_CLIENT" &>/dev/null || true
                 fi
@@ -548,6 +567,33 @@ roaming_cycle() {
         return
     fi
 
+    # Skip scanning/roaming while a captive portal login is in progress
+    if [ -f "$PORTAL_STATE_FILE" ]; then
+        log DEBUG "Captive portal in progress - holding roaming scans"
+        sleep 10
+        return
+    fi
+
+    # If a manual lock is set, honor it (stay on that SSID; try to reconnect if off it)
+    if [ -f "$LOCKED_SSID_FILE" ]; then
+        local locked_ssid
+        locked_ssid=$(cat "$LOCKED_SSID_FILE" 2>/dev/null || true)
+        if [ -n "$locked_ssid" ]; then
+            if [ "$CURRENT_SSID" != "$locked_ssid" ]; then
+                log INFO "🔒 Locked to '$locked_ssid' - attempting to connect and skipping other networks"
+                local pw
+                pw=$(get_network_password "$locked_ssid")
+                connect_to_network "$locked_ssid" "$pw" || true
+                sleep "$SCAN_INTERVAL_NO_CONNECTION"
+                return
+            else
+                log INFO "🔒 Locked to '$locked_ssid' - staying connected"
+                sleep "$SCAN_INTERVAL_GOOD"
+                return
+            fi
+        fi
+    fi
+
     # Get current status
     get_current_status || true
 
@@ -605,6 +651,13 @@ roaming_cycle() {
         mqtt_publish "status/state" "connected_good"
     fi
 
+    # If we are on a known network with internet, do nothing (avoid flaps)
+    if [ -n "$CURRENT_SSID" ] && [ "$HAS_INTERNET" = true ] && is_known_ssid "$CURRENT_SSID"; then
+        log INFO "🔒 Holding connection on known network '$CURRENT_SSID' (internet OK) - skipping scan/switch"
+        sleep "$SCAN_INTERVAL_GOOD"
+        return
+    fi
+
     # Scan for available networks
     local scan_results
     scan_results=$(scan_networks) || true
@@ -618,7 +671,7 @@ roaming_cycle() {
     local ranked_networks
     ranked_networks=$(rank_networks "$scan_results")
 
-    # Filter: allow known networks always; allow open networks; skip secured unknown networks
+    # Filter: only known networks (no auto-join to unknown/public)
     local filtered_networks
     filtered_networks=$(echo "$ranked_networks" | while IFS='|' read -r score ssid signal security; do
         [ -z "$ssid" ] && continue
@@ -630,7 +683,8 @@ roaming_cycle() {
             fi
         done
 
-        if [ "$security" != "Open" ] && ! is_known_ssid "$ssid"; then
+        # Only allow known SSIDs
+        if ! is_known_ssid "$ssid"; then
             continue
         fi
         echo "${score}|${ssid}|${signal}|${security}"
@@ -641,28 +695,7 @@ roaming_cycle() {
         return
     fi
 
-    # Optionally prefer known networks first
-    local candidate_networks
-    candidate_networks="$filtered_networks"
-    if [ "${PREFER_KNOWN_NETWORKS:-true}" = true ]; then
-        local known_candidates
-        known_candidates=$(echo "$ranked_networks" | while IFS='|' read -r score ssid signal security; do
-            [ -z "$ssid" ] && continue
-            if is_known_ssid "$ssid"; then
-                echo "${score}|${ssid}|${signal}|${security}"
-            fi
-        done)
-
-        if [ -n "$known_candidates" ]; then
-            local known_count
-            known_count=$(echo "$known_candidates" | wc -l)
-            log INFO "Preferring known networks first (${known_count} available)"
-            candidate_networks="$known_candidates"
-        else
-            log INFO "No known networks available; considering all candidates"
-        fi
-    fi
-
+    local candidate_networks="$filtered_networks"
     local network_count
     network_count=$(echo "$candidate_networks" | wc -l)
     log INFO "Evaluating $network_count candidate networks"
@@ -766,13 +799,8 @@ roaming_cycle() {
             mqtt_publish "events" "{\"event\":\"connected_success\",\"ssid\":\"$best_ssid\"}"
         else
             log WARN "⚠ Connected but no internet: '$best_ssid'"
-            if handle_captive_portal "$best_ssid"; then
-                update_network_history "$best_ssid" true
-                INTERNET_CHECK_FAILURES=0
-                mqtt_publish "events" "{\"event\":\"portal_bypassed\",\"ssid\":\"$best_ssid\"}"
-            else
-                update_network_history "$best_ssid" false
-            fi
+            log WARN "Portal/manual action may be required; skipping auto-bypass"
+            update_network_history "$best_ssid" false
         fi
     else
         log ERROR "❌ Failed to connect to: '$best_ssid'"
@@ -805,13 +833,8 @@ roaming_cycle() {
                     mqtt_publish "events" "{\"event\":\"connected_success\",\"ssid\":\"$candidate_ssid\"}"
                 else
                     log WARN "⚠ Connected but no internet: '$candidate_ssid'"
-                    if handle_captive_portal "$candidate_ssid"; then
-                        update_network_history "$candidate_ssid" true
-                        INTERNET_CHECK_FAILURES=0
-                        mqtt_publish "events" "{\"event\":\"portal_bypassed\",\"ssid\":\"$candidate_ssid\"}"
-                    else
-                        update_network_history "$candidate_ssid" false
-                    fi
+                    log WARN "Portal/manual action may be required; skipping auto-bypass"
+                    update_network_history "$candidate_ssid" false
                 fi
                 connected=true
                 break

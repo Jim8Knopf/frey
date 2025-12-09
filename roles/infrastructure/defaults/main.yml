@@ -37,22 +37,6 @@ infrastructure:
       version: "1"
       ports:
         http: 5001
-    authentik:
-      enabled: true  # Enable after initial infrastructure setup
-      version: "2025.2.4"  # Pinned version for reproducible deployments
-      port: 9300  # Changed from 9000 to avoid conflict with Portainer
-      port_https: 9446
-      postgres_version: "16-alpine"
-      redis_version: "alpine"
-      # Blueprint re-apply control:
-      # - Set to a list of filenames to re-apply specific blueprints
-      #   e.g., ['11-oidc-audiobookshelf.yaml', '10-oidc-immich.yaml']
-      # - Or set to 'all' to re-apply every blueprint file
-      reapply_blueprints: [
-        '11-oidc-audiobookshelf.yaml',
-        '14-oidc-mealie.yaml',
-        '15-oidc-dashy.yaml'
-      ]
     step_ca:
       enabled: true
       version: "latest"

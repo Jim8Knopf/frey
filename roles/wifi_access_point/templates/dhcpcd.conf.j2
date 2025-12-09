@@ -38,7 +38,9 @@ option interface_mtu           # MTU size (usually 1500 for Ethernet, varies for
 
 # Require DHCP server identifier in responses
 # Security: Prevents rogue DHCP servers from responding
-require dhcp_server_identifier
+# NOTE: Commented out for compatibility with captive portal networks
+#       Many public WiFi DHCP servers don't send this option correctly
+# require dhcp_server_identifier
 
 # ------------------------------------------------------------------------------
 # CLIENT INTERFACE CONFIGURATION (Upstream Connection)
@@ -56,22 +58,31 @@ interface {{ network.wifi.client_interface }}
 # If this interface goes down, system falls back to other interfaces
 metric 100
 
-# DISABLE WPA SUPPLICANT HOOK
-# The Frey WiFi Roaming daemon handles WPA supplicant for this interface.
-# This prevents dhcpcd from interfering with the roaming service.
-nohook wpa_supplicant
+# Skip ARP check before accepting DHCP lease (faster, needed for some captive portals)
+# Some captive portal networks have slow/broken ARP, which causes dhcpcd to timeout
+# The connection script already uses --noarp flag, make it permanent here
+noarp
+
+# WPA SUPPLICANT HOOK ENABLED
+# dhcpcd will now properly coordinate with wpa_supplicant for stable connections
+# Note: Roaming daemon should be disabled when using this configuration
 
 # WAIT FOR IP ADDRESS
 # Block until IPv4 address is obtained or timeout occurs
 # This ensures proper DHCP completion and prevents silent failures
 # The AP interface (wlan1) can still come up independently
 waitip 4
-timeout 180  # 180 seconds for slow public WiFi DHCP servers
+timeout 30   # Most DHCP servers respond in <5s; 30s is sufficient for detection
+             # If DHCP fails, frey-connect-wifi.sh will retry with different methods
 
-# DISABLE LINK-LOCAL FALLBACK
-# Don't fall back to 169.254.x.x if DHCP fails
-# We want to know immediately if WiFi/DHCP is broken
-noipv4ll
+# LINK-LOCAL FALLBACK ENABLED
+# Allow 169.254.x.x fallback if DHCP fails completely
+# Provides graceful degradation instead of complete failure
+# noipv4ll  # REMOVED: Enable fallback for resilience
+
+# AUTOMATIC RETRY ON FAILURE
+# Wait 10 seconds before retrying DHCP after failure
+reboot 10
 
 # ------------------------------------------------------------------------------
 # ACCESS POINT INTERFACE CONFIGURATION (WiFi AP)

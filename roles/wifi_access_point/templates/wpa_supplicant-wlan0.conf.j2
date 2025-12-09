@@ -13,6 +13,14 @@ network={
     {% if wifi_network.scan_ssid is defined %}scan_ssid={{ wifi_network.scan_ssid | int }}
     {% endif %}
     priority={{ wifi_network.priority | default(1) }}
+
+    # Background scanning for connection stability (per-network setting)
+    # Default: scan every 30s when signal weak (<-70dBm), every 300s when strong
+    {% if wifi_network.bgscan is defined %}
+    bgscan="{{ wifi_network.bgscan }}"
+    {% else %}
+    bgscan="simple:30:-70:300"
+    {% endif %}
 }
 {% endfor %}
 {% endif %}

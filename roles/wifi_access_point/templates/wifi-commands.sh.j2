@@ -23,6 +23,7 @@ Commands:
   pause                       Pause roaming daemon
   resume                      Resume roaming daemon
   power on|off                Enable/disable WiFi power saving
+  portal [login]              Launch captive portal helper (auto + manual)
 
 Examples:
   frey wifi connect "My Network" "password123"
@@ -36,6 +37,7 @@ Examples:
   frey wifi pause
   frey wifi resume
   frey wifi power off              # Disable power saving
+  frey wifi portal                 # Run captive portal helper
 
 Notes:
   - Connection commands affect {{ network.wifi.client_interface }} only
@@ -106,6 +108,10 @@ case "$1" in
             exit 1
         fi
         exec /usr/local/bin/frey-disable-wifi-power-save "$SETTING"
+        ;;
+    portal|portal-login|portal_login)
+        shift
+        exec /usr/local/bin/frey-portal-login "$@"
         ;;
     --help|-h|help)
         show_help

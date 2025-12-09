@@ -19,7 +19,7 @@ _frey_completion() {
     case "${words[1]}" in
         wifi)
             if [ $cword -eq 2 ]; then
-                COMPREPLY=( $(compgen -W "connect disconnect menu status pause resume power list portal-manual --help help" -- "$cur") )
+                COMPREPLY=( $(compgen -W "connect disconnect menu status pause resume power list portal portal-manual --help help" -- "$cur") )
             elif [ $cword -eq 3 ]; then
                 case "${words[2]}" in
                     power)

@@ -38,7 +38,7 @@ media:
   services:
     audiobookshelf:
       enabled: true
-      version: "latest"
+      version: "2.31.0"
       image: "ghcr.io/advplyr/audiobookshelf"
       container_name: "audiobookshelf"
       port: 13378    # External port for firewall/direct access
@@ -49,6 +49,9 @@ media:
         - "{{ storage.appdata_dir }}/audiobookshelf:/config"
         - "{{ media.dir }}/audiobooks:/audiobooks"
         - "{{ media.dir }}/podcasts:/podcasts"
+        - "{{ storage.appdata_dir }}/step-ca/certs/root_ca.crt:/usr/local/share/ca-certificates/step-ca-root.crt:ro"
+      environment:
+        - "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/step-ca-root.crt"
 
     jellyfin:
       enabled: true
@@ -81,7 +84,7 @@ media:
       container_name: "qbittorrent"
       listen_port: 51234
       port: 8080   # Container's internal port for Traefik
-      ports: 
+      ports:
         - "{{ media.vpn.port }}:{{ media.vpn.port }}"  # VPN port
         - "8080:8080"    # Web UI
         - "{{ media.services.qbittorrent.listen_port | default(51234) }}:{{ media.services.qbittorrent.listen_port | default(51234) }}/tcp"    # Torrent Port
@@ -92,6 +95,16 @@ media:
         - "{{ monitoring.dir }}/logs/qbittorrent:/logs"
       environment:
         - "WEBUI_PORT=8080"
+      # Smart healthcheck configuration
+      # Monitors download activity and internet connectivity
+      # Restarts container if no downloads for stall_threshold seconds despite having internet
+      healthcheck:
+        stall_threshold: 300      # Seconds of no downloads before restart (default: 5 minutes)
+        internet_host: "1.1.1.1"  # Host to ping for internet check
+        interval: "60s"           # How often to run healthcheck
+        timeout: "10s"            # Healthcheck timeout
+        retries: 3                # Failed checks before marking unhealthy
+        start_period: "60s"       # Grace period after container start
         
     nzbget:
       enabled: true
@@ -174,7 +187,7 @@ media:
 
     audiobookrequest:
       enabled: true
-      version: "latest"
+      version: "latest"  # v2.31.0 tag was removed upstream
       image: "markbeep/audiobookrequest"
       container_name: "audiobookrequest"
       port: 5432

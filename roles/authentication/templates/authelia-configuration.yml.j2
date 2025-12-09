@@ -70,7 +70,7 @@ authentication_backend:
       mail: mail
       display_name: displayName
 
-    # Service account for LDAP queries
+    # Service account for LDAP queries (using admin account)
     user: uid={{ authentication.services.lldap.admin_username }},ou=people,{{ authentication.services.lldap.base_dn }}
     password: {{ lldap_admin_password }}
 

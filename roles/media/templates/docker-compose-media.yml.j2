@@ -49,6 +49,10 @@ services:
 ] + (service_config.environment | default([]))) %}
       - {{ env_var }}
 {% endfor %}
+{% if service_name == 'qbittorrent' %}
+      - QBT_STALL_THRESHOLD={{ service_config.healthcheck.stall_threshold | default(300) }}
+      - QBT_INTERNET_HOST={{ service_config.healthcheck.internet_host | default('1.1.1.1') }}
+{% endif %}
 {% set media_dns = media.dns_servers | default([]) %}
 {% if media_dns | length > 0 %}
     dns:
@@ -72,6 +76,9 @@ services:
 {%     endif %}
 {%   endfor %}
 {% endif %}
+{% if service_name == 'qbittorrent' %}
+      - "{{ storage.appdata_dir }}/qbittorrent/healthcheck.sh:/healthcheck.sh:ro"
+{% endif %}
     networks:
       proxy: {}        # Required for Traefik routing
       backend: {}      # Internal service communication
@@ -82,6 +89,14 @@ services:
 {% endfor %}
 {% else %}
       - "{{ service_config.port }}:{{ service_config.port }}"  # Direct access for library network
+{% endif %}
+{% if service_name == 'qbittorrent' %}
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/bash /healthcheck.sh"]
+      interval: {{ service_config.healthcheck.interval | default('60s') }}
+      timeout: {{ service_config.healthcheck.timeout | default('10s') }}
+      retries: {{ service_config.healthcheck.retries | default(3) }}
+      start_period: {{ service_config.healthcheck.start_period | default('60s') }}
 {% endif %}
     labels:
       - deunhealth.restart.on.unhealthy=true

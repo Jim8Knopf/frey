@@ -24,14 +24,12 @@ immich:
       upload_location: "{{ storage.base_dir }}/photos/library"
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
-      # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
-      # Issuer URL uses auth.frey DNS (accessible via localdns Docker network)
-      # NOTE: OAuth must be enabled in Immich UI: Administration → Settings → OAuth Authentication
-      oidc_issuer_url: "https://auth.{{ network.domain_name }}/application/o/immich/"
+      # OIDC configuration for Authelia
+      oidc_issuer_url: "{{ network.authelia_public_url | default('https://auth.' ~ network.domain_name) }}"
       oidc_client_id: "immich"
-      oidc_scope: "openid profile email"
-      oidc_button_text: "Login with Authentik"
+      oidc_scope: "openid profile email groups"
+      oidc_button_text: "Login with SSO"
       oidc_auto_register: true
       oidc_auto_launch: false
-      oidc_mobile_redirect_uri: "app.immich:/"
+      oidc_mobile_redirect_uri: "https://immich.{{ network.domain_name }}/api/oauth/mobile-redirect"
       oidc_signing_algorithm: "RS256"

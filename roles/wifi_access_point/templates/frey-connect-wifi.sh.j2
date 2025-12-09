@@ -307,6 +307,9 @@ if [ "$DHCP_SUCCESS" = true ] && [ -n "$IP_ADDR" ]; then
     echo "========================================"
     echo ""
 
+    # Lock roaming to this SSID until manual disconnect
+    echo "$SSID" > /var/run/frey-wifi-locked-ssid || true
+
     # Verify gateway is reachable
     if [ -n "$GATEWAY" ]; then
         log "Verifying gateway connectivity..."
@@ -317,6 +320,10 @@ if [ "$DHCP_SUCCESS" = true ] && [ -n "$IP_ADDR" ]; then
             log "Gateway ${GREEN}✓ Reachable${NC}"
         fi
     fi
+
+    # Allow routes to stabilize before roaming daemon cycles again
+    log "Allowing routes to stabilize..."
+    sleep 10
 
     # Check if this is a known network (for whitelist check)
     KNOWN_NETWORK_SKIP_PORTAL=false
@@ -342,64 +349,21 @@ if [ "$DHCP_SUCCESS" = true ] && [ -n "$IP_ADDR" ]; then
         log_warning "Internet access: ${YELLOW}✗ Not working${NC}"
         log_warning "Connected to WiFi but no internet access"
 
-        # Skip portal bypass for known networks
-        if [ "$KNOWN_NETWORK_SKIP_PORTAL" = "true" ]; then
+        # Minimal portal check with opt-in bypass
+        portal_url=$(detect_portal_url)
+        if [ -n "$portal_url" ]; then
             echo ""
-            log_warning "This is a known network without captive portal - skipping bypass"
-            log_warning "If internet is not working, check the network configuration or credentials"
-        else
-            # Try automatic captive portal bypass for unknown networks
-            echo ""
-            log "Attempting automatic captive portal bypass..."
-
-            # Detect portal URL (function returns clean URL without log messages)
-            portal_url=$(detect_portal_url)
-
-            if [ -z "$portal_url" ]; then
-                log_warning "Could not detect portal URL"
-                log_warning "Manual login may be required - open browser to sign in"
+            log_info "Portal detected: $portal_url"
+            read -r -p "Run portal helper now? [y/N]: " run_portal
+            if [[ "$run_portal" =~ ^[Yy]$ ]]; then
+                log "Launching portal helper..."
+                frey wifi portal
             else
-                log_info "Portal URL detected: $portal_url"
-                echo ""
-
-                # Strategy 1: Shell-based bypass (curl-based, 3 methods)
-                if [ -x /usr/local/bin/frey-wifi-portal-shell-bypass.sh ]; then
-                    log "Strategy 1: Shell-based bypass (curl)..."
-                    if /usr/local/bin/frey-wifi-portal-shell-bypass.sh "$portal_url"; then
-                        log_success "Portal bypass ${GREEN}✓ Successful${NC}"
-                        log "Internet access should now be working"
-                        exit 0
-                    fi
-                    log_warning "Shell-based bypass ${YELLOW}✗ Failed${NC}"
-                fi
-
-                # Strategy 2: Lynx terminal browser (for simple portals)
-                if command -v lynx &>/dev/null; then
-                    log "Strategy 2: Lynx terminal browser..."
-                    if attempt_lynx_bypass "$portal_url"; then
-                        log_success "Portal bypass via lynx ${GREEN}✓ Successful${NC}"
-                        log "Internet access should now be working"
-                        exit 0
-                    fi
-                    log_warning "Lynx bypass ${YELLOW}✗ Failed${NC}"
-                fi
-
-                # Strategy 3: Python/Selenium (for complex portals)
-                if [ -x /usr/local/bin/frey-wifi-portal-bypasser.py ]; then
-                    log "Strategy 3: Python/Selenium bypass..."
-                    if /usr/local/bin/frey-wifi-portal-bypasser.py "$portal_url"; then
-                        log_success "Portal bypass ${GREEN}✓ Successful${NC}"
-                        log "Internet access should now be working"
-                        exit 0
-                    fi
-                    log_warning "Selenium bypass ${YELLOW}✗ Failed${NC}"
-                fi
-
-                echo ""
-                log_error "All bypass attempts failed ${YELLOW}✗${NC}"
-                log_warning "Manual login required - open browser and navigate to:"
-                log_warning "  $portal_url"
+                log_info "You can run it later: frey wifi portal"
             fi
+        else
+            log_warning "Could not detect portal URL automatically."
+            log_info "If this network uses a captive portal, run: frey wifi portal"
         fi
     fi
 else
