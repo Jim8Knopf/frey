@@ -17,11 +17,20 @@ PI_HOST="${1:-${PI_HOST:-frey}}"
 PORTAL_URL="${2:-${PORTAL_URL:-http://captive.apple.com/}}"  # Use the portal URL printed by `frey wifi portal` if provided
 PI_USER="${PI_USER:-ansible}"
 SOCKS_PORT="${SOCKS_PORT:-1080}"
-SSH_IDENTITY="${SSH_IDENTITY:-$HOME/.ssh/id_rsa_ansible}"
+SSH_IDENTITY="${SSH_IDENTITY:-}"
 SSH_OPTS_EXTRA=()
 
+# Choose a key automatically: env override, else common keys, else rely on agent
 if [[ -n "$SSH_IDENTITY" && -f "$SSH_IDENTITY" ]]; then
   SSH_OPTS_EXTRA+=(-i "$SSH_IDENTITY")
+else
+  for candidate in "$HOME/.ssh/id_rsa_ansible" "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_ecdsa"; do
+    if [[ -z "$SSH_IDENTITY" && -f "$candidate" ]]; then
+      SSH_IDENTITY="$candidate"
+      SSH_OPTS_EXTRA+=(-i "$SSH_IDENTITY")
+      break
+    fi
+  done
 fi
 
 if [[ -n "${SSH_OPTS:-}" ]]; then
@@ -88,10 +97,11 @@ if kill -0 "$SSH_PID" 2>/dev/null; then
 else
   echo "Failed to start SSH tunnel. Password auth is not supported in background."
   echo "Tried host: ${PI_HOST}, user: ${PI_USER}, port: ${SOCKS_PORT_CHOSEN}"
-  if [[ ! -f "$SSH_IDENTITY" ]]; then
-    echo "No key found at SSH_IDENTITY=${SSH_IDENTITY}. Provide a key or set SSH_IDENTITY."
+  if [[ -n "$SSH_IDENTITY" && ! -f "$SSH_IDENTITY" ]]; then
+    echo "Key not found at SSH_IDENTITY=${SSH_IDENTITY}. Provide a key or set SSH_IDENTITY."
+  else
+    echo "Ensure key-based SSH works (agent or key): ssh ${PI_USER}@${PI_HOST}"
   fi
-  echo "Ensure key-based SSH works: ssh -i ${SSH_IDENTITY} ${PI_USER}@${PI_HOST}"
   echo "SSH log:"
   tail -n 20 "$SSH_LOG" 2>/dev/null || true
   exit 1
