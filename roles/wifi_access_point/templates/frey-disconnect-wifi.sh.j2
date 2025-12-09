@@ -29,6 +29,9 @@ log "Disconnecting from WiFi..."
 # Stop dhcpcd on wlan0
 kill_dhcpcd "$INTERFACE"
 
+# Clear roaming lock if present
+rm -f /var/run/frey-wifi-locked-ssid || true
+
 # Disconnect wpa_supplicant
 if is_wpa_supplicant_running "$INTERFACE"; then
     wpa_disconnect "$INTERFACE"

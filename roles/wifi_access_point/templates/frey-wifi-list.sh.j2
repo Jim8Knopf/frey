@@ -1,0 +1,212 @@
+#!/bin/bash
+# ==============================================================================
+# FREY WIFI LIST - WiFi Network Scanner
+# ==============================================================================
+# Scans and displays available WiFi networks with signal strength and security
+#
+# USAGE:
+#   frey-wifi-list                     # Detailed table format
+#   frey-wifi-list --simple            # SSID only (one per line)
+#   frey-wifi-list --open              # Show only open networks
+#   frey-wifi-list --simple --open     # Combine flags
+# ==============================================================================
+{% raw %}
+# Source shared library
+source /usr/local/lib/frey/frey-wifi-lib.sh
+{% endraw %}
+INTERFACE="{{ network.wifi.client_interface }}"
+{% raw %}
+MODE="detailed"  # or "simple"
+FILTER="all"     # or "open"
+
+show_help() {
+    cat <<EOF
+Frey WiFi List - Scan and display available WiFi networks
+
+Usage: frey wifi list [options]
+
+Options:
+  --simple      Show only SSID names (one per line)
+  --open        Filter to show only open networks
+  --help, -h    Show this help message
+
+Examples:
+  frey wifi list                    # Detailed table
+  frey wifi list --simple           # SSID names only
+  frey wifi list --open             # Open networks only
+  frey wifi list --simple --open    # Open network names
+
+Output Format (detailed mode):
+  SSID                              Signal      Security    Band
+  ================================  ==========  ==========  ========
+  CoffeeShop WiFi                   -45 dBm     WPA         2.4GHz
+  Library Public                    -67 dBm     Open        5GHz
+  ...
+
+Notes:
+  - Open networks include: no encryption, and any non-password networks
+  - Signal strength: -30 to -50 dBm (excellent), -50 to -70 (good), < -70 (weak)
+  - Requires wlan0 interface to be up
+
+EOF
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --simple)
+            MODE="simple"
+            shift
+            ;;
+        --open)
+            FILTER="open"
+            shift
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
+# Validate interface exists
+if ! validate_interface "$INTERFACE"; then
+    log_error "WiFi interface $INTERFACE not found"
+    exit 1
+fi
+
+# Bring interface up
+if ! bring_interface_up "$INTERFACE"; then
+    log_error "Failed to bring interface $INTERFACE up"
+    exit 1
+fi
+
+# Trigger scan
+log_info "Scanning for WiFi networks on $INTERFACE..."
+iw dev "$INTERFACE" scan trigger 2>/dev/null || true
+sleep 2
+
+# Get scan results
+scan_output=$(iw dev "$INTERFACE" scan 2>/dev/null)
+
+if [ -z "$scan_output" ]; then
+    log_error "No scan results. Interface may not support scanning."
+    exit 1
+fi
+
+# Parse scan results into arrays
+declare -a ssids signals securities frequencies
+
+current_ssid=""
+current_signal=""
+current_security="Open"
+current_freq=""
+
+while IFS= read -r line; do
+    if [[ "$line" =~ ^BSS ]]; then
+        # Save previous entry if complete
+        if [[ -n "$current_ssid" && -n "$current_signal" ]]; then
+            # Apply filter
+            if [[ "$FILTER" == "all" ]] || [[ "$FILTER" == "open" && "$current_security" == "Open" ]]; then
+                ssids+=("$current_ssid")
+                signals+=("$current_signal")
+                securities+=("$current_security")
+                frequencies+=("$current_freq")
+            fi
+        fi
+
+        # Reset for new entry
+        current_ssid=""
+        current_signal=""
+        current_security="Open"
+        current_freq=""
+
+    elif [[ "$line" =~ ^[[:space:]]+SSID:[[:space:]]*(.+)$ ]]; then
+        current_ssid="${BASH_REMATCH[1]}"
+
+    elif [[ "$line" =~ signal:[[:space:]]*([+-]?[0-9]+\.[0-9]+)[[:space:]]*dBm ]]; then
+        # Extract signal as integer
+        current_signal=$(printf "%.0f" "${BASH_REMATCH[1]}")
+
+    elif [[ "$line" =~ freq:[[:space:]]*([0-9]+) ]]; then
+        local freq_mhz="${BASH_REMATCH[1]}"
+        # Determine band
+        if [[ $freq_mhz -gt 5000 ]]; then
+            current_freq="5GHz"
+        else
+            current_freq="2.4GHz"
+        fi
+
+    elif [[ "$line" =~ (WPA|RSN) ]]; then
+        current_security="WPA"
+    fi
+done <<< "$scan_output"
+
+# Save last entry
+if [[ -n "$current_ssid" && -n "$current_signal" ]]; then
+    if [[ "$FILTER" == "all" ]] || [[ "$FILTER" == "open" && "$current_security" == "Open" ]]; then
+        ssids+=("$current_ssid")
+        signals+=("$current_signal")
+        securities+=("$current_security")
+        frequencies+=("$current_freq")
+    fi
+fi
+
+# Check if any networks found
+if [ ${#ssids[@]} -eq 0 ]; then
+    if [ "$FILTER" = "open" ]; then
+        log_warning "No open networks found"
+    else
+        log_warning "No networks found"
+    fi
+    exit 0
+fi
+
+# Output results
+if [[ "$MODE" == "simple" ]]; then
+    # Simple mode - just SSID names
+    for ssid in "${ssids[@]}"; do
+        echo "$ssid"
+    done
+else
+    # Detailed table mode
+    echo ""
+    printf "%-32s %-10s %-10s %-8s\n" "SSID" "Signal" "Security" "Band"
+    printf "%-32s %-10s %-10s %-8s\n" "================================" "==========" "==========" "========"
+
+    for i in "${!ssids[@]}"; do
+        # Truncate long SSIDs
+        local display_ssid="${ssids[$i]}"
+        if [ ${#display_ssid} -gt 32 ]; then
+            display_ssid="${display_ssid:0:29}..."
+        fi
+
+        printf "%-32s %-10s %-10s %-8s\n" \
+            "$display_ssid" \
+            "${signals[$i]} dBm" \
+            "${securities[$i]}" \
+            "${frequencies[$i]}"
+    done
+
+    echo ""
+    log_info "Found ${#ssids[@]} network(s)"
+
+    if [ "$FILTER" != "open" ]; then
+        local open_count=0
+        for sec in "${securities[@]}"; do
+            if [ "$sec" = "Open" ]; then
+                ((open_count++)) || true
+            fi
+        done
+
+        if [ $open_count -gt 0 ]; then
+            log_info "$open_count open network(s) available (use --open to filter)"
+        fi
+    fi
+fi
+{% endraw %}

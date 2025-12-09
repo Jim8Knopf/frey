@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# ==============================================================================
+# Frey WiFi Captive Portal Daemon (Adaptive Intervals)
+#
+# Monitors for captive portals and automatically attempts bypass.
+# Uses adaptive check intervals based on network state:
+# - Fast interval (30s) after connection changes
+# - Portal interval (2min) when portal detected
+# - Normal interval (10min) when everything is OK
+#
+# This daemon runs continuously and calls the detection script.
+# ==============================================================================
+
+STATE_FILE="/var/lib/frey/captive-portal/portal.state"
+INTERVAL_NORMAL={{ network.wifi.roaming.captive_portal.interval_normal | default(600) }}    # 10 minutes
+INTERVAL_PORTAL={{ network.wifi.roaming.captive_portal.interval_portal | default(120) }}    # 2 minutes
+INTERVAL_FAST={{ network.wifi.roaming.captive_portal.interval_fast | default(30) }}         # 30 seconds
+
+LOG_PREFIX="[PortalDaemon]"
+
+log() {
+    echo "${LOG_PREFIX} $1" >&2
+    logger -t frey-portal-daemon "$1"
+}
+
+# Track previous connection state
+PREV_SSID=""
+PREV_STATE=""
+
+check_connection_changed() {
+    local current_ssid
+    local current_state
+
+    current_ssid=$(wpa_cli -i wlan0 status 2>/dev/null | grep '^ssid=' | cut -d'=' -f2 || echo "")
+    current_state=$(wpa_cli -i wlan0 status 2>/dev/null | grep '^wpa_state=' | cut -d'=' -f2 || echo "")
+
+    if [ "$current_ssid" != "$PREV_SSID" ] || [ "$current_state" != "$PREV_STATE" ]; then
+        PREV_SSID="$current_ssid"
+        PREV_STATE="$current_state"
+        return 0  # Connection changed
+    fi
+
+    return 1  # No change
+}
+
+log "Starting captive portal detection daemon"
+log "Intervals: Normal=${INTERVAL_NORMAL}s, Portal=${INTERVAL_PORTAL}s, Fast=${INTERVAL_FAST}s"
+
+while true; do
+    # Check if connection changed
+    CONNECTION_CHANGED=0
+    if check_connection_changed; then
+        CONNECTION_CHANGED=1
+        log "WiFi connection changed to: ${PREV_SSID} (${PREV_STATE})"
+    fi
+
+    # Run detection script
+    /usr/local/bin/frey-wifi-captive-portal-auto
+    EXIT_CODE=$?
+
+    # Determine next interval based on state
+    if [ -f "$STATE_FILE" ]; then
+        # Portal detected and saved to state file
+        SLEEP_TIME=$INTERVAL_PORTAL
+        log "Portal state active, rechecking in ${SLEEP_TIME}s"
+    elif [ $CONNECTION_CHANGED -eq 1 ]; then
+        # Connection just changed, check quickly
+        SLEEP_TIME=$INTERVAL_FAST
+        log "Connection changed, quick recheck in ${SLEEP_TIME}s"
+    else
+        # Normal operation
+        SLEEP_TIME=$INTERVAL_NORMAL
+    fi
+
+    sleep $SLEEP_TIME
+done

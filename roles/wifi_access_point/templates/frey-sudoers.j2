@@ -1,0 +1,14 @@
+# ==============================================================================
+# FREY SUDO PERMISSIONS
+# ==============================================================================
+# Allows {{ ansible_user }} to run frey WiFi commands without password prompts
+# Location: /etc/sudoers.d/10-frey-wifi
+# ==============================================================================
+
+# Allow {{ ansible_user }} to run frey commands without password
+{{ ansible_user }} ALL=(root) NOPASSWD: /usr/local/bin/frey
+{{ ansible_user }} ALL=(root) NOPASSWD: /usr/local/bin/frey-*
+{{ ansible_user }} ALL=(root) NOPASSWD: /usr/local/lib/frey/*
+
+# Allow reading system logs without sudo (useful for debugging)
+{{ ansible_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl

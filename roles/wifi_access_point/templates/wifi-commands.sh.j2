@@ -18,20 +18,26 @@ Commands:
   connect <ssid> [password]   Connect to WiFi network
   disconnect                  Disconnect from current network
   menu                        Interactive network selection (TUI)
+  list [--simple] [--open]    Scan and list available networks
   status                      Show current connection status
   pause                       Pause roaming daemon
   resume                      Resume roaming daemon
   power on|off                Enable/disable WiFi power saving
+  portal [login]              Launch captive portal helper (auto + manual)
 
 Examples:
   frey wifi connect "My Network" "password123"
   frey wifi connect "OpenWiFi"     # Open network
   frey wifi disconnect
   frey wifi menu
+  frey wifi list                   # Scan networks (detailed)
+  frey wifi list --simple          # SSID only
+  frey wifi list --open            # Open networks only
   frey wifi status
   frey wifi pause
   frey wifi resume
   frey wifi power off              # Disable power saving
+  frey wifi portal                 # Run captive portal helper
 
 Notes:
   - Connection commands affect {{ network.wifi.client_interface }} only
@@ -50,6 +56,10 @@ case "$1" in
         ;;
     menu)
         exec /usr/local/bin/frey-wifi-tui
+        ;;
+    list)
+        shift
+        exec /usr/local/bin/frey-wifi-list "$@"
         ;;
     status)
         # Show wpa_cli status + roaming daemon state
@@ -98,6 +108,10 @@ case "$1" in
             exit 1
         fi
         exec /usr/local/bin/frey-disable-wifi-power-save "$SETTING"
+        ;;
+    portal|portal-login|portal_login)
+        shift
+        exec /usr/local/bin/frey-portal-login "$@"
         ;;
     --help|-h|help)
         show_help

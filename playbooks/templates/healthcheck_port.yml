@@ -1,0 +1,33 @@
+---
+# healthcheck_port.yml - Wait for Port to Accept Connections
+#
+# This template waits for a TCP port to accept connections before proceeding.
+#
+# Parameters:
+#   port (required): Port number to check
+#   host (optional): Host to check (default: "127.0.0.1")
+#   timeout (optional): Maximum wait time in seconds (default: 120)
+#   delay (optional): Delay before first check in seconds (default: 5)
+#   service_name (optional): Service name for logging (default: "service")
+#
+# Usage:
+#   - include_tasks: healthcheck_port.yml
+#     vars:
+#       port: 8096
+#       host: "127.0.0.1"
+#       timeout: 120
+#       service_name: "jellyfin"
+
+- name: Wait for {{ service_name | default('service') }} port {{ port }} to accept connections
+  ansible.builtin.wait_for:
+    host: "{{ host | default('127.0.0.1') }}"
+    port: "{{ port }}"
+    timeout: "{{ timeout | default(120) }}"
+    delay: "{{ delay | default(5) }}"
+    state: started
+  register: port_check_result
+
+- name: Report {{ service_name | default('service') }} port health
+  ansible.builtin.debug:
+    msg: "✅ {{ service_name | default('service') }} is accepting connections on port {{ port }}"
+  when: port_check_result is succeeded

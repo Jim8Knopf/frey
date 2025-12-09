@@ -125,15 +125,27 @@
       become: true
 
     # --------------------------------------------------------------------------
+    # Check internet connectivity before package operations
+    # --------------------------------------------------------------------------
+    - name: Check for internet connectivity (pre-flight)
+      ansible.builtin.shell: ping -c 1 -W 3 8.8.8.8
+      register: preflight_internet_check
+      failed_when: false
+      changed_when: false
+      tags: always
+
+    # --------------------------------------------------------------------------
     # Update package cache for all roles
     # --------------------------------------------------------------------------
     # Ensures we have latest package information before installing anything
     # cache_valid_time: 3600 = Only update if cache is older than 1 hour
+    # Only runs if internet is available to avoid long retry delays
     # --------------------------------------------------------------------------
     - name: Update package cache
       apt:
         update_cache: yes
         cache_valid_time: 3600
+      when: preflight_internet_check.rc == 0
       ignore_errors: true
       tags: always
 

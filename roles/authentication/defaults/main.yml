@@ -37,6 +37,9 @@ authentication:
       redirect_uris:
         - "https://immich.{{ network.domain_name }}/auth/login"
         - "https://immich.{{ network.domain_name }}/user-settings"
+        - "https://immich.{{ network.domain_name }}/api/oauth/mobile-redirect"
+        - "app.immich:///oauth-callback"
+        - "https://app.immich:///oauth-callback"
       scopes:
         - openid
         - email

@@ -1,0 +1,41 @@
+---
+# healthcheck_http.yml - HTTP Health Check
+#
+# This template polls an HTTP endpoint until it returns expected status.
+#
+# Parameters:
+#   url (required): Full URL to check (e.g., "http://localhost:8080/api/health")
+#   status_code (optional): Expected HTTP status code (default: 200)
+#   retries (optional): Maximum retry attempts (default: 20)
+#   delay (optional): Seconds between retries (default: 5)
+#   service_name (optional): Service name for logging (default: "service")
+#
+# Usage:
+#   - include_tasks: healthcheck_http.yml
+#     vars:
+#       url: "http://localhost:8096/health"
+#       status_code: 200
+#       retries: 20
+#       delay: 5
+#       service_name: "jellyfin"
+
+- name: Wait for {{ service_name | default('service') }} HTTP health check
+  ansible.builtin.uri:
+    url: "{{ url }}"
+    status_code: "{{ status_code | default(200) }}"
+    validate_certs: false
+  register: http_health_check
+  until: http_health_check.status == (status_code | default(200))
+  retries: "{{ retries | default(20) }}"
+  delay: "{{ delay | default(5) }}"
+  failed_when: false
+
+- name: Report {{ service_name | default('service') }} HTTP health status
+  ansible.builtin.debug:
+    msg: "✅ {{ service_name | default('service') }} HTTP health check passed ({{ url }} returned {{ http_health_check.status }})"
+  when: http_health_check is succeeded
+
+- name: Warn on {{ service_name | default('service') }} HTTP health check failure
+  ansible.builtin.debug:
+    msg: "⚠️  {{ service_name | default('service') }} HTTP health check failed ({{ url }} returned {{ http_health_check.status | default('no response') }})"
+  when: http_health_check is failed

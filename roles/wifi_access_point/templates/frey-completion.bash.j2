@@ -1,0 +1,61 @@
+# ==============================================================================
+# FREY BASH COMPLETION
+# ==============================================================================
+# Bash completion for the frey command
+# Location: /etc/bash_completion.d/frey
+# ==============================================================================
+
+_frey_completion() {
+    local cur prev words cword
+    _init_completion || return
+
+    # Level 1: Main categories
+    if [ $cword -eq 1 ]; then
+        COMPREPLY=( $(compgen -W "wifi ap net --help --version help version" -- "$cur") )
+        return
+    fi
+
+    # Level 2: Category-specific subcommands
+    case "${words[1]}" in
+        wifi)
+            if [ $cword -eq 2 ]; then
+                COMPREPLY=( $(compgen -W "connect disconnect menu status pause resume power list portal portal-manual --help help" -- "$cur") )
+            elif [ $cword -eq 3 ]; then
+                case "${words[2]}" in
+                    power)
+                        COMPREPLY=( $(compgen -W "on off" -- "$cur") )
+                        ;;
+                    list)
+                        COMPREPLY=( $(compgen -W "--simple --open" -- "$cur") )
+                        ;;
+                esac
+            elif [ $cword -eq 4 ] && [ "${words[2]}" = "list" ]; then
+                # Allow combining --simple and --open flags
+                case "${words[3]}" in
+                    --simple)
+                        COMPREPLY=( $(compgen -W "--open" -- "$cur") )
+                        ;;
+                    --open)
+                        COMPREPLY=( $(compgen -W "--simple" -- "$cur") )
+                        ;;
+                esac
+            fi
+            ;;
+        ap)
+            if [ $cword -eq 2 ]; then
+                COMPREPLY=( $(compgen -W "status ensure restart clients --help help" -- "$cur") )
+            elif [ $cword -eq 3 ] && [ "${words[2]}" = "clients" ]; then
+                COMPREPLY=( $(compgen -W "--watch" -- "$cur") )
+            fi
+            ;;
+        net)
+            if [ $cword -eq 2 ]; then
+                COMPREPLY=( $(compgen -W "status nat --help help" -- "$cur") )
+            elif [ $cword -eq 3 ] && [ "${words[2]}" = "nat" ]; then
+                COMPREPLY=( $(compgen -W "start stop status restart" -- "$cur") )
+            fi
+            ;;
+    esac
+}
+
+complete -F _frey_completion frey

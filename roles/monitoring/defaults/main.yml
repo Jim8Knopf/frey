@@ -37,17 +37,8 @@ monitoring:
     port: 3000
     image: "grafana/grafana"
     version: "latest"
-    # OIDC/SSO Configuration (enabled when infrastructure.services.authentik.enabled is true)
-    # All OAuth URLs use clean DNS names without ports (http://auth.frey)
-    # Browser: auth.frey → AdGuard DNS → Traefik → Authentik
-    # Backend: auth.frey → Traefik network alias → Traefik → Authentik
-    # Works offline via AdGuard local DNS and Docker network aliases through Traefik
-    oidc_client_id: "grafana"
-    oidc_scopes: "openid profile email"
-    oidc_auth_url: "{{ network.authentik_public_url }}/application/o/authorize/"
-    oidc_token_url: "{{ network.authentik_public_url }}/application/o/token/"
-    oidc_api_url: "{{ network.authentik_public_url }}/application/o/userinfo/"
-    oidc_role_attribute_path: "contains(groups, 'grafana_admins') && 'Admin' || contains(groups, 'grafana_editors') && 'Editor' || 'Viewer'"
+    # OIDC configuration removed - Authentik replaced with Authelia
+    # TODO: Configure Authelia OIDC for Grafana
   loki:
     enabled: true
     port: 3100

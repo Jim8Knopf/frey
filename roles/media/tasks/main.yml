@@ -1,38 +1,28 @@
 ---
-- name: Setup media stack user
+# ==============================================================================
+# PHASE 1: START IMAGE DOWNLOADS IN BACKGROUND
+# ==============================================================================
+# Kickoff downloads for 12+ services immediately. These run in background
+# while we do all the setup work below (audiobook bridge, qBittorrent, Step-CA).
+
+- name: Start background image pulls for media stack
+  include_tasks: "../playbooks/templates/async_prepull_start.yml"
+  vars:
+    stack: "media"
+    service_dict: "{{ media.services }}"
+    exclude_services: [mopidy, audiobook_bridge, jellystat_db]
+    prepull_timeout: 300
+
+# ==============================================================================
+# PHASE 2: SETUP WORK (RUNS WHILE IMAGES DOWNLOAD)
+# ==============================================================================
+
+- name: Setup media stack user and directories
   include_tasks: "templates/create_user.yml"
   vars:
-    stack: "media"  
-    folders: [movies, tv, music, audiobooks, podcasts,audiobook-bridge]
+    stack: "media"
+    folders: [movies, tv, music, audiobooks, podcasts, audiobook-bridge]
     checkVar: [media, storage.base_dir, media.user.name]
-
-
-- name: Pre-pull all enabled media stack images
-  community.docker.docker_image:
-    name: "{{ item.value.image }}"
-    source: pull
-    state: present
-    timeout: 300
-  loop: "{{ media.services | dict2items }}"
-  loop_control:
-    label: "{{ item.value.image | default(item.key) }}"
-  when:
-    - item.value.enabled | default(false)
-    - item.value.image is defined
-    - item.key not in ['mopidy', 'audiobook_bridge', 'jellystat_db']
-  register: image_pull_results
-  retries: 2
-  delay: 10
-  failed_when: false
-
-- name: Set failed pulls fact
-  ansible.builtin.set_fact:
-    failed_pulls: "{{ image_pull_results.results | default([]) | select('failed') | map(attribute='item.value.image') | list }}"
-
-- name: Report failed image pulls
-  ansible.builtin.debug:
-    msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
-  when: failed_pulls | length > 0
 
 - name: Deploy audiobook bridge playback script
   ansible.builtin.template:
@@ -85,16 +75,6 @@
     step_ca_cert_available: "{{ step_ca_cert_check.stat.exists | default(false) and step_ca_cert_check.stat.isreg | default(false) }}"
   when: media.services.audiobookshelf.enabled | default(false)
 
-- name: Deploy media stack compose file
-  ansible.builtin.template:
-    src: docker-compose-media.yml.j2
-    dest: "{{ storage.stacks }}/media/docker-compose.yml"
-    owner: "{{ media.user.name }}"
-    group: "{{ media.group.name }}"
-    mode: '0644'
-    backup: yes
-  register: compose_template_result
-
 - name: Ensure downloads directory exists with proper permissions
   ansible.builtin.file:
     path: "{{ media.downloads }}"
@@ -128,6 +108,15 @@
     mode: '0775'
   when: not media.vpn.enabled
 
+- name: Deploy qBittorrent healthcheck script
+  ansible.builtin.copy:
+    src: qbittorrent_healthcheck.sh
+    dest: "{{ storage.appdata_dir }}/qbittorrent/healthcheck.sh"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.group.name }}"
+    mode: '0755'
+  when: not media.vpn.enabled
+
 - name: Deploy optimized qBittorrent configuration (only if not exists)
   ansible.builtin.template:
     src: qBittorrent.conf.j2
@@ -146,23 +135,6 @@
     - not media.vpn.enabled
     - qbittorrent_container_info.exists is defined
     - qbittorrent_container_info.exists
-
-- name: Show rendered compose
-  ansible.builtin.shell: |
-    nl -ba /opt/frey/stacks/media/docker-compose.yml
-  register: compose_snippet
-  when: debug_enabled | default(false) | bool
-
-- debug:
-    var: compose_snippet.stdout_lines
-  when: debug_enabled | default(false) | bool
-
-- name: Validate Docker Compose file syntax
-  ansible.builtin.command:
-    cmd: docker compose -f "{{ storage.stacks }}/media/docker-compose.yml" config --quiet
-  register: compose_validation
-  failed_when: compose_validation.rc != 0
-  changed_when: false
 
 - name: Ensure Step-CA root certificate is present for media mounts
   block:
@@ -251,49 +223,27 @@
       failed_when: not media_step_ca_verified.stat.isreg
   when: media.services.audiobookshelf.enabled | default(false)
 
-- name: Start media stack with graceful error handling
-  block:
-    - name: Start media stack containers using compose
-      community.docker.docker_compose_v2:
-        project_src: "{{ storage.stacks }}/media"
-        state: present
-        remove_orphans: true
-        timeout: 300
-      register: compose_result
-      retries: 2
-      delay: 30
+# ==============================================================================
+# PHASE 3: WAIT FOR IMAGE DOWNLOADS TO COMPLETE
+# ==============================================================================
+# All setup work is done. Now wait for the background downloads from Phase 1.
 
-  rescue:
-    - name: Identify failed containers
-      ansible.builtin.shell: |
-        docker compose -f "{{ storage.stacks }}/media/docker-compose.yml" ps --format '{% raw %}{{.Service}} {{.State}}{% endraw %}' \
-        | awk '$2 != "running" {printf "%s(%s) ", $1, $2}' | sed 's/ $//'
-      register: failed_containers
-      failed_when: false
+- name: Wait for media stack images to finish downloading
+  include_tasks: "../playbooks/templates/async_prepull_wait.yml"
+  vars:
+    stack: "media"
+    prepull_retries: 120
+    prepull_delay: 5
 
-    - name: Extract concise error message from compose failure
-      ansible.builtin.set_fact:
-        error_summary: >-
-          {% if compose_result.msg is defined %}
-          {{ compose_result.msg | regex_search('error mounting.*', ignorecase=True) | default(compose_result.msg | truncate(200)) }}
-          {% else %}
-          Unknown deployment error
-          {% endif %}
+# ==============================================================================
+# PHASE 4: DEPLOY STACK
+# ==============================================================================
 
-    - name: Show deployment error summary
-      ansible.builtin.debug:
-        msg: |
-          ❌ Media stack deployment failed
-
-          Failed containers: {{ failed_containers.stdout | default('none identified') }}
-
-          Error: {{ error_summary }}
-
-          💡 Common fixes:
-             • Step-CA cert issue: Re-run playbook after infrastructure role completes
-             • Volume mount errors: Check 'docker ps -a' and remove broken containers
-             • Full logs: docker compose -f {{ storage.stacks }}/media/docker-compose.yml logs
-
-    - name: Fail with concise message
-      ansible.builtin.fail:
-        msg: "Media deployment failed - see summary above"
+- name: Deploy media stack
+  include_tasks: "../playbooks/templates/deploy_compose_stack.yml"
+  vars:
+    stack: "media"
+    compose_template: "docker-compose-media.yml.j2"
+    error_handling: "rescue"
+    deploy_timeout: 300
+    deploy_retries: 2

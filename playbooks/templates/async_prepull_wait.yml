@@ -1,0 +1,74 @@
+---
+# async_prepull_wait.yml - Wait for Background Image Downloads
+#
+# This template polls async image downloads started by async_prepull_start.yml
+# and waits until all downloads complete (or timeout).
+#
+# Parameters:
+#   stack (required): Stack name - must match the stack used in async_prepull_start.yml
+#   prepull_retries (optional): Maximum wait iterations (default: 120)
+#   prepull_delay (optional): Seconds between poll attempts (default: 5)
+#   fail_on_timeout (optional): Fail playbook on timeout (default: false)
+#
+# Usage:
+#   - include_tasks: async_prepull_wait.yml
+#     vars:
+#       stack: "media"
+#       prepull_retries: 120
+#       prepull_delay: 5
+#
+# This should be called just BEFORE deploying the compose stack, after all
+# other setup work (user creation, configs, etc.) has completed.
+
+- name: Wait for {{ stack }} Docker image pre-pulls to finish
+  ansible.builtin.async_status:
+    jid: "{{ item.ansible_job_id }}"
+  register: _prepull_status_temp
+  until: _prepull_status_temp.finished
+  retries: "{{ prepull_retries | default(120) }}"
+  delay: "{{ prepull_delay | default(5) }}"
+  loop: "{{ vars[stack + '_image_jobs'].results | default([]) | selectattr('ansible_job_id', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - vars[stack + '_image_jobs'] is defined
+    - (vars[stack + '_image_jobs'].results | selectattr('ansible_job_id', 'defined') | list) | length > 0
+  failed_when: false  # Don't fail on pull errors - Docker Compose will retry
+
+- name: Store image pull status for {{ stack }} stack
+  ansible.builtin.set_fact:
+    "{{ stack }}_image_status": "{{ _prepull_status_temp }}"
+  when: _prepull_status_temp is defined
+
+- name: Identify failed image pulls for {{ stack }}
+  ansible.builtin.set_fact:
+    "{{ stack }}_failed_pulls": >-
+      {{
+        vars[stack + '_image_status'].results | default([])
+        | selectattr('failed', 'equalto', true)
+        | map(attribute='item.item')
+        | list
+      }}
+  when: vars[stack + '_image_status'] is defined
+
+- name: Report successful image pulls for {{ stack }}
+  ansible.builtin.debug:
+    msg: "{{ (vars[stack + '_image_status'].results | default([]) | selectattr('failed', 'equalto', false) | list) | length }} of {{ (vars[stack + '_image_status'].results | default([])) | length }} images pulled successfully for {{ stack }} stack"
+  when:
+    - vars[stack + '_image_status'] is defined
+    - (vars[stack + '_failed_pulls'] | default([])) | length == 0
+
+- name: Report failed image pulls for {{ stack }}
+  ansible.builtin.debug:
+    msg: "Warning: {{ (vars[stack + '_failed_pulls'] | default([])) | length }} images failed to pull: {{ vars[stack + '_failed_pulls'] | default([]) | join(', ') }}. Docker Compose will retry during deployment."
+  when:
+    - vars[stack + '_failed_pulls'] is defined
+    - (vars[stack + '_failed_pulls'] | default([])) | length > 0
+
+- name: Fail on pull timeout if requested
+  ansible.builtin.fail:
+    msg: "{{ stack }} image pulls timed out after {{ prepull_retries | default(120) * prepull_delay | default(5) }} seconds"
+  when:
+    - fail_on_timeout | default(false) | bool
+    - vars[stack + '_image_status'] is defined
+    - vars[stack + '_image_status'].results | selectattr('finished', 'equalto', false) | list | length > 0

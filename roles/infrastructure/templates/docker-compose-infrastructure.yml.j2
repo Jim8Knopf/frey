@@ -23,10 +23,14 @@ services:
     networks:
       proxy:              # Required for Traefik routing
         aliases:
-          - auth.{{ network.domain_name }}  # Allow backend containers to reach Authentik via Traefik
+{% for service in network.dns_rewrites | default([]) %}
+          - {{ service.host | default(service.name ~ '.' ~ network.domain_name) }}
+{% endfor %}
       backend:            # Internal service communication
         aliases:
-          - auth.{{ network.domain_name }}  # Allow backend containers to reach Authentik via Traefik
+{% for service in network.dns_rewrites | default([]) %}
+          - {{ service.host | default(service.name ~ '.' ~ network.domain_name) }}
+{% endfor %}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"  # Explicitly specify proxy network
@@ -56,142 +60,6 @@ services:
       - "traefik.http.routers.portainer.tls.certresolver=step-ca"
       - "traefik.http.services.portainer.loadbalancer.server.port=9000"
 
-{% if infrastructure.services.authentik.enabled | default(false) and authentik_postgres_password is defined %}
-  authentik-server:
-    image: ghcr.io/goauthentik/server:{{ infrastructure.services.authentik.version | default('latest') }}
-    container_name: authentik_server
-    restart: unless-stopped
-    command: server
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: authentik-db
-      AUTHENTIK_POSTGRESQL__USER: {{ authentik_db_user | default('authentik') }}
-      AUTHENTIK_POSTGRESQL__NAME: {{ authentik_db_name | default('authentik') }}
-      AUTHENTIK_POSTGRESQL__PASSWORD: {{ authentik_postgres_password }}
-      AUTHENTIK_SECRET_KEY: {{ authentik_secret_key }}
-      # Bootstrap configuration (initial setup)
-      AUTHENTIK_BOOTSTRAP_PASSWORD: {{ authentik_bootstrap_password }}
-      AUTHENTIK_BOOTSTRAP_TOKEN: {{ authentik_bootstrap_token }}
-      AUTHENTIK_BOOTSTRAP_EMAIL: {{ authentik_bootstrap_email | default('admin@local') }}
-      # Auto-import and instantiate blueprints on startup
-      AUTHENTIK_BOOTSTRAP_BLUEPRINTS: "/blueprints/*.yaml"
-      # Ensure Authentik scans the mounted custom blueprint directory
-      AUTHENTIK_BLUEPRINTS__DIRS: "/blueprints"
-      # Error reporting (disabled for privacy)
-      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
-      # Trust proxy headers from Traefik
-      AUTHENTIK_LISTEN__TRUSTED_PROXY_IP: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
-      # Public-facing URL (tells Authentik what its external URL is)
-      # Allows Authentik to accept OAuth requests from both internal (authentik_server:9000) and external (auth.frey)
-      AUTHENTIK_SERVER_NAME: "auth.{{ network.domain_name }}"
-    ports:
-      - "{{ infrastructure.services.authentik.port | default(9000) }}:9000"
-      - "{{ infrastructure.services.authentik.port_https | default(9446) }}:9446"
-    volumes:
-      - "{{ storage.appdata_dir }}/authentik/media:/media"
-      - "{{ storage.appdata_dir }}/authentik/custom-templates:/templates"
-      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints:ro"
-    networks:
-      proxy:
-      backend:
-    depends_on:
-      authentik-db:
-        condition: service_healthy
-      authentik-redis:
-        condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=proxy"
-      - "traefik.http.routers.authentik.rule=Host(`auth.{{ domain_name | default(network.domain_name | default('local')) }}`)"
-      - "traefik.http.routers.authentik.entrypoints=websecure"
-      - "traefik.http.routers.authentik.tls=true"
-      - "traefik.http.routers.authentik.tls.certresolver=step-ca"
-      - "traefik.http.services.authentik.loadbalancer.server.port=9000"
-{% set landing_cors_origins = landing_page.allowed_origins | default([]) if landing_page is defined else [] %}
-{% if landing_cors_origins | length > 0 %}
-      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolalloworiginlist={{ landing_cors_origins | join(',') }}"
-      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolallowcredentials=true"
-      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolallowmethods=GET,OPTIONS,POST"
-      - "traefik.http.middlewares.authentik-cors.headers.accesscontrolallowheaders=Authorization,Content-Type"
-      - "traefik.http.middlewares.authentik-cors.headers.addvaryheader=true"
-      - "traefik.http.routers.authentik.middlewares=authentik-cors"
-{% endif %}
-      # HTTP router to support internal outposts reaching http://auth.frey
-      - "traefik.http.routers.authentik-http.rule=Host(`auth.{{ domain_name | default(network.domain_name | default('local')) }}`)"
-      - "traefik.http.routers.authentik-http.entrypoints=web"
-      - "traefik.http.middlewares.auth-redirect.redirectscheme.scheme=https"
-      - "traefik.http.routers.authentik-http.middlewares=auth-redirect"
-    healthcheck:
-      test: ["CMD-SHELL", "ak healthcheck || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 90s
-
-  authentik-db:
-    image: postgres:{{ infrastructure.services.authentik.postgres_version | default('16-alpine') }}
-    container_name: authentik_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: {{ authentik_db_name | default('authentik') }}
-      POSTGRES_USER: {{ authentik_db_user | default('authentik') }}
-      POSTGRES_PASSWORD: {{ authentik_postgres_password }}
-    volumes:
-      - "{{ storage.appdata_dir }}/authentik/database:/var/lib/postgresql/data"
-    networks:
-      - backend
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U {{ authentik_db_user | default('authentik') }}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  authentik-redis:
-    image: redis:{{ infrastructure.services.authentik.redis_version | default('alpine') }}
-    container_name: authentik_redis
-    restart: unless-stopped
-    command: --save 60 1 --loglevel warning
-    volumes:
-      - "{{ storage.appdata_dir }}/authentik/redis:/data"
-    networks:
-      - backend
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  authentik-worker:
-    image: ghcr.io/goauthentik/server:{{ infrastructure.services.authentik.version | default('latest') }}
-    container_name: authentik_worker
-    restart: unless-stopped
-    command: worker
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: authentik-db
-      AUTHENTIK_POSTGRESQL__USER: {{ authentik_db_user | default('authentik') }}
-      AUTHENTIK_POSTGRESQL__NAME: {{ authentik_db_name | default('authentik') }}
-      AUTHENTIK_POSTGRESQL__PASSWORD: {{ authentik_postgres_password }}
-      AUTHENTIK_SECRET_KEY: {{ authentik_secret_key }}
-      AUTHENTIK_BLUEPRINTS__DIRS: "/blueprints"
-      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
-    user: root
-    volumes:
-      - "{{ storage.appdata_dir }}/authentik/media:/media"
-      - "{{ storage.appdata_dir }}/authentik/certs:/certs"
-      - "{{ storage.appdata_dir }}/authentik/custom-templates:/templates"
-      - "{{ storage.appdata_dir }}/authentik/blueprints:/blueprints:ro"
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - backend
-    depends_on:
-      authentik-db:
-        condition: service_healthy
-      authentik-redis:
-        condition: service_healthy
-{% endif %}
-
   # ==============================================================================
   # STEP-CA - PRIVATE CERTIFICATE AUTHORITY
   # ==============================================================================
@@ -215,13 +83,8 @@ services:
     networks:
       proxy:              # Required for Traefik routing
       backend:            # Internal service communication
-    extra_hosts:
-      "ca.{{ network.domain_name }}": "127.0.0.1"  # Required for health check
-      # Map all *.frey domains to Traefik's IP on infrastructure_network for ACME HTTP-01 validation
-      # Both Step-CA and Traefik are on this network, so HTTP connections work
-{% for host_name in dns_hosts.values %}
-      "{{ host_name }}": "10.20.3.3"  # Traefik on infrastructure_network
-{% endfor %}
+    # No extra_hosts needed - using Traefik network aliases for ACME validation
+    # Health check uses step CLI which connects via internal service name
     environment:
       - DOCKER_STEPCA_INIT_NAME={{ infrastructure.services.step_ca.ca_name }}
 {% if infrastructure.services.step_ca.dns_names is string %}

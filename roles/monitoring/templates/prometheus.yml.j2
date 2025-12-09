@@ -51,12 +51,7 @@ scrape_configs:
 
 {% if monitoring['postgres-exporter'].enabled | default(false) %}
   # PostgreSQL databases
-  - job_name: 'postgres-authentik'
-    static_configs:
-      - targets: ['postgres-exporter-authentik:9187']
-        labels:
-          service: 'postgresql'
-          database: 'authentik'
+  # Authentik postgres exporter removed - Authentik replaced with Authelia
 
   - job_name: 'postgres-immich'
     static_configs:

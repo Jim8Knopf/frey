@@ -226,11 +226,88 @@ cat /var/lib/misc/dnsmasq.leases
 
 ### Common Patterns
 
-**User/Group Creation Pattern**:
-All roles use shared task: `include_tasks: "templates/create_user.yml"` with vars:
-- `stack`: Stack name (media, infrastructure, etc.)
-- `folders`: List of subdirectories to create
-- `checkVar`: List of required variables to verify
+#### Reusable Templates (playbooks/templates/)
+
+The project includes 8 reusable templates for common tasks:
+
+**Core Templates:**
+1. **async_prepull_start.yml** - Start image downloads in background (TRUE async)
+2. **async_prepull_wait.yml** - Wait for downloads before deployment
+3. **deploy_compose_stack.yml** - Template, validate, deploy compose stack
+4. **create_user.yml** - Create stack user, group, and directories
+
+**Helper Templates:**
+5. **create_directories.yml** - Create directory lists with ownership
+6. **create_networks.yml** - Create Docker networks
+7. **healthcheck_port.yml** - Wait for TCP port
+8. **healthcheck_http.yml** / **healthcheck_container.yml** - Health checks
+
+#### TRUE Async Image Pre-pulling Pattern
+
+**The Two-Phase Async Pattern:**
+Roles now use a two-phase async pattern that achieves TRUE background downloading:
+
+```yaml
+# PHASE 1: Start image downloads (returns immediately)
+- name: Start background image pulls for <stack> stack
+  include_tasks: "../playbooks/templates/async_prepull_start.yml"
+  vars:
+    stack: "<stack>"
+    service_dict: "{{ <stack>.services }}"  # For service dicts
+    # OR
+    image_list: ["image1:tag", "image2:tag"]  # For static lists
+    exclude_services: [service_to_skip]  # Optional
+    timeout: 300  # Optional (default: 300)
+
+# PHASE 2: Setup work (runs WHILE images download in background)
+- name: Setup <stack> user and directories
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "<stack>"
+    folders: [subdir_one, subdir_two]
+
+# ... all other setup work (configs, directories, etc.) ...
+
+# PHASE 3: Wait for downloads (just before deployment)
+- name: Wait for <stack> images to finish downloading
+  include_tasks: "../playbooks/templates/async_prepull_wait.yml"
+  vars:
+    stack: "<stack>"
+    retries: 120  # Optional (default: 120)
+    delay: 5      # Optional (default: 5)
+
+# PHASE 4: Deploy stack
+- name: Deploy <stack> stack
+  include_tasks: "../playbooks/templates/deploy_compose_stack.yml"
+  vars:
+    stack: "<stack>"
+    compose_template: "docker-compose-<stack>.yml.j2"
+```
+
+**Benefits of Two-Phase Async:**
+- Images download during setup work (user creation, configs, etc.)
+- 15-30% faster deployments (role-dependent)
+- Larger images (4GB Immich ML) download while other tasks execute
+- `force_source: false` skips already-present images
+
+**Migration Status:**
+- ✅ Phase 1 Complete: immich, media, automation (high-value roles)
+- ⏳ Phase 2 Pending: monitoring, cookbook, authentication
+- ⏳ Phase 3 Pending: infrastructure, landing_page, file_management
+
+#### User/Group Creation Pattern
+
+**create_user.yml** (simplified - no longer handles image pulling):
+```yaml
+- name: Setup <stack> user and directories
+  include_tasks: "templates/create_user.yml"
+  vars:
+    stack: "<stack>"
+    folders: [subdir_one, subdir_two]
+    checkVar: [required, variables, to_verify]  # Optional
+```
+
+Creates user, group, stack directory, and subdirectories in base_dir and appdata.
 
 **Service Stack Deployment Pattern**:
 1. Create dedicated user/group for stack

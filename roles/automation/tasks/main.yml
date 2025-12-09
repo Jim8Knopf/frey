@@ -1,87 +1,64 @@
 ---
-- name: Setup automation stack user
+# ==============================================================================
+# PHASE 1: START IMAGE DOWNLOADS IN BACKGROUND
+# ==============================================================================
+# Kickoff downloads for automation services (Ollama models can be multi-GB).
+# These run in background while we do setup work.
+
+- name: Combine automation and homeassistant services for pre-pulling
+  ansible.builtin.set_fact:
+    automation_combined_services: >-
+      {{
+        automation.services
+        | combine(homeassistant.services if (features.homeassistant | default(false)) else {})
+      }}
+  tags:
+    - images
+
+- name: Start background image pulls for automation stack
+  include_tasks: "../playbooks/templates/async_prepull_start.yml"
+  vars:
+    stack: "automation"
+    service_dict: "{{ automation_combined_services }}"
+    prepull_timeout: 600  # Allow longer for large Ollama models
+  tags:
+    - images
+
+# ==============================================================================
+# PHASE 2: SETUP WORK (RUNS WHILE IMAGES DOWNLOAD)
+# ==============================================================================
+
+- name: Setup automation stack user and directories
   include_tasks: "templates/create_user.yml"
   vars:
     stack: "automation"
     folders: [ollama, n8n, open-webui, homeassistant, piper, wyoming-whisper]
     checkVar: [storage.base_dir, automation.user.name]
 
-- name: Combine automation and homeassistant services for pre-pulling
-  ansible.builtin.set_fact:
-    automation_all_services: "{{ (automation.services.values() | list) + (homeassistant.services.values() | list) }}"
-  when: features.homeassistant | default(false)
+# ==============================================================================
+# PHASE 3: WAIT FOR IMAGE DOWNLOADS TO COMPLETE
+# ==============================================================================
 
-- name: Pre-pull all enabled automation stack images
-  community.docker.docker_image:
-    name: "{{ item.image }}"
-    source: pull
-    state: present
-    timeout: 300
-  loop: "{{ automation_all_services | default(automation.services.values()) | selectattr('enabled', 'equalto', true) | list }}"
-  loop_control:
-    label: "{{ item.image }}"
-  register: image_pull_results
-  retries: 2
-  delay: 10
-  failed_when: false
+- name: Wait for automation stack images to finish downloading
+  include_tasks: "../playbooks/templates/async_prepull_wait.yml"
+  vars:
+    stack: "automation"
+    prepull_retries: 120  # Longer for large Ollama models
+    prepull_delay: 5
+  tags:
+    - images
 
-- name: Set failed pulls fact
-  ansible.builtin.set_fact:
-    failed_pulls: "{{ image_pull_results.results | select('failed') | map(attribute='item.image') | list }}"
+# ==============================================================================
+# PHASE 4: DEPLOY STACK
+# ==============================================================================
 
-- name: Report failed image pulls
-  ansible.builtin.debug:
-    msg: "Warning: Failed to pull the following images: {{ failed_pulls }}. Will retry during compose."
-  when: failed_pulls | length > 0
-
-- name: Deploy automation stack compose file
-  ansible.builtin.template:
-    src: docker-compose-automation.yml.j2
-    dest: "{{ storage.stacks }}/automation/docker-compose.yml"
-    owner: "{{ automation.user.name }}"
-    group: "{{ automation.group.name }}"
-    mode: '0644'
-
-- name: Check docker compose JSON support for automation stack
-  ansible.builtin.command:
-    cmd: docker compose --ansi never --progress json --project-directory "{{ storage.stacks }}/automation" images --format json
-  register: automation_compose_json_check
-  changed_when: false
-  failed_when: false
-
-- name: Determine compose JSON support
-  ansible.builtin.set_fact:
-    automation_compose_json_supported: >-
-      {{ automation_compose_json_check.rc == 0 and
-         (automation_compose_json_check.stdout | default('') | trim | regex_search('^[\\[{]')) is not none }}
-
-- name: Start automation stack containers using compose
-  community.docker.docker_compose_v2:
-    project_src: "{{ storage.stacks }}/automation"
-    state: present
-  register: automation_compose_result
-  when: automation_compose_json_supported
-
-- name: Start automation stack containers with compose CLI fallback
-  ansible.builtin.command:
-    cmd: docker compose --ansi never --project-directory "{{ storage.stacks }}/automation" up -d --quiet-pull
-  register: automation_compose_cli_result
-  changed_when: >-
-    'Recreated' in automation_compose_cli_result.stdout or
-    'Created' in automation_compose_cli_result.stdout or
-    'Pulled' in automation_compose_cli_result.stdout or
-    'Built' in automation_compose_cli_result.stdout or
-    'Creating' in automation_compose_cli_result.stdout or
-    'Starting' in automation_compose_cli_result.stdout or
-    'Restarting' in automation_compose_cli_result.stdout
-  failed_when: automation_compose_cli_result.rc != 0
-  when: not automation_compose_json_supported
-
-- name: Warn when compose CLI fallback was used
-  ansible.builtin.debug:
-    msg: >-
-      Used docker compose CLI fallback because JSON output from
-      `docker compose images` is not supported. Consider upgrading the
-      Docker compose plugin (>= 2.29) so the docker_compose_v2 module can
-      be used directly.
-  when: automation_compose_cli_result is defined
+- name: Deploy automation stack
+  include_tasks: "../playbooks/templates/deploy_compose_stack.yml"
+  vars:
+    stack: "automation"
+    compose_template: "docker-compose-automation.yml.j2"
+    error_handling: "rescue"
+    deploy_timeout: 300
+    deploy_retries: 2
+  tags:
+    - deploy

@@ -33,6 +33,13 @@ BLACKLIST_FILE="/var/lib/frey/wifi-blacklist.json"
 STATE_FILE="/var/run/frey-wifi-roaming.state"
 LOG_FILE="/var/log/frey-wifi-roaming.log"
 PID_FILE="/var/run/frey-wifi-roaming.pid"
+PORTAL_STATE_FILE="/var/lib/frey/captive-portal/portal.state"
+LOCKED_SSID_FILE="/var/run/frey-wifi-locked-ssid"
+
+normalize_ssid() {
+    # Trim leading/trailing spaces that may appear from scan parsing
+    echo "$1" | sed 's/^ *//;s/ *$//'
+}
 
 # Default settings (overridden by config file)
 INTERFACE_CLIENT="wlan0"
@@ -83,6 +90,7 @@ trap handle_pause SIGUSR1
 trap handle_resume SIGUSR2
 LAST_CONNECTED_OPEN=false
 OPEN_FAIL_BLACKLIST=60
+# Ignore FreyHub AP to prevent wlan0 from connecting to own wlan1 (routing loop prevention)
 DEFAULT_IGNORE_SSIDS=("FreyHub")
 
 # Connection stability
@@ -309,7 +317,8 @@ rank_networks() {
 # Connect to network
 # ==============================================================================
 connect_to_network() {
-    local ssid="$1"
+    local ssid
+    ssid=$(normalize_ssid "$1")
     local password="${2:-}"
 
     log INFO "Attempting to connect to: '$ssid'"
@@ -353,22 +362,39 @@ connect_to_network() {
         if wpa_cli -i "$INTERFACE_CLIENT" status | grep -q "wpa_state=COMPLETED"; then
             log INFO "✓ Connected to WiFi: '$ssid'"
 
-            # Request IP address, retrying with dhcpcd then dhclient
+            # Request IP address, retrying with dhcpcd then dhclient (skip if dhcpcd already managing interface)
             local dh_attempt=0
             while [ $dh_attempt -lt 3 ]; do
-                if ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                local current_ip
+                current_ip=$(ip -4 addr show "$INTERFACE_CLIENT" | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -1)
+
+                # If we have a non-link-local IP, leave DHCP alone (whether or not dhcpcd is running)
+                if [ -n "$current_ip" ] && [[ ! "$current_ip" =~ ^169\.254\. ]]; then
+                    if pgrep -f "dhcpcd.*$INTERFACE_CLIENT" >/dev/null 2>&1; then
+                        break
+                    fi
                     break
                 fi
 
+                # No valid IP yet; if dhcpcd is already working on it, wait and retry
+                if pgrep -f "dhcpcd.*$INTERFACE_CLIENT" >/dev/null 2>&1; then
+                    sleep 2
+                    dh_attempt=$((dh_attempt + 1))
+                    continue
+                fi
+
+                # No IP and no dhcpcd running - try dhcpcd first
                 if command -v dhcpcd &>/dev/null; then
                     dhcpcd -n "$INTERFACE_CLIENT" &>/dev/null || dhcpcd "$INTERFACE_CLIENT" &>/dev/null || true
                 fi
                 sleep 2
 
-                if ip -4 addr show "$INTERFACE_CLIENT" | grep -q "inet "; then
+                current_ip=$(ip -4 addr show "$INTERFACE_CLIENT" | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -1)
+                if [ -n "$current_ip" ] && [[ ! "$current_ip" =~ ^169\.254\. ]]; then
                     break
                 fi
 
+                # dhcpcd failed, try dhclient as backup
                 if command -v dhclient &>/dev/null; then
                     timeout 15 dhclient -1 -v "$INTERFACE_CLIENT" &>/dev/null || true
                 fi
@@ -412,7 +438,20 @@ connect_to_network() {
 # Handle captive portal
 # ==============================================================================
 handle_captive_portal() {
-    local ssid="$1"
+    local ssid
+    ssid=$(normalize_ssid "$1")
+
+    # If we are locked to this SSID, do nothing (manual portal only)
+    if [ -f "$LOCKED_SSID_FILE" ] && grep -Fxq "$ssid" "$LOCKED_SSID_FILE"; then
+        log WARN "⚠ Portal detected on locked SSID '$ssid' - skipping auto-bypass/blacklist"
+        return 1
+    fi
+
+    # If locked SSID, do not blacklist or disconnect; just report failure
+    if [ -f "$LOCKED_SSID_FILE" ] && grep -Fxq "$ssid" "$LOCKED_SSID_FILE"; then
+        log WARN "⚠ Portal detected on locked SSID '$ssid' - skipping auto-bypass/blacklist"
+        return 1
+    fi
 
     log INFO "Checking for captive portal on '$ssid'..."
 
@@ -425,9 +464,14 @@ handle_captive_portal() {
         if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
             log INFO "Open network; short blacklist to rotate candidates"
             update_network_history "$ssid" false
-            blacklist_network "$ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
-            wpa_cli -i "$INTERFACE_CLIENT" disconnect &>/dev/null || true
-            CURRENT_SSID=""
+            # If locked SSID, do not disconnect or blacklist
+            if [ -n "$LOCKED_SSID_FILE" ] && grep -Fxq "$ssid" "$LOCKED_SSID_FILE"; then
+                log INFO "Locked SSID '$ssid' - skipping blacklist/disconnect"
+            else
+                blacklist_network "$ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+                wpa_cli -i "$INTERFACE_CLIENT" disconnect &>/dev/null || true
+                CURRENT_SSID=""
+            fi
         else
             local backoff="${PORTAL_FAIL_BACKOFF:-60}"
             blacklist_network "$ssid" "$backoff"
@@ -443,6 +487,12 @@ blacklist_network() {
     local ssid="$1"
     local duration="${2:-300}"  # Default: 5 minutes
     local allow_open="${3:-false}"
+
+    # Never blacklist locked SSID
+    if [ -f "$LOCKED_SSID_FILE" ] && grep -Fxq "$ssid" "$LOCKED_SSID_FILE"; then
+        log INFO "Skipping blacklist for locked SSID '$ssid'"
+        return
+    fi
 
     # Do not blacklist known networks to preserve preferred connectivity
     if is_known_ssid "$ssid"; then
@@ -540,10 +590,35 @@ is_known_ssid() {
 roaming_cycle() {
     log DEBUG "Starting roaming cycle..."
 
+    # If a manual lock is set, honor it (stay on that SSID; try to reconnect if off it)
+    if [ -f "$LOCKED_SSID_FILE" ]; then
+        local locked_ssid
+        locked_ssid=$(cat "$LOCKED_SSID_FILE" 2>/dev/null || true)
+        if [ -n "$locked_ssid" ]; then
+            if [ "$CURRENT_SSID" != "$locked_ssid" ]; then
+                log INFO "🔒 Locked to '$locked_ssid' - attempting to connect and skipping other networks"
+                local pw
+                pw=$(get_network_password "$locked_ssid")
+                connect_to_network "$locked_ssid" "$pw" || true
+            else
+                log INFO "🔒 Locked to '$locked_ssid' - staying connected (no scans/switches)"
+            fi
+            sleep "$SCAN_INTERVAL_NO_CONNECTION"
+            return
+        fi
+    fi
+
     # Skip scanning if paused by user signal
     if [ "$SCANNING_PAUSED" = true ]; then
         log DEBUG "Scanning paused - sleeping"
         sleep 10  # Short sleep to keep daemon responsive
+        return
+    fi
+
+    # Skip scanning/roaming while a captive portal login is in progress
+    if [ -f "$PORTAL_STATE_FILE" ]; then
+        log DEBUG "Captive portal in progress - holding roaming scans"
+        sleep 10
         return
     fi
 
@@ -604,6 +679,24 @@ roaming_cycle() {
         mqtt_publish "status/state" "connected_good"
     fi
 
+    # If locked SSID is set, hard-pin to it (no scans/switches or blacklists)
+    if [ -n "$locked_ssid_for_filter" ]; then
+        local current_norm
+        current_norm=$(normalize_ssid "$CURRENT_SSID")
+        if [ "$current_norm" != "$locked_ssid_for_filter" ]; then
+            log INFO "🔒 Locked to '$locked_ssid_for_filter' - attempting to connect (skip all other networks)"
+            local pw
+            pw=$(get_network_password "$locked_ssid_for_filter")
+            connect_to_network "$locked_ssid_for_filter" "$pw" || true
+            sleep "$SCAN_INTERVAL_NO_CONNECTION"
+            return
+        else
+            log INFO "🔒 Locked to '$locked_ssid_for_filter' - staying connected (no scans/switches)"
+            sleep "$SCAN_INTERVAL_GOOD"
+            return
+        fi
+    fi
+
     # Scan for available networks
     local scan_results
     scan_results=$(scan_networks) || true
@@ -617,10 +710,15 @@ roaming_cycle() {
     local ranked_networks
     ranked_networks=$(rank_networks "$scan_results")
 
-    # Filter: allow known networks always; allow open networks; skip secured unknown networks
+    # Filter: only known networks (no auto-join to unknown/public), plus locked SSID if set
+    local locked_ssid_for_filter=""
+    if [ -f "$LOCKED_SSID_FILE" ]; then
+        locked_ssid_for_filter=$(normalize_ssid "$(cat "$LOCKED_SSID_FILE" 2>/dev/null || true)")
+    fi
     local filtered_networks
     filtered_networks=$(echo "$ranked_networks" | while IFS='|' read -r score ssid signal security; do
         [ -z "$ssid" ] && continue
+        ssid=$(normalize_ssid "$ssid")
 
         # Skip ignored SSIDs
         for ignore in "${IGNORE_SSIDS[@]}"; do
@@ -629,7 +727,8 @@ roaming_cycle() {
             fi
         done
 
-        if [ "$security" != "Open" ] && ! is_known_ssid "$ssid"; then
+        # Only allow known SSIDs, unless it is the locked SSID
+        if ! is_known_ssid "$ssid" && { [ -z "$locked_ssid_for_filter" ] || [ "$ssid" != "$locked_ssid_for_filter" ]; }; then
             continue
         fi
         echo "${score}|${ssid}|${signal}|${security}"
@@ -640,28 +739,7 @@ roaming_cycle() {
         return
     fi
 
-    # Optionally prefer known networks first
-    local candidate_networks
-    candidate_networks="$filtered_networks"
-    if [ "${PREFER_KNOWN_NETWORKS:-true}" = true ]; then
-        local known_candidates
-        known_candidates=$(echo "$ranked_networks" | while IFS='|' read -r score ssid signal security; do
-            [ -z "$ssid" ] && continue
-            if is_known_ssid "$ssid"; then
-                echo "${score}|${ssid}|${signal}|${security}"
-            fi
-        done)
-
-        if [ -n "$known_candidates" ]; then
-            local known_count
-            known_count=$(echo "$known_candidates" | wc -l)
-            log INFO "Preferring known networks first (${known_count} available)"
-            candidate_networks="$known_candidates"
-        else
-            log INFO "No known networks available; considering all candidates"
-        fi
-    fi
-
+    local candidate_networks="$filtered_networks"
     local network_count
     network_count=$(echo "$candidate_networks" | wc -l)
     log INFO "Evaluating $network_count candidate networks"
@@ -678,6 +756,7 @@ roaming_cycle() {
 
     local best_score best_ssid best_signal best_security
     IFS='|' read -r best_score best_ssid best_signal best_security <<< "$best_network"
+    best_ssid=$(normalize_ssid "$best_ssid")
 
     log INFO "Best available: '$best_ssid' (score: $best_score, signal: ${best_signal} dBm)"
 
@@ -765,21 +844,21 @@ roaming_cycle() {
             mqtt_publish "events" "{\"event\":\"connected_success\",\"ssid\":\"$best_ssid\"}"
         else
             log WARN "⚠ Connected but no internet: '$best_ssid'"
-            if handle_captive_portal "$best_ssid"; then
-                update_network_history "$best_ssid" true
-                INTERNET_CHECK_FAILURES=0
-                mqtt_publish "events" "{\"event\":\"portal_bypassed\",\"ssid\":\"$best_ssid\"}"
-            else
-                update_network_history "$best_ssid" false
-            fi
+            log WARN "Portal/manual action may be required; skipping auto-bypass"
+            update_network_history "$best_ssid" false
         fi
     else
         log ERROR "❌ Failed to connect to: '$best_ssid'"
         update_network_history "$best_ssid" false
-        if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
-            blacklist_network "$best_ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+        # Do not blacklist if locked SSID matches
+        if [ -n "$locked_ssid_for_filter" ] && [ "$best_ssid" = "$locked_ssid_for_filter" ]; then
+            log INFO "Skipping blacklist for locked SSID '$best_ssid' after connection failure"
         else
-            blacklist_network "$best_ssid" "${BLACKLIST_DURATION:-300}"
+            if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
+                blacklist_network "$best_ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+            else
+                blacklist_network "$best_ssid" "${BLACKLIST_DURATION:-300}"
+            fi
         fi
         mqtt_publish "events" "{\"event\":\"connection_failed\",\"ssid\":\"$best_ssid\"}"
     fi
@@ -790,6 +869,7 @@ roaming_cycle() {
         local connected=false
         while IFS='|' read -r candidate_score candidate_ssid candidate_signal candidate_security; do
             [ -z "$candidate_ssid" ] && continue
+            candidate_ssid=$(normalize_ssid "$candidate_ssid")
 
             log INFO "Attempting to connect to: '$candidate_ssid' (score: $candidate_score, signal: ${candidate_signal} dBm)"
             local password
@@ -804,23 +884,23 @@ roaming_cycle() {
                     mqtt_publish "events" "{\"event\":\"connected_success\",\"ssid\":\"$candidate_ssid\"}"
                 else
                     log WARN "⚠ Connected but no internet: '$candidate_ssid'"
-                    if handle_captive_portal "$candidate_ssid"; then
-                        update_network_history "$candidate_ssid" true
-                        INTERNET_CHECK_FAILURES=0
-                        mqtt_publish "events" "{\"event\":\"portal_bypassed\",\"ssid\":\"$candidate_ssid\"}"
-                    else
-                        update_network_history "$candidate_ssid" false
-                    fi
+                    log WARN "Portal/manual action may be required; skipping auto-bypass"
+                    update_network_history "$candidate_ssid" false
                 fi
                 connected=true
                 break
             else
                 log ERROR "❌ Failed to connect to: '$candidate_ssid'"
                 update_network_history "$candidate_ssid" false
-                if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
-                    blacklist_network "$candidate_ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+                # Do not blacklist if locked SSID matches
+                if [ -n "$locked_ssid_for_filter" ] && [ "$candidate_ssid" = "$locked_ssid_for_filter" ]; then
+                    log INFO "Skipping blacklist for locked SSID '$candidate_ssid' after connection failure"
                 else
-                    blacklist_network "$candidate_ssid" "${BLACKLIST_DURATION:-300}"
+                    if [ "${LAST_CONNECTED_OPEN:-false}" = true ]; then
+                        blacklist_network "$candidate_ssid" "${OPEN_FAIL_BLACKLIST:-60}" true
+                    else
+                        blacklist_network "$candidate_ssid" "${BLACKLIST_DURATION:-300}"
+                    fi
                 fi
                 mqtt_publish "events" "{\"event\":\"connection_failed\",\"ssid\":\"$candidate_ssid\"}"
             fi

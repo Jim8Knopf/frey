@@ -122,6 +122,13 @@ echo ""
 # Check if interface exists
 validate_interface "$INTERFACE" || exit 1
 
+# Pause roaming daemon to prevent interference
+if systemctl is-active frey-wifid.service >/dev/null 2>&1; then
+    log "Pausing roaming daemon..."
+    /usr/local/bin/frey-wifi-pause pause >/dev/null 2>&1 || true
+    sleep 1
+fi
+
 # Bring interface up
 bring_interface_up "$INTERFACE"
 
@@ -155,6 +162,19 @@ iwconfig "$INTERFACE" power off 2>/dev/null || true
 # Add network using wpa_cli
 log "Configuring network..."
 
+# Remove ALL existing networks (clean slate approach)
+log "Removing all saved networks..."
+mapfile -t NET_IDS < <(wpa_cli_cmd "$INTERFACE" list_networks | tail -n +2 | awk '{print $1}')
+for net_id in "${NET_IDS[@]}"; do
+    if [ -n "$net_id" ]; then
+        wpa_cli_cmd "$INTERFACE" remove_network "$net_id" >/dev/null 2>&1 || true
+    fi
+done
+
+# Reconfigure to clear any lingering state
+wpa_cli_cmd "$INTERFACE" reconfigure >/dev/null 2>&1 || true
+sleep 1
+
 # Add new network
 NETWORK_ID=$(wpa_cli_cmd "$INTERFACE" add_network | tail -1)
 
@@ -177,10 +197,15 @@ else
     wpa_cli_cmd "$INTERFACE" set_network "$NETWORK_ID" key_mgmt NONE >/dev/null
 fi
 
-# Enable and save
-log "Connecting to $SSID..."
+# Enable network
 wpa_cli_cmd "$INTERFACE" enable_network "$NETWORK_ID" >/dev/null
+
+# Save config
 wpa_cli_cmd "$INTERFACE" save_config >/dev/null
+
+# Connect to the network
+log "Connecting to $SSID..."
+wpa_cli_cmd "$INTERFACE" select_network "$NETWORK_ID" >/dev/null
 
 # Wait for connection
 echo -n "Waiting for connection"
@@ -207,46 +232,71 @@ log "Requesting IP address..."
 kill_dhcpcd "$INTERFACE"
 sleep 2
 
-# Request IP with proper error handling
-if ! dhcpcd --rebind --timeout 180 "$INTERFACE" 2>&1 | tee -a "$LOG_FILE"; then
-    log_warning "dhcpcd command failed, trying alternative method..."
-    # Fallback: force release and renew
-    release_dhcp "$INTERFACE"
-    sleep 2
-    dhcpcd --rebind --timeout 180 "$INTERFACE" 2>&1 | tee -a "$LOG_FILE" || true
-fi
+# First, try to release any existing lease
+release_dhcp "$INTERFACE"
+sleep 1
 
-# Wait for IP with longer timeout and verification
-echo -n "Waiting for IP address"
-for i in {1..180}; do  # 180 seconds for slow public WiFi
+# Request IP with proper error handling - try multiple methods
+DHCP_SUCCESS=false
+
+# Method 1: Standard dhcpcd request
+log_info "Attempting DHCP (method 1/3)..."
+if dhcpcd -4 --noarp --timeout 30 "$INTERFACE" 2>&1 | tee -a "$LOG_FILE"; then
+    sleep 3
     if ip addr show "$INTERFACE" | grep -q "inet "; then
-        # Verify IP is not link-local (169.254.x.x)
         IP_CHECK=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | cut -d/ -f1)
         if [[ ! "$IP_CHECK" =~ ^169\.254\. ]]; then
-            echo ""
-            break
+            DHCP_SUCCESS=true
         fi
     fi
-    echo -n "."
-    sleep 1
+fi
 
-    # Retry dhcpcd at 90 seconds if still no IP
-    if [ $i -eq 90 ]; then  # Retry at 90 seconds (halfway through 180s)
-        echo ""
-        log_warning "No IP after 90s, retrying DHCP..."
-        release_dhcp "$INTERFACE"
-        sleep 2
-        dhcpcd -4 --waitip "$INTERFACE" >/dev/null 2>&1 &
-        echo -n "Waiting for IP address"
+# Method 2: Force release and rebind
+if [ "$DHCP_SUCCESS" = false ]; then
+    log_warning "Method 1 failed, trying forced release/renew (method 2/3)..."
+    release_dhcp "$INTERFACE"
+    sleep 2
+    if dhcpcd -4 --rebind --timeout 30 "$INTERFACE" 2>&1 | tee -a "$LOG_FILE"; then
+        sleep 3
+        if ip addr show "$INTERFACE" | grep -q "inet "; then
+            IP_CHECK=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | cut -d/ -f1)
+            if [[ ! "$IP_CHECK" =~ ^169\.254\. ]]; then
+                DHCP_SUCCESS=true
+            fi
+        fi
     fi
-done
-echo ""
+fi
+
+# Method 3: Background dhcpcd with longer timeout
+if [ "$DHCP_SUCCESS" = false ]; then
+    log_warning "Method 2 failed, trying background DHCP with extended timeout (method 3/3)..."
+    release_dhcp "$INTERFACE"
+    sleep 1
+    dhcpcd -4 --waitip -t 0 "$INTERFACE" >/dev/null 2>&1 &
+
+    # Wait for IP with timeout
+    echo -n "Waiting for IP address"
+    for i in {1..60}; do  # 60 seconds max wait
+        if ip addr show "$INTERFACE" | grep -q "inet "; then
+            # Verify IP is not link-local (169.254.x.x)
+            IP_CHECK=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | cut -d/ -f1)
+            if [[ ! "$IP_CHECK" =~ ^169\.254\. ]]; then
+                echo ""
+                DHCP_SUCCESS=true
+                break
+            fi
+        fi
+        echo -n "."
+        sleep 1
+    done
+    echo ""
+fi
 
 # Display connection info
 IP_ADDR=$(get_interface_ip "$INTERFACE")
 GATEWAY=$(ip route | grep "default.*$INTERFACE" | awk '{print $3}')
 
-if [ -n "$IP_ADDR" ]; then
+if [ "$DHCP_SUCCESS" = true ] && [ -n "$IP_ADDR" ]; then
     log "Connection successful!"
     echo ""
     echo "========================================"
@@ -256,6 +306,9 @@ if [ -n "$IP_ADDR" ]; then
     log_info "Gateway: ${GATEWAY:-N/A}"
     echo "========================================"
     echo ""
+
+    # Lock roaming to this SSID until manual disconnect
+    echo "$SSID" > /var/run/frey-wifi-locked-ssid || true
 
     # Verify gateway is reachable
     if [ -n "$GATEWAY" ]; then
@@ -267,6 +320,10 @@ if [ -n "$IP_ADDR" ]; then
             log "Gateway ${GREEN}✓ Reachable${NC}"
         fi
     fi
+
+    # Allow routes to stabilize before roaming daemon cycles again
+    log "Allowing routes to stabilize..."
+    sleep 10
 
     # Check if this is a known network (for whitelist check)
     KNOWN_NETWORK_SKIP_PORTAL=false
@@ -292,70 +349,51 @@ if [ -n "$IP_ADDR" ]; then
         log_warning "Internet access: ${YELLOW}✗ Not working${NC}"
         log_warning "Connected to WiFi but no internet access"
 
-        # Skip portal bypass for known networks
-        if [ "$KNOWN_NETWORK_SKIP_PORTAL" = "true" ]; then
+        # Minimal portal check with opt-in bypass
+        portal_url=$(detect_portal_url)
+        if [ -n "$portal_url" ]; then
             echo ""
-            log_warning "This is a known network without captive portal - skipping bypass"
-            log_warning "If internet is not working, check the network configuration or credentials"
-        else
-            # Try automatic captive portal bypass for unknown networks
-            echo ""
-            log "Attempting automatic captive portal bypass..."
-
-            # Detect portal URL (function returns clean URL without log messages)
-            portal_url=$(detect_portal_url)
-
-            if [ -z "$portal_url" ]; then
-                log_warning "Could not detect portal URL"
-                log_warning "Manual login may be required - open browser to sign in"
+            log_info "Portal detected: $portal_url"
+            read -r -p "Run portal helper now? [y/N]: " run_portal
+            if [[ "$run_portal" =~ ^[Yy]$ ]]; then
+                log "Launching portal helper..."
+                frey wifi portal
             else
-                log_info "Portal URL detected: $portal_url"
-                echo ""
-
-                # Strategy 1: Shell-based bypass (curl-based, 3 methods)
-                if [ -x /usr/local/bin/frey-wifi-portal-shell-bypass.sh ]; then
-                    log "Strategy 1: Shell-based bypass (curl)..."
-                    if /usr/local/bin/frey-wifi-portal-shell-bypass.sh "$portal_url"; then
-                        log_success "Portal bypass ${GREEN}✓ Successful${NC}"
-                        log "Internet access should now be working"
-                        exit 0
-                    fi
-                    log_warning "Shell-based bypass ${YELLOW}✗ Failed${NC}"
-                fi
-
-                # Strategy 2: Lynx terminal browser (for simple portals)
-                if command -v lynx &>/dev/null; then
-                    log "Strategy 2: Lynx terminal browser..."
-                    if attempt_lynx_bypass "$portal_url"; then
-                        log_success "Portal bypass via lynx ${GREEN}✓ Successful${NC}"
-                        log "Internet access should now be working"
-                        exit 0
-                    fi
-                    log_warning "Lynx bypass ${YELLOW}✗ Failed${NC}"
-                fi
-
-                # Strategy 3: Python/Selenium (for complex portals)
-                if [ -x /usr/local/bin/frey-wifi-portal-bypasser.py ]; then
-                    log "Strategy 3: Python/Selenium bypass..."
-                    if /usr/local/bin/frey-wifi-portal-bypasser.py "$portal_url"; then
-                        log_success "Portal bypass ${GREEN}✓ Successful${NC}"
-                        log "Internet access should now be working"
-                        exit 0
-                    fi
-                    log_warning "Selenium bypass ${YELLOW}✗ Failed${NC}"
-                fi
-
-                echo ""
-                log_error "All bypass attempts failed ${YELLOW}✗${NC}"
-                log_warning "Manual login required - open browser and navigate to:"
-                log_warning "  $portal_url"
+                log_info "You can run it later: frey wifi portal"
             fi
+        else
+            log_warning "Could not detect portal URL automatically."
+            log_info "If this network uses a captive portal, run: frey wifi portal"
         fi
     fi
 else
     log_error "Failed to get IP address"
-    log_warning "Connected to WiFi but DHCP failed"
+    log_warning "Connected to WiFi but DHCP failed after all attempts"
+    echo ""
+    log_info "Diagnostics:"
+    log_info "- Check if the network provides DHCP"
+    log_info "- Some public WiFi require captive portal login first"
+    log_info "- Try: sudo frey wifi menu (for interactive connection)"
+    echo ""
+    log_info "To manually retry DHCP:"
+    log_info "  sudo dhcpcd -4 --debug $INTERFACE"
+    echo ""
+    log_info "To check connection status:"
+    log_info "  wpa_cli -i $INTERFACE status"
+    echo ""
+
+    # Resume roaming daemon if it was paused
+    if systemctl is-active frey-wifid.service >/dev/null 2>&1; then
+        /usr/local/bin/frey-wifi-pause resume >/dev/null 2>&1 || true
+    fi
+
     exit 1
+fi
+
+# Resume roaming daemon now that we're connected
+if systemctl is-active frey-wifid.service >/dev/null 2>&1; then
+    log "Resuming roaming daemon..."
+    /usr/local/bin/frey-wifi-pause resume >/dev/null 2>&1 || true
 fi
 
 echo ""

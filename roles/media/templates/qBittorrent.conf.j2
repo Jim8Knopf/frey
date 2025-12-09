@@ -12,7 +12,7 @@ FileLogger\Backup=true
 FileLogger\DeleteOld=true
 FileLogger\Enabled=true
 FileLogger\MaxSizeBytes=66560
-FileLogger\Path={{ storage.appdata_dir }}/qbittorrent/logs
+FileLogger\Path=/qbittorrent/logs
 
 [BitTorrent]
 Session\AddTorrentPaused=false
@@ -27,7 +27,7 @@ Session\CheckingMemUsageSize=32
 Session\ChokingAlgorithm=FixedSlots
 Session\CoalesceReadWrite=true
 Session\CreateTorrentSubfolder=true
-Session\DefaultSavePath={{ media.downloads }}
+Session\DefaultSavePath=/downloads
 Session\DisableAutoTMMByDefault=false
 Session\DisableAutoTMMTriggers\CategoryChanged=false
 Session\DisableAutoTMMTriggers\CategorySavePathChanged=true
@@ -178,7 +178,7 @@ WebUI\HTTPS\CertificatePath=
 WebUI\HTTPS\Enabled=false
 WebUI\HTTPS\KeyPath=
 WebUI\HostHeaderValidation=true
-WebUI\LocalHostAuth=false
+WebUI\LocalHostAuth=true
 WebUI\MaxAuthenticationFailCount=5
 WebUI\Port={{ media.services.qbittorrent.port | default(8080) }}
 WebUI\ReverseProxySupportEnabled=false
@@ -189,7 +189,6 @@ WebUI\SessionTimeout=3600
 WebUI\TrustedReverseProxiesList=
 WebUI\UseUPnP=false
 WebUI\Username={{ qbittorrent_username | default('admin') }}
-WebUI\Password_PBKDF2="{{ qbittorrent_password_hash | default('@ByteArray(70d403b81a87fefc8715f302d066a69e:fddc928c1df6425313c2862b0422e1404bebf38a855172956cf8e6c20521058f545ef65034e36ec9bf486a63e7f1b9c4da47588488d48365b0563de9315ddc31)') }}"
 
 [RSS]
 AutoDownloader\DownloadRepacks=true
