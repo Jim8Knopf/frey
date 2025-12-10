@@ -12,6 +12,15 @@ monitoring:
     uid: 12341
     groups: "{{ monitoring.group.name }}"
   dir: "{{ storage.base_dir }}/monitoring"
+  compose_retries: 3
+  compose_retry_delay: 30
+  alerting:
+    enabled: true
+  dashboard_provisioning:
+    enabled: true
+  prometheus_jobs:
+    node_exporter: node-exporter
+    cadvisor: cadvisor
   dockge:
     enabled: true
     port: 5001
@@ -37,8 +46,13 @@ monitoring:
     port: 3000
     image: "grafana/grafana"
     version: "latest"
-    # OIDC configuration removed - Authentik replaced with Authelia
-    # TODO: Configure Authelia OIDC for Grafana
+    # Authelia OIDC (SSO)
+    oidc_client_id: "grafana"
+    oidc_scopes: "openid profile email groups"
+    oidc_auth_url: "{{ network.authelia_public_url }}/api/oidc/authorization"
+    oidc_token_url: "{{ network.authelia_public_url }}/api/oidc/token"
+    oidc_api_url: "{{ network.authelia_public_url }}/api/oidc/userinfo"
+    oidc_role_attribute_path: "contains(groups, 'admin') && 'Admin' || 'Viewer'"
   loki:
     enabled: true
     port: 3100
@@ -47,6 +61,22 @@ monitoring:
   promtail:
     enabled: true
     image: "grafana/promtail"
+    version: "latest"
+  postgres-exporter:
+    enabled: true
+    image: "quay.io/prometheuscommunity/postgres-exporter"
+    version: "latest"
+  redis-exporter:
+    enabled: true
+    image: "oliver006/redis_exporter"
+    version: "latest"
+  adguard-exporter:
+    enabled: true
+    image: "ebrianne/adguard-exporter"
+    version: "latest"
+  qbittorrent-exporter:
+    enabled: true
+    image: "ghcr.io/esanchezm/prometheus-qbittorrent-exporter"
     version: "latest"
   uptime-kuma:
     enabled: true

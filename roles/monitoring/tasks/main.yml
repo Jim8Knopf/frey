@@ -27,7 +27,7 @@
     state: directory
     owner: "{{ monitoring.user.name }}"
     group: "{{ monitoring.group.name }}"
-    mode: '0777'
+    mode: '2775'
 
 - name: Ensure Loki appdata directory exists
   ansible.builtin.file:
@@ -36,6 +36,33 @@
     owner: "{{ monitoring.user.name }}"
     group: "{{ monitoring.group.name }}"
     mode: '0777'
+
+- name: Ensure Grafana data directory exists with setgid for monitoring group
+  become: true
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/grafana"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '2775'
+
+- name: Ensure Grafana data directory ownership matches monitoring user/group
+  become: true
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/grafana"
+    state: directory
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    recurse: true
+
+- name: Ensure Grafana data directory is group-writable and setgid
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    find "{{ storage.appdata_dir }}/grafana" -type d -print0 | xargs -0 chmod g+rwxs
+    find "{{ storage.appdata_dir }}/grafana" -type f -print0 | xargs -0 chmod g+rw
+  args:
+    executable: /bin/bash
 
 - name: Ensure all monitoring appdata owned by monitoring.user.name
   ansible.builtin.shell:
@@ -79,10 +106,12 @@
     state: directory
     owner: "{{ monitoring.user.name }}"
     group: "{{ monitoring.group.name }}"
-    mode: '0755'
+    mode: '2775'
   loop:
     - dashboards
     - datasources
+    - alerting
+    - plugins
 
 - name: Configure Grafana datasources
   ansible.builtin.template:
@@ -162,6 +191,8 @@
   loop:
     - dashboards
     - datasources
+    - alerting
+    - plugins
 
 - name: Configure Grafana datasources
   ansible.builtin.template:
@@ -170,6 +201,7 @@
     owner: "{{ monitoring.user.name }}"
     group: "{{ monitoring.group.name }}"
     mode: '0644'
+  register: grafana_datasource_template
 
 # Dashboard auto-provisioning setup
 - name: Create Grafana dashboard provisioning configuration
@@ -179,6 +211,51 @@
     owner: "{{ monitoring.user.name }}"
     group: "{{ monitoring.group.name }}"
     mode: '0644'
+  register: grafana_dash_provisioning_template
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Load Grafana dashboard manifest
+  ansible.builtin.set_fact:
+    grafana_dashboard_manifest: "{{ lookup('file', 'grafana-dashboards.json') | from_json | json_query('dashboards') }}"
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Build list of provisioned dashboard files
+  ansible.builtin.set_fact:
+    grafana_dashboard_files: "{{ (grafana_dashboard_files | default([])) + [ item.id ~ '-' ~ (item.name | lower | replace(' ', '-')) ~ '.json' ] }}"
+  loop: "{{ grafana_dashboard_manifest | default([]) }}"
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Discover existing provisioned dashboards
+  ansible.builtin.find:
+    paths: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards"
+    patterns: "*.json"
+    file_type: file
+  register: grafana_existing_dashboards
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Remove stale auto-provisioned dashboards
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ grafana_existing_dashboards.files | default([]) }}"
+  register: grafana_remove_stale
+  when:
+    - monitoring.dashboard_provisioning.enabled | default(false)
+    - (item.path | basename) is regex('^[0-9]+-')
+    - (item.path | basename) not in grafana_dashboard_files | default([])
+
+- name: Deploy Frey custom dashboards
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/{{ item | basename }}"
+    owner: "{{ monitoring.user.name }}"
+    group: "{{ monitoring.group.name }}"
+    mode: '0644'
+  register: grafana_custom_dashboards
+  loop:
+    - grafana/frey-containers.json
+    - grafana/frey-traefik.json
+    - grafana/frey-prometheus.json
   when: monitoring.dashboard_provisioning.enabled | default(false)
 
 - name: Download Grafana dashboards from Grafana.com
@@ -187,9 +264,17 @@
     dest: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/{{ item.id }}-{{ item.name | lower | replace(' ', '-') }}.json"
     creates: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards/{{ item.id }}-{{ item.name | lower | replace(' ', '-') }}.json"
     timeout: 30
-  loop: "{{ lookup('file', 'grafana-dashboards.json') | from_json | json_query('dashboards') }}"
+  loop: "{{ grafana_dashboard_manifest | default([]) }}"
   register: dashboard_downloads
   failed_when: false
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Discover provisioned dashboards after sync
+  ansible.builtin.find:
+    paths: "{{ storage.appdata_dir }}/grafana/provisioning/dashboards"
+    patterns: "*.json"
+    file_type: file
+  register: grafana_provisioned_dashboards
   when: monitoring.dashboard_provisioning.enabled | default(false)
 
 - name: Check Docker dashboard file for label patching
@@ -206,6 +291,97 @@
   when:
     - monitoring.dashboard_provisioning.enabled | default(false)
     - docker_dashboard.stat.exists | default(false)
+
+- name: Fix Grafana datasource placeholders to concrete UIDs
+  ansible.builtin.replace:
+    path: "{{ item.path }}"
+    regexp: "\\${DS_PROMETHEUS}"
+    replace: "prometheus"
+  loop: "{{ grafana_provisioned_dashboards.files | default([]) }}"
+  register: grafana_prom_ds_patch
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Fix Grafana Loki datasource placeholders to concrete UIDs
+  ansible.builtin.replace:
+    path: "{{ item.path }}"
+    regexp: "\\${DS_LOKI}"
+    replace: "loki"
+  loop: "{{ grafana_provisioned_dashboards.files | default([]) }}"
+  register: grafana_loki_ds_patch
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Normalize dashboard datasource UIDs to prometheus/loki
+  ansible.builtin.command:
+    cmd: >
+      python3 - <<'PY'
+      import json
+      from pathlib import Path
+
+      base = Path("{{ storage.appdata_dir }}/grafana/provisioning/dashboards")
+      changed = []
+
+      def fix(obj):
+          if isinstance(obj, dict):
+              if obj.get("type") == "prometheus":
+                  if obj.get("uid") != "prometheus":
+                      obj["uid"] = "prometheus"
+                      obj.setdefault("name", "prometheus")
+                  elif obj.get("name") not in (None, "prometheus", "Prometheus"):
+                      obj["name"] = "prometheus"
+                  return
+              if obj.get("type") == "loki":
+                  if obj.get("uid") != "loki":
+                      obj["uid"] = "loki"
+                      obj.setdefault("name", "loki")
+                  elif obj.get("name") not in (None, "loki", "Loki"):
+                      obj["name"] = "loki"
+              for v in obj.values():
+                  fix(v)
+          elif isinstance(obj, list):
+              for v in obj:
+                  fix(v)
+
+      for path in base.glob("*.json"):
+          try:
+              data = json.loads(path.read_text())
+          except Exception:
+              continue
+          before = json.dumps(data, sort_keys=True)
+          fix(data)
+          after = json.dumps(data, sort_keys=True)
+          if before != after:
+              path.write_text(json.dumps(data, indent=2))
+              changed.append(path.name)
+
+      if changed:
+          print("\\n".join(changed))
+      PY
+  register: grafana_ds_normalize
+  changed_when: grafana_ds_normalize.stdout != ""
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Determine if Grafana needs restart for provisioning changes
+  ansible.builtin.set_fact:
+    grafana_needs_restart: "{{ (
+      grafana_datasource_template is changed) or
+      (grafana_dash_provisioning_template is defined and grafana_dash_provisioning_template is changed) or
+      (grafana_remove_stale is defined and grafana_remove_stale is changed) or
+      (grafana_custom_dashboards is defined and grafana_custom_dashboards is changed) or
+      (dashboard_downloads is defined and dashboard_downloads is changed) or
+      (grafana_prom_ds_patch is defined and grafana_prom_ds_patch is changed) or
+      (grafana_loki_ds_patch is defined and grafana_loki_ds_patch is changed) or
+      (grafana_ds_normalize is defined and grafana_ds_normalize is changed)
+    }}"
+  when: monitoring.dashboard_provisioning.enabled | default(false)
+
+- name: Restart Grafana to apply provisioning changes
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks }}/monitoring"
+    services:
+      - grafana
+    state: restarted
+    recreate: always
+  when: grafana_needs_restart | default(false)
 
 # Prometheus alerting setup
 - name: Create Prometheus alerts directory
@@ -241,7 +417,7 @@
   ansible.builtin.shell: |
     set -eu
     BASE_DIR="{{storage.appdata_dir }}"
-    for svc in loki grafana prometheus promtail; do
+    for svc in loki prometheus promtail; do
       # ask docker for the configured container user for the running container
       user_spec=$(docker inspect -f "{{'{{'}}.Config.User{{'}}'}}" "${svc}" 2>/dev/null || true)
       if [ -n "${user_spec}" ]; then

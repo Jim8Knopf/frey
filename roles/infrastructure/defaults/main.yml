@@ -25,6 +25,9 @@ infrastructure:
         http: 80
         https: 443
         dashboard: 8082
+      metrics:
+        enabled: true
+        port: 8083
       config:
         acme_email: "{{ admin.email }}"  # Using admin email for Let's Encrypt notifications
     portainer:

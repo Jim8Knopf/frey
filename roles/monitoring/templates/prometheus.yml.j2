@@ -49,26 +49,30 @@ scrape_configs:
           service: 'traefik'
 {% endif %}
 
-{% if monitoring['postgres-exporter'].enabled | default(false) %}
+{% if monitoring['postgres-exporter'].enabled | default(false) and (immich_db_password is defined or mealie_db_password is defined) %}
   # PostgreSQL databases
   # Authentik postgres exporter removed - Authentik replaced with Authelia
 
+{%   if immich_db_password is defined %}
   - job_name: 'postgres-immich'
     static_configs:
       - targets: ['postgres-exporter-immich:9187']
         labels:
           service: 'postgresql'
           database: 'immich'
+{%   endif %}
 
+{%   if mealie_db_password is defined %}
   - job_name: 'postgres-mealie'
     static_configs:
       - targets: ['postgres-exporter-mealie:9187']
         labels:
           service: 'postgresql'
           database: 'mealie'
+{%   endif %}
 {% endif %}
 
-{% if monitoring['redis-exporter'].enabled | default(false) %}
+{% if monitoring['redis-exporter'].enabled | default(false) and authentik_db_user is defined %}
   # Redis cache
   - job_name: 'redis'
     static_configs:
@@ -78,7 +82,7 @@ scrape_configs:
           application: 'authentik'
 {% endif %}
 
-{% if monitoring['adguard-exporter'].enabled | default(false) %}
+{% if monitoring['adguard-exporter'].enabled | default(false) and (adguard_username is defined) and (adguard_password is defined) %}
   # AdGuard Home DNS/DHCP
   - job_name: 'adguard'
     static_configs:
@@ -87,7 +91,7 @@ scrape_configs:
           service: 'adguard-home'
 {% endif %}
 
-{% if monitoring['qbittorrent-exporter'].enabled | default(false) %}
+{% if monitoring['qbittorrent-exporter'].enabled | default(false) and (qbittorrent_username is defined) and (qbittorrent_password is defined) %}
   # qBittorrent torrent client
   - job_name: 'qbittorrent'
     static_configs:

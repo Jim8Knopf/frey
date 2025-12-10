@@ -17,12 +17,9 @@ This implementation adds production-grade monitoring to the Frey Raspberry Pi 5 
 2. **Docker and System Monitoring** (ID 13496) - Container + system overview
 3. **cAdvisor Exporter** (ID 14282) - Container resource details
 4. **Traefik Official** (ID 17346) - Reverse proxy performance
-5. **PostgreSQL Database** (ID 12273) - Database metrics
-6. **Redis Dashboard** (ID 763) - Cache performance
-7. **AdGuard Exporter** (ID 13330) - DNS statistics
-8. **qBittorrent Dashboard** (ID 15116) - Torrent metrics
-9. **Loki Logs Dashboard** (ID 18042) - Log viewer
-10. **Loki Stack Monitoring** (ID 14055) - Loki infrastructure
+5. **Prometheus 2.0 Stats** (ID 3662) - Prometheus health and scrape status
+6. **Loki Logs Dashboard** (ID 18042) - Log viewer
+7. **Loki Stack Monitoring** (ID 14055) - Loki infrastructure
 
 ### 🚨 Alert Categories
 - **System Alerts**: High CPU/memory, low disk space, high temperature
@@ -38,7 +35,7 @@ This implementation adds production-grade monitoring to the Frey Raspberry Pi 5 
 ### Configuration Files (5 modified)
 1. **`group_vars/all/main.yml`**
    - Added `infrastructure.services.traefik.metrics` configuration
-   - Added 5 exporter configurations to `monitoring` section
+   - Added exporter configurations to `monitoring` section
    - Enabled dashboard provisioning and alerting
 
 2. **`roles/infrastructure/templates/traefik.yml.j2`**
@@ -49,7 +46,7 @@ This implementation adds production-grade monitoring to the Frey Raspberry Pi 5 
    - Exposed Traefik metrics port 8083
 
 4. **`roles/monitoring/templates/docker-compose-monitoring.yml.j2`**
-   - Added 5 exporter containers (postgres×3, redis, adguard, qbittorrent)
+   - Added exporter containers (postgres, redis, adguard, qbittorrent when creds provided)
    - Added 4 external network connections
    - Added Docker socket mount to Promtail
 

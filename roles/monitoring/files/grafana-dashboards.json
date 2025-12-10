@@ -25,30 +25,6 @@
       "url": "https://grafana.com/api/dashboards/17346/revisions/latest/download"
     },
     {
-      "id": 12273,
-      "name": "PostgreSQL Database",
-      "description": "PostgreSQL database performance metrics and connection monitoring",
-      "url": "https://grafana.com/api/dashboards/12273/revisions/latest/download"
-    },
-    {
-      "id": 763,
-      "name": "Redis Dashboard",
-      "description": "Redis cache performance - hit rates, memory usage, commands",
-      "url": "https://grafana.com/api/dashboards/763/revisions/latest/download"
-    },
-    {
-      "id": 13330,
-      "name": "AdGuard Exporter",
-      "description": "DNS query statistics, blocked domains, and top clients",
-      "url": "https://grafana.com/api/dashboards/13330/revisions/latest/download"
-    },
-    {
-      "id": 15116,
-      "name": "qBittorrent Dashboard",
-      "description": "Torrent metrics, download/upload speeds, and ratios",
-      "url": "https://grafana.com/api/dashboards/15116/revisions/latest/download"
-    },
-    {
       "id": 18042,
       "name": "Loki Logs Dashboard",
       "description": "Log aggregation viewer with search and filtering",
@@ -59,6 +35,12 @@
       "name": "Loki Stack Monitoring",
       "description": "Monitor Loki infrastructure itself - ingestion rates, Promtail errors",
       "url": "https://grafana.com/api/dashboards/14055/revisions/latest/download"
+    },
+    {
+      "id": 3662,
+      "name": "Prometheus 2.0 Stats",
+      "description": "Built-in Prometheus health and scrape performance overview",
+      "url": "https://grafana.com/api/dashboards/3662/revisions/latest/download"
     }
   ]
 }

@@ -1,13 +1,31 @@
 apiVersion: 1
 
+deleteDatasources:
+  # Remove Grafana's bundled sample datasources so our managed ones don't conflict
+  - uid: PBFA97CFB590B2093  # Default Prometheus sample UID
+    name: Prometheus
+    orgId: 1
+  - uid: P8E80F9AEF21F6940  # Default Loki sample UID
+    name: Loki
+    orgId: 1
+  # Ensure managed datasources are recreated cleanly on each start
+  - uid: prometheus
+    name: Prometheus
+    orgId: 1
+  - uid: loki
+    name: Loki
+    orgId: 1
+
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
 
   - name: Loki
+    uid: loki
     type: loki
     access: proxy
     url: http://loki:3100
