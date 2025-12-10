@@ -25,6 +25,13 @@ features:
   backup: false  # Automated backup system
   cookbook: false # Mealie Recipe Manager
 
+# Immich overrides (defaults live in roles/immich/defaults/main.yml)
+immich:
+  services:
+    immich:
+      # Skip model preloading at startup; we'll schedule heavy ML windows instead
+      preload_models: false
+
 # ================================
 # GLOBAL CONFIGURATION
 # ================================
