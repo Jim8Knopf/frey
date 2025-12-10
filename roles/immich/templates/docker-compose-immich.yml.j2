@@ -52,6 +52,10 @@ services:
     depends_on:
       - redis
       - database
+    dns:
+{% for dns_server in immich.services.immich.dns_servers | default([]) %}
+      - "{{ dns_server }}"
+{% endfor %}
     restart: unless-stopped
     networks:
       - proxy
@@ -75,6 +79,7 @@ services:
       retries: 3
       start_period: 120s
 
+{% if immich.services.immich.machine_learning_enabled %}
   # ==============================================================================
   # IMMICH MACHINE LEARNING - AI Processing
   # ==============================================================================
@@ -88,6 +93,10 @@ services:
       - "{{ immich.services.immich.ml_cache_location }}:/cache"
     env_file:
       - .env
+    dns:
+{% for dns_server in immich.services.immich.dns_servers | default([]) %}
+      - "{{ dns_server }}"
+{% endfor %}
     restart: unless-stopped
     networks:
       - backend
@@ -97,6 +106,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
+{% endif %}
 
   # ==============================================================================
   # REDIS (Valkey 8) - In-Memory Cache (2025 Update)

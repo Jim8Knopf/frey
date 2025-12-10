@@ -18,12 +18,29 @@ immich:
       enabled: true
       version: "release"
       port: 2283
+      # Disable to start Immich without the ML container (helps when air-gapped)
+      machine_learning_enabled: true
       # Hardware acceleration for Pi 5
       hw_accel: "rkmpp"  # RK3588 hardware acceleration
       # Storage paths
       upload_location: "{{ storage.base_dir }}/photos/library"
       db_data_location: "{{ storage.appdata_dir }}/immich-db"
       ml_cache_location: "{{ storage.appdata_dir }}/immich-ml-cache"
+      # Hugging Face accelerated transfer sometimes fails DNS/offline; disable by default
+      hf_transfer_enabled: false
+      # Preload ML models at startup so they're cached for offline use
+      preload_models: true  # Set to false if you don't want downloads at startup
+      preload:
+        clip_textual: "ViT-B-32__openai"
+        clip_visual: "ViT-B-32__openai"
+        facial_detection: "buffalo_l"
+        facial_recognition: "buffalo_l"
+        ocr_detection: "PP-OCRv5_mobile"
+        ocr_recognition: "PP-OCRv5_mobile"
+      # DNS servers used inside Immich containers (helps when host DNS is offline/intermittent)
+      dns_servers:
+        - 1.1.1.1
+        - 8.8.8.8
       # OIDC configuration for Authelia
       oidc_issuer_url: "{{ network.authelia_public_url | default('https://auth.' ~ network.domain_name) }}"
       oidc_client_id: "immich"

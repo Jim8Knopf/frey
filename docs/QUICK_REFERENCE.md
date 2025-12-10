@@ -103,6 +103,7 @@ ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media
 
 | Issue | Solution |
 |-------|----------|
+| Immich ML container reboot loop (model downloads blocked) | Set `immich.services.immich.machine_learning_enabled: false` (or `preload_models: false`) in `group_vars/all/main.yml`, then redeploy `--tags immich`; re-enable once models are cached or internet is back. |
 | OAuth "Redirect URI Error" | Check service is using correct redirect URI from blueprint |
 | "Invalid Client" | Verify client_id and secret match |
 | Jellyfin LDAP not working | Install LDAP plugin, restart container |
