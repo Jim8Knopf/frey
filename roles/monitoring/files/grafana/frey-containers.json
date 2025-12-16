@@ -1,0 +1,181 @@
+{
+  "uid": "frey-containers",
+  "title": "Containers - Frey",
+  "tags": ["frey", "containers"],
+  "schemaVersion": 37,
+  "version": 1,
+  "timezone": "browser",
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "text": "prometheus",
+          "value": "prometheus",
+          "selected": true
+        }
+      },
+      {
+        "name": "container",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "refresh": 2,
+        "definition": "label_values(container_cpu_usage_seconds_total{job=\"cadvisor\", name!=\"\"}, name)",
+        "query": "label_values(container_cpu_usage_seconds_total{job=\"cadvisor\", name!=\"\"}, name)",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all",
+          "selected": true
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Containers with Metrics",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "count(count by (name) (container_cpu_usage_seconds_total{job=\"cadvisor\", name!=\"\"}))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "cAdvisor scrape status",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "max(up{job=\"cadvisor\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Down", "color": "red" }, "1": { "text": "Up", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Top CPU (5m rate)",
+      "gridPos": { "x": 6, "y": 0, "w": 9, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "topk(10, rate(container_cpu_usage_seconds_total{job=\"cadvisor\", name!=\"\"}[5m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Top Memory Usage",
+      "gridPos": { "x": 0, "y": 4, "w": 9, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "topk(10, container_memory_usage_bytes{job=\"cadvisor\", name!=\"\"})",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Disk IO (per container)",
+      "gridPos": { "x": 9, "y": 8, "w": 9, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "topk(10, rate(container_fs_writes_bytes_total{job=\"cadvisor\", name!=\"\"}[5m]))",
+          "legendFormat": "{{name}} writes",
+          "refId": "A"
+        },
+        {
+          "expr": "topk(10, rate(container_fs_reads_bytes_total{job=\"cadvisor\", name!=\"\"}[5m]))",
+          "legendFormat": "{{name}} reads",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Selected Containers - CPU",
+      "gridPos": { "x": 0, "y": 12, "w": 9, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "rate(container_cpu_usage_seconds_total{job=\"cadvisor\", name=~\"$container\", name!=\"\"}[5m])",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Selected Containers - Memory",
+      "gridPos": { "x": 9, "y": 16, "w": 9, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "container_memory_usage_bytes{job=\"cadvisor\", name=~\"$container\", name!=\"\"}",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

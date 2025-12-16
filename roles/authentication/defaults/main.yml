@@ -36,8 +36,11 @@ authentication:
       description: "Immich Photo Management"
       redirect_uris:
         - "https://immich.{{ network.domain_name }}/auth/login"
+        - "http://immich.{{ network.domain_name }}/auth/login"  # HTTP for app compatibility
         - "https://immich.{{ network.domain_name }}/user-settings"
+        - "http://immich.{{ network.domain_name }}/user-settings"  # HTTP for app compatibility
         - "https://immich.{{ network.domain_name }}/api/oauth/mobile-redirect"
+        - "http://immich.{{ network.domain_name }}/api/oauth/mobile-redirect"  # HTTP for app compatibility
         - "app.immich:///oauth-callback"
         - "https://app.immich:///oauth-callback"
       scopes:

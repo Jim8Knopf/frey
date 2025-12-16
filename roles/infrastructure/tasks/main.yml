@@ -86,7 +86,7 @@
     - step_ca_root_export.stdout is defined
     - step_ca_root_export.stdout | length > 0
 
-- name: Enforce 90-day certificates for Step CA ACME provisioner
+- name: Enforce certificate duration limits for Step CA provisioners
   ansible.builtin.shell: |
     set -euo pipefail
     python3 - <<'PY'
@@ -99,22 +99,37 @@
     provisioners = data.get("authority", {}).get("provisioners", [])
     changed = False
     acme_found = False
+    admin_found = False
 
     for prov in provisioners:
-        if prov.get("type") != "ACME":
-            continue
-        acme_found = True
-        claims = prov.setdefault("claims", {})
-        for key, value in (
-            ("defaultTLSCertDuration", "{{ infrastructure.services.step_ca.default_cert_duration }}"),
-            ("maxTLSCertDuration", "{{ infrastructure.services.step_ca.max_cert_duration }}"),
-            ("minTLSCertDuration", "{{ infrastructure.services.step_ca.min_cert_duration }}"),
-        ):
-            if claims.get(key) != value:
-                claims[key] = value
-                changed = True
+        # Configure ACME provisioner (for automatic certificate requests)
+        if prov.get("type") == "ACME":
+            acme_found = True
+            claims = prov.setdefault("claims", {})
+            for key, value in (
+                ("defaultTLSCertDuration", "{{ infrastructure.services.step_ca.default_cert_duration }}"),
+                ("maxTLSCertDuration", "{{ infrastructure.services.step_ca.max_cert_duration }}"),
+                ("minTLSCertDuration", "{{ infrastructure.services.step_ca.min_cert_duration }}"),
+            ):
+                if claims.get(key) != value:
+                    claims[key] = value
+                    changed = True
 
-    if not acme_found:
+        # Configure admin provisioner (for manual certificate generation)
+        # JWK type is used for the "admin" provisioner created during Step-CA init
+        elif prov.get("type") == "JWK" and prov.get("name") == "admin":
+            admin_found = True
+            claims = prov.setdefault("claims", {})
+            for key, value in (
+                ("defaultTLSCertDuration", "{{ infrastructure.services.step_ca.default_cert_duration }}"),
+                ("maxTLSCertDuration", "{{ infrastructure.services.step_ca.max_cert_duration }}"),
+                ("minTLSCertDuration", "{{ infrastructure.services.step_ca.min_cert_duration }}"),
+            ):
+                if claims.get(key) != value:
+                    claims[key] = value
+                    changed = True
+
+    if not acme_found and not admin_found:
         print("noop")
     elif changed:
         config_path.write_text(json.dumps(data, indent=2) + "\n")
@@ -129,6 +144,27 @@
     - step_ca_config.stat.exists
   register: step_ca_claims
   changed_when: "'updated' in step_ca_claims.stdout"
+
+- name: Restart Step-CA to apply provisioner configuration changes
+  community.docker.docker_compose_v2:
+    project_src: "{{ storage.stacks }}/infrastructure"
+    services:
+      - step-ca
+    state: restarted
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_claims is changed
+
+- name: Wait for Step-CA to be healthy after restart
+  ansible.builtin.command:
+    cmd: docker exec step-ca step ca health
+  retries: 30
+  delay: 2
+  register: step_ca_health_after_restart
+  until: step_ca_health_after_restart.rc == 0
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_claims is changed
 
 # Certificate Generation Tasks
 - name: Ensure Traefik certificates directory exists
@@ -314,6 +350,28 @@
   ansible.builtin.template:
     src: traefik.yml.j2
     dest: "{{ storage.appdata_dir }}/traefik/traefik.yml"
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0644'
+
+# ==============================================================================
+# TRAEFIK DYNAMIC CONFIGURATION - Default Certificate
+# ==============================================================================
+# Traefik v3 requires TLS certificates in dynamic configuration (file provider)
+# This configuration makes Traefik serve the Step-CA wildcard certificate for
+# ALL unknown domains, which is critical for captive portal validation
+- name: Create Traefik dynamic configuration directory
+  ansible.builtin.file:
+    path: "{{ storage.appdata_dir }}/traefik/dynamic"
+    state: directory
+    owner: "{{ infrastructure.user.name }}"
+    group: "{{ infrastructure.group.name }}"
+    mode: '0755'
+
+- name: Deploy Traefik dynamic TLS configuration
+  ansible.builtin.template:
+    src: dynamic-tls.yml.j2
+    dest: "{{ storage.appdata_dir }}/traefik/dynamic/tls.yml"
     owner: "{{ infrastructure.user.name }}"
     group: "{{ infrastructure.group.name }}"
     mode: '0644'
@@ -512,3 +570,69 @@
     - step_ca_root_export_post is succeeded
     - step_ca_root_export_post.stdout is defined
     - step_ca_root_export_post.stdout | length > 0
+
+# ==============================================================================
+# WILDCARD CERTIFICATE GENERATION FOR DEFAULT TLS
+# ==============================================================================
+# Generate a wildcard *.frey certificate from Step-CA to use as Traefik's
+# default certificate. This enables HTTPS for captive portal domains
+# (connectivitycheck.gstatic.com) which can't use ACME.
+- name: Generate wildcard certificate from Step-CA for default cert
+  block:
+    - name: Check if wildcard certificate already exists
+      ansible.builtin.stat:
+        path: "{{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}"
+      register: wildcard_cert_check
+
+    - name: Generate wildcard certificate from Step-CA with captive portal SANs
+      ansible.builtin.command:
+        cmd: >
+          docker exec step-ca step ca certificate "*.{{ network.domain_name }}"
+          /tmp/wildcard.crt
+          /tmp/wildcard.key
+          --san "*.{{ network.domain_name }}"
+          --san "{{ network.domain_name }}"
+          --san "connectivitycheck.gstatic.com"
+          --san "clients3.google.com"
+          --san "www.gstatic.com"
+          --san "connectivitycheck.grapheneos.network"
+          --san "captive.apple.com"
+          --san "www.apple.com"
+          --not-after=8760h
+          --provisioner=admin
+          --provisioner-password-file=/home/step/secrets/password
+          --force
+      when: not wildcard_cert_check.stat.exists
+      register: step_cert_result
+
+    - name: Copy wildcard certificate from container to host
+      ansible.builtin.command:
+        cmd: docker cp step-ca:/tmp/wildcard.crt {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}
+      when: not wildcard_cert_check.stat.exists
+
+    - name: Copy wildcard key from container to host
+      ansible.builtin.command:
+        cmd: docker cp step-ca:/tmp/wildcard.key {{ storage.appdata_dir }}/traefik/certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_key }}
+      when: not wildcard_cert_check.stat.exists
+
+    - name: Set ownership on wildcard certificate files
+      ansible.builtin.file:
+        path: "{{ storage.appdata_dir }}/traefik/certificates/{{ item }}"
+        owner: "{{ infrastructure.user.name }}"
+        group: "{{ infrastructure.group.name }}"
+        mode: '0644'
+      loop:
+        - "{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}"
+        - "{{ infrastructure.services.step_ca.cert_files.wildcard_key }}"
+      when: not wildcard_cert_check.stat.exists
+
+    - name: Restart Traefik to load new certificates
+      community.docker.docker_compose_v2:
+        project_src: "{{ storage.stacks }}/infrastructure"
+        services:
+          - traefik
+        state: restarted
+      when: not wildcard_cert_check.stat.exists
+  when:
+    - infrastructure.services.step_ca.enabled | default(false)
+    - step_ca_health is succeeded

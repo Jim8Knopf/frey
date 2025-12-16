@@ -6,71 +6,104 @@
 # 1. qBittorrent Web UI is responsive
 # 2. Active download activity (downloading torrents or download speed > 0)
 # 3. Internet connectivity
-# 4. If internet is available but no downloads for STALL_THRESHOLD seconds, mark unhealthy
+# 4. If torrents are queued but no progress is made for STALL_THRESHOLD seconds (with internet),
+#    mark unhealthy to trigger a restart
 #
 # Exit codes:
 # 0 = Healthy (service is working properly)
 # 1 = Unhealthy (service should be restarted)
 
-set -e
+set -uo pipefail
 
 # Configuration
 WEBUI_PORT="${WEBUI_PORT:-8080}"
 WEBUI_URL="http://localhost:${WEBUI_PORT}"
 STATE_FILE="/tmp/qbt_health_state"
+COOKIE_JAR="/tmp/qbt_health_cookie"
 STALL_THRESHOLD="${QBT_STALL_THRESHOLD:-300}"  # 5 minutes default
 INTERNET_CHECK_HOST="${QBT_INTERNET_HOST:-1.1.1.1}"
 API_TIMEOUT=5
+AUTH_FLAGS=()
+CURL_OPTS=(--silent --show-error --max-time "$API_TIMEOUT")
 
 # Logging function
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >&2
 }
 
-# Check if qBittorrent Web UI is responding
+# Check if qBittorrent Web UI is responding (200 or auth-required 403 both mean reachable)
 check_webui() {
-    if curl -sf --max-time "$API_TIMEOUT" "${WEBUI_URL}/api/v2/app/version" >/dev/null 2>&1; then
+    local http_code
+    http_code=$(
+        curl -o /dev/null -w "%{http_code}" "${CURL_OPTS[@]}" "${AUTH_FLAGS[@]}" \
+            "${WEBUI_URL}/api/v2/app/version" 2>/dev/null || echo "000"
+    )
+
+    if [ "$http_code" = "200" ] || [ "$http_code" = "403" ]; then
         return 0
-    else
-        log "ERROR: qBittorrent Web UI not responding"
-        return 1
     fi
+
+    log "ERROR: qBittorrent Web UI unreachable (status: ${http_code})"
+    return 1
 }
 
-# Check if there are active downloads
-check_active_downloads() {
-    local transfer_info
-    transfer_info=$(curl -sf --max-time "$API_TIMEOUT" "${WEBUI_URL}/api/v2/transfer/info" 2>/dev/null)
+# Authenticate against the qBittorrent API (only when credentials are provided)
+authenticate() {
+    if [ -z "${QBT_USERNAME:-}" ] || [ -z "${QBT_PASSWORD:-}" ]; then
+        # No credentials provided — fall back to unauthenticated calls (best effort)
+        return 0
+    fi
 
-    if [ -z "$transfer_info" ]; then
+    local response
+    response=$(
+        curl "${CURL_OPTS[@]}" -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
+            --data "username=${QBT_USERNAME}&password=${QBT_PASSWORD}" \
+            "${WEBUI_URL}/api/v2/auth/login" 2>/dev/null || true
+    )
+
+    if echo "$response" | grep -q "Ok."; then
+        AUTH_FLAGS=(-b "$COOKIE_JAR" -c "$COOKIE_JAR")
+        return 0
+    fi
+
+    log "WARNING: Authentication failed for provided qBittorrent credentials"
+    return 1
+}
+
+# Fetch download speed from the API (returns numeric value or 0 on error)
+get_download_speed() {
+    local transfer_info
+    if ! transfer_info=$(curl -f "${CURL_OPTS[@]}" "${AUTH_FLAGS[@]}" "${WEBUI_URL}/api/v2/transfer/info" 2>/dev/null); then
         log "WARNING: Could not fetch transfer info from qBittorrent API"
+        echo "0"
         return 1
     fi
 
-    # Extract download speed (dl_info_speed field)
     local dl_speed
-    dl_speed=$(echo "$transfer_info" | grep -o '"dl_info_speed":[0-9]*' | cut -d':' -f2)
-
-    # Check if download speed > 0 (active downloading)
-    if [ -n "$dl_speed" ] && [ "$dl_speed" -gt 0 ]; then
-        log "INFO: Active downloads detected (speed: ${dl_speed} bytes/s)"
-        return 0
+    dl_speed=$(echo "$transfer_info" | sed -n 's/.*"dl_info_speed":\([0-9]*\).*/\1/p' | head -n 1)
+    if [ -z "$dl_speed" ]; then
+        dl_speed="0"
     fi
 
-    # Alternative check: count downloading torrents
-    local torrent_list
-    torrent_list=$(curl -sf --max-time "$API_TIMEOUT" "${WEBUI_URL}/api/v2/torrents/info?filter=downloading" 2>/dev/null)
+    echo "$dl_speed"
+    return 0
+}
 
-    local downloading_count
-    downloading_count=$(echo "$torrent_list" | grep -c '"state":"downloading"' || echo "0")
+# Count torrents matching a filter (e.g., downloading, stalledDL)
+get_torrent_count() {
+    local filter="$1"
+    local torrents
+    torrents=$(curl -f "${CURL_OPTS[@]}" "${AUTH_FLAGS[@]}" "${WEBUI_URL}/api/v2/torrents/info?filter=${filter}" 2>/dev/null || true)
 
-    if [ "$downloading_count" -gt 0 ]; then
-        log "INFO: Active downloads detected (${downloading_count} torrents downloading)"
-        return 0
+    if [ -z "$torrents" ]; then
+        echo "0"
+        return 1
     fi
 
-    log "INFO: No active downloads detected"
-    return 1
+    local count
+    count=$(echo "$torrents" | grep -c '"state"' || true)
+    echo "${count:-0}"
+    return 0
 }
 
 # Check internet connectivity
@@ -99,23 +132,27 @@ write_state() {
 
 # Main healthcheck logic
 main() {
-    # Always check if Web UI is responsive first
+    # Authenticate to the API (if credentials provided)
+    if ! authenticate; then
+        log "INFO: Continuing without authenticated API session"
+    fi
+
+    # Verify Web UI reachability
     if ! check_webui; then
         log "UNHEALTHY: Web UI not responding"
         exit 1
     fi
 
-    # Check for active downloads
-    local has_downloads=0
-    if check_active_downloads; then
-        has_downloads=1
-    fi
+    local download_speed
+    download_speed=$(get_download_speed)
 
-    # Check internet connectivity
-    local has_internet=0
-    if check_internet; then
-        has_internet=1
-    fi
+    local downloading_count
+    downloading_count=$(get_torrent_count "downloading")
+
+    local stalled_count
+    stalled_count=$(get_torrent_count "stalledDL")
+
+    local active_candidates=$((downloading_count + stalled_count))
 
     local current_time
     current_time=$(date +%s)
@@ -123,11 +160,24 @@ main() {
     stall_start_time=$(read_state)
 
     # Decision logic
-    if [ "$has_downloads" -eq 1 ]; then
-        # Downloads active - reset stall timer and mark healthy
+    if [ "$active_candidates" -eq 0 ]; then
+        # No queued downloads — being idle is healthy
         write_state "0"
-        log "HEALTHY: Active downloads detected"
+        log "HEALTHY: No active or stalled downloads"
         exit 0
+    fi
+
+    # Any download activity counts as healthy
+    if [ "$download_speed" -gt 0 ] || [ "$downloading_count" -gt 0 ]; then
+        write_state "0"
+        log "HEALTHY: Active downloads detected (speed: ${download_speed} bytes/s)"
+        exit 0
+    fi
+
+    # Check internet connectivity
+    local has_internet=0
+    if check_internet; then
+        has_internet=1
     fi
 
     if [ "$has_internet" -eq 0 ]; then
@@ -137,11 +187,11 @@ main() {
         exit 0
     fi
 
-    # No downloads + has internet = potential stall
+    # No download progress + has internet = potential stall
     if [ "$stall_start_time" -eq 0 ]; then
         # First time detecting this state - start timer
         write_state "$current_time"
-        log "INFO: No downloads but internet available - starting stall timer"
+        log "INFO: No download progress but internet available - starting stall timer"
         exit 0
     fi
 
@@ -150,11 +200,11 @@ main() {
 
     if [ "$stall_duration" -ge "$STALL_THRESHOLD" ]; then
         # Stalled too long - mark unhealthy to trigger restart
-        log "UNHEALTHY: No downloads for ${stall_duration}s (threshold: ${STALL_THRESHOLD}s) despite internet connectivity"
+        log "UNHEALTHY: No download progress for ${stall_duration}s (threshold: ${STALL_THRESHOLD}s) despite internet connectivity"
         write_state "0"  # Reset state for next cycle
         exit 1
     else
-        log "INFO: No downloads for ${stall_duration}s (threshold: ${STALL_THRESHOLD}s)"
+        log "INFO: No download progress for ${stall_duration}s (threshold: ${STALL_THRESHOLD}s)"
         exit 0
     fi
 }

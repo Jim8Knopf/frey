@@ -133,6 +133,8 @@ services:
     image: "{{ monitoring.grafana.image }}:{{ monitoring.grafana.version }}"
     container_name: grafana
     restart: unless-stopped
+    group_add:
+      - "{{ monitoring.group.gid }}"
     # No direct host port; access via Traefik only
     volumes:
       - "{{ storage.appdata_dir }}/grafana:/var/lib/grafana"
@@ -140,12 +142,12 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD={{ monitoring.grafana.default_password | default('admin123') }}
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
       # DNS-based root URL for Traefik access (primary access method)
       # OAuth flow: grafana.frey → auth.frey → grafana.frey
       # Works offline via AdGuard local DNS resolution
       - GF_SERVER_ROOT_URL=https://grafana.{{ network.domain_name }}
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
+      - GF_ALERTING_DEFAULT_DATASOURCE_UID=prometheus
 {% if features.authentication | default(false) and monitoring.grafana.oidc_client_id is defined %}
       # OIDC/SSO Authentication with Authelia (uses internal Docker service name)
       - GF_AUTH_GENERIC_OAUTH_ENABLED=true
@@ -290,42 +292,34 @@ services:
       - "traefik.http.services.speedtest.loadbalancer.server.port=80"
   {% endif %}
 
-  {% if monitoring['postgres-exporter'].enabled | default(false) -%}
+  {% if monitoring['postgres-exporter'].enabled | default(false) and immich_db_password is defined -%}
   # Authentik postgres exporter removed - Authentik replaced with Authelia
-
-{%   if immich_db_password is defined %}
   postgres-exporter-immich:
     image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
     container_name: postgres-exporter-immich
     restart: unless-stopped
     environment:
-      - DATA_SOURCE_NAME=postgresql://immich:{{ immich_db_password }}@immich_postgres:5432/immich?sslmode=disable
+      - DATA_SOURCE_NAME=postgresql://immich:{{ immich_db_password | replace('$', '$$') }}@immich_postgres:5432/immich?sslmode=disable
     networks:
       backend:
     depends_on:
       - prometheus
-{%   else %}
-  # immich_db_password not defined: postgres-exporter-immich disabled (see roles/monitoring/tasks warning)
-{%   endif %}
+  {% endif %}
 
-{%   if mealie_db_password is defined %}
+  {% if monitoring['postgres-exporter'].enabled | default(false) and mealie_db_password is defined -%}
   postgres-exporter-mealie:
     image: "{{ monitoring['postgres-exporter'].image }}:{{ monitoring['postgres-exporter'].version }}"
     container_name: postgres-exporter-mealie
     restart: unless-stopped
     environment:
-      - DATA_SOURCE_NAME=postgresql://{{ cookbook.db_user | default('mealie') }}:{{ cookbook.db_password }}@mealie-db:5432/{{ cookbook.db_name | default('mealie') }}?sslmode=disable
+      - DATA_SOURCE_NAME=postgresql://{{ cookbook.db_user | default('mealie') }}:{{ cookbook.db_password | replace('$', '$$') }}@mealie-db:5432/{{ cookbook.db_name | default('mealie') }}?sslmode=disable
     networks:
       backend:
     depends_on:
       - prometheus
-{%   else %}
-  # mealie_db_password not defined: postgres-exporter-mealie disabled (see roles/monitoring/tasks warning)
-{%   endif %}
   {% endif %}
 
-  {% if monitoring['redis-exporter'].enabled | default(false) -%}
-{%   if authentik_db_user is defined -%}
+  {% if monitoring['redis-exporter'].enabled | default(false) and authentik_db_user is defined -%}
   redis-exporter:
     image: "{{ monitoring['redis-exporter'].image }}:{{ monitoring['redis-exporter'].version }}"
     container_name: redis-exporter
@@ -336,13 +330,9 @@ services:
       backend:
     depends_on:
       - prometheus
-{%   else -%}
-  # Authentik not configured: redis-exporter disabled (LLDAP/Authelia don't use Redis)
-{%   endif %}
   {% endif %}
 
-  {% if monitoring['adguard-exporter'].enabled | default(false) -%}
-  {%   if (adguard_username is defined) and (adguard_password is defined) %}
+  {% if monitoring['adguard-exporter'].enabled | default(false) and (adguard_username is defined) and (adguard_password is defined) -%}
   adguard-exporter:
     image: "{{ monitoring['adguard-exporter'].image }}:{{ monitoring['adguard-exporter'].version }}"
     container_name: adguard-exporter
@@ -352,7 +342,7 @@ services:
       - ADGUARD_HOSTNAME=adguardhome
       - ADGUARD_PORT=80
       - ADGUARD_USERNAME={{ adguard_username }}
-      - ADGUARD_PASSWORD={{ adguard_password }}
+      - ADGUARD_PASSWORD={{ adguard_password | replace('$', '$$') }}
       - INTERVAL=30s
       - LOG_LIMIT=10000
       - SERVER_PORT=9617
@@ -360,13 +350,9 @@ services:
       backend:
     depends_on:
       - prometheus
-  {%   else %}
-  # adguard_username/adguard_password missing: adguard-exporter disabled
-  {%   endif %}
   {% endif %}
 
-  {% if monitoring['qbittorrent-exporter'].enabled | default(false) -%}
-  {%   if (qbittorrent_username is defined) and (qbittorrent_password is defined) %}
+  {% if monitoring['qbittorrent-exporter'].enabled | default(false) and (qbittorrent_username is defined) and (qbittorrent_password is defined) -%}
   qbittorrent-exporter:
     image: "{{ monitoring['qbittorrent-exporter'].image }}:{{ monitoring['qbittorrent-exporter'].version }}"
     container_name: qbittorrent-exporter
@@ -375,7 +361,7 @@ services:
       - QBITTORRENT_HOST=qbittorrent
       - QBITTORRENT_PORT=8080
       - QBITTORRENT_USER={{ qbittorrent_username }}
-      - QBITTORRENT_PASS={{ qbittorrent_password }}
+      - QBITTORRENT_PASS={{ qbittorrent_password | replace('$', '$$') }}
       - EXPORTER_PORT=9022
       - EXPORTER_LOG_LEVEL=INFO
     networks:
@@ -383,9 +369,6 @@ services:
       backend:            # Access to qBittorrent and Prometheus
     depends_on:
       - prometheus
-  {%   else %}
-  # qbittorrent_username/qbittorrent_password missing: qbittorrent-exporter disabled
-  {%   endif %}
   {% endif %}
 
 networks:

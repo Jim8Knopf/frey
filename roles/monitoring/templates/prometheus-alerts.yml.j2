@@ -76,7 +76,7 @@ groups:
           summary: "Container {{ $labels.name }} is restarting frequently"
           description: "Container has restarted multiple times in the last 5 minutes"
 {% endraw %}
-{% if monitoring['postgres-exporter'].enabled | default(false) %}
+{% if monitoring['postgres-exporter'].enabled | default(false) and (immich_db_password is defined or mealie_db_password is defined) %}
 {% raw %}
   - name: database_alerts
     interval: 30s
@@ -113,7 +113,7 @@ groups:
 {% endraw %}
 {% endif %}
 
-{% if monitoring['redis-exporter'].enabled | default(false) %}
+{% if monitoring['redis-exporter'].enabled | default(false) and authentik_db_user is defined %}
 {% raw %}
       # Redis down
       - alert: RedisDown
@@ -207,7 +207,7 @@ groups:
 {% endraw %}
 {% endif %}
 
-{% if monitoring['adguard-exporter'].enabled | default(false) %}
+{% if monitoring['adguard-exporter'].enabled | default(false) and (adguard_username is defined) and (adguard_password is defined) %}
 {% raw %}
   - name: adguard_alerts
     interval: 30s
@@ -234,7 +234,7 @@ groups:
 {% endraw %}
 {% endif %}
 
-{% if monitoring['qbittorrent-exporter'].enabled | default(false) %}
+{% if monitoring['qbittorrent-exporter'].enabled | default(false) and (qbittorrent_username is defined) and (qbittorrent_password is defined) %}
 {% raw %}
   - name: qbittorrent_alerts
     interval: 30s

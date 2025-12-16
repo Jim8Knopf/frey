@@ -1,0 +1,48 @@
+# ==============================================================================
+# CAPTIVE PORTAL RESPONDER SERVICE
+# ==============================================================================
+# Runs Python HTTP server that serves HTTP 204 responses for captive portal
+# detection requests from Android/iOS devices
+#
+# PURPOSE: Makes offline FreyHub AP appear "connected" to devices
+# RESULT: No "Sign in to network" notification, all app features work
+# BENEFIT: Immich downloads work, full app functionality without internet
+# ==============================================================================
+
+[Unit]
+Description=Captive Portal Responder for FreyHub WiFi AP
+Documentation=man:python3(1)
+After=network.target dnsmasq.service
+Wants=dnsmasq.service
+
+# Only start if AP interface exists (hot-plug support)
+ConditionPathExists=/sys/class/net/{{ network.wifi.interface }}
+
+# Ensure this runs after WiFi AP is configured
+After=hostapd.service
+Wants=hostapd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/captive-portal-responder.py
+Restart=on-failure
+RestartSec=5s
+
+# Run as root (required to bind to port 80)
+User=root
+Group=root
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=captive-portal
+
+[Install]
+WantedBy=multi-user.target

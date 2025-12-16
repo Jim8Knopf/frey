@@ -22,6 +22,7 @@
 # Configuration
 WIFI_AP_INTERFACE="{{ network.wifi.interface }}"
 WIFI_AP_NETWORK="{{ network.wifi.network }}"
+FORCE_DNS_IP="{{ network.wifi.ip }}"
 CHECK_INTERVAL=10
 LOG_FILE="/var/log/frey-nat-manager.log"
 
@@ -99,6 +100,21 @@ has_internet() {
     return 1
 }
 
+# Force AP clients to use local DNS (redirect TCP/UDP 53 to dnsmasq on the Pi)
+ensure_force_dns_rules() {
+    if ! iptables -t nat -C PREROUTING -i "$WIFI_AP_INTERFACE" -p udp --dport 53 -j DNAT --to-destination "$FORCE_DNS_IP":53 2>/dev/null; then
+        if iptables -t nat -A PREROUTING -i "$WIFI_AP_INTERFACE" -p udp --dport 53 -j DNAT --to-destination "$FORCE_DNS_IP":53; then
+            log "✓ Forced UDP DNS to $FORCE_DNS_IP:53 for AP clients"
+        fi
+    fi
+
+    if ! iptables -t nat -C PREROUTING -i "$WIFI_AP_INTERFACE" -p tcp --dport 53 -j DNAT --to-destination "$FORCE_DNS_IP":53 2>/dev/null; then
+        if iptables -t nat -A PREROUTING -i "$WIFI_AP_INTERFACE" -p tcp --dport 53 -j DNAT --to-destination "$FORCE_DNS_IP":53; then
+            log "✓ Forced TCP DNS to $FORCE_DNS_IP:53 for AP clients"
+        fi
+    fi
+}
+
 # Main monitoring loop
 log "========================================="
 log "Frey NAT Manager started"
@@ -110,6 +126,9 @@ UPSTREAM_STABLE_COUNT=0  # Count stable detections before enabling NAT
 UPSTREAM_STABILITY_THRESHOLD=3  # Require 3 consecutive detections (30s)
 
 while true; do
+    # Ensure DNS pinning stays in place so clients resolve *.frey locally even when offline
+    ensure_force_dns_rules
+
     # Get current upstream interface
     CURRENT_UPSTREAM=$(get_upstream_interface)
 

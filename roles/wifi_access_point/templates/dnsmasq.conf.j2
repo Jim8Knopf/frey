@@ -126,6 +126,38 @@ host-record={{ host_name }},{{ network.wifi.ip }}
 address=/.{{ network.domain_name }}/{{ network.wifi.ip }}
 
 # ------------------------------------------------------------------------------
+# CAPTIVE PORTAL DETECTION - Offline Connectivity Validation
+# ------------------------------------------------------------------------------
+# Intercept Android/iOS captive portal detection requests and serve them locally
+# This makes devices think they have internet even when FreyHub is offline
+#
+# PROBLEM: Android checks connectivitycheck.gstatic.com to verify internet
+#          If check fails, Android shows "Sign in to network" and apps may
+#          disable downloads (Immich download button doesn't work)
+# SOLUTION: Serve HTTP 204 responses locally via captive-portal-responder service
+#          Devices think internet works, all features enabled, no internet needed
+#
+# Benefits:
+# - Immich downloads work without internet
+# - No "Sign in to network" notification on Android
+# - All devices connected to FreyHub work normally offline
+# - Easy testing via: curl http://connect.frey/generate_204
+
+# Android captive portal check domains
+address=/connectivitycheck.gstatic.com/{{ network.wifi.ip }}
+address=/clients3.google.com/{{ network.wifi.ip }}
+address=/www.gstatic.com/{{ network.wifi.ip }}
+# GrapheneOS captive portal check domain
+address=/connectivitycheck.grapheneos.network/{{ network.wifi.ip }}
+
+# iOS captive portal check domains
+address=/captive.apple.com/{{ network.wifi.ip }}
+address=/www.apple.com/{{ network.wifi.ip }}
+
+# Friendly local testing domain
+address=/connect.frey/{{ network.wifi.ip }}
+
+# ------------------------------------------------------------------------------
 # DNS CACHING - Performance Optimization
 # ------------------------------------------------------------------------------
 # Caching dramatically speeds up DNS queries and reduces upstream traffic
