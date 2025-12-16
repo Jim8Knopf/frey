@@ -99,6 +99,7 @@ Notes & edge cases
 - NetworkManager and other network services can interact with `dhcpcd` and `hostapd` — this role expects `dhcpcd` on Debian-like systems. If you use NetworkManager, you may need to adapt the role or disable NM for the AP interface.
 - If `hostapd_cli reconfigure` is unsupported on your platform, the handler falls back to a restart.
 - For nftables, replace iptables steps with nft atomic replace logic in the `security` role.
+- DNS enforcement: AP traffic on TCP/UDP 53 is redirected to the local dnsmasq so `*.frey` (Immich, Jellyfin, etc.) resolves even if clients hardcode external DNS servers. Private DNS/DoH still needs to be disabled on the client.
 
 If you want, I can:
 - (A) add an idempotent NAT task to this role (creates/persists MASQUERADE when `enable_nat: true`), or

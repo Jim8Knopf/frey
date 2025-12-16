@@ -50,6 +50,12 @@ services:
       - {{ env_var }}
 {% endfor %}
 {% if service_name == 'qbittorrent' %}
+{%   if qbittorrent_username is defined %}
+      - QBT_USERNAME={{ qbittorrent_username }}
+{%   endif %}
+{%   if qbittorrent_password is defined %}
+      - QBT_PASSWORD={{ qbittorrent_password | replace('$', '$$') }}
+{%   endif %}
       - QBT_STALL_THRESHOLD={{ service_config.healthcheck.stall_threshold | default(300) }}
       - QBT_INTERNET_HOST={{ service_config.healthcheck.internet_host | default('1.1.1.1') }}
 {% endif %}

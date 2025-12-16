@@ -1,0 +1,34 @@
+# ==============================================================================
+# TRAEFIK DYNAMIC TLS CONFIGURATION - Default Certificate
+# ==============================================================================
+# This file configures the default TLS certificate served by Traefik for ALL
+# domains that don't have a specific certificate configured (e.g., captive portal).
+#
+# CRITICAL FOR: GrapheneOS captive portal validation
+# WHY: GrapheneOS requires HTTPS validation with trusted certificates.
+#      When checking domains like connectivitycheck.gstatic.com (intercepted by
+#      dnsmasq), Traefik must serve the Step-CA wildcard certificate instead of
+#      its self-signed "TRAEFIK DEFAULT CERT".
+#
+# ARCHITECTURE NOTE:
+# In Traefik v3, TLS certificates MUST be in dynamic configuration (file provider).
+# The TLS section in static config (traefik.yml) is IGNORED!
+# ==============================================================================
+
+tls:
+  # TLS options define minimum security standards
+  options:
+    default:
+      minVersion: VersionTLS12
+
+  # Default certificate store - used for unknown/unmatched domains
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}
+        keyFile: /certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_key }}
+
+  # Certificate list - makes the wildcard cert available to Traefik
+  certificates:
+    - certFile: /certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_cert }}
+      keyFile: /certificates/{{ infrastructure.services.step_ca.cert_files.wildcard_key }}
