@@ -1,0 +1,88 @@
+---
+- name: Identify the device holding the root filesystem
+  ansible.builtin.command:
+    cmd: findmnt -n -o SOURCE /
+  register: rpi_nvme_root_source
+  changed_when: false
+  check_mode: false
+  tags:
+    - system
+    - nvme
+
+- name: Report which device root is on
+  ansible.builtin.debug:
+    msg: "root filesystem is on '{{ rpi_nvme_root_source.stdout | trim }}'"
+  tags:
+    - system
+    - nvme
+
+- name: Require that this host runs from NVMe
+  ansible.builtin.assert:
+    that:
+      - (rpi_nvme_root_source.stdout | trim) is match(rpi_nvme.root_device_pattern)
+    fail_msg: >-
+      root is on '{{ rpi_nvme_root_source.stdout | trim }}', not NVMe.
+      This role tunes an NVMe-backed system, and service data under
+      {{ frey.base_dir | default('/opt/frey') }} would land on the SD card.
+      Migrate first:
+        ansible-playbook -i inventory/hosts.yml playbooks/nvme_migrate.yml -e nvme_migrate_confirm=yes
+      then reboot and confirm with: findmnt -n -o SOURCE /
+      To deploy on the SD card anyway, set rpi_nvme.require_nvme_root=false
+    success_msg: "root is NVMe-backed"
+  when: rpi_nvme.require_nvme_root | bool
+  tags:
+    - system
+    - nvme
+
+- name: Install NVMe and disk health packages
+  ansible.builtin.apt:
+    name: "{{ rpi_nvme.packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags:
+    - system
+    - nvme
+
+- name: Enable periodic filesystem trim
+  ansible.builtin.systemd:
+    name: fstrim.timer
+    enabled: true
+    state: started
+  tags:
+    - system
+    - nvme
+
+- name: Apply Raspberry Pi service host VM tuning
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop: "{{ rpi_nvme.sysctl | dict2items }}"
+  tags:
+    - system
+    - nvme
+
+- name: Ensure journald override directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - system
+    - nvme
+
+- name: Limit persistent journal growth
+  ansible.builtin.template:
+    src: frey-nvme-journald.conf.j2
+    dest: /etc/systemd/journald.conf.d/frey-nvme.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+  tags:
+    - system
+    - nvme

@@ -1,0 +1,49 @@
+---
+rpi_nvme:
+  # This host is expected to run from NVMe. Every deploy verifies it, so a
+  # rebuild that is still on the SD card fails loudly with a pointer to the
+  # migration rather than quietly tuning and filling the wrong disk.
+  require_nvme_root: true
+  root_device_pattern: "^/dev/nvme"
+
+  packages:
+    - nvme-cli
+    - smartmontools
+
+  sysctl:
+    vm.swappiness: "10"
+    vm.vfs_cache_pressure: "50"
+
+  journald:
+    system_max_use: 256M
+    max_file_sec: 7day
+
+  # ---------------------------------------------------------------
+  # SD -> NVMe root migration.
+  #
+  # One-shot imaging operation, NOT part of site.yml. Run it with
+  # playbooks/nvme_migrate.yml. Safe to re-run: it detects a system
+  # already rooted on NVMe and stops.
+  # ---------------------------------------------------------------
+  migrate:
+    # Hard opt-in. Nothing touches the disk without this.
+    enabled: false
+    target_device: /dev/nvme0n1
+    boot_partition_size: 513MiB
+    boot_label: bootfs
+    root_label: rootfs
+    mount_point: /mnt/nvme-migrate
+    # Refuse to destroy an NVMe that already has partitions unless set.
+    force_wipe: false
+    # 0xf416 = try NVMe, then SD, then USB, then restart. Keeping SD in the
+    # chain means a failed NVMe boot falls back instead of stranding the Pi.
+    boot_order: "0xf416"
+    set_boot_order: true
+    # Flashing the bootloader EEPROM is a separate, riskier action.
+    update_eeprom_firmware: false
+    packages:
+      - parted
+      - gdisk
+      - dosfstools
+      - e2fsprogs
+      - rsync

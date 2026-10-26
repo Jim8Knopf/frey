@@ -1,0 +1,46 @@
+---
+# Move the Raspberry Pi's root filesystem from the SD card to NVMe.
+#
+# DESTRUCTIVE: rewrites the whole target device. Deliberately separate from
+# site.yml, because imaging a disk is a one-shot operation, not config
+# management. Safe to re-run: it stops cleanly if root is already on NVMe.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/nvme_migrate.yml \
+#     -e nvme_migrate_confirm=yes --vault-password-file .vault_pass
+#
+# Wiping an NVMe that already holds partitions additionally needs:
+#   -e nvme_migrate_force_wipe=yes
+#
+# The SD card is never written to, and the bootloader keeps it in the boot
+# chain behind NVMe, so a failed NVMe boot falls back instead of stranding
+# a Pi with no console.
+- name: Migrate Frey root filesystem to NVMe
+  hosts: frey_gateways
+  become: true
+  gather_facts: true
+
+  vars:
+    rpi_nvme:
+      migrate:
+        enabled: "{{ (nvme_migrate_confirm | default('no')) | bool }}"
+        force_wipe: "{{ (nvme_migrate_force_wipe | default('no')) | bool }}"
+
+  pre_tasks:
+    - name: Explain what is about to happen
+      ansible.builtin.debug:
+        msg:
+          - "Target device will be COMPLETELY ERASED and rewritten."
+          - "The SD card is not modified and stays a full fallback."
+          - "Run this BEFORE deploying services: cloning a live root filesystem"
+          - "is safe on a fresh install, but not once databases are running."
+      tags: [nvme_migrate]
+
+  tasks:
+    - name: Run the SD to NVMe migration
+      ansible.builtin.include_role:
+        name: rpi_nvme
+        tasks_from: migrate
+      # always: the include must load so the role's own task tags can be
+      # selected, e.g. --tags bootorder to touch only the bootloader.
+      tags: always

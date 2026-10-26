@@ -1,0 +1,404 @@
+---
+# SD -> NVMe root migration. Destructive, one-shot, NOT part of site.yml.
+# Run via playbooks/nvme_migrate.yml.
+#
+# Recoverability: the SD card is never written to. BOOT_ORDER keeps the SD in
+# the chain behind NVMe, so a failed NVMe boot falls back to the untouched SD
+# rather than stranding a Pi that has no console.
+
+- name: Require explicit opt-in before touching any disk
+  ansible.builtin.assert:
+    that:
+      - rpi_nvme.migrate.enabled | bool
+    fail_msg: >-
+      Refusing to run. This rewrites {{ rpi_nvme.migrate.target_device }} completely.
+      Re-run with -e nvme_migrate_confirm=yes
+  tags: [nvme_migrate]
+
+- name: Identify the filesystem currently mounted as root
+  ansible.builtin.command:
+    cmd: findmnt -n -o SOURCE /
+  register: nvme_root_source
+  changed_when: false
+  check_mode: false
+  tags: [nvme_migrate]
+
+- name: Report starting state
+  ansible.builtin.debug:
+    msg: >-
+      root is currently on '{{ nvme_root_source.stdout | trim }}',
+      target is '{{ rpi_nvme.migrate.target_device }}'.
+  tags: [nvme_migrate]
+
+- name: Stop cleanly if this system already boots from the target device
+  ansible.builtin.meta: end_play
+  when: (nvme_root_source.stdout | trim) is match('^' ~ rpi_nvme.migrate.target_device)
+  tags: [nvme_migrate]
+
+- name: Confirm the target device exists
+  ansible.builtin.stat:
+    path: "{{ rpi_nvme.migrate.target_device }}"
+  register: nvme_target_stat
+  tags: [nvme_migrate]
+
+- name: Fail when the target device is missing
+  ansible.builtin.assert:
+    that:
+      - nvme_target_stat.stat.exists
+      - nvme_target_stat.stat.isblk | default(false)
+    fail_msg: >-
+      {{ rpi_nvme.migrate.target_device }} is not a block device. Check that the
+      NVMe is seated and that PCIE_PROBE=1 is set in the bootloader config.
+  tags: [nvme_migrate]
+
+- name: Look for existing partitions on the target
+  ansible.builtin.shell:
+    cmd: "lsblk -rno NAME {{ rpi_nvme.migrate.target_device }} | tail -n +2"
+  register: nvme_existing_parts
+  changed_when: false
+  check_mode: false
+  tags: [nvme_migrate]
+
+- name: Refuse to destroy a target that already holds partitions
+  ansible.builtin.assert:
+    that:
+      - (nvme_existing_parts.stdout_lines | length) == 0 or (rpi_nvme.migrate.force_wipe | bool)
+    fail_msg: >-
+      {{ rpi_nvme.migrate.target_device }} already has partitions
+      ({{ nvme_existing_parts.stdout_lines | join(', ') }}).
+      Set rpi_nvme.migrate.force_wipe=true to wipe it. ALL DATA ON IT WILL BE LOST.
+  tags: [nvme_migrate]
+
+- name: Measure space in use on root
+  ansible.builtin.command:
+    cmd: df --output=used -B1 /
+  register: nvme_root_used
+  changed_when: false
+  check_mode: false
+  tags: [nvme_migrate]
+
+- name: Measure target capacity
+  ansible.builtin.command:
+    cmd: "blockdev --getsize64 {{ rpi_nvme.migrate.target_device }}"
+  register: nvme_target_bytes
+  changed_when: false
+  check_mode: false
+  tags: [nvme_migrate]
+
+- name: Confirm the target is large enough
+  ansible.builtin.assert:
+    that:
+      - (nvme_target_bytes.stdout | int) > ((nvme_root_used.stdout_lines | last | trim | int) * 1.2)
+    fail_msg: >-
+      Target holds {{ (nvme_target_bytes.stdout | int / 1024**3) | round(1) }} GiB but
+      root already uses
+      {{ ((nvme_root_used.stdout_lines | last | trim | int) / 1024**3) | round(1) }} GiB.
+  tags: [nvme_migrate]
+
+- name: Install partitioning and filesystem tooling
+  ansible.builtin.apt:
+    name: "{{ rpi_nvme.migrate.packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags: [nvme_migrate]
+
+# ---------------------------------------------------------------------
+# Partition. GPT is required: this disk is 3.6 TiB and MBR cannot address
+# beyond 2 TiB. The Pi 5 bootloader reads GPT.
+# ---------------------------------------------------------------------
+- name: Wipe existing signatures from the target
+  ansible.builtin.command:
+    cmd: "wipefs -a {{ rpi_nvme.migrate.target_device }}"
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Create a GPT label
+  ansible.builtin.command:
+    cmd: "parted -s {{ rpi_nvme.migrate.target_device }} mklabel gpt"
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Create the firmware boot partition
+  ansible.builtin.command:
+    cmd: >-
+      parted -s {{ rpi_nvme.migrate.target_device }}
+      mkpart {{ rpi_nvme.migrate.boot_label }} fat32 1MiB {{ rpi_nvme.migrate.boot_partition_size }}
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Flag the boot partition as ESP
+  ansible.builtin.command:
+    cmd: "parted -s {{ rpi_nvme.migrate.target_device }} set 1 esp on"
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Create the root partition across the remaining space
+  ansible.builtin.command:
+    cmd: >-
+      parted -s {{ rpi_nvme.migrate.target_device }}
+      mkpart {{ rpi_nvme.migrate.root_label }} ext4 {{ rpi_nvme.migrate.boot_partition_size }} 100%
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Re-read the partition table
+  ansible.builtin.command:
+    cmd: "partprobe {{ rpi_nvme.migrate.target_device }}"
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Wait for the partition nodes to appear
+  ansible.builtin.wait_for:
+    path: "{{ rpi_nvme.migrate.target_device }}p{{ item }}"
+    timeout: 30
+  loop: [1, 2]
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Create the FAT32 firmware filesystem
+  ansible.builtin.command:
+    cmd: >-
+      mkfs.vfat -F 32 -n {{ rpi_nvme.migrate.boot_label }}
+      {{ rpi_nvme.migrate.target_device }}p1
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Create the ext4 root filesystem
+  ansible.builtin.command:
+    cmd: >-
+      mkfs.ext4 -F -L {{ rpi_nvme.migrate.root_label }}
+      {{ rpi_nvme.migrate.target_device }}p2
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+# PARTUUIDs are generated at partition time, so they are discovered here and
+# written into the clone rather than hardcoded anywhere in the repo.
+- name: Read the new partition UUIDs
+  ansible.builtin.command:
+    cmd: "blkid -s PARTUUID -o value {{ rpi_nvme.migrate.target_device }}p{{ item }}"
+  register: nvme_partuuids
+  changed_when: false
+  loop: [1, 2]
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Record the new partition UUIDs
+  ansible.builtin.set_fact:
+    nvme_boot_partuuid: "{{ nvme_partuuids.results[0].stdout | trim }}"
+    nvme_root_partuuid: "{{ nvme_partuuids.results[1].stdout | trim }}"
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+# ---------------------------------------------------------------------
+# Clone. rsync -x stays on one filesystem, so /proc, /sys, /dev, /run and
+# the target mount itself are skipped automatically while their mountpoint
+# directories are still created.
+#
+# This copies a LIVE root filesystem. That is acceptable on a fresh install
+# with no databases running, and is the only option on a Pi with no console.
+# Once Immich or Postgres are running it is no longer safe - which is the
+# argument for doing this before any services are deployed.
+# ---------------------------------------------------------------------
+- name: Create the migration mount point
+  ansible.builtin.file:
+    path: "{{ rpi_nvme.migrate.mount_point }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [nvme_migrate]
+
+- name: Mount the new root filesystem
+  ansible.posix.mount:
+    path: "{{ rpi_nvme.migrate.mount_point }}"
+    src: "{{ rpi_nvme.migrate.target_device }}p2"
+    fstype: ext4
+    # ephemeral = mount now, never touch the running system's fstab.
+    state: ephemeral
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Clone the root filesystem to NVMe
+  ansible.builtin.command:
+    cmd: >-
+      rsync -aHAXx --numeric-ids
+      --exclude={{ rpi_nvme.migrate.mount_point }}/
+      / {{ rpi_nvme.migrate.mount_point }}/
+  register: nvme_rsync_root
+  changed_when: true
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Ensure the firmware mountpoint exists on the clone
+  ansible.builtin.file:
+    path: "{{ rpi_nvme.migrate.mount_point }}/boot/firmware"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Mount the new firmware partition
+  ansible.posix.mount:
+    path: "{{ rpi_nvme.migrate.mount_point }}/boot/firmware"
+    src: "{{ rpi_nvme.migrate.target_device }}p1"
+    fstype: vfat
+    state: ephemeral
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Clone the firmware partition
+  ansible.builtin.command:
+    cmd: "rsync -rltDv /boot/firmware/ {{ rpi_nvme.migrate.mount_point }}/boot/firmware/"
+  changed_when: true
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+# ---------------------------------------------------------------------
+# Point the clone at its own partitions. Both copies exist side by side
+# after this, so getting these two files wrong is what makes a Pi boot the
+# wrong root or none at all.
+# ---------------------------------------------------------------------
+- name: Write the clone's fstab
+  ansible.builtin.copy:
+    dest: "{{ rpi_nvme.migrate.mount_point }}/etc/fstab"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Generated by Ansible role rpi_nvme (SD -> NVMe migration).
+      proc            /proc           proc    defaults          0       0
+      PARTUUID={{ nvme_boot_partuuid }}  /boot/firmware  vfat    defaults          0       2
+      PARTUUID={{ nvme_root_partuuid }}  /               ext4    defaults,noatime  0       1
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Point the clone's kernel command line at the NVMe root
+  ansible.builtin.replace:
+    path: "{{ rpi_nvme.migrate.mount_point }}/boot/firmware/cmdline.txt"
+    regexp: 'root=PARTUUID=\S+'
+    replace: "root=PARTUUID={{ nvme_root_partuuid }}"
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Show the clone's resulting boot configuration
+  ansible.builtin.command:
+    cmd: "cat {{ rpi_nvme.migrate.mount_point }}/boot/firmware/cmdline.txt"
+  register: nvme_new_cmdline
+  changed_when: false
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Flush writes to the NVMe
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Unmount the firmware partition
+  ansible.builtin.command:
+    cmd: "umount {{ rpi_nvme.migrate.mount_point }}/boot/firmware"
+  changed_when: true
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+- name: Unmount the new root filesystem
+  ansible.builtin.command:
+    cmd: "umount {{ rpi_nvme.migrate.mount_point }}"
+  changed_when: true
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
+
+# ---------------------------------------------------------------------
+# Bootloader. SD stays in the chain behind NVMe so a failed NVMe boot falls
+# back to the untouched card instead of stranding a console-less Pi.
+# ---------------------------------------------------------------------
+- name: Read the current bootloader configuration
+  ansible.builtin.command:
+    cmd: rpi-eeprom-config
+  register: nvme_eeprom_current
+  changed_when: false
+  check_mode: false
+  when: rpi_nvme.migrate.set_boot_order | bool
+  tags: [nvme_migrate, bootorder]
+
+- name: Ensure the Frey state directory exists
+  ansible.builtin.file:
+    path: /var/lib/frey
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: rpi_nvme.migrate.set_boot_order | bool
+  tags: [nvme_migrate, bootorder]
+
+- name: Build the desired bootloader configuration
+  ansible.builtin.copy:
+    dest: /var/lib/frey/eeprom-boot.conf
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      {% set lines = nvme_eeprom_current.stdout_lines | default([]) %}
+      {% if lines | select('match', '^BOOT_ORDER=') | list | length > 0 %}
+      {% for line in lines %}
+      {{ 'BOOT_ORDER=' ~ rpi_nvme.migrate.boot_order if line is match('^BOOT_ORDER=') else line }}
+      {% endfor %}
+      {% else %}
+      {{ lines | join('\n') }}
+      BOOT_ORDER={{ rpi_nvme.migrate.boot_order }}
+      {% endif %}
+  register: nvme_eeprom_desired
+  when: rpi_nvme.migrate.set_boot_order | bool
+  tags: [nvme_migrate, bootorder]
+
+- name: Cancel a stale staged EEPROM update when the live boot order already matches
+  ansible.builtin.file:
+    path: "/boot/firmware/{{ item }}"
+    state: absent
+  loop:
+    - pieeprom.upd
+    - pieeprom.sig
+  when:
+    - rpi_nvme.migrate.set_boot_order | bool
+    - "'BOOT_ORDER=' ~ rpi_nvme.migrate.boot_order in (nvme_eeprom_current.stdout | default(''))"
+  tags: [nvme_migrate, bootorder]
+
+- name: Apply the bootloader boot order
+  ansible.builtin.command:
+    cmd: "rpi-eeprom-config --apply /var/lib/frey/eeprom-boot.conf"
+  register: nvme_eeprom_applied
+  changed_when: true
+  when:
+    - rpi_nvme.migrate.set_boot_order | bool
+    - not ansible_check_mode
+    - "'BOOT_ORDER=' ~ rpi_nvme.migrate.boot_order not in (nvme_eeprom_current.stdout | default(''))"
+  tags: [nvme_migrate, bootorder]
+
+- name: Update the bootloader EEPROM firmware
+  ansible.builtin.command:
+    cmd: rpi-eeprom-update -a
+  changed_when: true
+  when:
+    - rpi_nvme.migrate.update_eeprom_firmware | bool
+    - not ansible_check_mode
+  tags: [nvme_migrate, bootorder]
+
+- name: Migration complete
+  ansible.builtin.debug:
+    msg:
+      - "Clone written to {{ rpi_nvme.migrate.target_device }} (root PARTUUID {{ nvme_root_partuuid | default('n/a') }})."
+      - "Boot order {{ rpi_nvme.migrate.boot_order }} (NVMe, SD, USB) is STAGED, not live."
+      - "The bootloader writes it to EEPROM on the next boot, so expect TWO reboots:"
+      - "  1st boot still uses the SD, flashes the EEPROM, then reboots itself."
+      - "  2nd boot comes up on NVMe. 'rpi-eeprom-config' only ever shows the LIVE value."
+      - "Clone cmdline: {{ nvme_new_cmdline.stdout | default('n/a') }}"
+      - "The SD card was NOT modified and remains a complete fallback."
+      - "NEXT: reboot, then confirm with 'findmnt -n -o SOURCE /' -> expect {{ rpi_nvme.migrate.target_device }}p2"
+      - "Only remove the SD card once that check passes."
+  when: not ansible_check_mode
+  tags: [nvme_migrate]
