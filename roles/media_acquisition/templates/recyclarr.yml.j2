@@ -1,0 +1,99 @@
+{#
+  ============================================================================
+  Recyclarr configuration - managed by Ansible role: media_acquisition
+  ============================================================================
+
+  Recyclarr pulls quality definitions, quality profiles and custom formats
+  from the TRaSH Guides straight into Sonarr and Radarr, on the schedule set
+  by CRON_SCHEDULE. That beats hand-maintaining scoring tables in two web
+  UIs, and it means a rebuilt Pi lands on the same profiles as the old one.
+
+  WHY THESE TEMPLATES, for a van:
+
+  The Pi 5 has no hardware video encoder - it was physically removed, and only
+  HEVC decode remains - so every Jellyfin transcode is software and competes
+  with the gateway for CPU. The clients here are phones, tablets and laptop
+  browsers, and browsers are the fussiest: they transcode HEVC and anything
+  that is not stereo-friendly.
+
+  So the goal is never to transcode at all, which means grabbing 1080p H.264.
+  The TRaSH 1080p profiles below already score "x265 (HD)" heavily negative
+  for exactly this reason, which is the behaviour we want rather than
+  something to override.
+#}
+# yamllint disable rule:line-length
+{% if media_acquisition.services.radarr.enabled %}
+radarr:
+  radarr-main:
+    base_url: http://{{ media_acquisition.services.radarr.hostname }}:{{ media_acquisition.services.radarr.port }}
+    api_key: {{ media_secrets.radarr }}
+
+    delete_old_custom_formats: true
+    replace_existing_custom_formats: true
+
+    include:
+      - template: radarr-quality-definition-movie
+      - template: radarr-quality-profile-hd-bluray-web
+      - template: radarr-custom-formats-hd-bluray-web
+
+    quality_profiles:
+      - name: {{ media_acquisition.profiles.radarr.quality_profile }}
+        # Keep upgrading until the best allowed release is found, then stop.
+        upgrade:
+          allowed: true
+        # 2160p is pointless here: nothing in the van can display it and it
+        # would force a software transcode on every single play.
+        min_format_score: 0
+        quality_sort: top
+
+{% endif %}
+{% if media_acquisition.services.sonarr.enabled %}
+sonarr:
+  sonarr-main:
+    base_url: http://{{ media_acquisition.services.sonarr.hostname }}:{{ media_acquisition.services.sonarr.port }}
+    api_key: {{ media_secrets.sonarr }}
+
+    delete_old_custom_formats: true
+    replace_existing_custom_formats: true
+
+    include:
+      - template: sonarr-quality-definition-series
+      - template: sonarr-v4-quality-profile-web-1080p
+      - template: sonarr-v4-custom-formats-web-1080p
+
+    quality_profiles:
+      - name: {{ media_acquisition.profiles.sonarr.quality_profile }}
+        upgrade:
+          allowed: true
+        min_format_score: 0
+        quality_sort: top
+
+{% endif %}
+{#
+  ----------------------------------------------------------------------------
+  GERMAN LANGUAGE SCORING - a deliberate gap, not an oversight
+  ----------------------------------------------------------------------------
+
+  You asked for German first with English as a fallback. The language part of
+  that is set on the *arr language profiles (Ansible does this - see
+  tasks/configure/arrs.yml), but boosting German *releases* in the scoring
+  needs TRaSH custom formats referenced by their trash_id.
+
+  Those IDs are not written here because inventing them would quietly produce
+  a config that looks right and scores nothing. TRaSH's German coverage is
+  also thinner than its English coverage, so this is worth doing by hand once
+  you see what your indexers actually return.
+
+  To add them, look up the IDs you want at
+  https://trash-guides.info (Radarr/Sonarr -> Custom Formats) and add:
+
+    custom_formats:
+      - trash_ids:
+          - <id for German>
+          - <id for German DL>
+        assign_scores_to:
+          - name: {{ media_acquisition.profiles.radarr.quality_profile }}
+            score: {{ media_acquisition.profiles.score_overrides.german_dl }}
+
+  Re-run `--tags media_config` afterwards and Recyclarr applies them.
+#}

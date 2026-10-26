@@ -1,0 +1,379 @@
+---
+# ==============================================================================
+# MEDIA ACQUISITION
+#
+# The half of the media stack that needs internet: indexer search, download,
+# import. It is a separate module from media_library precisely because it is
+# useless without an uplink, so it can be paused, stopped or disabled on its
+# own without touching playback.
+#
+# Shared settings (paths, uid/gid, languages, internal network, client
+# targets) live in inventory/group_vars/all/main.yml under `media`.
+#
+# IMAGE PINS
+# Every tag below is a concrete version, not `latest`. The old stack used
+# `latest` everywhere, which means an unattended pull on a campground Wi-Fi
+# can hand you a broken stack with no internet left to fix it. Bump these
+# deliberately, then re-pull with `--tags media_update -e media_update=true`
+# while you still have a connection.
+# ==============================================================================
+
+media_acquisition:
+  stack_dir: "{{ frey.base_dir }}/stacks/media_acquisition"
+
+  # ---------------------------------------------------------------------------
+  # VPN
+  #
+  # The switch and the credentials live in
+  # inventory/group_vars/all/media.yml, so turning the tunnel on is a one-line
+  # edit in one obvious place. This is only the plumbing that reads it.
+  #
+  # When enabled, qBittorrent gets no network interface of its own and routes
+  # entirely through the Gluetun container. If the tunnel drops, Gluetun's
+  # firewall blocks everything rather than falling back to the campground's
+  # network - torrent traffic stops instead of leaking.
+  # ---------------------------------------------------------------------------
+  vpn:
+    enabled: "{{ media_vpn.enabled | bool }}"
+    container_name: gluetun
+    hostname: gluetun
+    image: "qmcgaw/gluetun:{{ media_versions.gluetun }}"
+    mem_limit: 512m
+    # The host the *arrs use to reach qBittorrent. With the tunnel on,
+    # qBittorrent has no hostname of its own - it lives inside Gluetun's
+    # network namespace - so everything must address Gluetun instead.
+    qbittorrent_host: >-
+      {{
+        'gluetun' if (media_vpn.enabled | bool)
+        else media_acquisition.services.qbittorrent.hostname
+      }}
+
+  # ---------------------------------------------------------------------------
+  # AUTHENTICATION
+  #
+  # `External` means "something in front of me authenticates": Servarr does
+  # not prompt, and the API key still guards the API. It is the correct
+  # setting for a reverse-proxied install and the right stepping stone to the
+  # planned auth module - drop Traefik forward-auth in front and nothing here
+  # changes.
+  #
+  # There is deliberately no local-account option: a Servarr local user
+  # cannot be seeded without writing the app's database, so claiming to
+  # automate it would mean lying about what happens. Today the boundary is
+  # the FreyHub passphrase; these UIs are open to anyone on the AP.
+  #
+  # Set method to `Forms` if you would rather create credentials by hand on
+  # first visit.
+  auth:
+    method: External
+    required: DisabledForLocalAddresses
+
+  # ---------------------------------------------------------------------------
+  # UPLINK GATING
+  #
+  # Public Wi-Fi comes and goes, and a captive portal looks like "connected"
+  # while actually answering every request with a sign-in page. Left alone,
+  # the *arrs burn through search attempts against that and collect indexer
+  # rate-limit bans, while qBittorrent hammers a dead link.
+  #
+  # A NetworkManager dispatcher hook watches the uplink and reacts:
+  #   mode: pause  - pause qBittorrent, apply alternate speed limits when the
+  #                  connection is metered. Resume on a usable uplink.
+  #   mode: stop   - additionally stop the *arr containers after a grace
+  #                  period, to save power when parked off-grid for a while.
+  #   mode: off    - no gating at all.
+  #
+  # `nmcli networking connectivity` reporting "portal" counts as NOT usable,
+  # which is the whole point.
+  # ---------------------------------------------------------------------------
+  uplink_gating:
+    mode: pause
+    grace_seconds: 300
+    metered_down_limit_kib: 256
+    metered_up_limit_kib: 64
+
+  # ---------------------------------------------------------------------------
+  # AUTO-CONFIGURATION
+  #
+  # Ansible owns the wiring between services. Each app is seeded with a known
+  # API key before its first start (so Ansible knows the key in advance), then
+  # everything else is applied over each app's REST API - which is idempotent
+  # and safe to re-run against a live container.
+  #
+  # Re-run just this part with: --tags media_config
+  # ---------------------------------------------------------------------------
+  configure:
+    enabled: true
+    # When true, a failed wiring step aborts the play. Default false on
+    # purpose: the containers are already up and usable by then, and in a van
+    # a hard failure here would also block the media_library module - the half
+    # that actually matters with no internet. Failures are always reported
+    # loudly at the end of the run either way.
+    strict: false
+    # Where the generated secrets are persisted on the Pi, mode 0600.
+    #
+    # Generated once and reused on every later run, so the stack needs no
+    # manual secret handling to come up fully wired. Define
+    # vault_media_api_keys in inventory/group_vars/all/secrets.yml to
+    # override any of them and make them reproducible from the repo instead;
+    # vault values always win over generated ones.
+    key_file: "{{ media.appdata_dir }}/.media-keys.json"
+    # Secrets this module owns. Listed explicitly rather than derived, so it
+    # is obvious what exists and nothing appears by accident.
+    #
+    # NOT named `keys`: Ansible's dot notation resolves `configure.keys` to
+    # the dict's own .keys() method instead of this list, and the error it
+    # then raises points nowhere near the actual cause.
+    secret_keys:
+      - prowlarr
+      - sonarr
+      - radarr
+      - lidarr
+      - chaptarr
+      - bazarr
+      - qbittorrent_password
+    # How long to wait for an app's API to answer before giving up on wiring it.
+    #
+    # 60 x 10s = 10 minutes per app. That sounds generous until you watch a
+    # Pi 5 cold-start eleven .NET applications at once: each one runs its
+    # database migrations on first boot, all competing for the same four
+    # cores. The first deploy used 30 x 5s = 150s and every single app was
+    # reported as "API never answered" while all of them were in fact
+    # starting normally - the wiring then silently did nothing.
+    #
+    # The wait exits as soon as an app answers, so a warm re-run is still fast.
+    api_timeout: 20
+    api_retries: 60
+    api_delay: 10
+
+  # ---------------------------------------------------------------------------
+  # SERVICES
+  # ---------------------------------------------------------------------------
+  services:
+    prowlarr:
+      enabled: "{{ media_enable.prowlarr | bool }}"
+      image: lscr.io/linuxserver/prowlarr:{{ media_versions.prowlarr }}
+      container_name: prowlarr
+      hostname: prowlarr
+      port: 9696
+      mem_limit: 512m
+      env_prefix: PROWLARR
+      api_version: v1
+
+    sonarr:
+      enabled: "{{ media_enable.sonarr | bool }}"
+      image: lscr.io/linuxserver/sonarr:{{ media_versions.sonarr }}
+      container_name: sonarr
+      hostname: sonarr
+      port: 8989
+      mem_limit: 768m
+      # Servarr env prefix, used to inject the API key before first start.
+      env_prefix: SONARR
+      # Prowlarr's name for this application type.
+      prowlarr_impl: Sonarr
+      category: tv-sonarr
+      # qBittorrent category field name differs per app in the Servarr API.
+      category_field: tvCategory
+      # Newznab/Torznab categories Prowlarr syncs to this application.
+      sync_categories: [5000, 5010, 5020, 5030, 5040, 5045, 5050, 5090]
+      api_version: v3
+      # Both paths are under the same /data mount, which is what lets an
+      # import hardlink instead of copy.
+      torrent_dir: /data/torrents/tv
+      # Sonarr and Radarr (API v3) accept a root folder with nothing but a
+      # path. Lidarr and Chaptarr do not - see their entries below.
+      root_folders:
+        - path: /data/media/tv
+
+    radarr:
+      enabled: "{{ media_enable.radarr | bool }}"
+      image: lscr.io/linuxserver/radarr:{{ media_versions.radarr }}
+      container_name: radarr
+      hostname: radarr
+      port: 7878
+      mem_limit: 768m
+      env_prefix: RADARR
+      prowlarr_impl: Radarr
+      category: radarr
+      category_field: movieCategory
+      sync_categories: [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080, 2090]
+      api_version: v3
+      torrent_dir: /data/torrents/movies
+      root_folders:
+        - path: /data/media/movies
+
+    lidarr:
+      # Honest warning: Lidarr's metadata server has been unreliable through
+      # 2026, so adding artists and library imports break periodically. This
+      # is upstream, not configuration. Jellyfin plays music fine regardless.
+      enabled: "{{ media_enable.lidarr | bool }}"
+      image: lscr.io/linuxserver/lidarr:{{ media_versions.lidarr }}
+      container_name: lidarr
+      hostname: lidarr
+      port: 8686
+      mem_limit: 768m
+      env_prefix: LIDARR
+      prowlarr_impl: Lidarr
+      category: lidarr
+      category_field: musicCategory
+      sync_categories: [3000, 3010, 3030, 3040, 3050, 3060]
+      api_version: v1
+      torrent_dir: /data/torrents/music
+      # Lidarr's v1 API rejects a path-only root folder: Name, a default
+      # quality profile and a default metadata profile are all mandatory.
+      # Profiles are resolved by NAME at run time rather than by hardcoded id,
+      # because the ids an app assigns to its own built-in profiles are not
+      # guaranteed.
+      root_folders:
+        - name: Music
+          path: /data/media/music
+          quality_field: defaultQualityProfileId
+          quality_profile: Standard
+          metadata_field: defaultMetadataProfileId
+          metadata_profile: Standard
+
+    chaptarr:
+      # The maintained successor to Readarr, which was retired in June 2025.
+      # Handles audiobooks and ebooks from one instance. Not a linuxserver
+      # image, so it takes PUID/PGID but no lsio-specific environment.
+      enabled: "{{ media_enable.chaptarr | bool }}"
+      image: chaptarr/chaptarr:{{ media_versions.chaptarr }}
+      container_name: chaptarr
+      hostname: chaptarr
+      port: 8789
+      mem_limit: 768m
+      env_prefix: CHAPTARR
+      # No healthcheck: this image ships no curl, so the check could never
+      # pass - and a permanently-failing healthcheck makes Traefik drop the
+      # container from the proxy entirely, which 404s the route while the app
+      # is actually fine. The app is verified by the wiring step instead.
+      healthcheck_enabled: false
+      # Chaptarr is a Readarr fork, so Prowlarr still talks to it as Readarr.
+      prowlarr_impl: Readarr
+      category: chaptarr
+      category_field: bookCategory
+      # 3030 audiobooks, 7000/7020 books and ebooks.
+      sync_categories: [3030, 7000, 7020]
+      api_version: v1
+      torrent_dir: /data/torrents/audiobooks
+      # Chaptarr handles audiobooks and ebooks from one instance, so every
+      # root folder must declare which it is and carry profiles for that
+      # media type specifically - there is no single "default" profile field.
+      #
+      # folderType is a numeric enum: 0 = mixed, 1 = audiobook, 2 = ebook.
+      root_folders:
+        - name: Audiobooks
+          path: /data/media/audiobooks
+          extra:
+            folderType: 1
+          quality_field: audiobookQualityProfileId
+          quality_profile: Audiobook
+          metadata_field: audiobookMetadataProfileId
+          metadata_profile: Audiobook Default
+        - name: Ebooks
+          path: /data/media/ebooks
+          extra:
+            folderType: 2
+          quality_field: ebookQualityProfileId
+          quality_profile: E-Book
+          metadata_field: ebookMetadataProfileId
+          metadata_profile: Ebook Default
+
+    bazarr:
+      enabled: "{{ media_enable.bazarr | bool }}"
+      image: lscr.io/linuxserver/bazarr:{{ media_versions.bazarr }}
+      container_name: bazarr
+      hostname: bazarr
+      port: 6767
+      mem_limit: 768m
+
+    qbittorrent:
+      enabled: "{{ media_enable.qbittorrent | bool }}"
+      image: lscr.io/linuxserver/qbittorrent:{{ media_versions.qbittorrent }}
+      container_name: qbittorrent
+      hostname: qbittorrent
+      port: 8080
+      # Outbound-only. Nothing is published to the host: behind a venue's NAT
+      # there is no inbound path anyway, so publishing it would only poke a
+      # hole on the uplink side for no benefit.
+      listen_port: 51234
+      mem_limit: 1g
+      cpus: "2.0"
+      web_username: admin
+      # Rewrite the stored WebUI password on every run. Leave true so Ansible
+      # stays able to log in; set false if you want to manage it by hand.
+      enforce_password: true
+
+    byparr:
+      # Replaces FlareSolverr, which was archived upstream and no longer
+      # clears the Cloudflare challenges trackers use. Byparr speaks the same
+      # API, so Prowlarr treats it as a FlareSolverr proxy.
+      #
+      # It drives a real browser engine, hence the hard memory cap - this is
+      # the one container most likely to balloon and threaten the gateway.
+      enabled: "{{ media_enable.byparr | bool }}"
+      image: ghcr.io/thephaseless/byparr:{{ media_versions.byparr }}
+      container_name: byparr
+      hostname: byparr
+      port: 8191
+      mem_limit: 1g
+      cpus: "1.5"
+      # Prowlarr applies the proxy only to indexers carrying this tag.
+      proxy_tag: cloudflare
+      # Liveness probe path. Deliberately not /health: in Byparr 3.x that
+      # endpoint runs an actual browser solve and outlasts any reasonable
+      # timeout, which left the container permanently marked unhealthy.
+      health_path: /docs
+
+    recyclarr:
+      # TRaSH-guide quality profiles and custom formats as code, on a timer.
+      # Better than hand-maintaining profiles in each UI.
+      enabled: "{{ media_enable.recyclarr | bool }}"
+      image: ghcr.io/recyclarr/recyclarr:{{ media_versions.recyclarr }}
+      container_name: recyclarr
+      mem_limit: 256m
+      # Runs once on start, then on this cron schedule (container-local).
+      cron: "0 4 * * *"
+
+    cleanuparr:
+      # Strikes downloads that stall, crawl or refuse to import, removes them,
+      # blocks the release and tells the *arr to search again. On an
+      # intermittent uplink this matters far more than on a home server.
+      enabled: "{{ media_enable.cleanuparr | bool }}"
+      image: ghcr.io/cleanuparr/cleanuparr:{{ media_versions.cleanuparr }}
+      container_name: cleanuparr
+      hostname: cleanuparr
+      port: 11011
+      mem_limit: 512m
+
+    unpackerr:
+      # Extracts archived releases so imports do not silently stall.
+      enabled: "{{ media_enable.unpackerr | bool }}"
+      image: ghcr.io/unpackerr/unpackerr:{{ media_versions.unpackerr }}
+      container_name: unpackerr
+      mem_limit: 256m
+
+  # ---------------------------------------------------------------------------
+  # QUALITY PROFILES (applied by Recyclarr from the TRaSH Guides)
+  #
+  # Tuned for phones, tablets and laptop browsers playing from a Pi 5 that
+  # cannot hardware-encode. Prefer H.264 + AAC at 1080p so clients direct-play
+  # and the CPU never transcodes.
+  #
+  # German is the primary language, English the accepted fallback. TRaSH's
+  # German custom-format coverage is thinner than its English coverage, so
+  # expect to hand-tune a few scores after the first grabs.
+  # ---------------------------------------------------------------------------
+  profiles:
+    radarr:
+      template: hd-bluray-web
+      quality_profile: HD Bluray + WEB
+    sonarr:
+      template: web-1080p-v4
+      quality_profile: WEB-1080p
+    # Scores applied on top of the TRaSH templates.
+    score_overrides:
+      x265_hd: -10000      # browsers transcode HEVC
+      av1: -10000
+      hdr_without_sdr: -10000
+      german_dl: 500       # dual-audio German releases preferred

@@ -1,0 +1,464 @@
+{#
+  ============================================================================
+  MEDIA ACQUISITION STACK - managed by Ansible role: media_acquisition
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  DESIGN RULES, and why the archived role broke them:
+
+  1. NO PUBLISHED PORTS. Every web UI is reached through Traefik on
+     frey_proxy. The firewall only opens 80/443 downstream, so the old
+     stack's dozen host port mappings were unreachable from FreyHub clients
+     anyway - while still being exposed on the uplink side.
+
+  2. ONE /data MOUNT. Identical path in every container, so an import is a
+     hardlink. The old split of /downloads + /tv + /movies forced a full copy
+     per import.
+
+  3. frey_media NEVER OVERLAPS 10.20.0.0/24. The archived role put this
+     network on the access point's own subnet, which would have taken
+     FreyHub down - the one service that must always survive.
+
+  4. EVERY IMAGE PINNED. No `latest`: an unattended pull on a campground
+     Wi-Fi must not be able to break the stack.
+
+  5. EVERY CONTAINER CAPPED. FreyHub is the only way in - no Ethernet, no
+     console - so nothing here may OOM the Pi or starve the gateway.
+#}
+{% set m = media_acquisition %}
+{% set svc = m.services %}
+{% set tz = frey.timezone %}
+{% set appdata = media.appdata_dir %}
+{% set auth_method = m.auth.method | default('External') %}
+{% set auth_required = m.auth.required | default('DisabledForLocalAddresses') %}
+
+{% macro logging() %}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+{%- endmacro %}
+
+{% macro proxy_labels(name, port) %}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.routers.{{ name }}.rule=Host(`{{ name }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.{{ name }}.entrypoints=web"
+      - "traefik.http.routers.{{ name }}.middlewares=secure-headers@file"
+      - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
+      - "frey.module=media_acquisition"
+{%- endmacro %}
+
+{#
+  Shared shape for the Servarr-family apps. They really are identical apart
+  from image, port and which media directory they own, so one macro is
+  safer here than six hand-maintained copies.
+
+  The API key is injected as an environment variable so Ansible knows it
+  before the app ever starts. Auth method defaults to External: there is no
+  way to seed a Servarr local user without writing its database, and these
+  UIs sit on a private LAN behind the FreyHub passphrase. When the auth
+  module lands, Traefik forward-auth goes in front and `External` is already
+  the correct setting.
+#}
+{% macro arr_service(name, cfg, extra_volumes=[]) %}
+  {{ name }}:
+    image: {{ cfg.image }}
+    container_name: {{ cfg.container_name }}
+    hostname: {{ cfg.hostname }}
+    restart: unless-stopped
+    environment:
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - TZ={{ tz }}
+      - UMASK={{ media.umask }}
+      - {{ cfg.env_prefix }}__AUTH__APIKEY={{ media_secrets[name] }}
+      - {{ cfg.env_prefix }}__AUTH__METHOD={{ auth_method }}
+      - {{ cfg.env_prefix }}__AUTH__REQUIRED={{ auth_required }}
+      - {{ cfg.env_prefix }}__SERVER__PORT={{ cfg.port }}
+      - {{ cfg.env_prefix }}__LOG__LEVEL=info
+    volumes:
+      - "{{ appdata }}/{{ name }}:/config"
+      - "{{ media.data_dir }}:/data"
+{% for volume in extra_volumes %}
+      - "{{ volume }}"
+{% endfor %}
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels(name, cfg.port) }}
+    mem_limit: {{ cfg.mem_limit }}
+{% if cfg.cpus is defined %}
+    cpus: "{{ cfg.cpus }}"
+{% endif %}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+{#
+  A healthcheck is only safe where the image actually has curl.
+
+  This is not a cosmetic concern: Traefik's Docker provider EXCLUDES a
+  container whose healthcheck is failing, so a healthcheck that cannot
+  possibly pass silently removes the service from the proxy and every
+  request to it returns 404 - with nothing in Traefik's log to say why.
+
+  That is exactly what happened to Chaptarr on first deploy: its image ships
+  no curl, the check failed forever, and chaptarr.frey 404'd while the app
+  itself was perfectly healthy and answering on its own port.
+#}
+{% if cfg.healthcheck_enabled | default(true) %}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:{{ cfg.port }}/ping || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+{% endif %}
+{%- endmacro %}
+
+networks:
+  # Created by service_proxy. Traefik lives here; this is the only path from
+  # a FreyHub client to any of these UIs.
+  {{ frey.proxy_network }}:
+    external: true
+  # Created by this role with an explicitly pinned subnet. App-to-app traffic
+  # only - Prowlarr talking to Sonarr, Bazarr talking to Radarr.
+  {{ media.network.name }}:
+    external: true
+
+services:
+{% if svc.prowlarr.enabled | bool %}
+{{ arr_service('prowlarr', svc.prowlarr) }}
+
+{% endif %}
+{% if svc.sonarr.enabled | bool %}
+{{ arr_service('sonarr', svc.sonarr) }}
+
+{% endif %}
+{% if svc.radarr.enabled | bool %}
+{{ arr_service('radarr', svc.radarr) }}
+
+{% endif %}
+{% if svc.lidarr.enabled | bool %}
+{{ arr_service('lidarr', svc.lidarr) }}
+
+{% endif %}
+{% if svc.chaptarr.enabled | bool %}
+{#
+  Chaptarr: the maintained successor to Readarr, which was retired in June
+  2025 when its metadata sources became unusable. Handles audiobooks and
+  ebooks in one instance. Not a linuxserver image, but it honours PUID/PGID
+  and is Servarr-based, so the same shape applies.
+#}
+{{ arr_service('chaptarr', svc.chaptarr) }}
+
+{% endif %}
+{% if svc.bazarr.enabled | bool %}
+  bazarr:
+    image: {{ svc.bazarr.image }}
+    container_name: {{ svc.bazarr.container_name }}
+    hostname: {{ svc.bazarr.hostname }}
+    restart: unless-stopped
+    environment:
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - TZ={{ tz }}
+      - UMASK={{ media.umask }}
+    volumes:
+      # Bazarr is configured by a plain YAML file, which Ansible templates
+      # directly - no API dance needed.
+      - "{{ appdata }}/bazarr:/config"
+      - "{{ media.data_dir }}:/data"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels('bazarr', svc.bazarr.port) }}
+    mem_limit: {{ svc.bazarr.mem_limit }}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if m.vpn.enabled | bool %}
+{#
+  ============================================================================
+  GLUETUN - the VPN tunnel, present only when media_vpn.enabled is true
+  ============================================================================
+
+  qBittorrent below joins this container's network namespace, so ALL of its
+  traffic - trackers, peers, DHT - leaves through the tunnel and nothing else.
+  If the tunnel drops, Gluetun's firewall blocks the lot rather than falling
+  back to the campground's network: downloads stop instead of leaking. That
+  killswitch is the reason for doing it this way instead of pointing
+  qBittorrent at a SOCKS proxy, which fails open.
+
+  Consequences, handled automatically elsewhere in this role:
+    - qBittorrent has no hostname of its own, so Traefik routes its web UI to
+      THIS container, and the *arrs address it as `gluetun`
+      (media_acquisition.vpn.qbittorrent_host).
+    - FIREWALL_OUTBOUND_SUBNETS must list the Docker networks, or Gluetun
+      blocks Traefik and the *arrs along with everything else and the web UI
+      becomes unreachable.
+#}
+  gluetun:
+    image: {{ m.vpn.image }}
+    container_name: {{ m.vpn.container_name }}
+    hostname: {{ m.vpn.hostname }}
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TZ={{ tz }}
+      - VPN_SERVICE_PROVIDER={{ media_vpn.provider }}
+      - VPN_TYPE={{ media_vpn.type }}
+{% if media_vpn.type == 'wireguard' %}
+      - WIREGUARD_PRIVATE_KEY={{ media_vpn.credentials.wireguard_private_key }}
+      - WIREGUARD_ADDRESSES={{ media_vpn.credentials.wireguard_addresses }}
+{% if media_vpn.credentials.wireguard_preshared_key | length > 0 %}
+      - WIREGUARD_PRESHARED_KEY={{ media_vpn.credentials.wireguard_preshared_key }}
+{% endif %}
+{% else %}
+      - OPENVPN_USER={{ media_vpn.credentials.openvpn_user }}
+      - OPENVPN_PASSWORD={{ media_vpn.credentials.openvpn_password }}
+{% endif %}
+{% if media_vpn.server_countries | length > 0 %}
+      - SERVER_COUNTRIES={{ media_vpn.server_countries | join(',') }}
+{% endif %}
+      # Without these, the killswitch blocks Traefik and the *arrs too.
+      - FIREWALL_OUTBOUND_SUBNETS={{ media_vpn.allowed_subnets | join(',') }}
+      # Gluetun's own DNS-over-TLS, so lookups do not leak to the venue's
+      # resolver. It does not affect FreyHub clients - only this namespace.
+      - DOT=on
+      - HEALTH_VPN_DURATION_INITIAL=30s
+    volumes:
+      - "{{ appdata }}/gluetun:/gluetun"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{#
+  The qBittorrent web UI is routed to Gluetun, because that is where the
+  listening socket actually lives once qBittorrent shares this namespace.
+#}
+{% if svc.qbittorrent.enabled | bool %}
+{{ proxy_labels('qbittorrent', svc.qbittorrent.port) }}
+{% else %}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=media_acquisition"
+{% endif %}
+    mem_limit: {{ m.vpn.mem_limit }}
+    pids_limit: 512
+{{ logging() }}
+    healthcheck:
+      test: ["CMD-SHELL", "/gluetun-entrypoint healthcheck"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+
+{% endif %}
+{% if svc.qbittorrent.enabled | bool %}
+  qbittorrent:
+    image: {{ svc.qbittorrent.image }}
+    container_name: {{ svc.qbittorrent.container_name }}
+{% if m.vpn.enabled | bool %}
+    # Inside the tunnel's network namespace: no interface, no hostname and no
+    # networks of its own, and therefore no way to reach the internet except
+    # through the VPN. Its web UI is published by Gluetun's Traefik labels.
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+{% else %}
+    hostname: {{ svc.qbittorrent.hostname }}
+{% endif %}
+    restart: unless-stopped
+    environment:
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - TZ={{ tz }}
+      - UMASK={{ media.umask }}
+      - WEBUI_PORT={{ svc.qbittorrent.port }}
+      - TORRENTING_PORT={{ svc.qbittorrent.listen_port }}
+    volumes:
+      - "{{ appdata }}/qbittorrent:/config"
+      - "{{ media.data_dir }}:/data"
+{% if not (m.vpn.enabled | bool) %}
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{#
+  The torrent listen port is deliberately NOT published. Parked behind a
+  venue's NAT there is no inbound path to forward anyway, so publishing it
+  would open the uplink side for nothing. Outbound peer connections work
+  regardless.
+#}
+{{ proxy_labels('qbittorrent', svc.qbittorrent.port) }}
+{% else %}
+    labels:
+      # Routing is Gluetun's job while the tunnel owns the network namespace.
+      - "traefik.enable=false"
+      - "frey.module=media_acquisition"
+{% endif %}
+    mem_limit: {{ svc.qbittorrent.mem_limit }}
+    cpus: "{{ svc.qbittorrent.cpus }}"
+    pids_limit: 1024
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:{{ svc.qbittorrent.port }} || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+{% endif %}
+{% if svc.byparr.enabled | bool %}
+{#
+  Byparr replaces FlareSolverr, which was archived upstream and no longer
+  clears the Cloudflare challenges trackers use. It speaks the same API on
+  the same port, so Prowlarr registers it as a FlareSolverr proxy.
+
+  It drives a real browser engine, so it gets the tightest cap in the stack
+  and is reachable only on the internal network.
+#}
+  byparr:
+    image: {{ svc.byparr.image }}
+    container_name: {{ svc.byparr.container_name }}
+    hostname: {{ svc.byparr.hostname }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+      - LOG_LEVEL=info
+    networks:
+      - {{ media.network.name }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=media_acquisition"
+    mem_limit: {{ svc.byparr.mem_limit }}
+    cpus: "{{ svc.byparr.cpus }}"
+    pids_limit: 512
+    # A browser engine needs more than the default 64MB of shared memory or
+    # it crashes on heavier pages.
+    shm_size: 256m
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+{#
+  NOT /health. In Byparr 3.x that endpoint performs a real browser solve and
+  takes longer than any sane probe timeout, so the container sat permanently
+  "unhealthy" while working perfectly. /docs answers instantly and still
+  proves the HTTP server is alive.
+#}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:{{ svc.byparr.port }}{{ svc.byparr.health_path }} || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+
+{% endif %}
+{% if svc.recyclarr.enabled | bool %}
+{#
+  Recyclarr pulls TRaSH-guide quality profiles and custom formats into Sonarr
+  and Radarr on a schedule. Config-as-code beats hand-maintaining scoring
+  tables in two separate web UIs.
+#}
+  recyclarr:
+    image: {{ svc.recyclarr.image }}
+    container_name: {{ svc.recyclarr.container_name }}
+    restart: unless-stopped
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
+    environment:
+      - TZ={{ tz }}
+      - CRON_SCHEDULE={{ svc.recyclarr.cron }}
+      - RECYCLARR_CREATE_CONFIG=false
+    volumes:
+      - "{{ appdata }}/recyclarr:/config"
+    networks:
+      - {{ media.network.name }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=media_acquisition"
+    mem_limit: {{ svc.recyclarr.mem_limit }}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if svc.cleanuparr.enabled | bool %}
+{#
+  Cleanuparr strikes downloads that stall, crawl or refuse to import, removes
+  them, blocks the release and tells the *arr to search again. On a van's
+  intermittent uplink this does more real work than on a home server.
+#}
+  cleanuparr:
+    image: {{ svc.cleanuparr.image }}
+    container_name: {{ svc.cleanuparr.container_name }}
+    hostname: {{ svc.cleanuparr.hostname }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+      - PORT={{ svc.cleanuparr.port }}
+    volumes:
+      - "{{ appdata }}/cleanuparr:/config"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels('cleanuparr', svc.cleanuparr.port) }}
+    mem_limit: {{ svc.cleanuparr.mem_limit }}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if svc.unpackerr.enabled | bool %}
+{#
+  Unpackerr extracts archived releases so imports do not silently stall
+  waiting on a .rar nobody unpacked.
+#}
+  unpackerr:
+    image: {{ svc.unpackerr.image }}
+    container_name: {{ svc.unpackerr.container_name }}
+    restart: unless-stopped
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
+    environment:
+      - TZ={{ tz }}
+{% if svc.sonarr.enabled | bool %}
+      - UN_SONARR_0_URL=http://{{ svc.sonarr.hostname }}:{{ svc.sonarr.port }}
+      - UN_SONARR_0_API_KEY={{ media_secrets.sonarr }}
+      - UN_SONARR_0_PATHS_0=/data/torrents/tv
+{% endif %}
+{% if svc.radarr.enabled | bool %}
+      - UN_RADARR_0_URL=http://{{ svc.radarr.hostname }}:{{ svc.radarr.port }}
+      - UN_RADARR_0_API_KEY={{ media_secrets.radarr }}
+      - UN_RADARR_0_PATHS_0=/data/torrents/movies
+{% endif %}
+{% if svc.lidarr.enabled | bool %}
+      - UN_LIDARR_0_URL=http://{{ svc.lidarr.hostname }}:{{ svc.lidarr.port }}
+      - UN_LIDARR_0_API_KEY={{ media_secrets.lidarr }}
+      - UN_LIDARR_0_PATHS_0=/data/torrents/music
+{% endif %}
+    volumes:
+      - "{{ media.data_dir }}:/data"
+    networks:
+      - {{ media.network.name }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=media_acquisition"
+    mem_limit: {{ svc.unpackerr.mem_limit }}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}

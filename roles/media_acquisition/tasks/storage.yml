@@ -1,0 +1,124 @@
+---
+# ==============================================================================
+# STORAGE LAYOUT
+#
+# One tree, mounted at the same path (/data) in every container. This is what
+# makes imports hardlinks instead of copies. Splitting downloads and the
+# library across separate mounts - as the archived role did - forces every
+# import to copy the whole file: twice the disk, and a lot of needless writes
+# on the NVMe that also holds the databases.
+# ==============================================================================
+
+- name: Ensure media group exists
+  ansible.builtin.group:
+    name: "{{ media.user.name }}"
+    gid: "{{ media.user.gid }}"
+    state: present
+  tags:
+    - media
+    - media_acquisition
+
+- name: Ensure media user exists
+  ansible.builtin.user:
+    name: "{{ media.user.name }}"
+    uid: "{{ media.user.uid }}"
+    group: "{{ media.user.name }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+  tags:
+    - media
+    - media_acquisition
+
+- name: Ensure media data tree exists
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    # 2775: setgid so new files inherit the media group, which is what keeps
+    # hardlinking between the torrent client and the *arrs working.
+    mode: "2775"
+  loop:
+    - "{{ media.data_dir }}"
+    - "{{ media.data_dir }}/torrents"
+    - "{{ media.data_dir }}/torrents/movies"
+    - "{{ media.data_dir }}/torrents/tv"
+    - "{{ media.data_dir }}/torrents/music"
+    - "{{ media.data_dir }}/torrents/audiobooks"
+    - "{{ media.data_dir }}/torrents/ebooks"
+    - "{{ media.data_dir }}/media"
+    - "{{ media.data_dir }}/media/movies"
+    - "{{ media.data_dir }}/media/tv"
+    - "{{ media.data_dir }}/media/music"
+    - "{{ media.data_dir }}/media/audiobooks"
+    - "{{ media.data_dir }}/media/podcasts"
+    - "{{ media.data_dir }}/media/ebooks"
+  tags:
+    - media
+    - media_acquisition
+
+- name: Resolve the backing device for the media tree
+  ansible.builtin.command:
+    cmd: "findmnt --noheadings --output SOURCE --target {{ media.data_dir }}"
+  register: media_data_mount
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  tags:
+    - media
+    - media_acquisition
+
+- name: Warn when the media tree is not on NVMe
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ media.data_dir }} resolves to {{ media_data_mount.stdout | trim }},
+      which is not an NVMe device. Media and *arr databases on an SD card will
+      be slow and will wear the card out. See docs/NVME_MIGRATION.md.
+  when:
+    - media_data_mount.stdout is defined
+    - media_data_mount.stdout | length > 0
+    - "'nvme' not in media_data_mount.stdout"
+  tags:
+    - media
+    - media_acquisition
+
+- name: Ensure stack and appdata directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "0775"
+  loop: "{{ media_acquisition_appdata_dirs }}"
+  vars:
+    media_acquisition_appdata_dirs: >-
+      {{
+        [media_acquisition.stack_dir, media.appdata_dir]
+        + (media_acquisition.services
+           | dict2items
+           | selectattr('value.enabled', 'truthy')
+           | map(attribute='key')
+           | map('regex_replace', '^', media.appdata_dir ~ '/')
+           | list)
+        + ([media.appdata_dir ~ '/gluetun'] if (media_vpn.enabled | bool) else [])
+      }}
+  tags:
+    - media
+    - media_acquisition
+
+- name: Ensure qBittorrent nested config directory exists
+  # The linuxserver image stores preferences at
+  # /config/qBittorrent/qBittorrent.conf, so the inner directory must exist
+  # before the seed file can be written.
+  ansible.builtin.file:
+    path: "{{ media.appdata_dir }}/qbittorrent/qBittorrent"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "0775"
+  when: media_acquisition.services.qbittorrent.enabled | bool
+  tags:
+    - media
+    - media_acquisition

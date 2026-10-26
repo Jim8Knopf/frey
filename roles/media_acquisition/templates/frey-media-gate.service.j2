@@ -1,0 +1,17 @@
+[Unit]
+# Managed by Ansible role: media_acquisition
+Description=Frey media download gating (match downloads to uplink state)
+Documentation=file:///opt/frey/stacks/media_acquisition
+After=docker.service NetworkManager.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-media-gate apply
+# A failure here must never block boot: the gate is an optimisation, and
+# FreyHub plus playback have to come up regardless.
+SuccessExitStatus=0 1
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

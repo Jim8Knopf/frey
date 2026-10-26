@@ -1,0 +1,163 @@
+---
+# ==============================================================================
+# WIRING
+#
+# Everything here runs against live containers over their REST APIs, which is
+# idempotent: each step reads the current state first and only writes when it
+# differs. Re-run on its own with --tags media_config.
+#
+# HOW ANSIBLE REACHES THE CONTAINERS
+#
+# Through Traefik, at the Pi's own LAN address, with an explicit Host header:
+#
+#     http://10.20.0.1/api/v3/rootfolder   Host: sonarr.frey
+#
+# Not by hostname, because the Pi does not necessarily resolve its own *.frey
+# names (dnsmasq answers for FreyHub clients; the Pi's own resolver is a
+# separate question). Not by container IP either, because those change. And
+# not by published port, because nothing here publishes one. The Host header
+# is the one path that works no matter how the Pi's DNS is set up.
+# ==============================================================================
+
+- name: Define media API endpoint
+  ansible.builtin.set_fact:
+    media_api_base: "http://{{ frey.service_address }}"
+    media_wiring_failures: []
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Wait for Servarr APIs to become available
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ item.value.api_version }}/system/status"
+    method: GET
+    headers:
+      Host: "{{ item.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[item.key] }}"
+    status_code: 200
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: media_api_ready
+  retries: "{{ media_acquisition.configure.api_retries }}"
+  delay: "{{ media_acquisition.configure.api_delay }}"
+  # Test the STATUS, not `is succeeded`.
+  #
+  # `failed_when: false` means the task can never be "failed", so
+  # `until: ... is succeeded` is already true on the first attempt and the
+  # retry loop exits immediately - it waits for nothing at all. That is the
+  # real reason the first deploys reported every app as "API never answered"
+  # while they were simply still starting: there was no retry, not a short one.
+  until: media_api_ready.status | default(0) == 200
+  failed_when: false
+  changed_when: false
+  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled', 'truthy') | selectattr('value.env_prefix', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Record Servarr apps that never answered
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (media_api_ready.results
+           | rejectattr('status', 'equalto', 200)
+           | map(attribute='item.key')
+           | map('regex_replace', '^(.*)$', '\1: API never answered')
+           | list)
+      }}
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Configure qBittorrent
+  ansible.builtin.include_tasks:
+    file: qbittorrent.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  when: media_acquisition.services.qbittorrent.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Configure the Servarr applications
+  ansible.builtin.include_tasks:
+    file: arrs.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Configure Prowlarr
+  ansible.builtin.include_tasks:
+    file: prowlarr.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  when: media_acquisition.services.prowlarr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Report wiring problems
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        ['Media wiring completed with problems. The containers are running and
+          can be configured by hand; re-run with --tags media_config after
+          fixing the cause.']
+        + media_wiring_failures
+      }}
+  when: media_wiring_failures | length > 0
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Fail on wiring problems when strict
+  ansible.builtin.fail:
+    msg: "Media wiring failed: {{ media_wiring_failures | join('; ') }}"
+  when:
+    - media_wiring_failures | length > 0
+    - media_acquisition.configure.strict | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Confirm wiring succeeded
+  ansible.builtin.debug:
+    msg: "Media wiring complete: indexers, download client and root folders are connected."
+  when: media_wiring_failures | length == 0
+  tags:
+    - media
+    - media_acquisition
+    - media_config

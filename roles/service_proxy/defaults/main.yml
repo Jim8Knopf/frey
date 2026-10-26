@@ -7,6 +7,16 @@ service_proxy:
     - curl
     - docker.io
     - python3-docker
+    # The Docker Compose v2 CLI plugin. Debian's docker.io package does NOT
+    # include it, so `docker compose` does not exist without this - and every
+    # compose-based service module fails at validation with a bare
+    # "unknown shorthand flag: 'f' in -f".
+    #
+    # On Debian 13 the `docker-compose` package IS v2 (2.26.x, the Go
+    # implementation) and registers itself at
+    # /usr/libexec/docker/cli-plugins/docker-compose, which is what makes
+    # `docker compose` work. It is not the old Python v1 tool.
+    - docker-compose
 
   docker:
     data_root: /opt/frey/docker

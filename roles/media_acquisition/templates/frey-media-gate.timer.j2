@@ -1,0 +1,19 @@
+[Unit]
+# Managed by Ansible role: media_acquisition
+Description=Re-check uplink state for media download gating
+Documentation=file:///opt/frey/stacks/media_acquisition
+
+[Timer]
+# Safety net behind the NetworkManager dispatcher hook.
+#
+# Not every transition produces an event NetworkManager reports: a captive
+# portal you sign into from a phone on FreyHub flips the Pi's connectivity
+# verdict from "portal" to "full" without any interface changing state. This
+# periodic re-check catches that, and anything else the hook missed.
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Unit=frey-media-gate.service
+
+[Install]
+WantedBy=timers.target

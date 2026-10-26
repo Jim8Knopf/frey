@@ -1,0 +1,281 @@
+{#
+  ============================================================================
+  MEDIA LIBRARY STACK - managed by Ansible role: media_library
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  This is the half of the media stack that must work with no internet at all.
+  Jellyfin and Audiobookshelf serve from local disk and need nothing upstream.
+  Seerr needs TMDB to browse, so with no uplink it degrades to showing what is
+  already requested - the queue still drains later when the *arrs get a
+  connection.
+
+  Same design rules as the acquisition stack: no published ports, one /data
+  mount, pinned images, every container capped.
+#}
+{% set m = media_library %}
+{% set svc = m.services %}
+{% set tz = frey.timezone %}
+{% set appdata = media.appdata_dir %}
+
+{% macro logging() %}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+{%- endmacro %}
+
+{#
+  A router can answer on several hostnames. Renaming a service's hostname
+  silently breaks every bookmark and habit pointing at the old one, so the
+  service-name hostname is always kept and friendlier names are added
+  alongside it rather than instead of it.
+
+  Several hostnames must be separate Host() rules joined by ||, NOT
+  Host(`a`, `b`). Traefik's Host matcher takes exactly one parameter and
+  rejects the comma form with "unexpected number of parameters; got 2,
+  expected one of [1]" - and a rule that fails to parse makes Traefik drop
+  the router entirely, so the service 404s with the container perfectly
+  healthy.
+#}
+{% macro proxy_labels(route, name, port, aliases=[]) %}
+{% set host_list = [] %}
+{% for h in [route] + aliases %}
+{% set _ = host_list.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% endfor %}
+{% set hosts = host_list | join(' || ') %}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.routers.{{ name }}.rule={{ hosts }}"
+      - "traefik.http.routers.{{ name }}.entrypoints=web"
+      - "traefik.http.routers.{{ name }}.middlewares=secure-headers@file"
+      - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
+      - "frey.module=media_library"
+{%- endmacro %}
+
+networks:
+  {{ frey.proxy_network }}:
+    external: true
+  {{ media.network.name }}:
+    external: true
+
+services:
+{% if svc.jellyfin.enabled | bool %}
+  jellyfin:
+    image: {{ svc.jellyfin.image }}
+    container_name: {{ svc.jellyfin.container_name }}
+    hostname: {{ svc.jellyfin.hostname }}
+    restart: unless-stopped
+    environment:
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - TZ={{ tz }}
+      # Tells Jellyfin which URL to advertise to clients for direct
+      # connections, so apps that follow it do not try to reach a container IP.
+      - JELLYFIN_PublishedServerUrl=http://jellyfin.{{ frey.local_domain }}
+      # Transcoding is software-only on a Pi 5; keep the scratch dir on NVMe.
+      - JELLYFIN_FFmpeg__probesize=1G
+    volumes:
+      - "{{ appdata }}/jellyfin:/config"
+      # Read-only: Jellyfin plays, the *arrs write. Nothing here should be
+      # able to delete the library.
+      - "{{ media.data_dir }}/media:/data/media:ro"
+      - "{{ svc.jellyfin.transcode_dir }}:/transcodes"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{% if svc.jellyfin.devices | length > 0 %}
+    devices:
+{% for device in svc.jellyfin.devices %}
+      - "{{ device }}"
+{% endfor %}
+{% endif %}
+{{ proxy_labels('jellyfin', 'jellyfin', svc.jellyfin.port) }}
+    mem_limit: {{ svc.jellyfin.mem_limit }}
+    cpus: "{{ svc.jellyfin.cpus }}"
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:{{ svc.jellyfin.port }}/health || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+{% endif %}
+{% if svc.audiobookshelf.enabled | bool %}
+  audiobookshelf:
+    image: {{ svc.audiobookshelf.image }}
+    container_name: {{ svc.audiobookshelf.container_name }}
+    hostname: {{ svc.audiobookshelf.hostname }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ appdata }}/audiobookshelf/config:/config"
+      - "{{ appdata }}/audiobookshelf/metadata:/metadata"
+      - "{{ media.data_dir }}/media/audiobooks:/audiobooks"
+      - "{{ media.data_dir }}/media/podcasts:/podcasts"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels(svc.audiobookshelf.route_host, 'audiobookshelf', svc.audiobookshelf.port, svc.audiobookshelf.route_aliases | default([])) }}
+    mem_limit: {{ svc.audiobookshelf.mem_limit }}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if svc.seerr.enabled | bool %}
+{#
+  Seerr, not Jellyseerr. Jellyseerr and Overseerr were merged upstream into
+  Seerr; Jellyseerr is discontinued and receives no updates or security
+  patches, and its Jellyfin authentication breaks against Jellyfin 12's
+  reworked auth. Seerr is the continuation of the same project, not a
+  different app.
+#}
+  seerr:
+    image: {{ svc.seerr.image }}
+    container_name: {{ svc.seerr.container_name }}
+    hostname: {{ svc.seerr.hostname }}
+    restart: unless-stopped
+    # Runs as the media user like the rest of the stack. The image otherwise
+    # runs as its own built-in uid, which cannot write into the appdata
+    # directory Ansible created - Seerr then crashloops on startup with
+    # "EACCES: permission denied, mkdir '/app/config/logs/'".
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
+    environment:
+      - TZ={{ tz }}
+      - LOG_LEVEL=info
+    volumes:
+      - "{{ appdata }}/seerr:/app/config"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels(svc.seerr.route_host, 'seerr', svc.seerr.port, svc.seerr.route_aliases | default([])) }}
+    mem_limit: {{ svc.seerr.mem_limit }}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if svc.audiobookrequest.enabled | bool %}
+  audiobookrequest:
+    image: {{ svc.audiobookrequest.image }}
+    container_name: {{ svc.audiobookrequest.container_name }}
+    hostname: {{ svc.audiobookrequest.hostname }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - ABR_APP__PORT={{ svc.audiobookrequest.port }}
+      - ABR_APP__OPENAPI_ENABLED=true
+    volumes:
+      - "{{ appdata }}/audiobookrequest:/config"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels(svc.audiobookrequest.route_host, 'audiobookrequest', svc.audiobookrequest.port, svc.audiobookrequest.route_aliases | default([])) }}
+    mem_limit: {{ svc.audiobookrequest.mem_limit }}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if svc.maintainerr.enabled | bool %}
+  maintainerr:
+    image: {{ svc.maintainerr.image }}
+    container_name: {{ svc.maintainerr.container_name }}
+    hostname: {{ svc.maintainerr.hostname }}
+    restart: unless-stopped
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ appdata }}/maintainerr:/opt/data"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels('maintainerr', 'maintainerr', svc.maintainerr.port) }}
+    mem_limit: {{ svc.maintainerr.mem_limit }}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if svc.jellystat.enabled | bool and svc.jellystat_db.enabled | bool %}
+  jellystat-db:
+    image: {{ svc.jellystat_db.image }}
+    container_name: {{ svc.jellystat_db.container_name }}
+    hostname: {{ svc.jellystat_db.hostname }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+      - POSTGRES_DB={{ svc.jellystat_db.database }}
+      - POSTGRES_USER={{ svc.jellystat_db.username }}
+      - POSTGRES_PASSWORD={{ media_secrets.jellystat_postgres_password }}
+    volumes:
+      # PostgreSQL 18+ wants a SINGLE mount at /var/lib/postgresql and puts
+      # the cluster in a versioned subdirectory itself, so that a later
+      # `pg_upgrade --link` does not cross a mount boundary. Mounting
+      # /var/lib/postgresql/data instead - correct for 17 and earlier - makes
+      # 18 refuse to start: it initialises a cluster elsewhere and then
+      # reports the mount as "unused mount/volume".
+      - "{{ appdata }}/jellystat/db:/var/lib/postgresql"
+    networks:
+      # Database only - never on the proxy network. Nothing outside this
+      # stack has any business reaching it.
+      - {{ media.network.name }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=media_library"
+    mem_limit: {{ svc.jellystat_db.mem_limit }}
+    shm_size: {{ svc.jellystat_db.shm_size }}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --dbname={{ svc.jellystat_db.database }} --username={{ svc.jellystat_db.username }}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  jellystat:
+    image: {{ svc.jellystat.image }}
+    container_name: {{ svc.jellystat.container_name }}
+    hostname: {{ svc.jellystat.hostname }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+      - POSTGRES_DB={{ svc.jellystat_db.database }}
+      - POSTGRES_USER={{ svc.jellystat_db.username }}
+      - POSTGRES_PASSWORD={{ media_secrets.jellystat_postgres_password }}
+      - POSTGRES_IP={{ svc.jellystat_db.hostname }}
+      - POSTGRES_PORT=5432
+      - JWT_SECRET={{ media_secrets.jellystat_jwt_secret }}
+    volumes:
+      - "{{ appdata }}/jellystat/backup:/app/backend/backup-data"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+    depends_on:
+      jellystat-db:
+        condition: service_healthy
+{{ proxy_labels('jellystat', 'jellystat', svc.jellystat.port) }}
+    mem_limit: {{ svc.jellystat.mem_limit }}
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}

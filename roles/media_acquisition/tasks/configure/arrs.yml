@@ -1,0 +1,29 @@
+---
+# ==============================================================================
+# Servarr applications: root folders and download client
+#
+# One include per app rather than a flat list of tasks, because each app needs
+# a read before its write (check what exists, then create only what is
+# missing) and Ansible cannot nest that inside a single loop.
+# ==============================================================================
+
+- name: Configure each Servarr application
+  ansible.builtin.include_tasks:
+    file: arr_instance.yml
+    # See configure/main.yml: included tasks do not inherit the include's
+    # tags without apply:.
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  loop: >-
+    {{
+      media_acquisition.services | dict2items
+      | selectattr('value.enabled', 'truthy')
+      | selectattr('value.root_folders', 'defined')
+      | list
+    }}
+  loop_control:
+    loop_var: arr
+    label: "{{ arr.key }}"
