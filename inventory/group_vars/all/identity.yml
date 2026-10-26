@@ -16,7 +16,7 @@
 #   Add a person:
 #       Add them to identity_users below, deploy, and the run prints their
 #       starting password once. Or add them in LLDAP's web UI at
-#       https://users.frey, which is faster and needs no deploy at all.
+#       https://users.hub.frey, which is faster and needs no deploy at all.
 #
 #   Protect a new service:
 #       Add one entry to identity_services. `forward_auth` means Traefik asks
@@ -72,8 +72,8 @@ identity_enable:
 # once. It is not a cosmetic rename.
 # ==============================================================================
 identity_hosts:
-  auth: auth      # auth.frey  - the login page
-  directory: users  # users.frey - LLDAP, where you add people
+  auth: auth      # auth.hub.frey  - the login page
+  directory: users  # users.hub.frey - LLDAP, where you add people
 
 
 # ==============================================================================
