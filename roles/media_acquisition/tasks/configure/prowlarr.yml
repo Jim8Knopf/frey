@@ -44,7 +44,7 @@
     status_code: [200, 201]
     timeout: "{{ media_acquisition.configure.api_timeout }}"
   when:
-    - media_acquisition.services.byparr.enabled
+    - media_acquisition.services.byparr.enabled | bool
     - prowlarr_tags.json is defined
     - media_acquisition.services.byparr.proxy_tag not in (prowlarr_tags.json | map(attribute='label') | list)
   register: prowlarr_tag_add
@@ -62,7 +62,7 @@
   register: prowlarr_tags_after
   failed_when: false
   changed_when: false
-  when: media_acquisition.services.byparr.enabled
+  when: media_acquisition.services.byparr.enabled | bool
 
 - name: "prowlarr: read existing indexer proxies"
   ansible.builtin.uri:
@@ -76,7 +76,7 @@
   register: prowlarr_proxies
   failed_when: false
   changed_when: false
-  when: media_acquisition.services.byparr.enabled
+  when: media_acquisition.services.byparr.enabled | bool
 
 - name: "prowlarr: register Byparr as the Cloudflare solver"
   ansible.builtin.uri:
@@ -109,7 +109,7 @@
         | map(attribute='id') | list
       }}
   when:
-    - media_acquisition.services.byparr.enabled
+    - media_acquisition.services.byparr.enabled | bool
     - prowlarr_proxies.json is defined
     - "'Byparr' not in (prowlarr_proxies.json | map(attribute='name') | list)"
   register: prowlarr_proxy_add
@@ -169,7 +169,7 @@
   loop: >-
     {{
       media_acquisition.services | dict2items
-      | selectattr('value.enabled')
+      | selectattr('value.enabled', 'truthy')
       | selectattr('value.prowlarr_impl', 'defined')
       | list
     }}

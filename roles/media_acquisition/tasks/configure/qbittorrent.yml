@@ -30,12 +30,19 @@
     body:
       username: "{{ media_acquisition.services.qbittorrent.web_username }}"
       password: "{{ media_secrets.qbittorrent_password }}"
-    status_code: 200
+    # 200 AND 204: qBittorrent 5.x answers a successful login with
+    # "204 No Content" and only the session cookie. Demanding 200 made every
+    # deploy report "WebUI login failed" while the login had in fact
+    # succeeded, which then skipped all the preference and category wiring.
+    status_code: [200, 204]
     timeout: "{{ media_acquisition.configure.api_timeout }}"
   register: qbt_login
   retries: "{{ media_acquisition.configure.api_retries }}"
   delay: "{{ media_acquisition.configure.api_delay }}"
-  until: qbt_login is succeeded
+  # Test the status, not `is succeeded` - with failed_when: false the latter
+  # is true immediately and no retry ever happens. See the equivalent note in
+  # configure/main.yml.
+  until: qbt_login.status | default(0) in [200, 204]
   failed_when: false
   changed_when: false
   no_log: true
@@ -43,12 +50,12 @@
 - name: Record a qBittorrent login failure
   ansible.builtin.set_fact:
     media_wiring_failures: "{{ media_wiring_failures + ['qbittorrent: WebUI login failed'] }}"
-  when: qbt_login.status is not defined or qbt_login.status != 200
+  when: qbt_login.status is not defined or qbt_login.status not in [200, 204]
 
 - name: Capture the qBittorrent session cookie
   ansible.builtin.set_fact:
     qbt_cookie: "{{ qbt_login.set_cookie | default('') }}"
-  when: qbt_login.status is defined and qbt_login.status == 200
+  when: qbt_login.status is defined and qbt_login.status in [200, 204]
   no_log: true
 
 - name: Read current qBittorrent preferences
@@ -151,7 +158,7 @@
       savePath: "{{ item.value.torrent_dir }}"
     status_code: [200, 409]
     timeout: "{{ media_acquisition.configure.api_timeout }}"
-  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled') | selectattr('value.torrent_dir', 'defined') | list }}"
+  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled', 'truthy') | selectattr('value.torrent_dir', 'defined') | list }}"
   loop_control:
     label: "{{ item.value.category }}"
   when:
@@ -160,6 +167,67 @@
     - item.value.category not in (qbt_categories.content | from_json)
   failed_when: false
   register: qbt_create_categories
+
+- name: Re-read qBittorrent categories
+  # createCategory does not reliably persist savePath - the categories come
+  # back with an empty path - so the paths are set explicitly afterwards.
+  # Without this every category inherits the default save path: still on the
+  # same filesystem, so hardlinks keep working, but the per-category layout
+  # under /data/torrents silently does not happen.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v2/torrents/categories"
+    method: GET
+    headers:
+      Host: "qbittorrent.{{ frey.local_domain }}"
+      Cookie: "{{ qbt_cookie }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: qbt_categories_after
+  failed_when: false
+  changed_when: false
+  when: qbt_cookie is defined
+  no_log: true
+
+- name: Set the save path on each qBittorrent category
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v2/torrents/editCategory"
+    method: POST
+    headers:
+      Host: "qbittorrent.{{ frey.local_domain }}"
+      Cookie: "{{ qbt_cookie }}"
+      Referer: "http://qbittorrent.{{ frey.local_domain }}"
+    body_format: form-urlencoded
+    body:
+      category: "{{ item.value.category }}"
+      savePath: "{{ item.value.torrent_dir }}"
+    status_code: [200]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled', 'truthy') | selectattr('value.torrent_dir', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.value.category }} -> {{ item.value.torrent_dir }}"
+  when:
+    - qbt_cookie is defined
+    - qbt_categories_after.content is defined
+    - item.value.category in (qbt_categories_after.content | from_json)
+    # Only when it actually differs, so a converged run reports no change.
+    - (qbt_categories_after.content | from_json)[item.value.category].savePath | default('') != item.value.torrent_dir
+  failed_when: false
+  register: qbt_edit_categories
+
+- name: Record qBittorrent category path failures
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (qbt_edit_categories.results | default([])
+           | rejectattr('skipped', 'defined')
+           | selectattr('status', 'defined')
+           | rejectattr('status', 'equalto', 200)
+           | map(attribute='item.value.category')
+           | map('regex_replace', '^(.*)$', 'qbittorrent: save path for category \1 not set')
+           | list)
+      }}
+  when: qbt_edit_categories.results is defined
 
 - name: Record qBittorrent category failures
   ansible.builtin.set_fact:

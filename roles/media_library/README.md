@@ -11,14 +11,19 @@ other module ran first.
 
 ## Service Hostnames
 
-| Service | URL | Purpose |
+| Service | URL (and aliases) | Purpose |
 | --- | --- | --- |
-| Jellyfin | `http://jellyfin.frey` | Film, TV, music |
-| Audiobookshelf | `http://books.frey` | Audiobooks and podcasts |
-| Seerr | `http://requests.frey` | Request films and shows |
-| AudioBookRequest | `http://bookrequests.frey` | Request audiobooks |
-| Maintainerr | `http://maintainerr.frey` | Rule-based library cleanup |
-| Jellystat | `http://jellystat.frey` | Playback statistics |
+| Jellyfin | `jellyfin.frey` | Film, TV, music |
+| Audiobookshelf | `audiobookshelf.frey`, `books.frey` | Audiobooks and podcasts |
+| Seerr | `seerr.frey`, `requests.frey`, `jellyseerr.frey` | Request films and shows |
+| AudioBookRequest | `audiobookrequest.frey`, `bookrequests.frey` | Request audiobooks |
+| Maintainerr | `maintainerr.frey` | Rule-based library cleanup |
+| Jellystat | `jellystat.frey` | Playback statistics |
+
+Each service answers on its own name plus any aliases. The service-name
+hostname is always present: renaming one silently breaks every bookmark
+pointing at the old name, so friendlier names are added alongside, never
+instead.
 
 Offline behaviour: Jellyfin and Audiobookshelf serve from local disk and need
 nothing upstream. Seerr needs TMDB to browse, so with no uplink it degrades to
@@ -66,17 +71,29 @@ This is also why Jellyseerr is gone: its Jellyfin authentication does not
 survive the rework, and it is discontinued upstream. Seerr is the maintained
 continuation of Overseerr and Jellyseerr both.
 
-## Provisioning Is Best Effort
+## Jellyfin Setup Is A Browser Step
 
-`tasks/configure.yml` completes Jellyfin's first-run wizard and creates the
-three libraries over its API. Every step tolerates failure on purpose:
-Jellyfin 12 reworked authentication and this path is **not verified against a
-live 12.x server**. If the endpoints have moved, Jellyfin is still running and
-the browser wizard still works — a deploy must not fail because an optional
-convenience did.
+`configure.provision_jellyfin` defaults to **false**. The API path exists in
+`tasks/configure.yml` but it does not work on Jellyfin 12.3: the
+`/Startup/Configuration` and `/Startup/Complete` calls are accepted while
+`/Startup/User` does not create the administrator. Since every step tolerated
+failure, the first deploy completed the wizard anyway and produced a server
+with no account able to log in — and completing the wizard is a one-way door.
 
-The run prints any step that did not take, along with the values needed to
-finish by hand.
+That has since been made safe (completion is gated on the admin actually
+existing) but the automation is still off, because a convenience that can
+brick admin access is not a convenience.
+
+So: open `http://jellyfin.frey`, run the two-minute wizard, then add the three
+libraries, all pointing into the read-only `/data/media` mount:
+
+| Library | Type | Path |
+| --- | --- | --- |
+| Movies | Movies | `/data/media/movies` |
+| TV Shows | Shows | `/data/media/tv` |
+| Music | Music | `/data/media/music` |
+
+The deploy prints this same list at the end of every run.
 
 **Seerr's first run is deliberately not automated.** Its settings live in a
 JSON file whose schema changes between versions, and a malformed seed does not

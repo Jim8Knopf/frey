@@ -5,7 +5,7 @@
 
 frey:
   node_name: frey
-  timezone: Australia/Brisbane
+  timezone: Pacific/Auckland
   base_dir: /opt/frey
   local_domain: frey
   service_address: "{{ network_gateway.downstream.address }}"
@@ -105,9 +105,9 @@ media:
 
   languages:
     # Primary drives Jellyfin metadata, *arr language profiles and Bazarr.
-    primary: de
-    secondary: en
-    metadata_country: DE
+    primary: en
+    secondary: de
+    metadata_country: NZ
 
   # ---------------------------------------------------------------------------
   # INTERNAL CONTAINER NETWORK

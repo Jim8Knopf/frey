@@ -16,17 +16,29 @@
       - media.network.name | length > 0
       - media_library.stack_dir | length > 0
       - not media.network.subnet.startswith('10.20.0.')
+      # The central knobs file must be present, or every image tag and on/off
+      # switch silently resolves to nothing.
+      - media_versions is defined
+      - media_enable is defined
     fail_msg: >-
       media_library configuration is invalid. The internal Docker network
       ({{ media.network.subnet }}) must not overlap FreyHub's
-      {{ network_gateway.downstream.network_cidr }}.
+      {{ network_gateway.downstream.network_cidr }}, and
+      inventory/group_vars/all/media.yml must define media_versions and
+      media_enable.
   tags:
     - media
     - media_library
     - media_config
 
 - name: Resolve media secrets
-  ansible.builtin.include_tasks: secrets.yml
+  ansible.builtin.include_tasks:
+    file: secrets.yml
+    apply:
+      tags:
+        - media
+        - media_library
+        - media_config
   tags:
     - media
     - media_library
@@ -111,8 +123,8 @@
     group: "999"
     mode: "0700"
   when:
-    - media_library.services.jellystat.enabled
-    - media_library.services.jellystat_db.enabled
+    - media_library.services.jellystat.enabled | bool
+    - media_library.services.jellystat_db.enabled | bool
   tags:
     - media
     - media_library
@@ -143,12 +155,62 @@
     - media
     - media_library
 
+- name: Pre-pull media library images one at a time
+  # See the equivalent task in media_acquisition: compose pulls in parallel,
+  # which starves a weak uplink and times out. Serial pulls with retries are
+  # far more likely to finish on a van's connection.
+  community.docker.docker_image_pull:
+    name: "{{ item }}"
+  loop: >-
+    {{
+      media_library.services | dict2items
+      | selectattr('value.enabled', 'truthy')
+      | map(attribute='value.image')
+      | list | unique
+    }}
+  loop_control:
+    label: "{{ item }}"
+  register: media_library_pull
+  retries: 8
+  delay: 30
+  until: media_library_pull is succeeded
+  # ignore_errors, not failed_when: false - see the note in
+  # media_acquisition. failed_when would hide a failed pull entirely.
+  ignore_errors: true
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_library
+
+- name: Fail clearly when images are missing
+  ansible.builtin.fail:
+    msg: >-
+      Could not pull {{ media_library_pull_failures | length }} image(s) after
+      8 attempts: {{ media_library_pull_failures | join(', ') }}.
+      Re-run `--tags media_library` on a better connection.
+  vars:
+    media_library_pull_failures: >-
+      {{
+        media_library_pull.results | default([])
+        | selectattr('failed', 'defined')
+        | selectattr('failed')
+        | map(attribute='item') | list
+      }}
+  when:
+    - media_library_pull.results is defined
+    - media_library_pull_failures | length > 0
+  tags:
+    - media
+    - media_library
+
 - name: Start the media library stack
   community.docker.docker_compose_v2:
     project_src: "{{ media_library.stack_dir }}"
     state: present
     remove_orphans: true
-    pull: missing
+    # See the note in media_acquisition: `missing` still costs a registry
+    # HEAD per service, which is what times out on a van's uplink.
+    pull: never
     timeout: 300
   when: not ansible_check_mode
   tags:
@@ -173,7 +235,13 @@
     - media_update
 
 - name: Configure the media library services
-  ansible.builtin.include_tasks: configure.yml
+  ansible.builtin.include_tasks:
+    file: configure.yml
+    apply:
+      tags:
+        - media
+        - media_library
+        - media_config
   when:
     - media_library.configure.enabled
     - not ansible_check_mode

@@ -26,27 +26,82 @@
       - not media.network.subnet.startswith('10.20.0.')
       - media_acquisition.uplink_gating.mode in ['pause', 'stop', 'off']
       - media_acquisition.auth.method in ['External', 'Forms']
+      # The central knobs file must be present, or every image tag and
+      # on/off switch silently resolves to nothing.
+      - media_versions is defined
+      - media_enable is defined
+      - media_vpn is defined
     fail_msg: >-
-      media_acquisition configuration is invalid. In particular the internal
-      Docker network ({{ media.network.subnet }}) must not overlap FreyHub's
-      {{ network_gateway.downstream.network_cidr }}.
+      media_acquisition configuration is invalid. The internal Docker network
+      ({{ media.network.subnet }}) must not overlap FreyHub's
+      {{ network_gateway.downstream.network_cidr }}, and
+      inventory/group_vars/all/media.yml must define media_versions,
+      media_enable and media_vpn.
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Validate VPN configuration
+  # Checked separately so the message can be specific. Turning the tunnel on
+  # without credentials must fail here and now, not start an unconfigured
+  # Gluetun that blocks all torrent traffic and looks like a broken stack.
+  ansible.builtin.assert:
+    that:
+      - media_vpn.type in ['wireguard', 'openvpn']
+      - media_vpn.provider | length > 0
+      - >-
+        (media_vpn.type == 'wireguard'
+         and media_vpn.credentials.wireguard_private_key | length > 0
+         and media_vpn.credentials.wireguard_addresses | length > 0)
+        or
+        (media_vpn.type == 'openvpn'
+         and media_vpn.credentials.openvpn_user | length > 0
+         and media_vpn.credentials.openvpn_password | length > 0)
+    fail_msg: >-
+      media_vpn.enabled is true but the credentials for a
+      {{ media_vpn.type }} connection are missing. Add them to the vault:
+      ansible-vault edit inventory/group_vars/all/secrets.yml
+      --vault-password-file .vault_pass
+      -- then vault_vpn_wireguard_private_key and
+      vault_vpn_wireguard_addresses for WireGuard, or vault_vpn_openvpn_user
+      and vault_vpn_openvpn_password for OpenVPN. See the comments in
+      inventory/group_vars/all/media.yml.
+    success_msg: "VPN enabled: {{ media_vpn.provider }} over {{ media_vpn.type }}."
+  when: media_vpn.enabled | bool
   tags:
     - media
     - media_acquisition
     - media_config
 
 - name: Prepare media storage
-  ansible.builtin.include_tasks: storage.yml
+  ansible.builtin.include_tasks:
+    file: storage.yml
+    apply:
+      tags:
+        - media
+        - media_acquisition
   tags:
     - media
     - media_acquisition
 
 - name: Resolve media secrets
-  ansible.builtin.include_tasks: secrets.yml
+  ansible.builtin.include_tasks:
+    file: secrets.yml
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+        # media_gating too: the gating credentials file needs the qBittorrent
+        # password, so `--tags media_gating` on its own fails with
+        # "'media_secrets' is undefined" without this.
+        - media_gating
   tags:
     - media
     - media_acquisition
     - media_config
+    - media_gating
 
 # ------------------------------------------------------------------------------
 # SEED CONFIGURATION
@@ -61,7 +116,7 @@
     mode: "0640"
     # Never overwrite: once the app has started, this file is its own.
     force: false
-  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled') | selectattr('value.env_prefix', 'defined') | list }}"
+  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled', 'truthy') | selectattr('value.env_prefix', 'defined') | list }}"
   loop_control:
     label: "{{ item.key }}"
   no_log: true
@@ -81,7 +136,7 @@
   changed_when: false
   check_mode: false
   no_log: true
-  when: media_acquisition.services.qbittorrent.enabled
+  when: media_acquisition.services.qbittorrent.enabled | bool
   tags:
     - media
     - media_acquisition
@@ -91,7 +146,7 @@
   ansible.builtin.set_fact:
     qbittorrent_password_hash: "{{ media_qbt_hash.stdout | trim }}"
   when:
-    - media_acquisition.services.qbittorrent.enabled
+    - media_acquisition.services.qbittorrent.enabled | bool
     - media_qbt_hash.stdout is defined
   no_log: true
   tags:
@@ -106,7 +161,7 @@
   ansible.builtin.stat:
     path: "{{ media.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
   register: media_qbt_conf_stat
-  when: media_acquisition.services.qbittorrent.enabled
+  when: media_acquisition.services.qbittorrent.enabled | bool
   tags:
     - media
     - media_acquisition
@@ -121,30 +176,58 @@
     mode: "0640"
     force: false
   when:
-    - media_acquisition.services.qbittorrent.enabled
+    - media_acquisition.services.qbittorrent.enabled | bool
     - qbittorrent_password_hash is defined
   no_log: true
   tags:
     - media
     - media_acquisition
 
-- name: Keep the stored qBittorrent password in step with Ansible
-  # The seed file above is never overwritten, so without this a password
-  # change in the vault would leave Ansible locked out of the API it needs
-  # for wiring and for download gating.
+- name: Read the current qBittorrent configuration
+  # Needed to tell "no password set at all" from "qBittorrent has rewritten
+  # the password hash with its own salt", which are very different situations.
+  ansible.builtin.slurp:
+    src: "{{ media.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
+  register: media_qbt_conf_content
+  when:
+    - media_acquisition.services.qbittorrent.enabled | bool
+    - media_qbt_conf_stat.stat.exists | default(false)
+  failed_when: false
+  no_log: true
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Restore the qBittorrent password when none is stored
+  # ONLY when the config carries no password at all.
+  #
+  # Deliberately not reconciled on every run: qBittorrent re-salts the hash
+  # each time it writes its config, so our deterministic value and its value
+  # never match. Enforcing ours unconditionally made this task report
+  # "changed" on every single deploy and restart the container each time,
+  # while qBittorrent promptly rewrote it again - a loop that achieved
+  # nothing.
+  #
+  # Both hashes authenticate the same password, so there is nothing to fix in
+  # the normal case. If you change the password in the vault, delete the
+  # Password_PBKDF2 line and re-run.
   ansible.builtin.lineinfile:
     path: "{{ media.appdata_dir }}/qbittorrent/qBittorrent/qBittorrent.conf"
     regexp: '^WebUI\\Password_PBKDF2='
     line: 'WebUI\Password_PBKDF2="{{ qbittorrent_password_hash }}"'
     insertafter: '^\[Preferences\]'
   when:
-    - media_acquisition.services.qbittorrent.enabled
+    - media_acquisition.services.qbittorrent.enabled | bool
     - media_acquisition.services.qbittorrent.enforce_password
     - qbittorrent_password_hash is defined
     # Only for a config that already existed. A freshly seeded one was just
     # written with the correct hash, and in check mode it was not written at
     # all - so touching it here would fail on a file that does not exist.
     - media_qbt_conf_stat.stat.exists | default(false)
+    # And only when there is genuinely no password stored.
+    - media_qbt_conf_content.content is defined
+    - "'Password_PBKDF2' not in (media_qbt_conf_content.content | b64decode)"
   no_log: true
   notify: Restart qbittorrent
   tags:
@@ -159,7 +242,7 @@
     owner: "{{ media.user.name }}"
     group: "{{ media.user.name }}"
     mode: "0775"
-  when: media_acquisition.services.bazarr.enabled
+  when: media_acquisition.services.bazarr.enabled | bool
   tags:
     - media
     - media_acquisition
@@ -172,7 +255,7 @@
     group: "{{ media.user.name }}"
     mode: "0640"
     force: false
-  when: media_acquisition.services.bazarr.enabled
+  when: media_acquisition.services.bazarr.enabled | bool
   no_log: true
   tags:
     - media
@@ -187,7 +270,7 @@
     owner: "{{ media.user.name }}"
     group: "{{ media.user.name }}"
     mode: "0640"
-  when: media_acquisition.services.recyclarr.enabled
+  when: media_acquisition.services.recyclarr.enabled | bool
   no_log: true
   notify: Restart recyclarr
   tags:
@@ -224,12 +307,78 @@
     - media
     - media_acquisition
 
+- name: Pre-pull media acquisition images one at a time
+  # `docker compose up` pulls every missing image in PARALLEL. Eleven
+  # simultaneous pulls over a campground Wi-Fi uplink starve each other and
+  # time out - which is exactly how the first deploy of this stack failed
+  # (ghcr.io i/o timeout on radarr while ten others were in flight).
+  #
+  # Pulling serially with retries is slower in the best case and far more
+  # likely to finish at all on a weak link, which is the case that matters
+  # here. The images are pinned, so a pull is a no-op once it has succeeded.
+  community.docker.docker_image_pull:
+    name: "{{ item }}"
+  loop: >-
+    {{
+      (media_acquisition.services | dict2items
+       | selectattr('value.enabled', 'truthy')
+       | map(attribute='value.image')
+       | list
+       + ([media_acquisition.vpn.image] if (media_vpn.enabled | bool) else []))
+      | unique
+    }}
+  loop_control:
+    label: "{{ item }}"
+  register: media_acquisition_pull
+  retries: 8
+  delay: 30
+  until: media_acquisition_pull is succeeded
+  # ignore_errors, NOT failed_when: false - the latter rewrites every item's
+  # `failed` to false, so a genuinely failed pull becomes indistinguishable
+  # from a successful one and the check below silently passes. That is exactly
+  # how the first attempt at this reported success while Prowlarr's image was
+  # never pulled.
+  ignore_errors: true
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+
+- name: Fail clearly when images are missing
+  # The stack cannot start without them: `docker compose up` is all-or-
+  # nothing, so continuing would only produce a more confusing error.
+  ansible.builtin.fail:
+    msg: >-
+      Could not pull {{ media_acquisition_pull_failures | length }} image(s) after
+      8 attempts: {{ media_acquisition_pull_failures | join(', ') }}.
+      The uplink is too unreliable right now. Everything else is already
+      configured on disk - re-run `--tags media_acquisition` on a better
+      connection and it will pick up where it left off.
+  vars:
+    media_acquisition_pull_failures: >-
+      {{
+        media_acquisition_pull.results | default([])
+        | selectattr('failed', 'defined')
+        | selectattr('failed')
+        | map(attribute='item') | list
+      }}
+  when:
+    - media_acquisition_pull.results is defined
+    - media_acquisition_pull_failures | length > 0
+  tags:
+    - media
+    - media_acquisition
+
 - name: Start the media acquisition stack
   community.docker.docker_compose_v2:
     project_src: "{{ media_acquisition.stack_dir }}"
     state: present
     remove_orphans: true
-    pull: missing
+    # never, not missing: every image is already local thanks to the serial
+    # pull above, and `missing` still makes compose issue a registry HEAD per
+    # service to resolve the tag - eleven round-trips that time out on a weak
+    # uplink even when nothing needs downloading.
+    pull: never
     timeout: 300
   register: media_acquisition_up
   when: not ansible_check_mode
@@ -373,7 +522,13 @@
 # ------------------------------------------------------------------------------
 
 - name: Wire the media services together
-  ansible.builtin.include_tasks: configure/main.yml
+  ansible.builtin.include_tasks:
+    file: configure/main.yml
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
   when:
     - media_acquisition.configure.enabled
     - not ansible_check_mode

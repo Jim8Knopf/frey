@@ -18,7 +18,9 @@ Legacy service stacks are archived under `archive/legacy-stack/`.
 playbooks/site.yml                       # Thin module orchestrator
 inventory/hosts.yml                      # Target Pi inventory
 inventory/group_vars/all/main.yml        # Active module registry and config
+inventory/group_vars/all/media.yml       # Media image versions, toggles, VPN switch
 inventory/group_vars/all/secrets.yml     # Vault: AP passphrase, known networks
+scripts/media-check-updates.sh           # What media images have newer versions
 roles/network_gateway/                   # FreyHub AP + public Wi-Fi uplink + NAT/DNS
 roles/service_proxy/                     # Docker + Traefik service entrypoint
 roles/security_baseline/                 # Firewall, fail2ban, network hardening
@@ -127,8 +129,9 @@ See [docs/SERVICE_MODULES.md](docs/SERVICE_MODULES.md).
 
 The media stack is split in two along the line that matters in a van:
 
-- `media_library` — Jellyfin (`jellyfin.frey`), Audiobookshelf (`books.frey`)
-  and Seerr (`requests.frey`). Works with **no internet at all**.
+- `media_library` — Jellyfin (`jellyfin.frey`), Audiobookshelf
+  (`audiobookshelf.frey`, also `books.frey`) and Seerr (`seerr.frey`, also
+  `requests.frey`). Works with **no internet at all**.
 - `media_acquisition` — Prowlarr, Sonarr, Radarr, Lidarr, Chaptarr, Bazarr and
   qBittorrent. Needs an uplink, and pauses itself when there isn't one.
 
@@ -141,6 +144,18 @@ an application but is not.
 ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
   --tags media --vault-password-file .vault_pass
 ```
+
+Everything you change day to day lives in one file,
+`inventory/group_vars/all/media.yml`: image versions, which services run, and
+the VPN toggle. To see what is out of date before editing it:
+
+```bash
+scripts/media-check-updates.sh
+```
+
+Setting `media_vpn.enabled: true` there (with credentials in the vault) moves
+qBittorrent inside a Gluetun tunnel with a killswitch, and repoints the rest
+of the stack at it automatically.
 
 See [docs/MEDIA.md](docs/MEDIA.md). Note that the Pi 5 has no hardware video
 encoder, so the quality profiles deliberately chase direct play rather than

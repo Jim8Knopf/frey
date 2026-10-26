@@ -19,9 +19,14 @@ the van is parked somewhere with no uplink.
 
 ## Required Variables
 
-All shared values come from `media` in `inventory/group_vars/all/main.yml`:
+Day-to-day knobs live in **`inventory/group_vars/all/media.yml`**:
+`media_versions` (image tags), `media_enable` (which services run) and
+`media_vpn` (the tunnel). You should not need to edit this role to run the
+stack.
+
+Shared values come from `media` in `inventory/group_vars/all/main.yml`:
 `data_dir`, `appdata_dir`, `user.{name,uid,gid}`, `umask`, `languages`,
-`network.{name,subnet}`. Everything else is in `defaults/main.yml`.
+`network.{name,subnet}`. Structure lives in `defaults/main.yml`.
 
 Nothing has to be put in the vault. API keys and the qBittorrent password are
 generated on first deploy and persisted at `/opt/frey/appdata/.media-keys.json`
@@ -121,10 +126,21 @@ curl -sS -H "Host: prowlarr.frey" http://10.20.0.1/api/v1/health \
 
 ## Deliberate Choices
 
-**No VPN.** Torrent traffic goes out over whatever network the van is parked
-on, and is attributable to it. This was an explicit decision, not an
-oversight. Gluetun can be added without restructuring the role —
-`media_acquisition.vpn.enabled` is the hook.
+**VPN off by default, one switch to change it.** Torrent traffic goes out over
+whatever network the van is parked on and is attributable to it. That was an
+explicit decision, not an oversight.
+
+To change it, set `media_vpn.enabled: true` in
+`inventory/group_vars/all/media.yml` and put the credentials in the vault.
+qBittorrent then runs inside Gluetun's network namespace
+(`network_mode: service:gluetun`), so if the tunnel drops its firewall stops
+traffic rather than falling back to the venue's network — a SOCKS proxy would
+fail open instead. Ansible repoints the *arrs at `gluetun`, Traefik serves the
+UI from there, and `qbittorrent.frey` is unchanged.
+
+Enabling it with no credentials fails the deploy immediately with
+instructions, rather than starting an unconfigured tunnel that looks like a
+broken stack.
 
 **No published ports, including the torrent listen port.** Behind a venue's
 NAT there is no inbound path to forward, so publishing it would open the
@@ -136,9 +152,11 @@ the AP passphrase is today's boundary. `External` is also exactly the right
 setting for the planned auth module: put Traefik forward-auth in front and
 nothing here changes.
 
-**Images are pinned to concrete versions.** An unattended pull on a campground
-Wi-Fi must not be able to hand you a broken stack with no internet left to fix
-it with. Bump deliberately:
+**Images are pinned to concrete versions**, all of them in
+`inventory/group_vars/all/media.yml`. An unattended pull on a campground Wi-Fi
+must not be able to hand you a broken stack with no internet left to fix it
+with. `scripts/media-check-updates.sh` reports what has moved upstream. Bump
+deliberately:
 
 ```bash
 # Re-pull the pinned tags and recreate what moved, while you still have a

@@ -2,16 +2,19 @@
 # ==============================================================================
 # MEDIA LIBRARY WIRING
 #
-# Jellyfin is provisioned over its API: the first-run wizard is completed and
-# the three libraries are created pointing at /data/media.
+# JELLYFIN PROVISIONING IS DISABLED BY DEFAULT - and this is the reason.
 #
-# BEST EFFORT, ON PURPOSE
+# The code below completes Jellyfin's first-run wizard and creates the three
+# libraries over its API. Tried against a live Jellyfin 12.3, it does not
+# work: /Startup/Configuration and /Startup/Complete are accepted but
+# /Startup/User does not create the administrator. Because every step
+# tolerates failure, the wizard was marked complete anyway and the result was
+# a server with no account able to log in and no way to make one.
 #
-# Jellyfin 12 reworked authentication - legacy authorization is disabled by
-# default and the /emby/* routes are gone - and this path has not been
-# verified against a live 12.x server. So every step here tolerates failure:
-# if the wizard has moved, Jellyfin is still running and the browser wizard
-# still works. A deploy must not fail because an optional convenience did.
+# So configure.provision_jellyfin defaults to false, the completion step is
+# now gated on the admin actually being created, and Jellyfin's own two-minute
+# browser wizard at http://jellyfin.frey is the supported path. A convenience
+# that can brick admin access is not a convenience.
 #
 # WHAT IS NOT AUTOMATED, AND WHY
 #
@@ -46,7 +49,7 @@
   until: jellyfin_public is succeeded
   failed_when: false
   changed_when: false
-  when: media_library.services.jellyfin.enabled
+  when: media_library.services.jellyfin.enabled | bool
   tags:
     - media
     - media_library
@@ -56,7 +59,7 @@
   ansible.builtin.set_fact:
     library_wiring_notes: "{{ library_wiring_notes + ['Jellyfin did not answer; provisioning skipped. Check: docker logs jellyfin'] }}"
   when:
-    - media_library.services.jellyfin.enabled
+    - media_library.services.jellyfin.enabled | bool
     - jellyfin_public.status is not defined or jellyfin_public.status != 200
   tags:
     - media
@@ -67,7 +70,7 @@
   ansible.builtin.set_fact:
     jellyfin_needs_setup: >-
       {{
-        media_library.services.jellyfin.enabled
+        media_library.services.jellyfin.enabled | bool
         and media_library.configure.provision_jellyfin
         and jellyfin_public.status | default(0) == 200
         and not (jellyfin_public.json | default({})).StartupWizardCompleted | default(false)
@@ -150,7 +153,16 @@
     timeout: "{{ media_library.configure.api_timeout }}"
   register: jellyfin_startup_complete
   failed_when: false
-  when: jellyfin_needs_setup | bool
+  when:
+    - jellyfin_needs_setup | bool
+    # ONLY if the administrator was actually created.
+    #
+    # Completing the wizard is a one-way door: afterwards Jellyfin never
+    # offers it again. Running it unconditionally after a silently-failed
+    # user creation leaves a server with NO admin account and no way to make
+    # one - which is exactly what happened on the first 12.3 deploy, because
+    # every step here is failed_when: false and the user POST failed quietly.
+    - jellyfin_startup_user.status | default(0) in [200, 204]
   tags:
     - media
     - media_library
@@ -193,7 +205,7 @@
   changed_when: false
   no_log: true
   when:
-    - media_library.services.jellyfin.enabled
+    - media_library.services.jellyfin.enabled | bool
     - media_library.configure.provision_jellyfin
     - jellyfin_public.status | default(0) == 200
   tags:
@@ -279,6 +291,16 @@
     msg: >-
       {{
         ['Media stack deployed. Remaining one-time steps, with the values you need:']
+        + ['']
+        + ['Jellyfin - http://' ~ media_library.services.jellyfin.hostname ~ '.' ~ frey.local_domain]
+        + ['  Run its setup wizard (API provisioning does not work on 12.x).']
+        + ['  Then add these libraries, all under the read-only /data/media mount:']
+        + (media_library.services.jellyfin.libraries
+           | map(attribute='path')
+           | zip(media_library.services.jellyfin.libraries | map(attribute='name'))
+           | map('join', '  <- ')
+           | map('regex_replace', '^(.*)$', '    \1')
+           | list)
         + ['']
         + ['Seerr - http://' ~ media_library.services.seerr.route_host ~ '.' ~ frey.local_domain]
         + ['  Jellyfin URL: http://' ~ media_library.services.jellyfin.hostname ~ ':' ~ media_library.services.jellyfin.port]

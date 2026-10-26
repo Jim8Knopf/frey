@@ -40,10 +40,17 @@
   register: media_api_ready
   retries: "{{ media_acquisition.configure.api_retries }}"
   delay: "{{ media_acquisition.configure.api_delay }}"
-  until: media_api_ready is succeeded
+  # Test the STATUS, not `is succeeded`.
+  #
+  # `failed_when: false` means the task can never be "failed", so
+  # `until: ... is succeeded` is already true on the first attempt and the
+  # retry loop exits immediately - it waits for nothing at all. That is the
+  # real reason the first deploys reported every app as "API never answered"
+  # while they were simply still starting: there was no retry, not a short one.
+  until: media_api_ready.status | default(0) == 200
   failed_when: false
   changed_when: false
-  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled') | selectattr('value.env_prefix', 'defined') | list }}"
+  loop: "{{ media_acquisition.services | dict2items | selectattr('value.enabled', 'truthy') | selectattr('value.env_prefix', 'defined') | list }}"
   loop_control:
     label: "{{ item.key }}"
   tags:
@@ -68,23 +75,53 @@
     - media_config
 
 - name: Configure qBittorrent
-  ansible.builtin.include_tasks: qbittorrent.yml
-  when: media_acquisition.services.qbittorrent.enabled
+  ansible.builtin.include_tasks:
+    file: qbittorrent.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  when: media_acquisition.services.qbittorrent.enabled | bool
   tags:
     - media
     - media_acquisition
     - media_config
 
 - name: Configure the Servarr applications
-  ansible.builtin.include_tasks: arrs.yml
+  ansible.builtin.include_tasks:
+    file: arrs.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
   tags:
     - media
     - media_acquisition
     - media_config
 
 - name: Configure Prowlarr
-  ansible.builtin.include_tasks: prowlarr.yml
-  when: media_acquisition.services.prowlarr.enabled
+  ansible.builtin.include_tasks:
+    file: prowlarr.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  when: media_acquisition.services.prowlarr.enabled | bool
   tags:
     - media
     - media_acquisition

@@ -1,12 +1,27 @@
 ---
 # ==============================================================================
-# One Servarr application: root folder + qBittorrent download client
+# One Servarr application: root folders + qBittorrent download client
 #
 # Called per app from arrs.yml with `arr` as {key: sonarr, value: {...}}.
 #
 # Idempotency: every step reads the collection first and only POSTs what is
 # missing, matched by name or path. Re-running is a no-op, which is what makes
 # --tags media_config safe to run whenever something looks wrong.
+#
+# WHY ROOT FOLDERS ARE NOT ONE SHARED PAYLOAD
+#
+# The Servarr apps disagree about what a root folder is:
+#
+#   Sonarr, Radarr (v3)  a path is enough
+#   Lidarr (v1)          Name + a default quality AND metadata profile, or it
+#                        answers 400 "must be greater than 0"
+#   Chaptarr (v1)        manages audiobooks and ebooks together, so each
+#                        folder declares a numeric folderType and carries
+#                        profiles for that media type specifically
+#
+# So each app declares its own root folders in defaults, and profiles are
+# resolved by NAME here rather than by hardcoded id - the ids an app gives its
+# own built-in profiles are not guaranteed to be stable.
 # ==============================================================================
 
 - name: "{{ arr.key }}: read existing root folders"
@@ -22,7 +37,35 @@
   failed_when: false
   changed_when: false
 
-- name: "{{ arr.key }}: add the root folder"
+- name: "{{ arr.key }}: read quality profiles"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/qualityprofile"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_quality_profiles
+  failed_when: false
+  changed_when: false
+  when: arr.value.root_folders | selectattr('quality_field', 'defined') | list | length > 0
+
+- name: "{{ arr.key }}: read metadata profiles"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/metadataprofile"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_metadata_profiles
+  failed_when: false
+  changed_when: false
+  when: arr.value.root_folders | selectattr('metadata_field', 'defined') | list | length > 0
+
+- name: "{{ arr.key }}: add root folders"
   ansible.builtin.uri:
     url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/rootfolder"
     method: POST
@@ -30,14 +73,49 @@
       Host: "{{ arr.key }}.{{ frey.local_domain }}"
       X-Api-Key: "{{ media_secrets[arr.key] }}"
     body_format: json
-    body:
-      path: "{{ item }}"
+    body: "{{ arr_rootfolder_body }}"
     status_code: [200, 201]
     timeout: "{{ media_acquisition.configure.api_timeout }}"
-  loop: "{{ [arr.value.root_folder] + ([arr.value.ebook_root_folder] if arr.value.ebook_root_folder is defined else []) }}"
+  vars:
+    # Resolve profile names to ids, falling back to the lowest id the app has
+    # rather than failing outright - a wrong-but-valid profile is recoverable
+    # in the UI, a missing root folder means nothing can be imported at all.
+    arr_quality_id: >-
+      {{
+        (arr_quality_profiles.json | default([])
+         | selectattr('name', 'equalto', rf.quality_profile | default(''))
+         | map(attribute='id') | list
+         + (arr_quality_profiles.json | default([]) | map(attribute='id') | sort | list))
+        | first | default(1)
+      }}
+    arr_metadata_id: >-
+      {{
+        (arr_metadata_profiles.json | default([])
+         | selectattr('name', 'equalto', rf.metadata_profile | default(''))
+         | map(attribute='id') | list
+         + (arr_metadata_profiles.json | default([]) | map(attribute='id') | sort | list))
+        | first | default(1)
+      }}
+    arr_rootfolder_body: >-
+      {{
+        {'path': rf.path}
+        | combine({'name': rf.name} if rf.name is defined else {})
+        | combine(rf.extra | default({}))
+        | combine({rf.quality_field: arr_quality_id | int} if rf.quality_field is defined else {})
+        | combine({rf.metadata_field: arr_metadata_id | int} if rf.metadata_field is defined else {})
+        | combine({
+            'defaultMonitorOption': 'none',
+            'defaultNewItemMonitorOption': 'none',
+            'defaultTags': [],
+          } if rf.quality_field is defined else {})
+      }}
+  loop: "{{ arr.value.root_folders }}"
+  loop_control:
+    loop_var: rf
+    label: "{{ arr.key }}:{{ rf.path }}"
   when:
     - arr_rootfolders.json is defined
-    - item not in (arr_rootfolders.json | map(attribute='path') | list)
+    - rf.path not in (arr_rootfolders.json | map(attribute='path') | list)
   register: arr_rootfolder_add
   failed_when: false
 
@@ -50,7 +128,7 @@
            | rejectattr('skipped', 'defined')
            | selectattr('status', 'defined')
            | rejectattr('status', 'in', [200, 201])
-           | map(attribute='item')
+           | map(attribute='rf.path')
            | map('regex_replace', '^(.*)$', arr.key ~ ': root folder \1 not created')
            | list)
       }}
@@ -68,7 +146,7 @@
   register: arr_downloadclients
   failed_when: false
   changed_when: false
-  when: media_acquisition.services.qbittorrent.enabled
+  when: media_acquisition.services.qbittorrent.enabled | bool
 
 - name: "{{ arr.key }}: add qBittorrent as the download client"
   ansible.builtin.uri:
@@ -93,8 +171,12 @@
       fields:
         # Container hostname on the internal media network - resolved by
         # Docker DNS, and stable across container recreation unlike an IP.
+        #
+        # This is `gluetun` when the VPN is on, because qBittorrent then has
+        # no hostname of its own: it lives inside the tunnel container's
+        # network namespace, and that is where its listening socket is.
         - name: host
-          value: "{{ media_acquisition.services.qbittorrent.hostname }}"
+          value: "{{ media_acquisition.vpn.qbittorrent_host }}"
         - name: port
           value: "{{ media_acquisition.services.qbittorrent.port }}"
         - name: useSsl
@@ -117,7 +199,7 @@
     status_code: [200, 201]
     timeout: "{{ media_acquisition.configure.api_timeout }}"
   when:
-    - media_acquisition.services.qbittorrent.enabled
+    - media_acquisition.services.qbittorrent.enabled | bool
     - arr_downloadclients.json is defined
     - "'qBittorrent' not in (arr_downloadclients.json | map(attribute='name') | list)"
   register: arr_downloadclient_add

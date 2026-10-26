@@ -26,11 +26,29 @@
         max-file: "3"
 {%- endmacro %}
 
-{% macro proxy_labels(route, name, port) %}
+{#
+  A router can answer on several hostnames. Renaming a service's hostname
+  silently breaks every bookmark and habit pointing at the old one, so the
+  service-name hostname is always kept and friendlier names are added
+  alongside it rather than instead of it.
+
+  Several hostnames must be separate Host() rules joined by ||, NOT
+  Host(`a`, `b`). Traefik's Host matcher takes exactly one parameter and
+  rejects the comma form with "unexpected number of parameters; got 2,
+  expected one of [1]" - and a rule that fails to parse makes Traefik drop
+  the router entirely, so the service 404s with the container perfectly
+  healthy.
+#}
+{% macro proxy_labels(route, name, port, aliases=[]) %}
+{% set host_list = [] %}
+{% for h in [route] + aliases %}
+{% set _ = host_list.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% endfor %}
+{% set hosts = host_list | join(' || ') %}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network={{ frey.proxy_network }}"
-      - "traefik.http.routers.{{ name }}.rule=Host(`{{ route }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.{{ name }}.rule={{ hosts }}"
       - "traefik.http.routers.{{ name }}.entrypoints=web"
       - "traefik.http.routers.{{ name }}.middlewares=secure-headers@file"
       - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
@@ -44,7 +62,7 @@ networks:
     external: true
 
 services:
-{% if svc.jellyfin.enabled %}
+{% if svc.jellyfin.enabled | bool %}
   jellyfin:
     image: {{ svc.jellyfin.image }}
     container_name: {{ svc.jellyfin.container_name }}
@@ -89,7 +107,7 @@ services:
       start_period: 180s
 
 {% endif %}
-{% if svc.audiobookshelf.enabled %}
+{% if svc.audiobookshelf.enabled | bool %}
   audiobookshelf:
     image: {{ svc.audiobookshelf.image }}
     container_name: {{ svc.audiobookshelf.container_name }}
@@ -105,7 +123,7 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels(svc.audiobookshelf.route_host, 'audiobookshelf', svc.audiobookshelf.port) }}
+{{ proxy_labels(svc.audiobookshelf.route_host, 'audiobookshelf', svc.audiobookshelf.port, svc.audiobookshelf.route_aliases | default([])) }}
     mem_limit: {{ svc.audiobookshelf.mem_limit }}
     pids_limit: 512
     security_opt:
@@ -113,7 +131,7 @@ services:
 {{ logging() }}
 
 {% endif %}
-{% if svc.seerr.enabled %}
+{% if svc.seerr.enabled | bool %}
 {#
   Seerr, not Jellyseerr. Jellyseerr and Overseerr were merged upstream into
   Seerr; Jellyseerr is discontinued and receives no updates or security
@@ -126,6 +144,11 @@ services:
     container_name: {{ svc.seerr.container_name }}
     hostname: {{ svc.seerr.hostname }}
     restart: unless-stopped
+    # Runs as the media user like the rest of the stack. The image otherwise
+    # runs as its own built-in uid, which cannot write into the appdata
+    # directory Ansible created - Seerr then crashloops on startup with
+    # "EACCES: permission denied, mkdir '/app/config/logs/'".
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
     environment:
       - TZ={{ tz }}
       - LOG_LEVEL=info
@@ -134,7 +157,7 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels(svc.seerr.route_host, 'seerr', svc.seerr.port) }}
+{{ proxy_labels(svc.seerr.route_host, 'seerr', svc.seerr.port, svc.seerr.route_aliases | default([])) }}
     mem_limit: {{ svc.seerr.mem_limit }}
     pids_limit: 512
     security_opt:
@@ -142,7 +165,7 @@ services:
 {{ logging() }}
 
 {% endif %}
-{% if svc.audiobookrequest.enabled %}
+{% if svc.audiobookrequest.enabled | bool %}
   audiobookrequest:
     image: {{ svc.audiobookrequest.image }}
     container_name: {{ svc.audiobookrequest.container_name }}
@@ -159,7 +182,7 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels(svc.audiobookrequest.route_host, 'audiobookrequest', svc.audiobookrequest.port) }}
+{{ proxy_labels(svc.audiobookrequest.route_host, 'audiobookrequest', svc.audiobookrequest.port, svc.audiobookrequest.route_aliases | default([])) }}
     mem_limit: {{ svc.audiobookrequest.mem_limit }}
     pids_limit: 256
     security_opt:
@@ -167,7 +190,7 @@ services:
 {{ logging() }}
 
 {% endif %}
-{% if svc.maintainerr.enabled %}
+{% if svc.maintainerr.enabled | bool %}
   maintainerr:
     image: {{ svc.maintainerr.image }}
     container_name: {{ svc.maintainerr.container_name }}
@@ -189,7 +212,7 @@ services:
 {{ logging() }}
 
 {% endif %}
-{% if svc.jellystat.enabled and svc.jellystat_db.enabled %}
+{% if svc.jellystat.enabled | bool and svc.jellystat_db.enabled | bool %}
   jellystat-db:
     image: {{ svc.jellystat_db.image }}
     container_name: {{ svc.jellystat_db.container_name }}
@@ -201,7 +224,13 @@ services:
       - POSTGRES_USER={{ svc.jellystat_db.username }}
       - POSTGRES_PASSWORD={{ media_secrets.jellystat_postgres_password }}
     volumes:
-      - "{{ appdata }}/jellystat/db:/var/lib/postgresql/data"
+      # PostgreSQL 18+ wants a SINGLE mount at /var/lib/postgresql and puts
+      # the cluster in a versioned subdirectory itself, so that a later
+      # `pg_upgrade --link` does not cross a mount boundary. Mounting
+      # /var/lib/postgresql/data instead - correct for 17 and earlier - makes
+      # 18 refuse to start: it initialises a cluster elsewhere and then
+      # reports the mount as "unused mount/volume".
+      - "{{ appdata }}/jellystat/db:/var/lib/postgresql"
     networks:
       # Database only - never on the proxy network. Nothing outside this
       # stack has any business reaching it.

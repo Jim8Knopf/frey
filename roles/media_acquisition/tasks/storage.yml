@@ -98,10 +98,11 @@
         [media_acquisition.stack_dir, media.appdata_dir]
         + (media_acquisition.services
            | dict2items
-           | selectattr('value.enabled')
+           | selectattr('value.enabled', 'truthy')
            | map(attribute='key')
            | map('regex_replace', '^', media.appdata_dir ~ '/')
            | list)
+        + ([media.appdata_dir ~ '/gluetun'] if (media_vpn.enabled | bool) else [])
       }}
   tags:
     - media
@@ -117,7 +118,7 @@
     owner: "{{ media.user.name }}"
     group: "{{ media.user.name }}"
     mode: "0775"
-  when: media_acquisition.services.qbittorrent.enabled
+  when: media_acquisition.services.qbittorrent.enabled | bool
   tags:
     - media
     - media_acquisition

@@ -21,11 +21,32 @@
 media_acquisition:
   stack_dir: "{{ frey.base_dir }}/stacks/media_acquisition"
 
-  # Torrents only, no VPN - a deliberate choice. See README.md: the traffic is
-  # attributable to whatever network the van is parked on. gluetun can be
-  # layered in later without restructuring the role.
+  # ---------------------------------------------------------------------------
+  # VPN
+  #
+  # The switch and the credentials live in
+  # inventory/group_vars/all/media.yml, so turning the tunnel on is a one-line
+  # edit in one obvious place. This is only the plumbing that reads it.
+  #
+  # When enabled, qBittorrent gets no network interface of its own and routes
+  # entirely through the Gluetun container. If the tunnel drops, Gluetun's
+  # firewall blocks everything rather than falling back to the campground's
+  # network - torrent traffic stops instead of leaking.
+  # ---------------------------------------------------------------------------
   vpn:
-    enabled: false
+    enabled: "{{ media_vpn.enabled | bool }}"
+    container_name: gluetun
+    hostname: gluetun
+    image: "qmcgaw/gluetun:{{ media_versions.gluetun }}"
+    mem_limit: 512m
+    # The host the *arrs use to reach qBittorrent. With the tunnel on,
+    # qBittorrent has no hostname of its own - it lives inside Gluetun's
+    # network namespace - so everything must address Gluetun instead.
+    qbittorrent_host: >-
+      {{
+        'gluetun' if (media_vpn.enabled | bool)
+        else media_acquisition.services.qbittorrent.hostname
+      }}
 
   # ---------------------------------------------------------------------------
   # AUTHENTICATION
@@ -112,17 +133,26 @@ media_acquisition:
       - bazarr
       - qbittorrent_password
     # How long to wait for an app's API to answer before giving up on wiring it.
+    #
+    # 60 x 10s = 10 minutes per app. That sounds generous until you watch a
+    # Pi 5 cold-start eleven .NET applications at once: each one runs its
+    # database migrations on first boot, all competing for the same four
+    # cores. The first deploy used 30 x 5s = 150s and every single app was
+    # reported as "API never answered" while all of them were in fact
+    # starting normally - the wiring then silently did nothing.
+    #
+    # The wait exits as soon as an app answers, so a warm re-run is still fast.
     api_timeout: 20
-    api_retries: 30
-    api_delay: 5
+    api_retries: 60
+    api_delay: 10
 
   # ---------------------------------------------------------------------------
   # SERVICES
   # ---------------------------------------------------------------------------
   services:
     prowlarr:
-      enabled: true
-      image: lscr.io/linuxserver/prowlarr:version-2.6.5.5623
+      enabled: "{{ media_enable.prowlarr | bool }}"
+      image: lscr.io/linuxserver/prowlarr:{{ media_versions.prowlarr }}
       container_name: prowlarr
       hostname: prowlarr
       port: 9696
@@ -131,8 +161,8 @@ media_acquisition:
       api_version: v1
 
     sonarr:
-      enabled: true
-      image: lscr.io/linuxserver/sonarr:version-4.0.20.3014
+      enabled: "{{ media_enable.sonarr | bool }}"
+      image: lscr.io/linuxserver/sonarr:{{ media_versions.sonarr }}
       container_name: sonarr
       hostname: sonarr
       port: 8989
@@ -150,11 +180,14 @@ media_acquisition:
       # Both paths are under the same /data mount, which is what lets an
       # import hardlink instead of copy.
       torrent_dir: /data/torrents/tv
-      root_folder: /data/media/tv
+      # Sonarr and Radarr (API v3) accept a root folder with nothing but a
+      # path. Lidarr and Chaptarr do not - see their entries below.
+      root_folders:
+        - path: /data/media/tv
 
     radarr:
-      enabled: true
-      image: lscr.io/linuxserver/radarr:version-6.4.4.10685
+      enabled: "{{ media_enable.radarr | bool }}"
+      image: lscr.io/linuxserver/radarr:{{ media_versions.radarr }}
       container_name: radarr
       hostname: radarr
       port: 7878
@@ -166,14 +199,15 @@ media_acquisition:
       sync_categories: [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080, 2090]
       api_version: v3
       torrent_dir: /data/torrents/movies
-      root_folder: /data/media/movies
+      root_folders:
+        - path: /data/media/movies
 
     lidarr:
       # Honest warning: Lidarr's metadata server has been unreliable through
       # 2026, so adding artists and library imports break periodically. This
       # is upstream, not configuration. Jellyfin plays music fine regardless.
-      enabled: true
-      image: lscr.io/linuxserver/lidarr:version-3.1.0.4875
+      enabled: "{{ media_enable.lidarr | bool }}"
+      image: lscr.io/linuxserver/lidarr:{{ media_versions.lidarr }}
       container_name: lidarr
       hostname: lidarr
       port: 8686
@@ -185,19 +219,35 @@ media_acquisition:
       sync_categories: [3000, 3010, 3030, 3040, 3050, 3060]
       api_version: v1
       torrent_dir: /data/torrents/music
-      root_folder: /data/media/music
+      # Lidarr's v1 API rejects a path-only root folder: Name, a default
+      # quality profile and a default metadata profile are all mandatory.
+      # Profiles are resolved by NAME at run time rather than by hardcoded id,
+      # because the ids an app assigns to its own built-in profiles are not
+      # guaranteed.
+      root_folders:
+        - name: Music
+          path: /data/media/music
+          quality_field: defaultQualityProfileId
+          quality_profile: Standard
+          metadata_field: defaultMetadataProfileId
+          metadata_profile: Standard
 
     chaptarr:
       # The maintained successor to Readarr, which was retired in June 2025.
       # Handles audiobooks and ebooks from one instance. Not a linuxserver
       # image, so it takes PUID/PGID but no lsio-specific environment.
-      enabled: true
-      image: chaptarr/chaptarr:0.9.965
+      enabled: "{{ media_enable.chaptarr | bool }}"
+      image: chaptarr/chaptarr:{{ media_versions.chaptarr }}
       container_name: chaptarr
       hostname: chaptarr
       port: 8789
       mem_limit: 768m
       env_prefix: CHAPTARR
+      # No healthcheck: this image ships no curl, so the check could never
+      # pass - and a permanently-failing healthcheck makes Traefik drop the
+      # container from the proxy entirely, which 404s the route while the app
+      # is actually fine. The app is verified by the wiring step instead.
+      healthcheck_enabled: false
       # Chaptarr is a Readarr fork, so Prowlarr still talks to it as Readarr.
       prowlarr_impl: Readarr
       category: chaptarr
@@ -206,20 +256,40 @@ media_acquisition:
       sync_categories: [3030, 7000, 7020]
       api_version: v1
       torrent_dir: /data/torrents/audiobooks
-      root_folder: /data/media/audiobooks
-      ebook_root_folder: /data/media/ebooks
+      # Chaptarr handles audiobooks and ebooks from one instance, so every
+      # root folder must declare which it is and carry profiles for that
+      # media type specifically - there is no single "default" profile field.
+      #
+      # folderType is a numeric enum: 0 = mixed, 1 = audiobook, 2 = ebook.
+      root_folders:
+        - name: Audiobooks
+          path: /data/media/audiobooks
+          extra:
+            folderType: 1
+          quality_field: audiobookQualityProfileId
+          quality_profile: Audiobook
+          metadata_field: audiobookMetadataProfileId
+          metadata_profile: Audiobook Default
+        - name: Ebooks
+          path: /data/media/ebooks
+          extra:
+            folderType: 2
+          quality_field: ebookQualityProfileId
+          quality_profile: E-Book
+          metadata_field: ebookMetadataProfileId
+          metadata_profile: Ebook Default
 
     bazarr:
-      enabled: true
-      image: lscr.io/linuxserver/bazarr:version-v1.6.2
+      enabled: "{{ media_enable.bazarr | bool }}"
+      image: lscr.io/linuxserver/bazarr:{{ media_versions.bazarr }}
       container_name: bazarr
       hostname: bazarr
       port: 6767
       mem_limit: 768m
 
     qbittorrent:
-      enabled: true
-      image: lscr.io/linuxserver/qbittorrent:version-5.3.0_v2.1.2
+      enabled: "{{ media_enable.qbittorrent | bool }}"
+      image: lscr.io/linuxserver/qbittorrent:{{ media_versions.qbittorrent }}
       container_name: qbittorrent
       hostname: qbittorrent
       port: 8080
@@ -241,8 +311,8 @@ media_acquisition:
       #
       # It drives a real browser engine, hence the hard memory cap - this is
       # the one container most likely to balloon and threaten the gateway.
-      enabled: true
-      image: ghcr.io/thephaseless/byparr:2.0.1
+      enabled: "{{ media_enable.byparr | bool }}"
+      image: ghcr.io/thephaseless/byparr:{{ media_versions.byparr }}
       container_name: byparr
       hostname: byparr
       port: 8191
@@ -250,12 +320,16 @@ media_acquisition:
       cpus: "1.5"
       # Prowlarr applies the proxy only to indexers carrying this tag.
       proxy_tag: cloudflare
+      # Liveness probe path. Deliberately not /health: in Byparr 3.x that
+      # endpoint runs an actual browser solve and outlasts any reasonable
+      # timeout, which left the container permanently marked unhealthy.
+      health_path: /docs
 
     recyclarr:
       # TRaSH-guide quality profiles and custom formats as code, on a timer.
       # Better than hand-maintaining profiles in each UI.
-      enabled: true
-      image: ghcr.io/recyclarr/recyclarr:8.8.0
+      enabled: "{{ media_enable.recyclarr | bool }}"
+      image: ghcr.io/recyclarr/recyclarr:{{ media_versions.recyclarr }}
       container_name: recyclarr
       mem_limit: 256m
       # Runs once on start, then on this cron schedule (container-local).
@@ -265,8 +339,8 @@ media_acquisition:
       # Strikes downloads that stall, crawl or refuse to import, removes them,
       # blocks the release and tells the *arr to search again. On an
       # intermittent uplink this matters far more than on a home server.
-      enabled: true
-      image: ghcr.io/cleanuparr/cleanuparr:2.10.12
+      enabled: "{{ media_enable.cleanuparr | bool }}"
+      image: ghcr.io/cleanuparr/cleanuparr:{{ media_versions.cleanuparr }}
       container_name: cleanuparr
       hostname: cleanuparr
       port: 11011
@@ -274,8 +348,8 @@ media_acquisition:
 
     unpackerr:
       # Extracts archived releases so imports do not silently stall.
-      enabled: true
-      image: ghcr.io/unpackerr/unpackerr:1.0.0
+      enabled: "{{ media_enable.unpackerr | bool }}"
+      image: ghcr.io/unpackerr/unpackerr:{{ media_versions.unpackerr }}
       container_name: unpackerr
       mem_limit: 256m
 

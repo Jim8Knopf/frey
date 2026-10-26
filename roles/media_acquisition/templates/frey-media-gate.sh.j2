@@ -65,13 +65,19 @@ uplink_is_usable() {
 
 # A metered connection is someone's phone hotspot or a capped campground plan.
 # Downloading flat out on one is rude at best and expensive at worst.
+#
+# Only an EXPLICIT "yes" counts. NetworkManager also reports "yes (guessed)"
+# when it is merely speculating - which it does for ordinary Wi-Fi whose
+# connection.metered is "unknown", i.e. almost every public network the van
+# joins. Treating a guess as fact throttled downloads to a crawl on a link
+# nobody had declared metered, with nothing on screen to explain why.
+#
+# To mark a network metered, say so and the guess becomes a fact:
+#     nmcli connection modify <name> connection.metered yes
 uplink_is_metered() {
   local metered
   metered=$(nmcli -t -f GENERAL.METERED device show "${UPLINK_IFACE}" 2>/dev/null | cut -d: -f2)
-  case "${metered}" in
-    yes*) return 0 ;;
-    *) return 1 ;;
-  esac
+  [ "${metered}" = "yes" ]
 }
 
 # -----------------------------------------------------------------------------

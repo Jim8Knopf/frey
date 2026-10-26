@@ -26,19 +26,31 @@ media_library:
       - jellystat_postgres_password
       - jellystat_jwt_secret
     strict: false
+    # See the note in media_acquisition: a cold first boot on a Pi needs far
+    # longer than it looks like it should.
     api_timeout: 30
-    api_retries: 40
-    api_delay: 5
-    # Jellyfin's first-run wizard is completed over its API. Jellyfin 12
-    # reworked authentication (legacy auth is off by default and the /emby
-    # routes are gone), and this path is not verified against a live 12.x
-    # server, so it is best-effort by design: if it does not take, Jellyfin
-    # is still up and the wizard can be finished in a browser. See README.md.
-    provision_jellyfin: true
+    api_retries: 60
+    api_delay: 10
+    # Jellyfin's first-run wizard over the API: OFF by default.
+    #
+    # Tried against a live Jellyfin 12.3 and it does not work. The
+    # /Startup/Configuration and /Startup/Complete calls are accepted, but
+    # /Startup/User does not create the administrator - leaving a server with
+    # the wizard marked complete and no account able to log in, which is
+    # strictly worse than no automation at all.
+    #
+    # Jellyfin's own setup wizard takes about two minutes in a browser at
+    # http://jellyfin.frey and is a one-time cost. The libraries it wants are
+    # listed under services.jellyfin.libraries below.
+    #
+    # Set true only if you have confirmed the Startup API works on your
+    # version; the completion step is gated on the admin actually being
+    # created, so a failure now leaves the wizard usable rather than locked.
+    provision_jellyfin: false
 
   services:
     jellyfin:
-      enabled: true
+      enabled: "{{ media_enable.jellyfin | bool }}"
       # Jellyfin 12.x. A major jump from the 10.x the old stack ran:
       #   - legacy authorization is disabled by default
       #   - the /emby/* and /mediabrowser/* routes are gone
@@ -46,7 +58,7 @@ media_library:
       #   - plugins must be REMOVED before migrating an existing 10.x config
       # This deployment is greenfield, so none of that bites - but do not
       # point it at an old 10.x config directory without reading README.md.
-      image: lscr.io/linuxserver/jellyfin:12.3ubu2604-ls56
+      image: lscr.io/linuxserver/jellyfin:{{ media_versions.jellyfin }}
       container_name: jellyfin
       hostname: jellyfin
       port: 8096
@@ -78,27 +90,35 @@ media_library:
           path: /data/media/music
 
     audiobookshelf:
-      enabled: true
-      image: ghcr.io/advplyr/audiobookshelf:2.37.2
+      enabled: "{{ media_enable.audiobookshelf | bool }}"
+      image: ghcr.io/advplyr/audiobookshelf:{{ media_versions.audiobookshelf }}
       container_name: audiobookshelf
       hostname: audiobookshelf
       # Audiobookshelf listens on 80 inside the container.
       port: 80
-      # Reached as books.frey - friendlier to say out loud than the image name.
-      route_host: books
+      # Primary hostname plus aliases. The service-name hostname is kept
+      # because that is what the previous stack used and what is already in
+      # muscle memory and bookmarks; books.frey is just a shorthand.
+      route_host: audiobookshelf
+      route_aliases:
+        - books
       mem_limit: 512m
 
     seerr:
       # Replaces Jellyseerr, which is discontinued. Overseerr and Jellyseerr
       # were merged upstream into Seerr, which is the maintained line and the
       # only one that keeps working with Jellyfin's reworked authentication.
-      enabled: true
-      image: seerr/seerr:v3.5.1
+      enabled: "{{ media_enable.seerr | bool }}"
+      image: seerr/seerr:{{ media_versions.seerr }}
       container_name: seerr
       hostname: seerr
       port: 5055
-      # Reached as requests.frey: it is where you ask for things.
-      route_host: requests
+      # seerr.frey is the service name; requests.frey says what it is for.
+      # jellyseerr.frey is kept so old bookmarks still land somewhere useful.
+      route_host: seerr
+      route_aliases:
+        - requests
+        - jellyseerr
       mem_limit: 768m
 
     audiobookrequest:
@@ -107,20 +127,22 @@ media_library:
       #
       # Port 8000, not the 5432 the archived role had - that is PostgreSQL's
       # port and was plainly a copy-paste slip.
-      enabled: true
-      image: markbeep/audiobookrequest:1
+      enabled: "{{ media_enable.audiobookrequest | bool }}"
+      image: markbeep/audiobookrequest:{{ media_versions.audiobookrequest }}
       container_name: audiobookrequest
       hostname: audiobookrequest
       port: 8000
-      route_host: bookrequests
+      route_host: audiobookrequest
+      route_aliases:
+        - bookrequests
       mem_limit: 512m
 
     maintainerr:
       # Rule-based library cleanup: "delete watched movies older than N
       # months", and so on. A 4TB disk shared with Immich fills up quietly
       # otherwise.
-      enabled: true
-      image: ghcr.io/jorenn92/maintainerr:2.19.0
+      enabled: "{{ media_enable.maintainerr | bool }}"
+      image: ghcr.io/jorenn92/maintainerr:{{ media_versions.maintainerr }}
       container_name: maintainerr
       hostname: maintainerr
       port: 6246
@@ -129,16 +151,17 @@ media_library:
     jellystat:
       # Playback statistics. Costs a PostgreSQL container, which is the main
       # reason it is easy to turn off.
-      enabled: true
-      image: ghcr.io/cyfershepard/jellystat:1.1.12
+      enabled: "{{ media_enable.jellystat | bool }}"
+      image: ghcr.io/cyfershepard/jellystat:{{ media_versions.jellystat }}
       container_name: jellystat
       hostname: jellystat
       port: 3000
       mem_limit: 512m
 
     jellystat_db:
-      enabled: true
-      image: postgres:18.1
+      # Follows the jellystat flag: this database exists only to serve it.
+      enabled: "{{ media_enable.jellystat | bool }}"
+      image: postgres:{{ media_versions.jellystat_db }}
       container_name: jellystat-db
       hostname: jellystat-db
       mem_limit: 512m

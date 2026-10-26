@@ -8,12 +8,20 @@
 # ==============================================================================
 
 - name: Configure each Servarr application
-  ansible.builtin.include_tasks: arr_instance.yml
+  ansible.builtin.include_tasks:
+    file: arr_instance.yml
+    # See configure/main.yml: included tasks do not inherit the include's
+    # tags without apply:.
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
   loop: >-
     {{
       media_acquisition.services | dict2items
-      | selectattr('value.enabled')
-      | selectattr('value.root_folder', 'defined')
+      | selectattr('value.enabled', 'truthy')
+      | selectattr('value.root_folders', 'defined')
       | list
     }}
   loop_control:

@@ -16,6 +16,77 @@ changes.
 because it generates the *arr API keys the library module needs to wire Seerr
 in the same run.
 
+## The File You Edit
+
+`inventory/group_vars/all/media.yml` holds everything you change day to day:
+
+| Block | What it controls |
+| --- | --- |
+| `media_versions` | every image tag, in one list |
+| `media_enable` | which services run |
+| `media_vpn` | the VPN toggle and its credentials |
+
+Structure — volumes, networks, Traefik labels, API wiring — stays in the two
+roles. You should not need to open them to run the stack.
+
+### Updating images
+
+```bash
+scripts/media-check-updates.sh      # what has moved upstream
+# edit inventory/group_vars/all/media.yml
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+  --tags media --vault-password-file .vault_pass
+```
+
+The script skips linuxserver's `-lsNNN` build suffix and treats a short pin
+like `"1"` as deliberately tracking a major line, so it only reports real
+moves. It compares against each project's latest **release**, and a few
+projects tag releases differently from their published images — Maintainerr
+currently publishes a v3 release with no v3 image — so check a tag exists
+before applying it:
+
+```bash
+docker manifest inspect ghcr.io/jorenn92/maintainerr:3.31.0
+```
+
+### Turning the VPN on
+
+1. Put the credentials in the vault:
+
+   ```bash
+   ansible-vault edit inventory/group_vars/all/secrets.yml \
+     --vault-password-file .vault_pass
+   ```
+
+   ```yaml
+   vault_vpn_wireguard_private_key: "..."
+   vault_vpn_wireguard_addresses: "10.2.0.2/32"
+   ```
+
+2. Set `media_vpn.enabled: true` (and `provider`/`type`) in
+   `inventory/group_vars/all/media.yml`.
+3. Re-deploy: `--tags media_acquisition`.
+
+qBittorrent then runs **inside** Gluetun's network namespace
+(`network_mode: service:gluetun`), so every tracker, peer and DHT packet
+leaves through the tunnel and nothing else. If the tunnel drops, Gluetun's
+firewall blocks the lot rather than falling back to the venue's network:
+downloads stop instead of leaking. A SOCKS proxy would fail open instead.
+
+What Ansible changes for you:
+
+- Traefik serves the qBittorrent UI from the Gluetun container, so
+  `qbittorrent.frey` keeps working unchanged.
+- The *arrs are repointed at `gluetun` as their download-client host, since
+  qBittorrent no longer has a hostname of its own.
+- `FIREWALL_OUTBOUND_SUBNETS` is set to the Docker networks plus the FreyHub
+  LAN. Without that the killswitch blocks Traefik and the *arrs too, and the
+  UI vanishes along with the leaks.
+
+Enabling it without credentials fails the deploy immediately with
+instructions, rather than starting an unconfigured tunnel that looks like a
+broken stack.
+
 ## Deploy
 
 ```bash
@@ -131,31 +202,33 @@ from the repo instead, set `vault_media_api_keys` in
 | Bazarr | Sonarr, Radarr | Templated `config.yaml` |
 | Recyclarr | Sonarr, Radarr | TRaSH quality profiles and custom formats, nightly |
 | Unpackerr | Sonarr, Radarr, Lidarr | Archive extraction |
-| Jellyfin | — | First-run wizard and three libraries (best effort — see below) |
 
 ## First-Run Steps That Are Not Automated
 
-Four things, by design rather than omission. The deploy prints the values you
-need for each.
+Five things. The deploy prints the values you need for each.
 
-1. **Prowlarr indexers.** They need your own tracker credentials. Add them at
+1. **Jellyfin's setup wizard** at `http://jellyfin.frey`, then its three
+   libraries (`/data/media/movies`, `/data/media/tv`, `/data/media/music`).
+   Not automated because Jellyfin 12.3's `/Startup/User` endpoint does not
+   create the administrator, and completing the wizard without one leaves a
+   server nobody can log into. See `roles/media_library/README.md`.
+2. **Prowlarr indexers.** They need your own tracker credentials. Add them at
    `http://prowlarr.frey` and they propagate to every *arr automatically.
-2. **Seerr setup** at `http://requests.frey`. Point it at
+3. **Seerr setup** at `http://seerr.frey`. Point it at
    `http://jellyfin:8096`, then add Sonarr (`http://sonarr:8989`) and Radarr
    (`http://radarr:7878`) with the API keys from the secret file. Not
    automated because Seerr's settings JSON changes schema between versions and
    a malformed seed stops the container from starting outright.
-3. **Bazarr providers and language profiles** at `http://bazarr.frey`. These
+4. **Bazarr providers and language profiles** at `http://bazarr.frey`. These
    live in Bazarr's database, not its config file, so Ansible cannot seed
    them. Attach a `de`/`en` profile.
-4. **German release scoring.** Language profiles are set, but boosting German
+5. **German release scoring.** Language profiles are set, but boosting German
    releases needs TRaSH custom formats referenced by `trash_id`. Those IDs are
    not guessed at — see the instructions in
    `roles/media_acquisition/templates/recyclarr.yml.j2`.
 
-`tasks/configure.yml` in `media_library` also completes Jellyfin's wizard, but
-best-effort: Jellyfin 12 reworked authentication and that path is not verified
-against a live 12.x server. If it does not take, finish it in a browser.
+`media_library` also carries code to complete Jellyfin's wizard over the API,
+disabled by default for the reason above.
 
 ## Download Gating
 
