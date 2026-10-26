@@ -1,0 +1,181 @@
+---
+# Frey active configuration.
+# Legacy service stack configuration is archived in:
+# archive/legacy-stack/group_vars/all/main.yml
+
+frey:
+  node_name: frey
+  timezone: Australia/Brisbane
+  base_dir: /opt/frey
+  local_domain: frey
+  service_address: "{{ network_gateway.downstream.address }}"
+  proxy_network: frey_proxy
+
+  dns:
+    # Resolves frey and any *.frey name to the Pi. New Traefik-backed services
+    # only need proxy labels; DNS does not need per-service edits.
+    wildcard_services: true
+    records:
+      - name: "@"
+      - name: gateway
+      - name: proxy
+
+  modules:
+    enabled:
+      - network_gateway
+      - rpi_nvme
+      - service_proxy
+      - security_baseline
+
+    available:
+      network_gateway:
+        role: network_gateway
+        tags:
+          - network
+          - gateway
+      rpi_nvme:
+        role: rpi_nvme
+        tags:
+          - system
+          - nvme
+      service_proxy:
+        role: service_proxy
+        tags:
+          - services
+          - proxy
+          - docker
+      security_baseline:
+        role: security_baseline
+        tags:
+          - security
+
+network_gateway:
+  # -----------------------------------------------------------------
+  # RADIO ASSIGNMENT
+  #
+  # FreyHub is the critical always-on service: it is how the van reaches
+  # Immich, the media stack and SSH, with or without internet. It therefore
+  # lives on wlan0, the built-in Broadcom radio - soldered down, and the
+  # best-proven AP driver on a Pi.
+  #
+  # The uplink is opportunistic and expendable, so it lives on wlan1, the
+  # USB adapter. If that adapter resets or browns out you lose internet,
+  # never FreyHub.
+  #
+  # Swapping these two `interface:` lines swaps the roles. Nothing else
+  # in the role hardcodes a radio.
+  # -----------------------------------------------------------------
+  upstream:
+    enabled: true
+    interface: wlan1
+    route_metric: 100
+    country: NZ
+    # Known networks, declared in the vault so a rebuild reproduces them.
+    # NetworkManager joins whichever is in range; none in range is fine.
+    networks: "{{ vault_uplink_networks | default([]) }}"
+
+  downstream:
+    enabled: true
+    mode: ap
+    interface: wlan0
+    connection_name: frey-hub-ap
+    address: 10.20.0.1
+    prefix: 24
+    netmask: 255.255.255.0
+    network_cidr: 10.20.0.0/24
+    dhcp_range_start: 10.20.0.50
+    dhcp_range_end: 10.20.0.150
+    dhcp_lease_time: 12h
+    domain: "{{ frey.local_domain }}"
+    ap:
+      ssid: FreyHub
+      password: "{{ vault_freyhub_ap_password | default('') }}"
+      country: NZ
+      # 2.4 GHz channel 6: non-DFS, widest client support, and it carries
+      # through a van body better than 5 GHz. Once the AP has proven stable,
+      # switching to band 'a' channel 36 (also non-DFS in NZ) roughly
+      # trebles throughput for media streaming at shorter range.
+      band: bg
+      channel: 6
+      hidden: false
+
+  safety:
+    allow_reconfigure_control_interface: false
+    rollback:
+      enabled: true
+      timeout_seconds: 600
+
+rpi_nvme:
+  # Boot order is deliberately SD-FIRST for now, so recovering from a bad
+  # NVMe boot is just "leave the card in". 0xf461 reads right-to-left:
+  #   1 = SD card, 6 = NVMe, 4 = USB, f = restart
+  #
+  # CONSEQUENCE: while the SD card is inserted the Pi always runs FROM the
+  # card, so the NVMe clone sits idle until you physically remove it.
+  # Change to 0xf416 to prefer NVMe while keeping the card as a fallback.
+  migrate:
+    boot_order: "0xf461"
+
+  # Confirmed running from NVMe (nvme0n1p2) since 2026-10-26, SD card removed.
+  # Enforced so a later rebuild refuses to deploy service data onto an SD card
+  # instead of quietly filling it.
+  require_nvme_root: true
+
+  packages:
+    - nvme-cli
+    - smartmontools
+
+  sysctl:
+    vm.swappiness: "10"
+    vm.vfs_cache_pressure: "50"
+
+  journald:
+    system_max_use: 256M
+    max_file_sec: 7day
+
+service_proxy:
+  bind_address: "{{ frey.service_address }}"
+  docker:
+    data_root: "{{ frey.base_dir }}/docker"
+    log_max_size: 10m
+    log_max_file: "3"
+    users:
+      - "{{ ansible_user | default('ansible') }}"
+  traefik:
+    image: traefik:v3
+    container_name: frey-traefik
+    network: "{{ frey.proxy_network }}"
+    dynamic_config_dir: "{{ frey.base_dir }}/proxy/traefik/dynamic"
+    dashboard_enabled: false
+    exposed_by_default: false
+    http_port: 80
+    https_port: 443
+
+security_baseline:
+  packages:
+    - ufw
+    - fail2ban
+  firewall:
+    enabled: true
+    downstream_interface: "{{ network_gateway.downstream.interface }}"
+    upstream_interface: "{{ network_gateway.upstream.interface }}"
+    allow_ssh_from_control_interface: true
+    downstream_tcp_ports:
+      - 22
+      - 53
+      - 80
+      - 443
+    downstream_udp_ports:
+      - 53
+      - 67
+    allow_gateway_routing: true
+  fail2ban:
+    enabled: true
+  sysctl:
+    net.ipv4.tcp_syncookies: "1"
+    net.ipv4.conf.all.rp_filter: "2"
+    net.ipv4.conf.default.rp_filter: "2"
+    net.ipv4.conf.all.accept_redirects: "0"
+    net.ipv4.conf.default.accept_redirects: "0"
+    net.ipv4.conf.all.send_redirects: "0"
+    net.ipv4.icmp_echo_ignore_broadcasts: "1"

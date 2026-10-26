@@ -1,7 +1,7 @@
 #!/bin/bash
 # .git/hooks/post-commit
 
-FILE_PATTERN="group_vars/all/secrets.yml"
+FILE_PATTERN="inventory/group_vars/all/secrets.yml"
 ENCRYPTED_PATTERN='^\$ANSIBLE_VAULT'
 
 if [ -f "$FILE_PATTERN" ] && head -1 "$FILE_PATTERN" | grep -q '$ANSIBLE_VAULT'; then

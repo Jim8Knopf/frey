@@ -1,0 +1,32 @@
+---
+security_baseline:
+  packages:
+    - ufw
+    - fail2ban
+
+  firewall:
+    enabled: true
+    downstream_interface: eth0
+    upstream_interface: wlan0
+    allow_ssh_from_control_interface: true
+    downstream_tcp_ports:
+      - 22
+      - 53
+      - 80
+      - 443
+    downstream_udp_ports:
+      - 53
+      - 67
+    allow_gateway_routing: true
+
+  fail2ban:
+    enabled: true
+
+  sysctl:
+    net.ipv4.tcp_syncookies: "1"
+    net.ipv4.conf.all.rp_filter: "2"
+    net.ipv4.conf.default.rp_filter: "2"
+    net.ipv4.conf.all.accept_redirects: "0"
+    net.ipv4.conf.default.accept_redirects: "0"
+    net.ipv4.conf.all.send_redirects: "0"
+    net.ipv4.icmp_echo_ignore_broadcasts: "1"

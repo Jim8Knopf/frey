@@ -1,0 +1,140 @@
+---
+- name: Validate security baseline configuration
+  ansible.builtin.assert:
+    that:
+      - security_baseline.firewall.downstream_interface | length > 0
+      - security_baseline.firewall.upstream_interface | length > 0
+    fail_msg: "security_baseline requires upstream and downstream interface names."
+  tags:
+    - security
+
+- name: Install security packages
+  ansible.builtin.apt:
+    name: "{{ security_baseline.packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags:
+    - security
+
+- name: Apply kernel network hardening
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop: "{{ security_baseline.sysctl | dict2items }}"
+  tags:
+    - security
+
+- name: Configure fail2ban SSH jail
+  ansible.builtin.template:
+    src: sshd.local.j2
+    dest: /etc/fail2ban/jail.d/frey-sshd.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+  when: security_baseline.fail2ban.enabled | bool
+  tags:
+    - security
+
+- name: Enable fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+  when:
+    - security_baseline.fail2ban.enabled | bool
+    - not ansible_check_mode
+  tags:
+    - security
+
+- name: Determine SSH control source
+  ansible.builtin.set_fact:
+    security_baseline_control_source: "{{ ansible_facts.env.SSH_CLIENT.split()[0] if ansible_facts.env.SSH_CLIENT is defined else 'any' }}"
+  tags:
+    - security
+
+- name: Set UFW default incoming policy
+  ansible.builtin.command:
+    cmd: ufw default deny incoming
+  register: security_baseline_ufw_default_in
+  changed_when: "'Default incoming policy changed' in security_baseline_ufw_default_in.stdout"
+  when: security_baseline.firewall.enabled | bool
+  tags:
+    - security
+
+- name: Set UFW default outgoing policy
+  ansible.builtin.command:
+    cmd: ufw default allow outgoing
+  register: security_baseline_ufw_default_out
+  changed_when: "'Default outgoing policy changed' in security_baseline_ufw_default_out.stdout"
+  when: security_baseline.firewall.enabled | bool
+  tags:
+    - security
+
+- name: Set UFW default routed policy
+  ansible.builtin.command:
+    cmd: ufw default deny routed
+  register: security_baseline_ufw_default_routed
+  changed_when: "'Default routed policy changed' in security_baseline_ufw_default_routed.stdout"
+  when: security_baseline.firewall.enabled | bool
+  tags:
+    - security
+
+- name: Allow downstream TCP services
+  ansible.builtin.command:
+    cmd: "ufw allow in on {{ security_baseline.firewall.downstream_interface }} proto tcp to any port {{ item }} comment 'Frey downstream TCP {{ item }}'"
+  loop: "{{ security_baseline.firewall.downstream_tcp_ports }}"
+  register: security_baseline_ufw_downstream_tcp
+  changed_when: "'Rule added' in security_baseline_ufw_downstream_tcp.stdout"
+  when: security_baseline.firewall.enabled | bool
+  tags:
+    - security
+
+- name: Allow downstream UDP services
+  ansible.builtin.command:
+    cmd: "ufw allow in on {{ security_baseline.firewall.downstream_interface }} proto udp to any port {{ item }} comment 'Frey downstream UDP {{ item }}'"
+  loop: "{{ security_baseline.firewall.downstream_udp_ports }}"
+  register: security_baseline_ufw_downstream_udp
+  changed_when: "'Rule added' in security_baseline_ufw_downstream_udp.stdout"
+  when: security_baseline.firewall.enabled | bool
+  tags:
+    - security
+
+- name: Allow current Ansible SSH control path
+  ansible.builtin.command:
+    cmd: "ufw allow in on {{ ansible_facts.default_ipv4.interface }} proto tcp from {{ security_baseline_control_source }} to any port {{ ansible_port | default(22) }} comment 'Frey Ansible control SSH'"
+  register: security_baseline_ufw_control_ssh
+  changed_when: "'Rule added' in security_baseline_ufw_control_ssh.stdout"
+  when:
+    - security_baseline.firewall.enabled | bool
+    - security_baseline.firewall.allow_ssh_from_control_interface | bool
+    - ansible_facts.default_ipv4 is defined
+    - ansible_facts.default_ipv4.interface is defined
+    - ansible_facts.default_ipv4.interface != security_baseline.firewall.downstream_interface
+  tags:
+    - security
+
+- name: Allow downstream clients to route through upstream Wi-Fi
+  ansible.builtin.command:
+    cmd: "ufw route allow in on {{ security_baseline.firewall.downstream_interface }} out on {{ security_baseline.firewall.upstream_interface }} comment 'Frey downstream internet routing'"
+  register: security_baseline_ufw_route
+  changed_when: "'Rule added' in security_baseline_ufw_route.stdout"
+  when:
+    - security_baseline.firewall.enabled | bool
+    - security_baseline.firewall.allow_gateway_routing | bool
+  tags:
+    - security
+
+- name: Enable UFW
+  ansible.builtin.command:
+    cmd: ufw --force enable
+  register: security_baseline_ufw_enable
+  changed_when: "'Firewall is active and enabled' in security_baseline_ufw_enable.stdout"
+  when:
+    - security_baseline.firewall.enabled | bool
+    - not ansible_check_mode
+  tags:
+    - security

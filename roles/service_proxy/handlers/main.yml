@@ -1,0 +1,12 @@
+---
+- name: Restart docker
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: not ansible_check_mode
+
+- name: Restart traefik
+  community.docker.docker_container:
+    name: "{{ service_proxy.traefik.container_name }}"
+    restart: true
+  when: not ansible_check_mode

@@ -7,7 +7,7 @@
 
 set -e  # Exit on any error
 
-FILE_PATTERN="group_vars/all/secrets.yml"
+FILE_PATTERN="inventory/group_vars/all/secrets.yml"
 VAULT_PASSWORD_FILE=".vault_pass"
 ENCRYPTED_PATTERN='^\$ANSIBLE_VAULT'
 
@@ -18,11 +18,23 @@ is_encrypted() {
 
 # Check if our secrets file is in the changes
 if git diff --cached --name-only | grep -q "$FILE_PATTERN"; then
+    # The path may be staged as a deletion or a rename (it moved once already,
+    # from group_vars/ to inventory/group_vars/). With `set -e` a missing file
+    # used to abort the entire commit, so skip cleanly when it is not present.
+    if [ ! -f "$FILE_PATTERN" ]; then
+        echo "ℹ️  $FILE_PATTERN not in the working tree (deleted or moved) - skipping vault check"
+        exit 0
+    fi
+
     echo "🔐 Ansible Vault: Checking $FILE_PATTERN encryption status..."
     
-    # Get the staged version of the file
+    # Get the staged version of the file.
+    # NOTE: ":path" reads the staged blob. ":/text" is a COMMIT-MESSAGE search
+    # and used to dump a commit object here, which the encryption check then
+    # read as plaintext - so the hook tried to re-encrypt an already-encrypted
+    # vault and failed the commit.
     STAGED_FILE=$(mktemp)
-    git show ":/$FILE_PATTERN" > "$STAGED_FILE" 2>/dev/null || true
+    git show ":$FILE_PATTERN" > "$STAGED_FILE" 2>/dev/null || true
     
     # If we can't get staged content, use the working directory file
     if [ ! -s "$STAGED_FILE" ]; then

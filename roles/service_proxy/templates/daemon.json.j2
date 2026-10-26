@@ -1,0 +1,12 @@
+{
+  "data-root": "{{ service_proxy.docker.data_root }}",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "{{ service_proxy.docker.log_max_size }}",
+    "max-file": "{{ service_proxy.docker.log_max_file }}"
+  },
+  "storage-driver": "overlay2",
+  "live-restore": true,
+  "iptables": true,
+  "userland-proxy": false
+}

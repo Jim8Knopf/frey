@@ -1,0 +1,25 @@
+---
+service_proxy:
+  bind_address: 10.20.0.1
+
+  packages:
+    - ca-certificates
+    - curl
+    - docker.io
+    - python3-docker
+
+  docker:
+    data_root: /opt/frey/docker
+    log_max_size: 10m
+    log_max_file: "3"
+    users: []
+
+  traefik:
+    image: traefik:v3
+    container_name: frey-traefik
+    network: frey_proxy
+    dynamic_config_dir: /opt/frey/proxy/traefik/dynamic
+    dashboard_enabled: false
+    exposed_by_default: false
+    http_port: 80
+    https_port: 443

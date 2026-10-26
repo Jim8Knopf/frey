@@ -1,0 +1,144 @@
+---
+- name: Validate service proxy configuration
+  ansible.builtin.assert:
+    that:
+      - service_proxy.bind_address | length > 0
+      - service_proxy.docker.data_root | length > 0
+      - service_proxy.traefik.network | length > 0
+      - service_proxy.traefik.dynamic_config_dir | length > 0
+    fail_msg: "service_proxy requires bind_address, docker.data_root, traefik.network, and traefik.dynamic_config_dir."
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Install Docker runtime packages
+  ansible.builtin.apt:
+    name: "{{ service_proxy.packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Ensure Frey service directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ frey.base_dir }}"
+    - "{{ service_proxy.docker.data_root }}"
+    - "{{ service_proxy.traefik.dynamic_config_dir }}"
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Configure Docker daemon for NVMe-backed service data
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Enable Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Apply Docker daemon changes before creating containers
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Add configured users to docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups:
+      - docker
+    append: true
+  loop: "{{ service_proxy.docker.users }}"
+  when: service_proxy.docker.users | length > 0
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Create shared proxy network
+  community.docker.docker_network:
+    name: "{{ service_proxy.traefik.network }}"
+    state: present
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Configure Traefik dynamic middleware
+  ansible.builtin.template:
+    src: traefik-dynamic.yml.j2
+    dest: "{{ service_proxy.traefik.dynamic_config_dir }}/middlewares.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart traefik
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Run Traefik reverse proxy
+  community.docker.docker_container:
+    name: "{{ service_proxy.traefik.container_name }}"
+    image: "{{ service_proxy.traefik.image }}"
+    state: started
+    restart_policy: unless-stopped
+    pull: true
+    networks:
+      - name: "{{ service_proxy.traefik.network }}"
+    networks_cli_compatible: true
+    published_ports:
+      - "{{ service_proxy.bind_address }}:{{ service_proxy.traefik.http_port }}:80"
+      - "{{ service_proxy.bind_address }}:{{ service_proxy.traefik.https_port }}:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - "{{ service_proxy.traefik.dynamic_config_dir }}:/etc/traefik/dynamic:ro"
+    command:
+      - "--global.checknewversion=false"
+      - "--global.sendanonymoususage=false"
+      - "--api.dashboard={{ service_proxy.traefik.dashboard_enabled | ternary('true', 'false') }}"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault={{ service_proxy.traefik.exposed_by_default | ternary('true', 'false') }}"
+      - "--providers.docker.network={{ service_proxy.traefik.network }}"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--log.level=INFO"
+    labels:
+      frey.module: service_proxy
+    security_opts:
+      - no-new-privileges:true
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker

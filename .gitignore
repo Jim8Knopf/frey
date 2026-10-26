@@ -1,8 +1,14 @@
-# Ansible Vault Password File
+# Vault password file - the ONLY thing that must never be committed.
 .vault_pass
+
+# NOTE: inventory/group_vars/all/secrets.yml IS tracked, on purpose.
+# It is AES256 ansible-vault ciphertext. Committing it is what makes a
+# rebuild from scratch reproduce the FreyHub passphrase and known networks.
+# Without it in git, losing this laptop means losing the deployment.
 
 # Ansible temporary files
 *.retry
+.ansible/tmp/
 
 # Python cache
 __pycache__/
