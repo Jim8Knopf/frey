@@ -1,0 +1,42 @@
+#!/bin/sh
+# Frey gateway NAT rules. Managed by Ansible role: network_gateway
+#
+# Must succeed when there is NO uplink at all. FreyHub clients still get
+# DHCP, DNS and local services; they just have nowhere to route to yet.
+# Rules naming a currently-absent interface are valid and start working
+# the moment that interface appears.
+set -u
+
+UPLINK="{{ network_gateway.upstream.interface }}"
+DOWNSTREAM="{{ network_gateway.downstream.interface }}"
+DOWNSTREAM_CIDR="{{ network_gateway.downstream.network_cidr }}"
+
+log() { logger -t frey-gateway-nat "$1"; }
+
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || log "could not set ip_forward"
+
+ensure() {
+  table="$1"; shift
+  if [ "$table" = "filter" ]; then
+    iptables -C "$@" >/dev/null 2>&1 || iptables -A "$@" >/dev/null 2>&1 \
+      || log "failed to add filter rule: $*"
+  else
+    iptables -t "$table" -C "$@" >/dev/null 2>&1 || iptables -t "$table" -A "$@" >/dev/null 2>&1 \
+      || log "failed to add $table rule: $*"
+  fi
+}
+
+ensure nat POSTROUTING -s "$DOWNSTREAM_CIDR" -o "$UPLINK" -j MASQUERADE
+ensure filter FORWARD -i "$DOWNSTREAM" -o "$UPLINK" -j ACCEPT
+ensure filter FORWARD -i "$UPLINK" -o "$DOWNSTREAM" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+# Clamp MSS to the uplink path MTU. Public Wi-Fi hotspots and captive portals
+# frequently sit behind tunnels with a reduced MTU; without this, large HTTPS
+# responses stall for FreyHub clients while small requests appear to work.
+iptables -t mangle -C FORWARD -o "$UPLINK" -p tcp --tcp-flags SYN,RST SYN \
+  -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
+  || iptables -t mangle -A FORWARD -o "$UPLINK" -p tcp --tcp-flags SYN,RST SYN \
+     -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
+  || log "failed to add MSS clamp"
+
+exit 0

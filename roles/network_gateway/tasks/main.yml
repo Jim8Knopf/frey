@@ -1,0 +1,701 @@
+---
+# ---------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------
+- name: Validate gateway configuration
+  ansible.builtin.assert:
+    that:
+      - network_gateway.downstream.interface | length > 0
+      - network_gateway.upstream.interface | length > 0
+      - network_gateway.downstream.interface != network_gateway.upstream.interface
+      - network_gateway.downstream.address | length > 0
+      - network_gateway.downstream.network_cidr | length > 0
+    fail_msg: >-
+      network_gateway needs two DIFFERENT radios. One hosts FreyHub, the other
+      reaches for public Wi-Fi. Running AP and client mode on one radio is not
+      supported here.
+  tags: [network, gateway, uplink, hub]
+
+- name: Validate FreyHub access point settings
+  ansible.builtin.assert:
+    that:
+      - network_gateway.downstream.ap.ssid | length > 0
+      - >-
+        network_gateway.downstream.ap.password | string | length == 0
+        or network_gateway.downstream.ap.password | string | length >= 8
+    fail_msg: >-
+      FreyHub needs an SSID, and a WPA2 passphrase of at least 8 characters
+      (or an empty string for an open network).
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.downstream.mode == 'ap'
+  tags: [network, gateway, hub]
+
+# NOTE: there is deliberately NO assert that an uplink SSID is set. Having no
+# public network to join is a normal operating state for a van, not an error.
+
+# ---------------------------------------------------------------------
+# Work out which interface the live SSH session is actually riding.
+#
+# The previous implementation used the DEFAULT ROUTE interface, which is
+# always the uplink. That blocked every legitimate uplink change even when
+# the operator was safely connected over FreyHub, and failed to notice when
+# SSH really was on the radio about to be reconfigured.
+# ---------------------------------------------------------------------
+- name: Determine which interface carries this SSH session
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      ip -o route get {{ ansible_facts.env.SSH_CLIENT.split()[0] | quote }}
+      | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1
+    executable: /bin/bash
+  register: ngw_control_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: ansible_facts.env.SSH_CLIENT is defined
+  tags: [network, gateway, uplink, hub]
+
+- name: Record the control interface
+  ansible.builtin.set_fact:
+    ngw_control_interface: >-
+      {{ (ngw_control_probe.stdout | default('') | trim)
+         if (ngw_control_probe.stdout | default('') | trim) | length > 0
+         else (ansible_facts.default_ipv4.interface | default('')) }}
+  tags: [network, gateway, uplink, hub]
+
+- name: Show the detected control interface
+  ansible.builtin.debug:
+    msg: >-
+      SSH session arrives on '{{ ngw_control_interface }}'.
+      FreyHub will be built on '{{ network_gateway.downstream.interface }}',
+      uplink on '{{ network_gateway.upstream.interface }}'.
+  tags: [network, gateway, uplink, hub]
+
+- name: Refuse to convert the radio carrying this SSH session into an access point
+  ansible.builtin.fail:
+    msg: >-
+      '{{ network_gateway.downstream.interface }}' is carrying this SSH session.
+      Converting it to an access point would drop you immediately, and this Pi
+      has no Ethernet port and no console.
+      Run phase 1 first to put the uplink on '{{ network_gateway.upstream.interface }}':
+        ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags uplink
+      then reconnect to that radio's address and re-run with
+        -e frey_host=<{{ network_gateway.upstream.interface }}-address>
+      Full procedure: docs/GATEWAY.md
+      Override only with a known-good way back in:
+      network_gateway.safety.allow_reconfigure_control_interface=true
+  when:
+    - network_gateway.downstream.enabled | bool
+    - not network_gateway.safety.allow_reconfigure_control_interface | bool
+    - ngw_control_interface | length > 0
+    - ngw_control_interface == network_gateway.downstream.interface
+  tags: [network, gateway, hub]
+
+# ---------------------------------------------------------------------
+# Base system
+# ---------------------------------------------------------------------
+- name: Install gateway packages
+  ansible.builtin.apt:
+    name: "{{ network_gateway.packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags: [network, gateway, uplink, hub]
+
+- name: Verify both radios are present
+  ansible.builtin.command:
+    cmd: "ip link show {{ item }}"
+  loop:
+    - "{{ network_gateway.downstream.interface }}"
+    - "{{ network_gateway.upstream.interface }}"
+  changed_when: false
+  tags: [network, gateway, uplink, hub]
+
+- name: Install persistent Wi-Fi regulatory domain unit
+  ansible.builtin.template:
+    src: frey-regdomain.service.j2
+    dest: /etc/systemd/system/frey-regdomain.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: ngw_regdom_unit
+  tags: [network, gateway, uplink, hub]
+
+- name: Enable regulatory domain unit
+  ansible.builtin.systemd:
+    name: frey-regdomain
+    enabled: true
+    state: "{{ 'restarted' if ngw_regdom_unit.changed else 'started' }}"
+    daemon_reload: true
+  when: not ansible_check_mode
+  tags: [network, gateway, uplink, hub]
+
+- name: Enable NetworkManager
+  ansible.builtin.systemd:
+    name: NetworkManager
+    enabled: true
+    state: started
+  tags: [network, gateway, uplink, hub]
+
+- name: Disable dhcpcd to avoid interface ownership conflicts
+  ansible.builtin.systemd:
+    name: dhcpcd
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: network_gateway.network_manager.disable_dhcpcd | bool
+  tags: [network, gateway, uplink, hub]
+
+- name: Unblock Wi-Fi radios
+  ansible.builtin.command:
+    cmd: rfkill unblock wifi
+  changed_when: false
+  tags: [network, gateway, uplink, hub]
+
+- name: Ensure Frey state directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - /var/lib/frey
+    - "{{ network_gateway.safety.rollback.state_dir }}"
+    - "{{ network_gateway.network_manager.netplan_backup_dir }}"
+    - /etc/NetworkManager/system-connections
+  tags: [network, gateway, uplink, hub]
+
+- name: Enable IPv4 forwarding persistently
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    reload: true
+  tags: [network, gateway, hub]
+
+# Two radios briefly share one subnet during the migration. Loose reverse-path
+# filtering and per-interface ARP keep that dual-homed window from silently
+# black-holing the SSH session.
+- name: Make dual-homed operation safe during migration
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop:
+    - { key: net.ipv4.conf.all.rp_filter, value: "2" }
+    - { key: net.ipv4.conf.all.arp_ignore, value: "1" }
+    - { key: net.ipv4.conf.all.arp_announce, value: "2" }
+  tags: [network, gateway, uplink, hub]
+
+# ---------------------------------------------------------------------
+# Netplan handover
+#
+# This image ships netplan with the NetworkManager renderer, and
+# /etc/NetworkManager/system-connections is empty - every profile is
+# generated by netplan. Left alone, netplan regenerates competing profiles
+# for the same radios on every boot and fights the AP for the interface.
+# ---------------------------------------------------------------------
+- name: Find netplan configs claiming the radios Frey manages
+  ansible.builtin.shell:
+    cmd: >-
+      grep -l -E '^[[:space:]]+({{ network_gateway.downstream.interface }}|{{ network_gateway.upstream.interface }}):'
+      /etc/netplan/*.yaml 2>/dev/null || true
+  register: ngw_netplan_hits
+  changed_when: false
+  check_mode: false
+  when: network_gateway.network_manager.take_over_netplan | bool
+  tags: [network, gateway, uplink, hub]
+
+- name: Back up netplan configs before taking the radios over
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ network_gateway.network_manager.netplan_backup_dir }}/{{ item | basename }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+  loop: "{{ ngw_netplan_hits.stdout_lines | default([]) }}"
+  when:
+    - network_gateway.network_manager.take_over_netplan | bool
+    - ngw_netplan_hits.stdout_lines | default([]) | length > 0
+  tags: [network, gateway, uplink, hub]
+
+- name: Record the currently active profile so rollback can restore it
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      nmcli -t -f NAME,DEVICE connection show --active
+      | awk -F: -v d='{{ network_gateway.downstream.interface }}' '$2==d {print $1}' | head -1
+      > {{ network_gateway.safety.rollback.state_dir }}/previous-connection
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+  tags: [network, gateway, hub]
+
+# ---------------------------------------------------------------------
+# Uplink: opportunistic public Wi-Fi (phase 1 of the migration)
+# ---------------------------------------------------------------------
+- name: Render a profile for each known upstream network
+  ansible.builtin.template:
+    src: uplink-wifi.nmconnection.j2
+    dest: "/etc/NetworkManager/system-connections/{{ uplink_connection_id }}.nmconnection"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    uplink_connection_id: >-
+      {{ network_gateway.upstream.connection_prefix }}-{{ item.ssid | regex_replace('[^A-Za-z0-9_-]', '-') }}
+  loop: "{{ network_gateway.upstream.networks | default([]) }}"
+  loop_control:
+    label: "{{ item.ssid }}"
+  no_log: true
+  register: ngw_uplink_profiles
+  when: network_gateway.upstream.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Compute which uplink profiles should exist
+  ansible.builtin.set_fact:
+    # NOTE: built by prefixing with a '^' replacement, deliberately avoiding a
+    # '^(.*)$' + backreference. The backreference form does NOT expand here and
+    # silently yields the literal 'prefix-\1', which previously made the prune
+    # below delete the very profile the task above had just written.
+    ngw_desired_uplinks: >-
+      {{ (network_gateway.upstream.networks | default([]))
+         | map(attribute='ssid')
+         | map('regex_replace', '[^A-Za-z0-9_-]', '-')
+         | map('regex_replace', '^', network_gateway.upstream.connection_prefix ~ '-')
+         | list }}
+  when: network_gateway.upstream.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Find uplink profiles currently on the host
+  ansible.builtin.find:
+    paths: /etc/NetworkManager/system-connections
+    patterns: "{{ network_gateway.upstream.connection_prefix }}-*.nmconnection"
+    file_type: file
+  register: ngw_uplink_existing
+  when: network_gateway.upstream.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Remove uplink profiles for networks no longer declared
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ngw_uplink_existing.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - (item.path | basename | replace('.nmconnection', '')) not in (ngw_desired_uplinks | default([]))
+  register: ngw_uplink_pruned
+  tags: [network, gateway, uplink]
+
+- name: Verify every declared uplink profile is present on disk
+  ansible.builtin.stat:
+    path: "/etc/NetworkManager/system-connections/{{ item }}.nmconnection"
+  register: ngw_uplink_check
+  loop: "{{ ngw_desired_uplinks | default([]) }}"
+  when: network_gateway.upstream.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Fail if an uplink profile went missing
+  ansible.builtin.assert:
+    that:
+      - ngw_uplink_check.results | default([]) | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      Declared uplink profiles are missing from
+      /etc/NetworkManager/system-connections after this run:
+      {{ ngw_uplink_check.results | default([]) | rejectattr('stat.exists')
+         | map(attribute='item') | list | join(', ') }}.
+      The uplink cannot associate without them.
+    success_msg: "all {{ ngw_desired_uplinks | default([]) | length }} uplink profile(s) present"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.networks | default([]) | length > 0
+  tags: [network, gateway, uplink]
+
+- name: Configure the FreyHub access point profile
+  ansible.builtin.template:
+    src: downstream-ap.nmconnection.j2
+    dest: "/etc/NetworkManager/system-connections/{{ network_gateway.downstream.connection_name }}.nmconnection"
+    owner: root
+    group: root
+    mode: "0600"
+  register: ngw_ap_profile
+  no_log: true
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.downstream.mode == 'ap'
+  tags: [network, gateway, hub]
+
+- name: Read the AP interface's current addresses
+  # Plain command, no shell. The previous probe used a piped `>-` folded block
+  # whose continuation line was indented further; YAML then KEPT the newline
+  # instead of folding it, handing bash a broken pipeline. failed_when:false hid
+  # the error and the empty result looked like "AP not serving", so every run
+  # declared a cutover and armed the deadman over a healthy system.
+  ansible.builtin.command:
+    cmd: "ip -4 -o addr show {{ network_gateway.downstream.interface }}"
+  register: ngw_ap_addr
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: network_gateway.downstream.enabled | bool
+  tags: [network, gateway, hub]
+
+- name: Decide whether this run performs an AP cutover
+  ansible.builtin.set_fact:
+    # A cutover means the AP radio is about to change state: either FreyHub is
+    # not serving yet, or its profile changed and must be re-activated. Only
+    # then is a deadman warranted. Arming it on a no-op run both breaks
+    # idempotency and needlessly puts a revert timer over a healthy system.
+    ngw_cutover_needed: >-
+      {{ ((network_gateway.downstream.address ~ '/') not in (ngw_ap_addr.stdout | default('')))
+         or (ngw_ap_profile.changed | default(false)) }}
+  when: network_gateway.downstream.enabled | bool
+  tags: [network, gateway, hub]
+
+- name: Report the cutover decision
+  ansible.builtin.debug:
+    msg: >-
+      [{{ network_gateway.downstream.interface }} has
+      '{{ ngw_ap_addr.stdout | default('') | trim }}']
+      {% if ngw_cutover_needed | default(false) | bool %}
+      AP cutover required - arming the deadman rollback.
+      {% else %}
+      FreyHub already serving and profile unchanged - no cutover, no deadman needed.
+      {% endif %}
+  when: network_gateway.downstream.enabled | bool
+  tags: [network, gateway, hub]
+
+# ---------------------------------------------------------------------
+# Arm the deadman BEFORE touching the AP radio
+# ---------------------------------------------------------------------
+- name: Install deadman rollback script
+  ansible.builtin.template:
+    src: frey-net-rollback.sh.j2
+    dest: /usr/local/sbin/frey-net-rollback
+    owner: root
+    group: root
+    mode: "0755"
+  when: network_gateway.downstream.enabled | bool
+  tags: [network, gateway, hub]
+
+- name: Install deadman rollback units
+  ansible.builtin.template:
+    src: "frey-net-rollback.{{ item }}.j2"
+    dest: "/etc/systemd/system/frey-net-rollback.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [service, timer]
+  register: ngw_rollback_units
+  when: network_gateway.downstream.enabled | bool
+  tags: [network, gateway, hub]
+
+- name: Clear any stale commit marker from a previous run
+  ansible.builtin.file:
+    path: "{{ network_gateway.safety.rollback.state_dir }}/committed"
+    state: absent
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.safety.rollback.enabled | bool
+    - ngw_cutover_needed | default(true) | bool
+  tags: [network, gateway, hub]
+
+- name: Stamp the arm time the rollback guard checks
+  ansible.builtin.shell:
+    cmd: "date +%s > {{ network_gateway.safety.rollback.state_dir }}/armed_at"
+  changed_when: true
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.safety.rollback.enabled | bool
+    - not ansible_check_mode
+    - ngw_cutover_needed | default(true) | bool
+  tags: [network, gateway, hub]
+
+- name: Arm the deadman rollback
+  ansible.builtin.systemd:
+    name: frey-net-rollback.timer
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.safety.rollback.enabled | bool
+    - not ansible_check_mode
+    - ngw_cutover_needed | default(true) | bool
+  tags: [network, gateway, hub]
+
+- name: Announce the rollback window
+  ansible.builtin.debug:
+    msg: >-
+      Deadman armed: if this run does not reach its commit step, the Pi reverts
+      to its previous network in
+      {{ network_gateway.safety.rollback.timeout_seconds }}s
+      (and again after any reboot) so you are never locked out.
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.safety.rollback.enabled | bool
+    - ngw_cutover_needed | default(true) | bool
+  tags: [network, gateway, hub]
+
+# ---------------------------------------------------------------------
+# FreyHub access point (phase 2 of the migration)
+# ---------------------------------------------------------------------
+# Only now, with the AP profile written and the deadman armed, is it safe to
+# take the radio off netplan. Scoped to the AP radio: the uplink radio is left
+# alone so a phase-1 run can never disturb the session riding it.
+- name: Find netplan configs claiming the FreyHub radio
+  ansible.builtin.shell:
+    cmd: >-
+      grep -l -E '^[[:space:]]+{{ network_gateway.downstream.interface }}:'
+      /etc/netplan/*.yaml 2>/dev/null || true
+  register: ngw_netplan_downstream
+  changed_when: false
+  check_mode: false
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.network_manager.take_over_netplan | bool
+  tags: [network, gateway, hub]
+
+- name: Remove netplan's claim on the FreyHub radio
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ ngw_netplan_downstream.stdout_lines | default([]) }}"
+  register: ngw_netplan_removed
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.network_manager.take_over_netplan | bool
+  tags: [network, gateway, hub]
+
+- name: Regenerate netplan state without the FreyHub radio
+  ansible.builtin.command:
+    cmd: netplan generate
+  changed_when: true
+  failed_when: false
+  when:
+    - network_gateway.downstream.enabled | bool
+    - ngw_netplan_removed.changed | default(false)
+    - not ansible_check_mode
+  tags: [network, gateway, hub]
+
+- name: Reload NetworkManager connection profiles
+  ansible.builtin.command:
+    cmd: nmcli connection reload
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - (ngw_ap_profile.changed | default(false))
+      or (ngw_uplink_profiles.changed | default(false))
+      or (ngw_netplan_removed.changed | default(false))
+  tags: [network, gateway, uplink, hub]
+
+# ---------------------------------------------------------------------
+# DHCP / DNS / NAT
+# ---------------------------------------------------------------------
+- name: Configure dnsmasq for FreyHub
+  ansible.builtin.template:
+    src: dnsmasq-gateway.conf.j2
+    dest: /etc/dnsmasq.d/frey-gateway.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: ngw_dnsmasq_config
+  when: network_gateway.downstream.enabled | bool
+  tags: [network, gateway, hub]
+
+- name: Install NAT helper script
+  ansible.builtin.template:
+    src: frey-gateway-nat.sh.j2
+    dest: /usr/local/sbin/frey-gateway-nat
+    owner: root
+    group: root
+    mode: "0755"
+  register: ngw_nat_script
+  when: network_gateway.nat.enabled | bool
+  tags: [network, gateway, hub]
+
+- name: Install NAT systemd unit
+  ansible.builtin.template:
+    src: frey-gateway-nat.service.j2
+    dest: /etc/systemd/system/frey-gateway-nat.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: ngw_nat_unit
+  when: network_gateway.nat.enabled | bool
+  tags: [network, gateway, hub]
+
+# The uplink comes and goes constantly in a van. This reasserts NAT whenever
+# NetworkManager brings an interface up or down.
+- name: Install NetworkManager dispatcher to reassert NAT
+  ansible.builtin.template:
+    src: frey-nat-dispatcher.sh.j2
+    dest: /etc/NetworkManager/dispatcher.d/90-frey-nat
+    owner: root
+    group: root
+    mode: "0755"
+  when: network_gateway.nat.enabled | bool
+  tags: [network, gateway, hub]
+
+- name: Reload systemd for changed units
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - not ansible_check_mode
+    - (ngw_nat_unit.changed | default(false)) or (ngw_rollback_units.changed | default(false))
+  tags: [network, gateway, hub]
+
+# ---------------------------------------------------------------------
+# Activation
+# ---------------------------------------------------------------------
+# Only (re)activate when it is not already up, or when the profile actually
+# changed. Deploys are normally run FROM a FreyHub client, and needlessly
+# re-activating the AP would drop the very connection running the play - the
+# run would then never reach its commit step and the deadman would revert.
+- name: Bring up FreyHub
+  ansible.builtin.command:
+    cmd: "nmcli connection up {{ network_gateway.downstream.connection_name }}"
+  register: ngw_ap_up
+  changed_when: "'successfully activated' in ngw_ap_up.stdout"
+  failed_when: false
+  when:
+    - network_gateway.downstream.enabled | bool
+    - not ansible_check_mode
+    - ngw_cutover_needed | default(true) | bool
+  tags: [network, gateway, hub]
+
+- name: Start dnsmasq for FreyHub DHCP and DNS
+  ansible.builtin.systemd:
+    name: dnsmasq
+    enabled: true
+    state: "{{ 'restarted' if ngw_dnsmasq_config.changed else 'started' }}"
+  when:
+    - network_gateway.downstream.enabled | bool
+    - not ansible_check_mode
+  tags: [network, gateway, hub]
+
+- name: Enable NAT service
+  ansible.builtin.systemd:
+    name: frey-gateway-nat
+    enabled: true
+    state: "{{ 'restarted' if ((ngw_nat_script.changed | default(false)) or (ngw_nat_unit.changed | default(false))) else 'started' }}"
+  when:
+    - network_gateway.nat.enabled | bool
+    - not ansible_check_mode
+  tags: [network, gateway, hub]
+
+# Never bounce the radio carrying this session. In phase 1 the uplink profile
+# is written and left to autoconnect on its own.
+- name: Bring up the uplink
+  ansible.builtin.command:
+    cmd: "nmcli device connect {{ network_gateway.upstream.interface }}"
+  register: ngw_uplink_up
+  changed_when: ngw_uplink_up.rc == 0
+  failed_when: false
+  when:
+    - network_gateway.upstream.enabled | bool
+    - ngw_control_interface != network_gateway.upstream.interface
+    - network_gateway.upstream.networks | default([]) | length > 0
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
+- name: Read the uplink's resulting state
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      nmcli -t -f DEVICE,STATE,CONNECTION device status
+      | awk -F: -v d='{{ network_gateway.upstream.interface }}' '$1==d {print $2 "|" $3}'
+    executable: /bin/bash
+  register: ngw_uplink_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: network_gateway.upstream.enabled | bool
+  tags: [network, gateway, uplink]
+
+# Not a failure: in a van there is often no known network in range. But it must
+# be visible, because a silent "ok" here previously hid a broken uplink.
+- name: Report the uplink outcome
+  ansible.builtin.debug:
+    msg: >-
+      {% set st = (ngw_uplink_state.stdout | default('') | trim).split('|') %}
+      {% if st | length > 1 and st[0] == 'connected' %}
+      uplink {{ network_gateway.upstream.interface }} is CONNECTED via '{{ st[1] }}'.
+      {% else %}
+      uplink {{ network_gateway.upstream.interface }} is NOT connected
+      (state: {{ st[0] | default('unknown') }}). This is expected when none of the
+      {{ network_gateway.upstream.networks | default([]) | length }} known network(s)
+      are in range. FreyHub does not depend on it.
+      {% endif %}
+  when: network_gateway.upstream.enabled | bool
+  tags: [network, gateway, uplink]
+
+# ---------------------------------------------------------------------
+# Verify, then commit the deadman
+# ---------------------------------------------------------------------
+- name: Confirm FreyHub is actually serving before committing
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      ip -4 addr show {{ network_gateway.downstream.interface }}
+      | grep -q '{{ network_gateway.downstream.address }}/' && echo ap-ok
+    executable: /bin/bash
+  register: ngw_ap_verify
+  changed_when: false
+  failed_when: false
+  retries: 6
+  delay: 5
+  until: "'ap-ok' in (ngw_ap_verify.stdout | default(''))"
+  when:
+    - network_gateway.downstream.enabled | bool
+    - not ansible_check_mode
+  tags: [network, gateway, hub]
+
+- name: Refuse to commit when FreyHub did not come up
+  ansible.builtin.fail:
+    msg: >-
+      FreyHub did not take address {{ network_gateway.downstream.address }} on
+      {{ network_gateway.downstream.interface }}. NOT committing: the deadman will
+      restore your previous network within
+      {{ network_gateway.safety.rollback.timeout_seconds }}s.
+      Leave this session open and check 'nmcli device status'.
+  when:
+    - network_gateway.downstream.enabled | bool
+    - not ansible_check_mode
+    - "'ap-ok' not in (ngw_ap_verify.stdout | default(''))"
+  tags: [network, gateway, hub]
+
+- name: Commit - FreyHub verified up, disarm the deadman
+  ansible.builtin.file:
+    path: "{{ network_gateway.safety.rollback.state_dir }}/committed"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.safety.rollback.enabled | bool
+    - not ansible_check_mode
+    - ngw_cutover_needed | default(true) | bool
+  tags: [network, gateway, hub]
+
+- name: Disarm the deadman rollback timer
+  ansible.builtin.systemd:
+    name: frey-net-rollback.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+  when:
+    - network_gateway.downstream.enabled | bool
+    - network_gateway.safety.rollback.enabled | bool
+    - not ansible_check_mode
+    - ngw_cutover_needed | default(true) | bool
+  tags: [network, gateway, hub]

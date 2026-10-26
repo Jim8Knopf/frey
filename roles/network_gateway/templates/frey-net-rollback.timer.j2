@@ -1,0 +1,18 @@
+[Unit]
+Description=Frey network deadman rollback timer
+Documentation=man:frey-net-rollback
+
+[Timer]
+# Fires once after the cutover window unless the deploy commits first.
+#
+# Deliberately OnActiveSec ONLY. OnBootSec is measured from system BOOT, so on
+# a Pi that has already been up longer than the timeout it fires the INSTANT
+# the timer is armed. That once raced a cutover and tore the AP down mid-deploy.
+# Because this timer is also 'enabled', it activates again at boot and counts
+# the same window from there, which preserves reboot protection.
+OnActiveSec={{ network_gateway.safety.rollback.timeout_seconds }}
+AccuracySec=5s
+Unit=frey-net-rollback.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Frey network deadman rollback
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/frey-net-rollback
+RemainAfterExit=no

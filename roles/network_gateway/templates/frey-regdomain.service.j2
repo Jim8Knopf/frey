@@ -1,0 +1,15 @@
+[Unit]
+Description=Frey Wi-Fi regulatory domain ({{ network_gateway.downstream.ap.country }})
+# Must win the race against NetworkManager bringing radios up, or the AP can
+# land on a channel the regulatory domain then forbids.
+Before=NetworkManager.service
+After=systemd-modules-load.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iw reg set {{ network_gateway.downstream.ap.country }}'
+
+[Install]
+WantedBy=multi-user.target

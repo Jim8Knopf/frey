@@ -1,0 +1,16 @@
+[Unit]
+Description=Frey gateway NAT rules
+After=NetworkManager.service
+Wants=NetworkManager.service
+# Deliberately NOT ordered after network-online.target. In a van there is
+# often no uplink at all, and waiting for that target to time out would
+# delay every single boot. NAT rules are valid whether or not the uplink
+# interface currently exists.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/frey-gateway-nat
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

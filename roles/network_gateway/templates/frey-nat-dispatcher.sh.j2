@@ -1,0 +1,14 @@
+#!/bin/sh
+# NetworkManager dispatcher: reassert NAT when the uplink comes or goes.
+# Managed by Ansible role: network_gateway
+IFACE="$1"
+ACTION="$2"
+
+case "$ACTION" in
+  up|down|vpn-up|vpn-down|connectivity-change)
+    [ "$IFACE" = "{{ network_gateway.upstream.interface }}" ] || \
+    [ "$IFACE" = "{{ network_gateway.downstream.interface }}" ] || exit 0
+    /usr/local/sbin/frey-gateway-nat || true
+    ;;
+esac
+exit 0

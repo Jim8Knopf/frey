@@ -1,0 +1,68 @@
+# FreyHub DHCP/DNS. Managed by Ansible role: network_gateway
+#
+# Design rule: this file must produce a fully working FreyHub with NO
+# upstream connectivity. Local name resolution and DHCP never depend on
+# the uplink being present.
+
+# bind-dynamic, not bind-interfaces: dnsmasq must start even when the AP
+# radio has not appeared yet (cold boot, USB enumeration, power cycle)
+# and pick it up when it does. bind-interfaces hard-fails in that window.
+interface={{ network_gateway.downstream.interface }}
+bind-dynamic
+listen-address={{ network_gateway.downstream.address }}
+# Never answer on the uplink side.
+except-interface={{ network_gateway.upstream.interface }}
+no-dhcp-interface={{ network_gateway.upstream.interface }}
+
+# no-hosts: do NOT serve the Pi's /etc/hosts to clients. Raspberry Pi OS puts
+# "127.0.1.1 frey" there for the hostname, and dnsmasq would hand that to every
+# client - so "frey" resolved to the CLIENT's own loopback and http://frey hit
+# nothing. The explicit host-record/address entries below are authoritative.
+no-hosts
+
+{% set local_domain = frey.local_domain | default(network_gateway.downstream.domain) %}
+{% set service_address = frey.service_address | default(network_gateway.downstream.address) %}
+domain={{ local_domain }}
+expand-hosts
+local=/{{ local_domain }}/
+
+{% for record in frey.dns.records | default([]) %}
+{% set record_name = local_domain if record.name == '@' else record.name ~ '.' ~ local_domain %}
+host-record={{ record_name }},{{ record.address | default(service_address) }}
+{% endfor %}
+
+{% if frey.dns.wildcard_services | default(true) | bool %}
+# Catch-all service DNS, resolved locally and therefore offline-safe.
+# Traefik decides which services actually exist.
+address=/{{ local_domain }}/{{ service_address }}
+{% endif %}
+
+dhcp-authoritative
+dhcp-range={{ network_gateway.downstream.dhcp_range_start }},{{ network_gateway.downstream.dhcp_range_end }},{{ network_gateway.downstream.netmask }},{{ network_gateway.downstream.dhcp_lease_time }}
+dhcp-option=3,{{ network_gateway.downstream.address }}
+dhcp-option=6,{{ network_gateway.downstream.address }}
+dhcp-option=15,{{ local_domain }}
+# Leases survive restarts so parked clients keep their addresses.
+dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+
+cache-size={{ network_gateway.dns.cache_size }}
+
+# Follow the upstream network's own resolvers. This is what lets a captive
+# portal intercept DNS and hand back its sign-in page. With no uplink the
+# file is simply empty and only local .{{ local_domain }} names resolve, which is correct.
+resolv-file={{ network_gateway.dns.resolv_file }}
+{% for resolver in network_gateway.dns.upstream_servers | default([]) %}
+server={{ resolver }}
+{% endfor %}
+
+domain-needed
+bogus-priv
+{% if network_gateway.dns.stop_dns_rebind | default(false) | bool %}
+# WARNING: this breaks captive-portal sign-in pages, which resolve to
+# private addresses by design.
+stop-dns-rebind
+rebind-localhost-ok
+rebind-domain-ok=/{{ local_domain }}/
+{% endif %}
+
+log-facility=daemon

@@ -1,0 +1,98 @@
+---
+# Frey gateway module.
+#
+# Radio assignment is deliberately two variables. Swapping the two
+# `interface:` lines swaps which radio hosts FreyHub and which reaches
+# for public Wi-Fi. Nothing else in the role hardcodes a radio.
+#
+#   downstream.interface -> FreyHub AP   (must be the MOST reliable radio)
+#   upstream.interface   -> public Wi-Fi (the expendable one)
+
+network_gateway:
+
+  # ---------------------------------------------------------------
+  # Upstream: opportunistic public Wi-Fi. Absent by design much of
+  # the time. Nothing below the Pi depends on it being up.
+  # ---------------------------------------------------------------
+  upstream:
+    enabled: true
+    interface: wlan1
+    connection_prefix: frey-uplink
+    route_metric: 100
+    country: NZ
+    powersave: false
+    # Known networks, tried by NetworkManager whichever is in range.
+    # Declared in group_vars/all/secrets.yml so a rebuild reproduces them.
+    networks: []
+
+  # ---------------------------------------------------------------
+  # Downstream: FreyHub. This is the critical always-on service.
+  # It must come up and stay up with no upstream of any kind.
+  # ---------------------------------------------------------------
+  downstream:
+    enabled: true
+    mode: ap
+    interface: wlan0
+    connection_name: frey-hub-ap
+    address: 10.20.0.1
+    prefix: 24
+    netmask: 255.255.255.0
+    network_cidr: 10.20.0.0/24
+    route_metric: 500
+    dhcp_range_start: 10.20.0.50
+    dhcp_range_end: 10.20.0.150
+    dhcp_lease_time: 12h
+    domain: frey
+    ap:
+      ssid: FreyHub
+      password: ""
+      country: NZ
+      # band bg = 2.4 GHz (better range through a van body, widest client
+      # support). band a = 5 GHz (faster for media). Channel must stay
+      # non-DFS so the AP can never go silent for a radar check.
+      band: bg
+      channel: 6
+      hidden: false
+      # AP radios must not sleep.
+      powersave: false
+
+  dns:
+    # Captive portals intercept DNS and answer with private addresses.
+    # Rebind protection throws those answers away and the sign-in page
+    # never appears, so it is off by default.
+    stop_dns_rebind: false
+    # Empty on purpose: follow the upstream network's own resolvers so
+    # portal interception works. Hardcoding public resolvers here breaks
+    # sign-in pages. With no uplink, *.frey still resolves locally.
+    upstream_servers: []
+    resolv_file: /run/NetworkManager/no-stub-resolv.conf
+    cache_size: 1000
+
+  nat:
+    enabled: true
+
+  network_manager:
+    disable_dhcpcd: true
+    # Netplan renders its own NetworkManager profiles. Left in place they
+    # compete with ours for the same radios on every boot.
+    take_over_netplan: true
+    netplan_backup_dir: /var/lib/frey/netplan-disabled
+
+  safety:
+    # Guard against reconfiguring the radio carrying the live SSH session.
+    allow_reconfigure_control_interface: false
+    rollback:
+      # Deadman switch: arms before the AP cutover and reverts the Pi to
+      # its previous network config unless the run explicitly commits.
+      # This is the only way back in on a box with no Ethernet and no console.
+      enabled: true
+      timeout_seconds: 600
+      state_dir: /var/lib/frey/rollback
+
+  packages:
+    - dnsmasq
+    - iptables
+    - network-manager
+    - rfkill
+    - wireless-regdb
+    - iw

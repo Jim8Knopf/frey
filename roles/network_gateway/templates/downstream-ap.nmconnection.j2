@@ -1,0 +1,45 @@
+# FreyHub access point. Managed by Ansible role: network_gateway
+# This interface is the critical always-on service: it must serve clients
+# with no upstream connectivity of any kind.
+[connection]
+id={{ network_gateway.downstream.connection_name }}
+uuid={{ ('frey-' ~ inventory_hostname ~ '-' ~ network_gateway.downstream.connection_name) | to_uuid }}
+type=wifi
+interface-name={{ network_gateway.downstream.interface }}
+autoconnect=true
+# Outrank any leftover profile so the AP always wins this radio.
+autoconnect-priority=999
+autoconnect-retries=0
+
+[wifi]
+mode=ap
+ssid={{ network_gateway.downstream.ap.ssid }}
+band={{ network_gateway.downstream.ap.band }}
+channel={{ network_gateway.downstream.ap.channel }}
+{% if network_gateway.downstream.ap.hidden | bool %}
+hidden=true
+{% endif %}
+{% if not network_gateway.downstream.ap.powersave | bool %}
+powersave=2
+{% endif %}
+
+{% if network_gateway.downstream.ap.password | string | length > 0 %}
+[wifi-security]
+key-mgmt=wpa-psk
+# WPA2-only. Excludes TKIP, which would drag the whole AP to 54Mbps.
+proto=rsn
+pairwise=ccmp
+group=ccmp
+psk={{ network_gateway.downstream.ap.password }}
+{% endif %}
+
+[ipv4]
+# Static, not 'shared'. NetworkManager's shared mode runs its own dnsmasq
+# and NAT, which would collide with the ones this role manages.
+method=manual
+addresses={{ network_gateway.downstream.address }}/{{ network_gateway.downstream.prefix }}
+never-default=true
+route-metric={{ network_gateway.downstream.route_metric }}
+
+[ipv6]
+method=ignore

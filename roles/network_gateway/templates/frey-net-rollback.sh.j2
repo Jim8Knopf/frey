@@ -1,0 +1,74 @@
+#!/bin/sh
+# Frey network deadman switch. Managed by Ansible role: network_gateway
+#
+# Armed immediately BEFORE the AP cutover. If the deploy does not reach its
+# commit step, this restores the Pi to the network config it had before,
+# so a box with no Ethernet port and no console always has a way back.
+#
+# Restores, it does not improvise: everything it puts back was captured at
+# arm time into the state directory.
+
+STATE="{{ network_gateway.safety.rollback.state_dir }}"
+NETPLAN_BACKUP="{{ network_gateway.network_manager.netplan_backup_dir }}"
+AP_PROFILE="/etc/NetworkManager/system-connections/{{ network_gateway.downstream.connection_name }}.nmconnection"
+
+log() { logger -t frey-net-rollback "$1"; echo "frey-net-rollback: $1"; }
+
+if [ -f "$STATE/committed" ]; then
+  log "deploy committed, nothing to roll back"
+  exit 0
+fi
+
+# Independent of any timer misconfiguration, never revert before the window
+# has actually elapsed. A premature fire once tore down the AP mid-cutover.
+TIMEOUT={{ network_gateway.safety.rollback.timeout_seconds }}
+if [ -f "$STATE/armed_at" ]; then
+  armed=$(cat "$STATE/armed_at" 2>/dev/null || echo 0)
+  elapsed=$(( $(date +%s) - armed ))
+  if [ "$elapsed" -lt "$TIMEOUT" ]; then
+    log "armed only ${elapsed}s ago (window ${TIMEOUT}s) - too early, not reverting"
+    exit 0
+  fi
+else
+  log "no arm timestamp found - refusing to revert"
+  exit 0
+fi
+
+log "NOT COMMITTED - reverting network configuration"
+
+# 1. Stop serving a LAN that is about to stop existing.
+systemctl stop dnsmasq 2>/dev/null || true
+systemctl stop frey-gateway-nat 2>/dev/null || true
+
+# 2. Drop the access point profile so it cannot grab the radio again.
+if [ -f "$AP_PROFILE" ]; then
+  rm -f "$AP_PROFILE"
+  log "removed AP profile"
+fi
+
+# 3. Put netplan's original profiles back.
+if [ -d "$NETPLAN_BACKUP" ]; then
+  for f in "$NETPLAN_BACKUP"/*.yaml; do
+    [ -e "$f" ] || continue
+    cp -a "$f" /etc/netplan/ && log "restored $(basename "$f")"
+  done
+  chmod 600 /etc/netplan/*.yaml 2>/dev/null || true
+fi
+
+nmcli connection reload 2>/dev/null || true
+
+if command -v netplan >/dev/null 2>&1; then
+  netplan apply 2>/dev/null || log "netplan apply failed"
+fi
+
+# 4. Best effort: bring the previously-active profile back up by name.
+if [ -f "$STATE/previous-connection" ]; then
+  PREV=$(cat "$STATE/previous-connection")
+  [ -n "$PREV" ] && nmcli connection up "$PREV" 2>/dev/null \
+    && log "reactivated '$PREV'" || true
+fi
+
+# 5. Disarm so this cannot loop.
+systemctl disable --now frey-net-rollback.timer 2>/dev/null || true
+log "rollback complete - previous network restored"
+exit 0

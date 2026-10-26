@@ -1,0 +1,37 @@
+# Public Wi-Fi uplink: {{ item.ssid }}
+# Managed by Ansible role: network_gateway
+# Opportunistic by design. Failure to associate is a normal state.
+[connection]
+id={{ uplink_connection_id }}
+uuid={{ ('frey-' ~ inventory_hostname ~ '-' ~ uplink_connection_id) | to_uuid }}
+type=wifi
+interface-name={{ network_gateway.upstream.interface }}
+autoconnect=true
+autoconnect-priority={{ item.priority | default(0) }}
+autoconnect-retries=0
+
+[wifi]
+mode=infrastructure
+ssid={{ item.ssid }}
+{% if item.hidden | default(false) | bool %}
+hidden=true
+{% endif %}
+{% if not network_gateway.upstream.powersave | bool %}
+powersave=2
+{% endif %}
+
+{% if item.password | default('') | string | length > 0 %}
+[wifi-security]
+key-mgmt=wpa-psk
+psk={{ item.password }}
+{% endif %}
+
+[ipv4]
+method=auto
+route-metric={{ network_gateway.upstream.route_metric }}
+# may-fail=true: an uplink that cannot get a lease must never hold up
+# the rest of the system. FreyHub does not depend on it.
+may-fail=true
+
+[ipv6]
+method=ignore
