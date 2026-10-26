@@ -1,10 +1,25 @@
-#!/bin/bash
-# .git/hooks/post-commit
+#!/usr/bin/env bash
+#
+# Post-commit: say something only when a vault file is sitting decrypted.
+#
+# The old version congratulated you on every commit for having an encrypted
+# secrets.yml, which is noise - that is the normal state. The useful moment is
+# the opposite one: a vault file left decrypted after you finished editing it.
+set -uo pipefail
 
-FILE_PATTERN="inventory/group_vars/all/secrets.yml"
-ENCRYPTED_PATTERN='^\$ANSIBLE_VAULT'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 0
+cd "$REPO_ROOT" || exit 0
 
-if [ -f "$FILE_PATTERN" ] && head -1 "$FILE_PATTERN" | grep -q '$ANSIBLE_VAULT'; then
-    echo "💡 Remember: Your secrets.yml is encrypted. To edit:"
-    echo "   ansible-vault edit $FILE_PATTERN --vault-password-file .vault_pass"
-fi
+CIPHERTEXT_MARKER='$ANSIBLE_VAULT'
+
+git ls-files \
+  | grep -E '(^|/)(secrets|vault)\.ya?ml$|secrets\.ya?ml$' \
+  | while IFS= read -r file; do
+      [ -f "$file" ] || continue
+      if ! head -c 20 "$file" 2>/dev/null | grep -qF "$CIPHERTEXT_MARKER"; then
+        printf '\033[33m! %s is decrypted.\033[0m Re-encrypt before it gets staged:\n' "$file"
+        printf '   ansible-vault encrypt %s --vault-password-file .vault_pass\n' "$file"
+      fi
+    done
+
+exit 0

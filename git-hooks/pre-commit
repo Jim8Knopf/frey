@@ -1,97 +1,190 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Pre-commit Hook: Ansible Vault Auto-Encrypt
+# Pre-commit: never let a vault file be committed as plaintext.
 #
-# This hook automatically encrypts the secrets file if it's unencrypted,
-# and only fails if encryption is not possible.
+# WHAT THIS GUARDS AGAINST
+#
+# The dangerous case is not "a new secret file appeared" - it is a file that
+# used to be ciphertext and is now plaintext. That happens the ordinary way:
+# you run `ansible-vault decrypt` to read something, get distracted, and the
+# next `git add -A` stages your Wi-Fi passwords in the clear. Git will happily
+# commit it, and once pushed it is in the history forever.
+#
+# So this hook:
+#   1. treats ANY file that is ciphertext in HEAD as vault-managed, which
+#      catches renames and new locations without a hardcoded list;
+#   2. also checks files whose names say "secret"/"vault";
+#   3. re-encrypts them when it safely can, and BLOCKS the commit when it
+#      cannot;
+#   4. blocks a plaintext `vault_*` assignment in any staged YAML, so a secret
+#      pasted into an ordinary vars file is caught too;
+#   5. warns about a vault file sitting decrypted in the working tree even
+#      when nothing is staged - that is the state that leads to the accident,
+#      and a hook is the only thing that will ever mention it.
+#
+# Not `set -e`: every finding is collected so one commit reports all problems
+# rather than stopping at the first.
+set -uo pipefail
 
-set -e  # Exit on any error
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+cd "$REPO_ROOT" || exit 1
 
-FILE_PATTERN="inventory/group_vars/all/secrets.yml"
 VAULT_PASSWORD_FILE=".vault_pass"
-ENCRYPTED_PATTERN='^\$ANSIBLE_VAULT'
+CIPHERTEXT_MARKER='$ANSIBLE_VAULT'
 
-# Function to check if file is encrypted
-is_encrypted() {
-    head -1 "$1" | grep -q "$ENCRYPTED_PATTERN"
+blocking=0
+warnings=0
+
+note()  { printf '   %s\n' "$*"; }
+fail()  { printf '\n\033[31m✗ %s\033[0m\n' "$*"; blocking=1; }
+warn()  { printf '\n\033[33m! %s\033[0m\n' "$*"; warnings=$((warnings + 1)); }
+ok()    { printf '\033[32m✓\033[0m %s\n' "$*"; }
+
+is_ciphertext_file() {
+  [ -f "$1" ] && head -c 20 "$1" 2>/dev/null | grep -qF "$CIPHERTEXT_MARKER"
 }
 
-# Check if our secrets file is in the changes
-if git diff --cached --name-only | grep -q "$FILE_PATTERN"; then
-    # The path may be staged as a deletion or a rename (it moved once already,
-    # from group_vars/ to inventory/group_vars/). With `set -e` a missing file
-    # used to abort the entire commit, so skip cleanly when it is not present.
-    if [ ! -f "$FILE_PATTERN" ]; then
-        echo "ℹ️  $FILE_PATTERN not in the working tree (deleted or moved) - skipping vault check"
-        exit 0
-    fi
+staged_is_ciphertext() {
+  git show ":$1" 2>/dev/null | head -c 20 | grep -qF "$CIPHERTEXT_MARKER"
+}
 
-    echo "🔐 Ansible Vault: Checking $FILE_PATTERN encryption status..."
-    
-    # Get the staged version of the file.
-    # NOTE: ":path" reads the staged blob. ":/text" is a COMMIT-MESSAGE search
-    # and used to dump a commit object here, which the encryption check then
-    # read as plaintext - so the hook tried to re-encrypt an already-encrypted
-    # vault and failed the commit.
-    STAGED_FILE=$(mktemp)
-    git show ":$FILE_PATTERN" > "$STAGED_FILE" 2>/dev/null || true
-    
-    # If we can't get staged content, use the working directory file
-    if [ ! -s "$STAGED_FILE" ]; then
-        cp "$FILE_PATTERN" "$STAGED_FILE"
-    fi
-    
-    # Check if the staged file is encrypted
-    if ! is_encrypted "$STAGED_FILE"; then
-        echo "⚠️  $FILE_PATTERN is not encrypted. Attempting automatic encryption..."
-        
-        # Check if vault password file exists
-        if [ ! -f "$VAULT_PASSWORD_FILE" ]; then
-            echo "❌ ERROR: Vault password file '$VAULT_PASSWORD_FILE' not found!"
-            echo "   Cannot encrypt $FILE_PATTERN automatically."
-            echo "   Please create '$VAULT_PASSWORD_FILE' or encrypt manually with:"
-            echo "   ansible-vault encrypt $FILE_PATTERN --vault-password-file $VAULT_PASSWORD_FILE"
-            rm -f "$STAGED_FILE"
-            exit 1
-        fi
-        
-        # Ensure password file has secure permissions
-        if [ "$(stat -c %a "$VAULT_PASSWORD_FILE" 2>/dev/null || stat -f %Lp "$VAULT_PASSWORD_FILE")" != "600" ]; then
-            echo "⚠️  Setting secure permissions on $VAULT_PASSWORD_FILE..."
-            chmod 600 "$VAULT_PASSWORD_FILE"
-        fi
-        
-        # Try to encrypt the file
-        if ansible-vault encrypt "$FILE_PATTERN" --vault-password-file "$VAULT_PASSWORD_FILE" > /dev/null 2>&1; then
-            echo "✅ Successfully encrypted $FILE_PATTERN"
-            
-            # Stage the newly encrypted file
-            git add "$FILE_PATTERN"
-            echo "📦 Encrypted file has been added to git staging area"
-        else
-            echo "❌ ERROR: Failed to encrypt $FILE_PATTERN!"
-            echo "   Please check that:"
-            echo "   1. Your vault password in $VAULT_PASSWORD_FILE is correct"
-            echo "   2. You have ansible-vault installed"
-            echo "   3. The file $FILE_PATTERN exists and is valid YAML"
-            rm -f "$STAGED_FILE"
-            exit 1
-        fi
-    else
-        echo "✅ $FILE_PATTERN is already encrypted"
-    fi
-    
-    # Cleanup
-    rm -f "$STAGED_FILE"
+head_is_ciphertext() {
+  git show "HEAD:$1" 2>/dev/null | head -c 20 | grep -qF "$CIPHERTEXT_MARKER"
+}
+
+# A name that claims to hold secrets. Anchored to .yml/.yaml so that
+# secrets.yml.example - which is documentation - is not swept up.
+looks_like_vault_name() {
+  printf '%s\n' "$1" | grep -qE '(^|/)(secrets|vault)\.ya?ml$|(^|/)vault_[^/]*\.ya?ml$|secrets\.ya?ml$'
+}
+
+echo "🔐 Vault pre-commit check"
+
+# ---------------------------------------------------------------------------
+# 1. Staged files that must be ciphertext
+# ---------------------------------------------------------------------------
+# Added/copied/modified/renamed only: a deletion has no content to check, and
+# a staged rename of an encrypted file is still checked under its new path.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
+
+for file in "${staged[@]:-}"; do
+  [ -n "$file" ] || continue
+
+  vault_managed=0
+  reason=""
+  if head_is_ciphertext "$file"; then
+    vault_managed=1
+    reason="it is encrypted in HEAD"
+  elif looks_like_vault_name "$file"; then
+    vault_managed=1
+    reason="its name says it holds secrets"
+  fi
+  [ "$vault_managed" -eq 1 ] || continue
+
+  if staged_is_ciphertext "$file"; then
+    ok "$file is encrypted"
+    continue
+  fi
+
+  # Staged as plaintext. Try to fix it, but only when that cannot change
+  # anything else about the commit.
+  warn "$file is staged UNENCRYPTED ($reason)"
+
+  if [ ! -f "$file" ]; then
+    fail "cannot encrypt $file: not in the working tree"
+    note "Restore it, encrypt it, and stage it again."
+    continue
+  fi
+
+  # Refuse to auto-encrypt a file with unstaged edits: encrypting the working
+  # copy and re-staging it would quietly drag those edits into this commit.
+  if ! git diff --quiet -- "$file"; then
+    fail "$file has unstaged changes as well; not touching it"
+    note "Encrypting it here would also commit those unstaged edits."
+    note "Do it yourself, then stage:"
+    note "  ansible-vault encrypt $file --vault-password-file $VAULT_PASSWORD_FILE"
+    note "  git add $file"
+    continue
+  fi
+
+  if ! command -v ansible-vault >/dev/null 2>&1; then
+    fail "ansible-vault is not installed, so $file cannot be encrypted"
+    continue
+  fi
+
+  if [ ! -f "$VAULT_PASSWORD_FILE" ]; then
+    fail "$VAULT_PASSWORD_FILE not found, so $file cannot be encrypted"
+    note "Create it (chmod 600), or encrypt manually and stage the result."
+    continue
+  fi
+
+  chmod 600 "$VAULT_PASSWORD_FILE" 2>/dev/null || true
+
+  if ansible-vault encrypt "$file" --vault-password-file "$VAULT_PASSWORD_FILE" >/dev/null 2>&1; then
+    git add -- "$file"
+    ok "encrypted $file and re-staged it"
+  else
+    fail "failed to encrypt $file"
+    note "Check the vault password in $VAULT_PASSWORD_FILE and that the file is valid YAML."
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 2. Plaintext vault_* assignments in any staged YAML
+# ---------------------------------------------------------------------------
+# Catches a secret pasted into an ordinary vars file, where neither the name
+# nor HEAD gives the game away. A value that is purely a Jinja reference is
+# fine - that is how media.yml points at vault variables without holding them.
+for file in "${staged[@]:-}"; do
+  [ -n "$file" ] || continue
+  printf '%s\n' "$file" | grep -qE '\.ya?ml$' || continue
+  staged_is_ciphertext "$file" && continue
+
+  offending=$(
+    git show ":$file" 2>/dev/null \
+      | grep -nE '^[[:space:]]*vault_[A-Za-z0-9_]*[[:space:]]*:[[:space:]]*[^[:space:]#]' \
+      | grep -vE ':[[:space:]]*"?\{\{' \
+      | grep -vE ':[[:space:]]*(""|''|~|null)[[:space:]]*$' \
+      | head -5
+  )
+  if [ -n "$offending" ]; then
+    fail "$file contains plaintext vault_* values and is not encrypted"
+    while IFS= read -r line; do
+      note "line ${line%%:*}: $(printf '%s' "${line#*:}" | sed -E 's/(:[[:space:]]*).*/\1<redacted>/')"
+    done <<< "$offending"
+    note "Either move these into the vault file, or encrypt this file."
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 3. Advisory: a vault file left decrypted in the working tree
+# ---------------------------------------------------------------------------
+# Nothing to block - it is not part of this commit - but this is precisely the
+# state that produces the accident later, and nothing else will ever say so.
+mapfile -t tracked_vault < <(git ls-files | grep -E '(^|/)(secrets|vault)\.ya?ml$|secrets\.ya?ml$' || true)
+
+for file in "${tracked_vault[@]:-}"; do
+  [ -n "$file" ] || continue
+  [ -f "$file" ] || continue
+  if ! is_ciphertext_file "$file" && head_is_ciphertext "$file"; then
+    warn "$file is DECRYPTED in your working tree (it is encrypted in HEAD)"
+    note "Not part of this commit, so the commit continues - but re-encrypt it"
+    note "before it gets staged by a later 'git add -A':"
+    note "  ansible-vault encrypt $file --vault-password-file $VAULT_PASSWORD_FILE"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+echo
+if [ "$blocking" -ne 0 ]; then
+  printf '\033[31mCommit blocked: plaintext secrets would have been committed.\033[0m\n'
+  printf 'Fix the above, or bypass deliberately with: git commit --no-verify\n\n'
+  exit 1
 fi
 
-# Additional safety: Check for any potentially unencrypted secret files in the entire commit
-echo "🔍 Scanning for other potential unencrypted secret files..."
-if git diff --cached --name-only | grep -E '\.(vault|secret|key|env|pem)$' | while read file; do
-    if [ -f "$file" ] && ! is_encrypted "$file"; then
-        echo "⚠️  WARNING: $file looks like a secret file but is not encrypted with Ansible Vault"
-        echo "   Consider encrypting it with: ansible-vault encrypt $file"
-    fi
-done; then
-    echo "✅ Security scan complete"
+if [ "$warnings" -gt 0 ]; then
+  printf '\033[33mVault check passed with %d warning(s).\033[0m\n\n' "$warnings"
+else
+  ok "Vault check passed."
 fi
+exit 0
