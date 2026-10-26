@@ -121,6 +121,38 @@ Currently: Jellyfin and Audiobookshelf are `oidc`, Seerr is `none` (it
 authenticates against Jellyfin, so it inherits that login), and the other
 twelve hostnames are `forward_auth`.
 
+## Machines Still Need To Get In
+
+An API client cannot answer a 302 to a login page. That is not hypothetical
+here: the wiring in `roles/media_acquisition/tasks/configure/` connects
+Prowlarr to Sonarr to qBittorrent by driving their REST APIs **through
+Traefik**, at `http://10.20.0.1` with a `Host:` header, because the Pi does not
+necessarily resolve its own `*.frey` names and nothing publishes a port. RSS
+readers and any other key-holding client are in the same position.
+
+So on the *arr services — and only those — `/api`, `/feed` and `/ping` skip the
+session check. They are authenticated by `X-Api-Key` instead: a different
+mechanism, not a missing one.
+
+That is why `media_acquisition.auth.required` is pinned to `Enabled` rather
+than Servarr's default of `DisabledForLocalAddresses`. The default waives the
+API key for requests from private addresses, and *every* request arriving
+through Traefik has one — it comes from Traefik's container on a Docker bridge.
+Without the pin, the exemption would be an unauthenticated door into the API
+for anyone on FreyHub.
+
+The result, verified:
+
+| Request | Result |
+| --- | --- |
+| `/api/...` with a valid key | `200` |
+| `/api/...` with no key | `401` |
+| `/` (the UI), even holding a key | `302` to the login page |
+
+`api_bypass` is opt-in per service in `identity_services`. Maintainerr — which
+can delete media and has no authentication of its own — deliberately does not
+have it.
+
 ## What Is Still Manual, And Why
 
 Three things. Everything else is automatic.

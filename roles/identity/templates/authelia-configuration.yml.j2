@@ -161,6 +161,21 @@ access_control:
 {% for host in item.value.hosts %}
 
     # {{ item.key }}
+{% if item.value.api_bypass | default(false) %}
+    # Machine access first, because the first matching rule wins. An API client
+    # cannot answer a 302 to a login page, and these APIs are genuinely driven
+    # through the proxy - the media wiring in
+    # roles/media_acquisition/tasks/configure/ talks to them over Traefik with
+    # a Host header. They carry their own X-Api-Key authentication, which is
+    # why media_acquisition.auth.required must stay Enabled.
+    - domain: '{{ host }}.{{ frey.service_domain }}'
+      policy: 'bypass'
+      resources:
+        - '^/api([/?].*)?$'
+        - '^/feed([/?].*)?$'
+        - '^/ping$'
+
+{% endif %}
     - domain: '{{ host }}.{{ frey.service_domain }}'
       policy: '{{ item.value.policy | default(identity.authelia.default_policy) }}'
 {% if item.value.groups | length > 0 %}

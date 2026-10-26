@@ -76,6 +76,32 @@
       # Secure and would never come back over HTTP, leaving a redirect loop
       # instead of a login. Upgrade to the canonical HTTPS URL instead.
       - "traefik.http.routers.{{ name }}-http.middlewares=to-canonical@file"
+      # ----------------------------------------------------------------------
+      # MACHINE ACCESS - the REST API, which must NOT get a login page
+      #
+      # An API client cannot answer a forward-auth 302 or follow a redirect to
+      # a name it may not resolve. And these APIs really are driven through
+      # Traefik: tasks/configure/ wires the whole stack together over
+      # http://10.20.0.1 with a Host header, because the Pi does not
+      # necessarily resolve its own *.frey names and nothing here publishes a
+      # port. RSS readers and any other key-holding client are in the same
+      # position.
+      #
+      # So API paths skip the session check and are authenticated by
+      # X-Api-Key instead. That is only safe because
+      # media_acquisition.auth.required is Enabled - left at Servarr's default
+      # of DisabledForLocalAddresses the key is waived for private source
+      # addresses, which every request arriving through Traefik has, and this
+      # router would then be an unauthenticated door into the API.
+      #
+      # Higher priority than -http so these paths are matched before the
+      # blanket redirect.
+      # ----------------------------------------------------------------------
+      - "traefik.http.routers.{{ name }}-api.rule=(Host(`{{ name }}.{{ frey.service_domain }}`) || Host(`{{ name }}.{{ frey.local_domain }}`)) && (PathPrefix(`/api`) || PathPrefix(`/feed`) || PathPrefix(`/ping`))"
+      - "traefik.http.routers.{{ name }}-api.entrypoints=web"
+      - "traefik.http.routers.{{ name }}-api.service={{ name }}"
+      - "traefik.http.routers.{{ name }}-api.middlewares=secure-headers@file"
+      - "traefik.http.routers.{{ name }}-api.priority=100"
 {% else %}
       - "traefik.http.routers.{{ name }}-http.middlewares=secure-headers@file"
 {% endif %}

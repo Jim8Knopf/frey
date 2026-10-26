@@ -59,6 +59,14 @@ Who may reach what is one `groups` list per service in
 `inventory/group_vars/all/identity.yml`. Authelia's own brute-force regulation
 is separate from, and additional to, the fail2ban that watches sshd.
 
+On the *arr services, `/api`, `/feed` and `/ping` are exempt from the session
+check, because an API client cannot answer a redirect to a login page and the
+media wiring drives those APIs through the proxy. Those paths demand an
+`X-Api-Key` instead, which is why `media_acquisition.auth.required` is pinned
+to `Enabled` — Servarr's default waives the key for private source addresses,
+and everything arriving through Traefik has one. The UI itself still requires a
+session even when a valid API key is presented.
+
 See [docs/IDENTITY.md](IDENTITY.md).
 
 ## Remaining Hardening To Consider

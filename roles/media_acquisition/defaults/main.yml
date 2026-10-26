@@ -22,6 +22,36 @@ media_acquisition:
   stack_dir: "{{ frey.base_dir }}/stacks/media_acquisition"
 
   # ---------------------------------------------------------------------------
+  # HOW THE SERVARR UIs AND APIs AUTHENTICATE
+  #
+  # method: External  - the apps do no login of their own, because something in
+  #                     front of them does it. That something is Authelia, via
+  #                     the forward-auth middleware; see
+  #                     inventory/group_vars/all/identity.yml.
+  #
+  # required: Enabled - the API key is demanded on EVERY request, including from
+  #                     private source addresses.
+  #
+  # `required` is not Servarr's default and the difference matters. Left at
+  # DisabledForLocalAddresses, the key is waived for any request from a private
+  # address - and every request arriving through Traefik has one, because it
+  # comes from Traefik's container on a Docker bridge.
+  #
+  # The identity module exempts /api, /feed and /ping from the session check,
+  # because an API client cannot answer a 302 to a login page and the wiring in
+  # tasks/configure/ drives these APIs through Traefik. With the key waived,
+  # that exemption would be an unauthenticated door into the API for anyone on
+  # FreyHub. With it Enabled, those paths are authenticated by X-Api-Key
+  # instead of by session - a different mechanism, not a missing one.
+  #
+  # Every integration this role configures is seeded with its key, so nothing
+  # here depends on the waiver.
+  # ---------------------------------------------------------------------------
+  auth:
+    method: External
+    required: Enabled
+
+  # ---------------------------------------------------------------------------
   # VPN
   #
   # The switch and the credentials live in

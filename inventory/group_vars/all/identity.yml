@@ -142,6 +142,17 @@ identity_groups:
 # name left out here is a name that gets denied and has no certificate. It is
 # spelled out rather than defaulted so that one glance down this column tells
 # you every name on the network.
+#
+# `api_bypass: true` exempts /api, /feed and /ping from the session check. Set
+# it only where a machine has to reach the service without a browser - an API
+# client cannot answer a 302 to a login page. The *arrs need it because the
+# wiring in roles/media_acquisition/tasks/configure/ drives them through
+# Traefik, and because RSS readers and other key-holding clients do the same.
+#
+# It is safe there and only there: those paths demand an X-Api-Key, which is
+# why media_acquisition.auth.required is pinned to Enabled. Do NOT set it on a
+# service whose API has no authentication of its own - Maintainerr, which can
+# delete media, deliberately does not have it.
 # ==============================================================================
 identity_services:
 
@@ -198,41 +209,49 @@ identity_services:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [sonarr]
+    api_bypass: true
 
   radarr:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [radarr]
+    api_bypass: true
 
   lidarr:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [lidarr]
+    api_bypass: true
 
   chaptarr:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [chaptarr]
+    api_bypass: true
 
   prowlarr:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [prowlarr]
+    api_bypass: true
 
   bazarr:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [bazarr]
+    api_bypass: true
 
   cleanuparr:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [cleanuparr]
+    api_bypass: true
 
   qbittorrent:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [qbittorrent]
+    api_bypass: true
 
 
 # ==============================================================================
