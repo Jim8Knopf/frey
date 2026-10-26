@@ -7,9 +7,41 @@ frey:
   node_name: frey
   timezone: Pacific/Auckland
   base_dir: /opt/frey
+  # The DNS zone the gateway answers for. dnsmasq resolves this name and
+  # everything beneath it, at any depth, to the Pi.
   local_domain: frey
+
+  # ---------------------------------------------------------------------------
+  # THE CANONICAL SERVICE DOMAIN
+  #
+  # Services live at <name>.hub.frey, not <name>.frey. That extra label is not
+  # decoration - single sign-on does not work without it.
+  #
+  # Authelia's session cookie has to be scoped to a domain covering every
+  # protected service, and Authelia requires that domain to "include at least
+  # one domain segment i.e. period". Browsers agree: under the Public Suffix
+  # List's default rule an unknown TLD is itself a public suffix, so `frey` is
+  # a bare public suffix and Set-Cookie for Domain=frey is refused. That makes
+  # sonarr.frey and auth.frey siblings with no shareable parent, and forward
+  # auth would log in successfully and then redirect-loop forever.
+  #
+  # hub.frey has a period, is not a public suffix, and covers every service.
+  # "hub" is FreyHub, the name the network already has.
+  #
+  # Nothing breaks. Every <name>.frey still resolves, is still in the
+  # certificate, and 308-redirects to its hub.frey equivalent, so existing
+  # bookmarks keep landing in the right place. See docs/IDENTITY.md.
+  # ---------------------------------------------------------------------------
+  service_domain: "hub.{{ frey.local_domain }}"
+
   service_address: "{{ network_gateway.downstream.address }}"
   proxy_network: frey_proxy
+
+  # Where frey_pki publishes the root certificate and the script that installs
+  # it into a container's trust store. Declared here rather than only in
+  # roles/frey_pki/defaults/ because the service modules mount these paths, and
+  # a role's defaults are only in scope while that role itself is running.
+  pki_public_dir: "{{ frey.base_dir }}/pki-public"
 
   dns:
     # Resolves frey and any *.frey name to the Pi. New Traefik-backed services
@@ -26,6 +58,15 @@ frey:
       - rpi_nvme
       - service_proxy
       - security_baseline
+      # PKI runs BEFORE identity, and before anything that serves HTTPS: it
+      # issues the certificate Traefik presents. Authelia refuses plain-HTTP
+      # redirect URIs for public OIDC clients, so without this there is no SSO.
+      - frey_pki
+      # Identity runs BEFORE the media modules, so that the forward-auth
+      # middleware exists by the time their routers reference it. A router
+      # pointing at a middleware Traefik does not know about is dropped
+      # entirely, and the service 404s with a perfectly healthy container.
+      - identity
       # Acquisition runs BEFORE library: it generates the shared *arr API
       # keys that the library module needs to wire Seerr to Sonarr/Radarr,
       # so a single run comes up fully connected.
@@ -53,6 +94,16 @@ frey:
         role: security_baseline
         tags:
           - security
+      frey_pki:
+        role: frey_pki
+        tags:
+          - pki
+          - tls
+      identity:
+        role: identity
+        tags:
+          - identity
+          - sso
       media_library:
         role: media_library
         tags:

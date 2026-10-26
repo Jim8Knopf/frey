@@ -1,0 +1,75 @@
+---
+# ==============================================================================
+# WHAT THE RUN TELLS YOU
+#
+# Three things, and only when they are actually needed:
+#
+#   1. Starting passwords, for people seeded on THIS run. Shown once, because
+#      after this Ansible stops managing them and there is nowhere else to read
+#      them from in a form you can hand to somebody.
+#
+#   2. OIDC client secrets, for apps that can only be configured by clicking
+#      through their own UI. Audiobookshelf is the honest example: it has no
+#      way to take OIDC settings from the environment or an API.
+#
+#   3. The manual steps still outstanding.
+#
+# Yes, this prints secrets to your terminal. That is the point - they have to
+# reach a human somehow, and the alternative the old stack chose was making you
+# invent them all up front and paste them into a vault by hand.
+# ==============================================================================
+
+- name: Report starting passwords for new people
+  ansible.builtin.debug:
+    msg: >-
+      NEW ACCOUNT  {{ item }}  /  {{ identity_secrets['user_' ~ item ~ '_password'] }}
+      -- sign in at {{ identity.urls.directory }} and change it; Ansible will
+      not touch it again.
+  loop: "{{ identity_new_users | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - identity_new_users | default([]) | length > 0
+    # Under --check nothing is persisted, so the passwords generated this run
+    # are throwaway values that will never be anybody's actual password.
+    # Printing them would be actively misleading.
+    - not ansible_check_mode
+  tags: [identity, sso, identity_config]
+
+- name: Report OIDC details for apps configured by hand
+  ansible.builtin.debug:
+    msg:
+      - "CONFIGURE BY HAND: {{ item }}"
+      - "  Issuer URL:    {{ identity.urls.auth }}"
+      - "  Discovery:     {{ identity.urls.auth }}/.well-known/openid-configuration"
+      - "  Client ID:     {{ item }}"
+      - "  Client secret: {{ identity_secrets[item ~ '_oidc_secret'] }}"
+      - "  Scopes:        {{ identity.oidc_catalog[item].scopes | join(' ') }}"
+      - "  Redirect URIs: {{ identity.oidc_catalog[item].redirect_uris | join(' ') }}"
+  loop: "{{ identity_confidential_clients | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: not ansible_check_mode
+  tags: [identity, sso, identity_config]
+
+- name: Report the outstanding manual steps
+  ansible.builtin.debug:
+    msg:
+      - "IDENTITY IS UP"
+      - "  Login page: {{ identity.urls.auth }}"
+      - "  Directory:  {{ identity.urls.directory }}"
+      - ""
+      - "  Forward auth now protects {{ identity_protect | length }} hostnames."
+      - "  Nothing more to do for those - they are done."
+      - ""
+      - "STILL MANUAL:"
+      - "  1. Install the Frey root certificate on every device, or every"
+      - "     service shows a certificate warning. The file is at"
+      - "     ./ca/frey-root-ca.crt beside this playbook. See docs/IDENTITY.md."
+      - "  2. Audiobookshelf OIDC: paste the values above into"
+      - "     Settings -> Authentication. It has no API or environment"
+      - "     variable for this."
+      - "  3. Jellyfin SSO: install the plugin, then paste the values printed"
+      - "     by the identity_jellyfin tasks. See roles/identity/README.md -"
+      - "     and note the plugin is untested on Jellyfin 12.3."
+  tags: [identity, sso, identity_config]

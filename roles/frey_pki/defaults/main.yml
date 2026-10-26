@@ -1,0 +1,73 @@
+---
+# ==============================================================================
+# FREY PKI
+#
+# One private certificate authority, one wildcard certificate, no ACME and no
+# extra container.
+#
+# WHY THIS EXISTS AT ALL
+#
+# SSO is not optional-HTTPS. Authelia's session cookie is marked Secure, so a
+# plain-HTTP service behind forward auth would authenticate, never get the
+# cookie back, and bounce to the portal again - forever. Authelia also flatly
+# refuses plain-HTTP redirect URIs for public OIDC clients, which is exactly
+# what the Jellyfin SSO plugin needs. So: TLS first, SSO second.
+#
+# WHY NOT step-ca LIKE THE OLD STACK
+#
+# The old stack ran step-ca and had Traefik request a certificate per host over
+# ACME. It worked - 15 certs were issued - but ACME needs step-ca to resolve
+# every *.frey name back to Traefik, which the old compose did with a generated
+# extra_hosts list, and the whole loop has to keep working while parked with no
+# internet. A single wildcard signed offline by a local CA has none of those
+# moving parts and renews with one Ansible task.
+#
+# WHAT YOU STILL DO BY HAND
+#
+# Install the root certificate once per device. Everything else is automatic.
+# See docs/IDENTITY.md.
+# ==============================================================================
+
+frey_pki:
+  dir: "{{ frey.base_dir }}/pki"
+
+  ca:
+    common_name: Frey Root CA
+    organization: Frey
+    # Ten years. The root is installed by hand on every device, so replacing it
+    # is the single most annoying operation in this design - keep it rare. The
+    # leaf below is the thing that actually rotates.
+    valid_days: 3650
+    key_size: 4096
+
+  leaf:
+    # 398 days is a hard ceiling: Apple rejects any TLS leaf valid longer than
+    # that, including one from a CA you installed yourself. A ten-year leaf
+    # looks tempting and then fails on every iPhone in the van. 365 keeps room.
+    valid_days: 365
+    # Reissue once the certificate has less than this left. A reissue is a file
+    # write plus a Traefik reload and never touches the root, so devices carry
+    # on trusting it with no action from you.
+    renew_before_days: 30
+    key_size: 2048
+
+  # Written into Traefik's watched dynamic directory, so a new certificate is
+  # picked up without restarting the container.
+  cert_dir: "{{ service_proxy.traefik.dynamic_config_dir }}/certs"
+
+  # Everything a container or a device is allowed to see: the root certificate
+  # and the trust-install script. Deliberately a separate directory from
+  # frey_pki.dir, which is 0700 because it holds the root private key - no
+  # container should ever be handed a path into that one.
+  public_dir: "{{ frey.pki_public_dir }}"
+
+  # Extra names to put in the certificate. The wildcard, the apex and the AP
+  # address are added automatically; this is for anything else you reach the
+  # Pi by.
+  extra_dns_names: []
+  extra_ip_addresses: []
+
+  # Copy the root certificate back to the machine running Ansible, so there is
+  # always a current copy beside the playbook to hand to a new device.
+  fetch_root_ca: true
+  fetch_dir: ./ca

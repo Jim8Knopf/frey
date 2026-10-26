@@ -38,20 +38,72 @@
   expected one of [1]" - and a rule that fails to parse makes Traefik drop
   the router entirely, so the service 404s with the container perfectly
   healthy.
+
+  Three routers per service, and which three depends on one thing: whether the
+  service is listed as forward_auth in inventory/group_vars/all/identity.yml.
+
+    <name>          canonical, HTTPS, on <name>.{{ frey.service_domain }}
+    <name>-legacy   HTTPS on the old <name>.{{ frey.local_domain }}, redirects
+    <name>-http     plain HTTP on BOTH names
+
+  The domain gained a label because single sign-on needs a cookie domain
+  containing a period - see frey.service_domain in
+  inventory/group_vars/all/main.yml. The legacy router is what stops that from
+  breaking every bookmark.
+
+  What <name>-http does is the interesting part:
+
+    protected      it redirects to the canonical HTTPS URL. It has no choice -
+                   Authelia's session cookie is Secure, so a forward-auth
+                   service answering over HTTP would authenticate and then
+                   redirect to the login page forever.
+
+    not protected  it serves the service directly, exactly as before. This is
+                   what keeps a smart TV talking to Jellyfin: a television
+                   cannot install a private root certificate and gives you no
+                   way to click through, so HTTPS-only would not warn, it would
+                   simply stop working.
+
+  `authelia@file` on the canonical router is the whole SSO integration. Traefik
+  asks Authelia before the request arrives; the service needs no plugin, no
+  setting, and no awareness that any of this exists.
+
+  With identity not deployed, identity_protect is empty, nothing is protected,
+  and every service keeps answering plain HTTP as it does today.
 #}
 {% macro proxy_labels(route, name, port, aliases=[]) %}
-{% set host_list = [] %}
+{% set canonical = [] %}
+{% set legacy = [] %}
+{% set every = [] %}
 {% for h in [route] + aliases %}
-{% set _ = host_list.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% set _ = canonical.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
+{% set _ = legacy.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
+{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
 {% endfor %}
-{% set hosts = host_list | join(' || ') %}
+{% set protected = route in (identity_protect | default([])) %}
+{% set middlewares = ['secure-headers@file'] + (['authelia@file'] if protected else []) %}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network={{ frey.proxy_network }}"
-      - "traefik.http.routers.{{ name }}.rule={{ hosts }}"
-      - "traefik.http.routers.{{ name }}.entrypoints=web"
-      - "traefik.http.routers.{{ name }}.middlewares=secure-headers@file"
       - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
+      - "traefik.http.routers.{{ name }}.rule={{ canonical | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}.tls=true"
+      - "traefik.http.routers.{{ name }}.middlewares={{ middlewares | join(',') }}"
+      - "traefik.http.routers.{{ name }}-legacy.rule={{ legacy | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}-legacy.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}-legacy.tls=true"
+      - "traefik.http.routers.{{ name }}-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.{{ name }}-legacy.service={{ name }}"
+      - "traefik.http.routers.{{ name }}-http.rule={{ every | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}-http.entrypoints=web"
+      - "traefik.http.routers.{{ name }}-http.service={{ name }}"
+{% if protected %}
+      - "traefik.http.routers.{{ name }}-http.middlewares=to-canonical@file"
+{% else %}
+      - "traefik.http.routers.{{ name }}-http.middlewares=secure-headers@file"
+{% endif %}
       - "frey.module=media_library"
 {%- endmacro %}
 
@@ -74,7 +126,9 @@ services:
       - TZ={{ tz }}
       # Tells Jellyfin which URL to advertise to clients for direct
       # connections, so apps that follow it do not try to reach a container IP.
-      - JELLYFIN_PublishedServerUrl=http://jellyfin.{{ frey.local_domain }}
+      # HTTPS and the canonical domain: an OIDC redirect back to an http:// URL
+      # is refused outright for a public client, which this is.
+      - JELLYFIN_PublishedServerUrl=https://jellyfin.{{ frey.service_domain }}
       # Transcoding is software-only on a Pi 5; keep the scratch dir on NVMe.
       - JELLYFIN_FFmpeg__probesize=1G
     volumes:
@@ -83,6 +137,15 @@ services:
       # able to delete the library.
       - "{{ media.data_dir }}/media:/data/media:ro"
       - "{{ svc.jellyfin.transcode_dir }}:/transcodes"
+{% if (identity_services | default({})).get('jellyfin', {}).get('auth', 'none') == 'oidc' %}
+      # The SSO plugin calls https://auth.{{ frey.service_domain }} from inside
+      # this container - fetching discovery, exchanging the code for a token -
+      # and those calls use the container's trust store, not a browser's. The
+      # linuxserver image runs anything in /custom-cont-init.d as root before
+      # Jellyfin starts, which is where the CA gets installed.
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+      - "{{ frey.pki_public_dir }}/container-init:/custom-cont-init.d:ro"
+{% endif %}
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
@@ -115,9 +178,20 @@ services:
     restart: unless-stopped
     environment:
       - TZ={{ tz }}
+{% if (identity_services | default({})).get('audiobookshelf', {}).get('auth', 'none') == 'oidc' %}
+      # Audiobookshelf is Node, not a linuxserver image, so it has no
+      # /custom-cont-init.d hook and never reads the system trust store for
+      # outbound TLS. NODE_EXTRA_CA_CERTS is the mechanism it does respect, and
+      # without it the OIDC token exchange fails with a bare
+      # SELF_SIGNED_CERT_IN_CHAIN that says nothing useful.
+      - NODE_EXTRA_CA_CERTS=/frey-ca.crt
+{% endif %}
     volumes:
       - "{{ appdata }}/audiobookshelf/config:/config"
       - "{{ appdata }}/audiobookshelf/metadata:/metadata"
+{% if (identity_services | default({})).get('audiobookshelf', {}).get('auth', 'none') == 'oidc' %}
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+{% endif %}
       - "{{ media.data_dir }}/media/audiobooks:/audiobooks"
       - "{{ media.data_dir }}/media/podcasts:/podcasts"
     networks:

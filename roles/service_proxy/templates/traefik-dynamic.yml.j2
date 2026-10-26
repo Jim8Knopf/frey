@@ -1,3 +1,13 @@
+{#
+  ============================================================================
+  TRAEFIK MIDDLEWARES - managed by Ansible role: service_proxy
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Middlewares every service can use, independent of any other module. The
+  forward-auth middleware lives in roles/identity/ instead, because it points
+  at a container that only exists when that module is deployed.
+#}
 http:
   middlewares:
     secure-headers:
@@ -6,3 +16,35 @@ http:
         frameDeny: true
         referrerPolicy: no-referrer
         permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+
+    # --------------------------------------------------------------------------
+    # SEND A REQUEST TO THE CANONICAL HTTPS URL
+    #
+    # Services live at <name>.{{ frey.service_domain }} over HTTPS. Two kinds of
+    # request need sending there:
+    #
+    #   http://<name>.{{ frey.local_domain }}        the old name, old scheme
+    #   https://<name>.{{ frey.local_domain }}       the old name, new scheme
+    #   http://<name>.{{ frey.service_domain }}      right name, old scheme
+    #
+    # The domain gained a label because single sign-on needs a cookie domain
+    # containing a period - see the note on frey.service_domain in
+    # inventory/group_vars/all/main.yml. This middleware is what stops that
+    # from breaking every bookmark and typed-from-memory address.
+    #
+    # One middleware covers every service: the first label of the hostname is
+    # captured and reused, so there is nothing per-service to maintain.
+    #
+    # [^.]+ matters. A greedy match would rewrite
+    # jellyfin.{{ frey.service_domain }} into jellyfin.hub.{{ frey.service_domain }}
+    # and loop. The optional `hub.` group is what lets the already-canonical
+    # host match without being mangled.
+    #
+    # Never attach this to a router that already serves the canonical HTTPS
+    # host; it is for the legacy and plain-HTTP routers only.
+    # --------------------------------------------------------------------------
+    to-canonical:
+      redirectRegex:
+        regex: "^https?://([^.]+)\\.(?:hub\\.)?{{ frey.local_domain }}(/.*)?$"
+        replacement: "https://${1}.{{ frey.service_domain }}${2}"
+        permanent: true

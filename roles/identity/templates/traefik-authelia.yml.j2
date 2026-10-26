@@ -1,0 +1,40 @@
+{#
+  ============================================================================
+  TRAEFIK FORWARD AUTH - managed by Ansible role: identity
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  This is the whole mechanism by which a service that knows nothing about SSO
+  gets it anyway. Traefik holds the request, asks Authelia whether this person
+  may proceed, and only then passes it on. Sonarr never sees an
+  unauthenticated request and needs no plugin, no config and no restart.
+
+  Adding it to a service is one word in inventory/group_vars/all/identity.yml.
+#}
+http:
+  middlewares:
+
+    authelia:
+      forwardAuth:
+        # Container-to-container on the shared proxy network. Deliberately
+        # plain HTTP to an internal name: this hop never leaves the Docker
+        # bridge, and pointing it at https://{{ identity.hosts.auth }}.{{ frey.service_domain }}
+        # instead would send every single request out through Traefik and back,
+        # and would need the Frey CA inside the Traefik container.
+        address: 'http://authelia:{{ identity.authelia.port }}/api/authz/forward-auth'
+
+        # Authelia has to know the original scheme, host and path to decide
+        # which access_control rule applies and where to send the person back
+        # to. Without this every request looks like it was for `authelia`
+        # itself and no rule ever matches.
+        trustForwardHeader: true
+
+        # Passed on to the service after a successful check. An app that can
+        # read these gets the user's identity for free - no OIDC needed. The
+        # *arrs ignore them, which is fine; Jellystat and Maintainerr can use
+        # them to show who is logged in.
+        authResponseHeaders:
+          - 'Remote-User'
+          - 'Remote-Name'
+          - 'Remote-Email'
+          - 'Remote-Groups'

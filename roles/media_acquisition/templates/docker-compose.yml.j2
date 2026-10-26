@@ -40,14 +40,45 @@
         max-file: "3"
 {%- endmacro %}
 
+{#
+  Two routers per service: the canonical one on {{ frey.service_domain }}, and
+  a legacy one on {{ frey.local_domain }} that redirects to it. See the note on
+  frey.service_domain in inventory/group_vars/all/main.yml for why the domain
+  gained a label - single sign-on needs a cookie domain with a period in it.
+
+  `authelia@file` is added for any service listed as forward_auth in
+  inventory/group_vars/all/identity.yml, which is every service in this stack.
+  These UIs already run with AUTH__METHOD=External - "something in front of me
+  is doing the authenticating" - and this is that something finally arriving.
+  Nothing inside the containers changes.
+#}
 {% macro proxy_labels(name, port) %}
+{% set protected = name in (identity_protect | default([])) %}
+{% set middlewares = ['secure-headers@file'] + (['authelia@file'] if protected else []) %}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network={{ frey.proxy_network }}"
-      - "traefik.http.routers.{{ name }}.rule=Host(`{{ name }}.{{ frey.local_domain }}`)"
-      - "traefik.http.routers.{{ name }}.entrypoints=web"
-      - "traefik.http.routers.{{ name }}.middlewares=secure-headers@file"
       - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
+      - "traefik.http.routers.{{ name }}.rule=Host(`{{ name }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.{{ name }}.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}.tls=true"
+      - "traefik.http.routers.{{ name }}.middlewares={{ middlewares | join(',') }}"
+      - "traefik.http.routers.{{ name }}-legacy.rule=Host(`{{ name }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.{{ name }}-legacy.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}-legacy.tls=true"
+      - "traefik.http.routers.{{ name }}-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.{{ name }}-legacy.service={{ name }}"
+      - "traefik.http.routers.{{ name }}-http.rule=Host(`{{ name }}.{{ frey.service_domain }}`) || Host(`{{ name }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.{{ name }}-http.entrypoints=web"
+      - "traefik.http.routers.{{ name }}-http.service={{ name }}"
+{% if protected %}
+      # Protected, so plain HTTP cannot be served: Authelia's session cookie is
+      # Secure and would never come back over HTTP, leaving a redirect loop
+      # instead of a login. Upgrade to the canonical HTTPS URL instead.
+      - "traefik.http.routers.{{ name }}-http.middlewares=to-canonical@file"
+{% else %}
+      - "traefik.http.routers.{{ name }}-http.middlewares=secure-headers@file"
+{% endif %}
       - "frey.module=media_acquisition"
 {%- endmacro %}
 

@@ -3,3 +3,6 @@ collections:
   - name: community.general
   - name: community.docker
   - name: ansible.posix
+  # Used by frey_pki to issue the Frey CA and the service certificate, and by
+  # identity to generate the OIDC token signing key.
+  - name: community.crypto

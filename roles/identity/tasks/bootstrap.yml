@@ -1,0 +1,201 @@
+---
+# ==============================================================================
+# SEED THE DIRECTORY
+#
+# LLDAP ships its own bootstrap script, which reads JSON files and is
+# idempotent. That is the whole reason this stack is maintainable: users and
+# groups are rendered from inventory/group_vars/all/identity.yml, applied by a
+# tool whose job that is, and never poked at through an API by hand.
+#
+# PASSWORDS ARE SET ONCE. The bootstrap script will happily set a password on
+# every run, which would silently undo anybody who changed theirs. So the
+# password is included only for people who have never been seeded before, and
+# a list of who has is kept on the Pi. Change your password in the directory UI
+# and a later deploy leaves it alone.
+#
+# DO_CLEANUP stays off. A typo in a username must not be able to delete an
+# account - and more importantly, people added in the web UI (the fast path,
+# and the one actually recommended for guests) are not in this file and must
+# survive a deploy.
+# ==============================================================================
+
+- name: Check which people have already been seeded
+  ansible.builtin.stat:
+    path: "{{ identity.configure.created_file }}"
+  register: identity_created_stat
+
+- name: Read the seeded-people list
+  ansible.builtin.slurp:
+    src: "{{ identity.configure.created_file }}"
+  register: identity_created_blob
+  when: identity_created_stat.stat.exists
+
+- name: Load the seeded-people list
+  ansible.builtin.set_fact:
+    identity_already_seeded: >-
+      {{
+        (identity_created_blob.content | b64decode | from_json)
+        if identity_created_stat.stat.exists
+        else []
+      }}
+
+- name: Work out who is new this run
+  ansible.builtin.set_fact:
+    identity_new_users: >-
+      {{
+        identity_users
+        | rejectattr('username', 'in', identity_already_seeded)
+        | map(attribute='username')
+        | list
+      }}
+
+# ------------------------------------------------------------------------------
+# GROUPS
+#
+# Only the groups declared in identity.yml. LLDAP's own built-ins -
+# lldap_admin, lldap_password_manager, lldap_strict_readonly - already exist
+# and are referenced by membership rather than recreated.
+# ------------------------------------------------------------------------------
+- name: Render the group definitions
+  ansible.builtin.copy:
+    content: "{{ {'name': item.name} | to_nice_json }}\n"
+    dest: "{{ identity.appdata_dir }}/bootstrap/group-configs/{{ item.name }}.json"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ identity_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# ------------------------------------------------------------------------------
+# PEOPLE
+#
+# Plus one non-person: the account Authelia binds with. Its password is always
+# written, because it has to match what Authelia was configured with and no
+# human is ever going to change it - which makes the write self-healing rather
+# than destructive.
+# ------------------------------------------------------------------------------
+- name: Render the Authelia bind account
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'id': identity.ldap.bind_user,
+          'email': identity.ldap.bind_user ~ '@' ~ frey.local_domain,
+          'displayName': 'Authelia service account',
+          'password': identity_secrets.authelia_ldap_password,
+          'groups': ['lldap_strict_readonly'],
+        } | to_nice_json
+      }}
+    dest: "{{ identity.appdata_dir }}/bootstrap/user-configs/00-{{ identity.ldap.bind_user }}.json"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Render the people
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'id': item.username,
+          'email': item.email,
+          'displayName': item.name,
+          'groups': item.groups,
+        }
+        | combine(
+            {'password': identity_secrets['user_' ~ item.username ~ '_password']}
+            if item.username not in identity_already_seeded
+            else {}
+          )
+        | to_nice_json
+      }}
+    dest: "{{ identity.appdata_dir }}/bootstrap/user-configs/{{ item.username }}.json"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ identity_users }}"
+  loop_control:
+    label: "{{ item.username }}"
+  no_log: true
+
+# Removing somebody from identity.yml removes their definition file, so the
+# bootstrap stops asserting anything about them. It does NOT delete their
+# account - do that in the directory UI, deliberately.
+- name: Find stale definition files
+  ansible.builtin.find:
+    paths:
+      - "{{ identity.appdata_dir }}/bootstrap/user-configs"
+      - "{{ identity.appdata_dir }}/bootstrap/group-configs"
+    patterns: "*.json"
+  register: identity_bootstrap_files
+
+- name: Remove stale definition files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ identity_bootstrap_files.files | map(attribute='path') | list }}"
+  when: >-
+    (item | basename) not in (
+      (identity_users | map(attribute='username') | map('regex_replace', '$', '.json') | list)
+      + (identity_groups | map(attribute='name') | map('regex_replace', '$', '.json') | list)
+      + ['00-' ~ identity.ldap.bind_user ~ '.json']
+    )
+  loop_control:
+    label: "{{ item | basename }}"
+
+- name: Apply the directory bootstrap
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - --env
+      - "LLDAP_URL=http://localhost:{{ identity.web.port }}"
+      - --env
+      - "LLDAP_ADMIN_USERNAME={{ identity.lldap_admin_user }}"
+      - --env
+      - "LLDAP_ADMIN_PASSWORD={{ identity_secrets.lldap_admin_password }}"
+      - --env
+      - USER_CONFIGS_DIR=/bootstrap/user-configs
+      - --env
+      - GROUP_CONFIGS_DIR=/bootstrap/group-configs
+      - --env
+      - DO_CLEANUP=false
+      - lldap
+      - /app/bootstrap.sh
+  register: identity_bootstrap_run
+  # The script is idempotent in effect but not in wording: it PATCHes every
+  # user on every run and so always prints "successfully updated", and it
+  # always re-sets the bind account's password because this role always
+  # supplies it. Reporting that as a change would mean this task is forever
+  # yellow and a second run never comes back clean - which is the signal the
+  # repo relies on to show a deploy has settled.
+  #
+  # So only real structural changes count: an account or group appearing, a
+  # membership being granted, something being removed.
+  changed_when: >-
+    identity_bootstrap_run.stdout is search('successfully created')
+    or identity_bootstrap_run.stdout is search('successfully added to the group')
+    or identity_bootstrap_run.stdout is search('successfully deleted')
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Show the bootstrap result
+  ansible.builtin.debug:
+    msg: "{{ identity_bootstrap_run.stdout_lines | default([]) }}"
+  when: identity_bootstrap_run is not skipped
+
+- name: Record who has now been seeded
+  ansible.builtin.copy:
+    content: >-
+      {{
+        (
+          identity_already_seeded
+          + (identity_users | map(attribute='username') | list)
+        ) | unique | sort | to_nice_json
+      }}
+    dest: "{{ identity.configure.created_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not ansible_check_mode

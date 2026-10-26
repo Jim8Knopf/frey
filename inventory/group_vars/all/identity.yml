@@ -1,0 +1,270 @@
+---
+# ==============================================================================
+#
+#   FREY IDENTITY - THE ONLY FILE YOU NORMALLY EDIT
+#
+#   Who can log in, which groups they are in, and how each service checks.
+#   Image versions and on/off switches live here too, same as media.yml.
+#
+#   Everything structural - the Authelia config file, the OIDC client details,
+#   the Traefik middleware, the LLDAP bootstrap - stays in roles/identity/.
+#   You should not need to open those to run this day to day.
+#
+# ------------------------------------------------------------------------------
+#   THE THREE THINGS YOU WILL ACTUALLY DO
+#
+#   Add a person:
+#       Add them to identity_users below, deploy, and the run prints their
+#       starting password once. Or add them in LLDAP's web UI at
+#       https://users.frey, which is faster and needs no deploy at all.
+#
+#   Protect a new service:
+#       Add one entry to identity_services. `forward_auth` means Traefik asks
+#       Authelia before the service ever sees the request - it needs nothing
+#       from the app itself.
+#
+#   Change who may reach what:
+#       Edit the `groups` on that service. Nothing else.
+#
+# ------------------------------------------------------------------------------
+#   APPLY
+#
+#       ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+#         --tags identity --vault-password-file .vault_pass
+#
+#   FIRST TIME: read docs/IDENTITY.md first. The Frey root certificate has to
+#   be on your devices before any of this is reachable over HTTPS, and SSO does
+#   not work without HTTPS.
+#
+# ==============================================================================
+
+
+# ==============================================================================
+# IMAGE VERSIONS
+#
+# Pinned, for the same reason media.yml pins: an unattended pull on a
+# campground Wi-Fi can hand you a broken stack with no internet left to fix it.
+#
+# Authelia especially earns the pin. Its configuration schema moves between
+# minor releases - `url` became `address`, `issuer_private_key` became a `jwks`
+# list, the top-level `jwt_secret` moved under `identity_validation` - so a
+# config written for one version is simply rejected by another. The role runs
+# `authelia validate-config` before restarting anything, which turns that into
+# a failed deploy rather than a login page that is down.
+# ==============================================================================
+identity_versions:
+  authelia: 4.39.28
+  lldap: 2026-09-22-alpine
+
+
+# ==============================================================================
+# WHICH SERVICES RUN
+# ==============================================================================
+identity_enable:
+  lldap: true
+  authelia: true
+
+
+# ==============================================================================
+# WHERE IDENTITY LIVES
+#
+# Changing `auth` invalidates every OIDC redirect URI and every live session at
+# once. It is not a cosmetic rename.
+# ==============================================================================
+identity_hosts:
+  auth: auth      # auth.frey  - the login page
+  directory: users  # users.frey - LLDAP, where you add people
+
+
+# ==============================================================================
+# PEOPLE
+#
+# A starting password is generated for anyone new and printed once at the end
+# of the run. After that Ansible stops touching their password - change it in
+# LLDAP's web UI and a later deploy will not overwrite it.
+#
+# Removing someone here does NOT delete their account, deliberately: a typo
+# should not be able to destroy a directory. Delete them in LLDAP's web UI.
+#
+# Emails are @frey on purpose. They are login identifiers, nothing sends mail,
+# and there is no reason to commit real external addresses to a git repository.
+# ==============================================================================
+identity_users:
+  - username: jim
+    name: Jim
+    email: jim@frey
+    groups:
+      - frey_admins
+      - media
+      # LLDAP's own built-in group. Membership in it is what lets you into the
+      # directory UI to manage everyone else.
+      - lldap_admin
+
+
+# ==============================================================================
+# GROUPS
+#
+# Three is enough. Resist one group per service: the old stack had thirty-one
+# of them - sonarr_users, prowlarr_users, uptime_kuma_users, metrics_users -
+# every one still had to be hand-assigned, which is thirty-one chances to
+# forget one and no clearer an answer to "who can see what".
+# ==============================================================================
+identity_groups:
+  - name: frey_admins
+    description: Full access, including the acquisition stack and admin tools
+  - name: media
+    description: Watch, listen and request. Family and guests.
+  - name: guests
+    description: Deliberately narrow - nothing is granted to this group yet
+
+
+# ==============================================================================
+# THE AUTH MATRIX
+#
+# One entry per service. Three modes:
+#
+#   forward_auth  Traefik asks Authelia before the request reaches the app.
+#                 Works on anything, needs nothing from the app, and the app
+#                 never sees an unauthenticated request. This is the one to
+#                 reach for.
+#
+#   oidc          The app logs in against Authelia itself. Nicer - the app
+#                 knows who you are, can show your name, can map groups to its
+#                 own roles - but only if the app supports OIDC, and each one
+#                 needs configuring inside the app too.
+#
+#   none          The app keeps its own login. Not a failure: for something
+#                 that already authenticates against another service, this is
+#                 the correct answer.
+#
+# `groups` is who may pass. `hosts` is every hostname the service answers on -
+# the extras come from route_aliases in roles/media_*/defaults/main.yml, and a
+# name left out here is a name that gets denied and has no certificate. It is
+# spelled out rather than defaulted so that one glance down this column tells
+# you every name on the network.
+# ==============================================================================
+identity_services:
+
+  # --- Library ---------------------------------------------------------------
+  jellyfin:
+    # OIDC through the jellyfin-sso community plugin. Jellyfin's local accounts
+    # keep working beside it, which is the fallback - and that matters here,
+    # because the plugin is tested on Jellyfin 12.0-12.2 and this runs 12.3.
+    # Installing the plugin is a manual step; see docs/IDENTITY.md.
+    #
+    # NOT forward_auth: Jellyfin apps on TVs and consoles cannot follow a
+    # browser redirect, so forward auth would lock out every device in the van
+    # that is not a laptop.
+    auth: oidc
+    groups: [frey_admins, media]
+    hosts: [jellyfin]
+
+  audiobookshelf:
+    auth: oidc
+    groups: [frey_admins, media]
+    hosts: [audiobookshelf, books]
+
+  seerr:
+    # Seerr authenticates against Jellyfin, so it inherits Jellyfin's login and
+    # needs nothing of its own. Stable Seerr has no OIDC - upstream ships it
+    # only in a preview image - and forward auth in front of a service that
+    # already has a login just means logging in twice.
+    auth: none
+    groups: []
+    hosts: [seerr, requests, jellyseerr]
+
+  audiobookrequest:
+    auth: forward_auth
+    groups: [frey_admins, media]
+    hosts: [audiobookrequest, bookrequests]
+
+  maintainerr:
+    # No authentication of its own whatsoever, and it can delete media.
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [maintainerr]
+
+  jellystat:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [jellystat]
+
+  # --- Acquisition -----------------------------------------------------------
+  #
+  # The *arr services already run with AUTH__METHOD=External, which is exactly
+  # the setting meaning "something in front of me does the authenticating".
+  # That something is Authelia.
+  sonarr:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [sonarr]
+
+  radarr:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [radarr]
+
+  lidarr:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [lidarr]
+
+  chaptarr:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [chaptarr]
+
+  prowlarr:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [prowlarr]
+
+  bazarr:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [bazarr]
+
+  cleanuparr:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [cleanuparr]
+
+  qbittorrent:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [qbittorrent]
+
+
+# ==============================================================================
+# DERIVED - nothing to edit below here
+#
+# These two flat lists are the whole interface the other modules use. They read
+# these and never reach into roles/identity/, which is what lets the media
+# stack still deploy correctly with identity switched off: the lists resolve
+# empty and every router stays on plain HTTP exactly as it is today.
+# ==============================================================================
+
+# Hostnames Traefik must put Authelia in front of.
+identity_protect: >-
+  {{
+    (
+      identity_services | dict2items
+      | selectattr('value.auth', 'equalto', 'forward_auth')
+      | map(attribute='value.hosts')
+      | flatten
+    ) | unique | sort
+  }}
+
+# Every hostname anything answers on, so frey_pki can put them all in the
+# certificate. Adding a service above reissues it on the next run.
+identity_hostnames: >-
+  {{
+    (
+      (
+        identity_services | dict2items
+        | map(attribute='value.hosts')
+        | flatten
+      )
+      + [identity_hosts.auth, identity_hosts.directory]
+    ) | unique | sort
+  }}
