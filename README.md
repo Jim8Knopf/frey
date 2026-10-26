@@ -8,7 +8,8 @@ critical always-on service: it is how you reach Immich, the media stack and
 SSH, with or without internet. When a public Wi-Fi network is available, the
 Pi joins it on `wlan1` and shares it through to FreyHub clients.
 
-Services are reached by name as `service.frey`, for example `immich.frey`.
+Services are reached by name as `service.hub.frey`, for example
+`immich.hub.frey`. The shorter `service.frey` still works and redirects there.
 
 Legacy service stacks are archived under `archive/legacy-stack/`.
 
@@ -22,6 +23,7 @@ inventory/group_vars/all/media.yml       # Media image versions, toggles, VPN sw
 inventory/group_vars/all/identity.yml    # Who can log in, and what each service checks
 inventory/group_vars/all/secrets.yml     # Vault: AP passphrase, known networks
 scripts/media-check-updates.sh           # What media images have newer versions
+scripts/identity-check.sh                # Assert SSO is actually enforcing
 roles/network_gateway/                   # FreyHub AP + public Wi-Fi uplink + NAT/DNS
 roles/service_proxy/                     # Docker + Traefik service entrypoint
 roles/frey_pki/                          # Frey CA + the certificate Traefik serves
@@ -154,9 +156,11 @@ See [docs/IDENTITY.md](docs/IDENTITY.md).
 
 The media stack is split in two along the line that matters in a van:
 
-- `media_library` — Jellyfin (`jellyfin.frey`), Audiobookshelf
-  (`audiobookshelf.frey`, also `books.frey`) and Seerr (`seerr.frey`, also
-  `requests.frey`). Works with **no internet at all**.
+- `media_library` — Jellyfin (`jellyfin.hub.frey`), Audiobookshelf
+  (`audiobookshelf.hub.frey`, also `books.hub.frey`) and Seerr
+  (`seerr.hub.frey`, also `requests.hub.frey`). Works with **no internet at
+  all**, and these three still answer plain HTTP so a television can reach
+  them.
 - `media_acquisition` — Prowlarr, Sonarr, Radarr, Lidarr, Chaptarr, Bazarr and
   qBittorrent. Needs an uplink, and pauses itself when there isn't one.
 

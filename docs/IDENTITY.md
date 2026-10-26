@@ -185,6 +185,22 @@ on 12.3, that is your way back in — do not delete the local administrator.
 ## Verifying
 
 ```bash
+scripts/identity-check.sh
+```
+
+Asserts the four things that break silently: protected services really do
+bounce an anonymous request to the login page, unprotected ones really do still
+answer plain HTTP, legacy names redirect rather than 404, and the certificate
+is neither expiring nor missing a name. Exits non-zero on any failure, so it
+works from cron.
+
+A `200` where a `302` is expected is the one to take seriously — it usually
+means Traefik dropped a router because it named a middleware that did not
+exist, which fails open rather than anywhere you would notice.
+
+By hand:
+
+```bash
 # From a device on FreyHub
 curl -I https://auth.hub.frey
 curl -I https://jellyfin.frey        # 308 -> jellyfin.hub.frey
