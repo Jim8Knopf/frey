@@ -23,6 +23,8 @@ roles/network_gateway/                   # FreyHub AP + public Wi-Fi uplink + NA
 roles/service_proxy/                     # Docker + Traefik service entrypoint
 roles/security_baseline/                 # Firewall, fail2ban, network hardening
 roles/rpi_nvme/                          # Pi/NVMe runtime tuning
+roles/media_acquisition/                 # *arrs + qBittorrent (needs uplink)
+roles/media_library/                     # Jellyfin, Audiobookshelf, Seerr (offline-capable)
 docs/                                    # Active architecture docs
 archive/legacy-stack/                    # Previous service stack, docs, roles
 ```
@@ -120,6 +122,29 @@ For a new service such as Immich:
 - Set the container port with `traefik.http.services.<name>.loadbalancer.server.port`.
 
 See [docs/SERVICE_MODULES.md](docs/SERVICE_MODULES.md).
+
+## Media
+
+The media stack is split in two along the line that matters in a van:
+
+- `media_library` — Jellyfin (`jellyfin.frey`), Audiobookshelf (`books.frey`)
+  and Seerr (`requests.frey`). Works with **no internet at all**.
+- `media_acquisition` — Prowlarr, Sonarr, Radarr, Lidarr, Chaptarr, Bazarr and
+  qBittorrent. Needs an uplink, and pauses itself when there isn't one.
+
+Downloads and the library share a single `/opt/frey/data` tree so imports are
+hardlinks rather than copies, and downloading pauses automatically when the
+uplink is unusable — including behind a captive portal, which looks online to
+an application but is not.
+
+```bash
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+  --tags media --vault-password-file .vault_pass
+```
+
+See [docs/MEDIA.md](docs/MEDIA.md). Note that the Pi 5 has no hardware video
+encoder, so the quality profiles deliberately chase direct play rather than
+relying on transcoding.
 
 ## Add A Module
 

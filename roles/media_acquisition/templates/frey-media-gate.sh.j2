@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-media-gate - match downloading to whether the uplink is actually usable
+# Managed by Ansible role: media_acquisition. Do not edit on the Pi.
+# =============================================================================
+#
+# THE PROBLEM THIS SOLVES
+#
+# The van's uplink is public Wi-Fi: it appears, disappears, and - worst of all
+# - sits behind captive portals that answer every request with a sign-in page.
+# To an application that looks like a working connection, so the *arrs keep
+# searching and collect indexer rate-limit bans, while qBittorrent hammers a
+# link that is going nowhere.
+#
+# `nmcli networking connectivity` distinguishes these states, and "portal"
+# counts here as NOT usable. That distinction is the whole point of the script.
+#
+# Invoked by the NetworkManager dispatcher on interface events, and safe to
+# run by hand:
+#     frey-media-gate status
+#     frey-media-gate apply
+#
+set -uo pipefail
+
+MODE="{{ media_acquisition.uplink_gating.mode }}"
+GRACE_SECONDS="{{ media_acquisition.uplink_gating.grace_seconds }}"
+METERED_DOWN_KIB="{{ media_acquisition.uplink_gating.metered_down_limit_kib }}"
+METERED_UP_KIB="{{ media_acquisition.uplink_gating.metered_up_limit_kib }}"
+UPLINK_IFACE="{{ network_gateway.upstream.interface }}"
+PROXY_ADDR="{{ frey.service_address }}"
+QBT_HOST="qbittorrent.{{ frey.local_domain }}"
+STATE_DIR=/run/frey-media-gate
+OFFLINE_STAMP="${STATE_DIR}/offline-since"
+COOKIE_JAR="${STATE_DIR}/qbt-cookies"
+
+# Credentials live in a root-only environment file, never in this script.
+# shellcheck disable=SC1091
+[ -r /etc/frey/media-gate.env ] && . /etc/frey/media-gate.env
+
+ARR_CONTAINERS=(
+{% for name, cfg in media_acquisition.services.items() %}
+{% if cfg.enabled and cfg.env_prefix is defined %}
+  "{{ cfg.container_name }}"
+{% endif %}
+{% endfor %}
+)
+
+log() { logger -t frey-media-gate -- "$*"; [ -t 1 ] && echo "$*"; }
+
+mkdir -p "${STATE_DIR}"
+chmod 0700 "${STATE_DIR}"
+
+# -----------------------------------------------------------------------------
+# Uplink assessment
+# -----------------------------------------------------------------------------
+
+# full | limited | portal | none | unknown
+uplink_connectivity() {
+  nmcli -t -f CONNECTIVITY general status 2>/dev/null | head -n1 || echo unknown
+}
+
+uplink_is_usable() {
+  [ "$(uplink_connectivity)" = "full" ]
+}
+
+# A metered connection is someone's phone hotspot or a capped campground plan.
+# Downloading flat out on one is rude at best and expensive at worst.
+uplink_is_metered() {
+  local metered
+  metered=$(nmcli -t -f GENERAL.METERED device show "${UPLINK_IFACE}" 2>/dev/null | cut -d: -f2)
+  case "${metered}" in
+    yes*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+# qBittorrent WebUI API
+#
+# Reached through Traefik with an explicit Host header rather than by name.
+# The Pi does not necessarily resolve its own *.{{ frey.local_domain }} names,
+# and the containers publish no host ports, so this is the one path that works
+# regardless of how the Pi's resolver is configured.
+# -----------------------------------------------------------------------------
+
+qbt() {
+  local path="$1"; shift
+  curl -fsS --max-time 15 \
+    -H "Host: ${QBT_HOST}" \
+    -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
+    "http://${PROXY_ADDR}${path}" "$@"
+}
+
+qbt_login() {
+  [ -n "${QBT_USERNAME:-}" ] && [ -n "${QBT_PASSWORD:-}" ] || return 1
+  curl -fsS --max-time 15 \
+    -H "Host: ${QBT_HOST}" \
+    -c "${COOKIE_JAR}" \
+    --data-urlencode "username=${QBT_USERNAME}" \
+    --data-urlencode "password=${QBT_PASSWORD}" \
+    "http://${PROXY_ADDR}/api/v2/auth/login" >/dev/null 2>&1
+}
+
+# qBittorrent 5.x renamed pause/resume to stop/start and kept the old names as
+# deprecated aliases. Try the current spelling, fall back to the old one, so
+# this keeps working across a version bump in either direction.
+qbt_all_torrents() {
+  local action="$1" legacy="$2"
+  qbt "/api/v2/torrents/${action}" --data "hashes=all" >/dev/null 2>&1 && return 0
+  qbt "/api/v2/torrents/${legacy}" --data "hashes=all" >/dev/null 2>&1
+}
+
+qbt_pause_all() { qbt_all_torrents stop pause; }
+qbt_resume_all() { qbt_all_torrents start resume; }
+
+qbt_set_alt_limits() {
+  qbt "/api/v2/app/setPreferences" \
+    --data-urlencode "json={\"alt_dl_limit\":$((METERED_DOWN_KIB * 1024)),\"alt_up_limit\":$((METERED_UP_KIB * 1024))}" \
+    >/dev/null 2>&1
+}
+
+# Returns 0 when alternate (throttled) limits are currently active.
+qbt_alt_mode_active() {
+  [ "$(qbt /api/v2/transfer/speedLimitsMode 2>/dev/null)" = "1" ]
+}
+
+qbt_set_alt_mode() {
+  local want="$1"
+  if [ "${want}" = "on" ]; then
+    qbt_alt_mode_active || qbt /api/v2/transfer/toggleSpeedLimitsMode --data "" >/dev/null 2>&1
+  else
+    ! qbt_alt_mode_active || qbt /api/v2/transfer/toggleSpeedLimitsMode --data "" >/dev/null 2>&1
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Container control, for mode: stop
+# -----------------------------------------------------------------------------
+
+arr_containers_action() {
+  local action="$1" name
+  for name in "${ARR_CONTAINERS[@]}"; do
+    docker "${action}" "${name}" >/dev/null 2>&1 || true
+  done
+}
+
+offline_long_enough() {
+  local since now
+  [ -r "${OFFLINE_STAMP}" ] || return 1
+  since=$(cat "${OFFLINE_STAMP}" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  [ $((now - since)) -ge "${GRACE_SECONDS}" ]
+}
+
+# -----------------------------------------------------------------------------
+# Actions
+# -----------------------------------------------------------------------------
+
+go_online() {
+  rm -f "${OFFLINE_STAMP}"
+  qbt_login || { log "uplink usable, but qBittorrent login failed - leaving downloads alone"; return 0; }
+
+  if uplink_is_metered; then
+    qbt_set_alt_limits
+    qbt_set_alt_mode on
+    log "uplink usable but metered: throttled to ${METERED_DOWN_KIB}/${METERED_UP_KIB} KiB/s"
+  else
+    qbt_set_alt_mode off
+    log "uplink usable and unmetered: full speed"
+  fi
+
+  qbt_resume_all && log "downloads resumed"
+  if [ "${MODE}" = "stop" ]; then
+    arr_containers_action start
+    log "*arr containers started"
+  fi
+}
+
+go_offline() {
+  local state="$1"
+  [ -r "${OFFLINE_STAMP}" ] || date +%s > "${OFFLINE_STAMP}"
+
+  if qbt_login; then
+    qbt_pause_all && log "uplink ${state}: downloads paused"
+  else
+    log "uplink ${state}: qBittorrent unreachable (already down?)"
+  fi
+
+  if [ "${MODE}" = "stop" ] && offline_long_enough; then
+    arr_containers_action stop
+    log "uplink ${state} for more than ${GRACE_SECONDS}s: *arr containers stopped"
+  fi
+}
+
+apply_gating() {
+  if [ "${MODE}" = "off" ]; then
+    log "gating disabled (mode: off)"
+    return 0
+  fi
+
+  local state
+  state=$(uplink_connectivity)
+
+  if [ "${state}" = "full" ]; then
+    go_online
+  else
+    # "portal" is the important one: it looks online and is not.
+    go_offline "${state}"
+  fi
+}
+
+show_status() {
+  echo "mode:          ${MODE}"
+  echo "uplink iface:  ${UPLINK_IFACE}"
+  echo "connectivity:  $(uplink_connectivity)"
+  echo "metered:       $(uplink_is_metered && echo yes || echo no)"
+  echo "usable:        $(uplink_is_usable && echo yes || echo no)"
+  if [ -r "${OFFLINE_STAMP}" ]; then
+    echo "offline since: $(date -d "@$(cat "${OFFLINE_STAMP}")" 2>/dev/null)"
+  fi
+}
+
+case "${1:-apply}" in
+  apply) apply_gating ;;
+  status) show_status ;;
+  pause) go_offline manual ;;
+  resume) go_online ;;
+  *)
+    echo "usage: $(basename "$0") {apply|status|pause|resume}" >&2
+    exit 64
+    ;;
+esac

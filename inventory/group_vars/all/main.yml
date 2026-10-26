@@ -26,6 +26,11 @@ frey:
       - rpi_nvme
       - service_proxy
       - security_baseline
+      # Acquisition runs BEFORE library: it generates the shared *arr API
+      # keys that the library module needs to wire Seerr to Sonarr/Radarr,
+      # so a single run comes up fully connected.
+      - media_acquisition
+      - media_library
 
     available:
       network_gateway:
@@ -48,6 +53,93 @@ frey:
         role: security_baseline
         tags:
           - security
+      media_library:
+        role: media_library
+        tags:
+          - media
+          - media_library
+      media_acquisition:
+        role: media_acquisition
+        tags:
+          - media
+          - media_acquisition
+
+# ==============================================================================
+# MEDIA - SHARED CONFIGURATION
+#
+# Only choices that BOTH media modules must agree on live here. Everything
+# else belongs in roles/media_library/defaults/main.yml or
+# roles/media_acquisition/defaults/main.yml.
+#
+# The two modules are deliberately separate:
+#   media_library     - Jellyfin, Audiobookshelf, Seerr. Serves the van with
+#                       no uplink at all. This is the half that matters when
+#                       parked off-grid.
+#   media_acquisition - the *arrs and qBittorrent. Useless without internet,
+#                       so it can be disabled or power-gated on its own.
+# ==============================================================================
+media:
+  # ---------------------------------------------------------------------------
+  # STORAGE: ONE TREE, NOT TWO
+  #
+  # Downloads and the library share a single parent that is mounted into every
+  # container at the SAME path (/data). That is what makes an *arr import a
+  # hardlink instead of a copy: one set of bytes on disk, visible to both the
+  # torrent client and the library.
+  #
+  # The old stack mounted /downloads and /movies and /tv separately, so every
+  # import was a full file copy - double the disk, and a lot of pointless
+  # writes on an NVMe that also holds the databases.
+  # ---------------------------------------------------------------------------
+  data_dir: "{{ frey.base_dir }}/data"
+  appdata_dir: "{{ frey.base_dir }}/appdata"
+
+  # Single uid/gid shared by every media container, so hardlinks and
+  # permissions work across the whole stack.
+  user:
+    name: media
+    uid: 63342
+    gid: 63342
+  # 002 so group members can write each other's files (umask, not a mode).
+  umask: "002"
+
+  languages:
+    # Primary drives Jellyfin metadata, *arr language profiles and Bazarr.
+    primary: de
+    secondary: en
+    metadata_country: DE
+
+  # ---------------------------------------------------------------------------
+  # INTERNAL CONTAINER NETWORK
+  #
+  # MUST NOT overlap FreyHub's 10.20.0.0/24. The archived media role used
+  # 10.20.0.0/24 for exactly this network, which would have blackholed the
+  # access point - the one service that must never break.
+  # ---------------------------------------------------------------------------
+  network:
+    name: frey_media
+    subnet: 172.28.0.0/16
+
+  # ---------------------------------------------------------------------------
+  # CLIENT TARGETS -> QUALITY PROFILES
+  #
+  # The Pi 5 has NO hardware video encoder (it was physically removed; only
+  # HEVC decode remains), so every transcode is software and competes with
+  # the gateway for CPU. The only sane strategy is to never transcode: grab
+  # releases the clients can direct-play.
+  #
+  # Phones, tablets and laptop browsers are the targets here. Browsers are
+  # the fussiest - they transcode HEVC and anything that is not stereo-
+  # friendly - so profiles prefer H.264 + AAC at 1080p and reject 2160p,
+  # HDR-only and AV1 releases.
+  # ---------------------------------------------------------------------------
+  clients:
+    direct_play_codecs:
+      - h264
+    max_resolution: 1080p
+    reject_hdr_only: true
+    reject_av1: true
+
 
 network_gateway:
   # -----------------------------------------------------------------

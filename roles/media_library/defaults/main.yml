@@ -1,0 +1,149 @@
+---
+# ==============================================================================
+# MEDIA LIBRARY
+#
+# The half of the media stack that works with NO internet: playback, browsing,
+# listening. Parked off-grid this is the only half that matters, which is why
+# it is a module of its own rather than part of one big media role - it can
+# run while media_acquisition is stopped, disabled or power-gated.
+#
+# Shared settings (paths, uid/gid, languages, internal network) live in
+# inventory/group_vars/all/main.yml under `media`.
+# ==============================================================================
+
+media_library:
+  stack_dir: "{{ frey.base_dir }}/stacks/media_library"
+
+  configure:
+    enabled: true
+    # Same persisted secret file the acquisition module uses, so Seerr can be
+    # wired to Sonarr and Radarr with the keys they were seeded with.
+    key_file: "{{ media.appdata_dir }}/.media-keys.json"
+    # Not named `keys`: see the note in media_acquisition - that name collides
+    # with the dict method of the same name under Ansible's dot notation.
+    secret_keys:
+      - jellyfin_admin_password
+      - jellystat_postgres_password
+      - jellystat_jwt_secret
+    strict: false
+    api_timeout: 30
+    api_retries: 40
+    api_delay: 5
+    # Jellyfin's first-run wizard is completed over its API. Jellyfin 12
+    # reworked authentication (legacy auth is off by default and the /emby
+    # routes are gone), and this path is not verified against a live 12.x
+    # server, so it is best-effort by design: if it does not take, Jellyfin
+    # is still up and the wizard can be finished in a browser. See README.md.
+    provision_jellyfin: true
+
+  services:
+    jellyfin:
+      enabled: true
+      # Jellyfin 12.x. A major jump from the 10.x the old stack ran:
+      #   - legacy authorization is disabled by default
+      #   - the /emby/* and /mediabrowser/* routes are gone
+      #   - the database migration is one-way; 10.x cannot be rolled back to
+      #   - plugins must be REMOVED before migrating an existing 10.x config
+      # This deployment is greenfield, so none of that bites - but do not
+      # point it at an old 10.x config directory without reading README.md.
+      image: lscr.io/linuxserver/jellyfin:12.3ubu2604-ls56
+      container_name: jellyfin
+      hostname: jellyfin
+      port: 8096
+      # 2 CPUs of 4, and a hard memory cap. The Pi 5 has NO hardware video
+      # encoder - it was physically removed, only HEVC decode remains - so a
+      # transcode is pure software and will happily eat every core. FreyHub
+      # and SSH are the only ways into this machine; they must not lose a
+      # fight with a video transcode.
+      mem_limit: 2g
+      cpus: "2.0"
+      admin_username: frey
+      # Transcode scratch space on the NVMe rather than a RAM tmpfs: a 1080p
+      # transcode can write gigabytes, which would OOM the Pi on tmpfs.
+      transcode_dir: "{{ media.appdata_dir }}/jellyfin/transcodes"
+      # Optional device passthrough. Left empty on purpose: the Pi 5 exposes
+      # only an HEVC *decoder*, Jellyfin's V4L2 support for it is partial, and
+      # a half-working hwaccel is worse than none. Add /dev/video19 etc. here
+      # if you decide to experiment.
+      devices: []
+      libraries:
+        - name: Movies
+          type: movies
+          path: /data/media/movies
+        - name: TV Shows
+          type: tvshows
+          path: /data/media/tv
+        - name: Music
+          type: music
+          path: /data/media/music
+
+    audiobookshelf:
+      enabled: true
+      image: ghcr.io/advplyr/audiobookshelf:2.37.2
+      container_name: audiobookshelf
+      hostname: audiobookshelf
+      # Audiobookshelf listens on 80 inside the container.
+      port: 80
+      # Reached as books.frey - friendlier to say out loud than the image name.
+      route_host: books
+      mem_limit: 512m
+
+    seerr:
+      # Replaces Jellyseerr, which is discontinued. Overseerr and Jellyseerr
+      # were merged upstream into Seerr, which is the maintained line and the
+      # only one that keeps working with Jellyfin's reworked authentication.
+      enabled: true
+      image: seerr/seerr:v3.5.1
+      container_name: seerr
+      hostname: seerr
+      port: 5055
+      # Reached as requests.frey: it is where you ask for things.
+      route_host: requests
+      mem_limit: 768m
+
+    audiobookrequest:
+      # Request tracker for audiobooks. Hands auto-downloads to Chaptarr,
+      # which is why Chaptarr is in the acquisition module.
+      #
+      # Port 8000, not the 5432 the archived role had - that is PostgreSQL's
+      # port and was plainly a copy-paste slip.
+      enabled: true
+      image: markbeep/audiobookrequest:1
+      container_name: audiobookrequest
+      hostname: audiobookrequest
+      port: 8000
+      route_host: bookrequests
+      mem_limit: 512m
+
+    maintainerr:
+      # Rule-based library cleanup: "delete watched movies older than N
+      # months", and so on. A 4TB disk shared with Immich fills up quietly
+      # otherwise.
+      enabled: true
+      image: ghcr.io/jorenn92/maintainerr:2.19.0
+      container_name: maintainerr
+      hostname: maintainerr
+      port: 6246
+      mem_limit: 512m
+
+    jellystat:
+      # Playback statistics. Costs a PostgreSQL container, which is the main
+      # reason it is easy to turn off.
+      enabled: true
+      image: ghcr.io/cyfershepard/jellystat:1.1.12
+      container_name: jellystat
+      hostname: jellystat
+      port: 3000
+      mem_limit: 512m
+
+    jellystat_db:
+      enabled: true
+      image: postgres:18.1
+      container_name: jellystat-db
+      hostname: jellystat-db
+      mem_limit: 512m
+      # Upstream suggests 1GB of shared memory; 256MB is ample for a stats
+      # database this small and leaves the RAM for Jellyfin and Immich.
+      shm_size: 256m
+      database: jellystat
+      username: jellystat

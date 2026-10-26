@@ -1,0 +1,30 @@
+#!/bin/sh
+# NetworkManager dispatcher hook - managed by Ansible role: media_acquisition
+#
+# Fires frey-media-gate when the uplink changes state.
+#
+# The real work is handed to a transient systemd unit with --no-block, not run
+# inline. Dispatcher scripts run serially and block every other hook behind
+# them, and this one makes HTTP calls to qBittorrent that can take seconds on
+# a bad link. Blocking here would delay NetworkManager's own event handling -
+# including events that FreyHub depends on.
+
+IFACE="$1"
+ACTION="$2"
+
+case "${ACTION}" in
+  up | down | connectivity-change | dhcp4-change) ;;
+  *) exit 0 ;;
+esac
+
+# React to the uplink radio, or to any global connectivity verdict change
+# (which is how a captive portal sign-in finally completing shows up).
+if [ "${IFACE}" != "{{ network_gateway.upstream.interface }}" ] \
+   && [ "${ACTION}" != "connectivity-change" ]; then
+  exit 0
+fi
+
+exec systemd-run --no-block --quiet \
+  --unit="frey-media-gate-$$" \
+  --description="Frey media download gating" \
+  /usr/local/bin/frey-media-gate apply

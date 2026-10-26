@@ -1,0 +1,183 @@
+---
+# ==============================================================================
+# MEDIA LIBRARY
+#
+# Deploys playback. Written so it works whether or not media_acquisition is
+# enabled: it creates the directories and the internal network it needs
+# rather than assuming the other module ran first. Off-grid with downloading
+# disabled, this module alone still gives a working library.
+# ==============================================================================
+
+- name: Validate media library configuration
+  ansible.builtin.assert:
+    that:
+      - media.data_dir | length > 0
+      - media.appdata_dir | length > 0
+      - media.network.name | length > 0
+      - media_library.stack_dir | length > 0
+      - not media.network.subnet.startswith('10.20.0.')
+    fail_msg: >-
+      media_library configuration is invalid. The internal Docker network
+      ({{ media.network.subnet }}) must not overlap FreyHub's
+      {{ network_gateway.downstream.network_cidr }}.
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Resolve media secrets
+  ansible.builtin.include_tasks: secrets.yml
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Ensure media group exists
+  ansible.builtin.group:
+    name: "{{ media.user.name }}"
+    gid: "{{ media.user.gid }}"
+    state: present
+  tags:
+    - media
+    - media_library
+
+- name: Ensure media user exists
+  ansible.builtin.user:
+    name: "{{ media.user.name }}"
+    uid: "{{ media.user.uid }}"
+    group: "{{ media.user.name }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+  tags:
+    - media
+    - media_library
+
+- name: Ensure the library media directories exist
+  # Created here as well as in media_acquisition so this module stands alone:
+  # if Docker creates a missing bind-mount source it does so as root, and
+  # Jellyfin then cannot read it.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "2775"
+  loop:
+    - "{{ media.data_dir }}"
+    - "{{ media.data_dir }}/media"
+    - "{{ media.data_dir }}/media/movies"
+    - "{{ media.data_dir }}/media/tv"
+    - "{{ media.data_dir }}/media/music"
+    - "{{ media.data_dir }}/media/audiobooks"
+    - "{{ media.data_dir }}/media/podcasts"
+    - "{{ media.data_dir }}/media/ebooks"
+  tags:
+    - media
+    - media_library
+
+- name: Ensure library stack and appdata directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "0775"
+  loop:
+    - "{{ media_library.stack_dir }}"
+    - "{{ media.appdata_dir }}"
+    - "{{ media.appdata_dir }}/jellyfin"
+    - "{{ media_library.services.jellyfin.transcode_dir }}"
+    - "{{ media.appdata_dir }}/audiobookshelf"
+    - "{{ media.appdata_dir }}/audiobookshelf/config"
+    - "{{ media.appdata_dir }}/audiobookshelf/metadata"
+    - "{{ media.appdata_dir }}/seerr"
+    - "{{ media.appdata_dir }}/audiobookrequest"
+    - "{{ media.appdata_dir }}/maintainerr"
+    - "{{ media.appdata_dir }}/jellystat"
+    - "{{ media.appdata_dir }}/jellystat/backup"
+  tags:
+    - media
+    - media_library
+
+- name: Ensure the Jellystat database directory exists
+  # PostgreSQL insists on owning its data directory and refuses to start if
+  # the mode is too permissive.
+  ansible.builtin.file:
+    path: "{{ media.appdata_dir }}/jellystat/db"
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: "0700"
+  when:
+    - media_library.services.jellystat.enabled
+    - media_library.services.jellystat_db.enabled
+  tags:
+    - media
+    - media_library
+
+- name: Ensure the internal media network exists
+  community.docker.docker_network:
+    name: "{{ media.network.name }}"
+    driver: bridge
+    state: present
+    ipam_config:
+      - subnet: "{{ media.network.subnet }}"
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_library
+
+- name: Deploy media library compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ media_library.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+    validate: "docker compose -f %s config --quiet"
+  register: media_library_compose
+  no_log: true
+  tags:
+    - media
+    - media_library
+
+- name: Start the media library stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ media_library.stack_dir }}"
+    state: present
+    remove_orphans: true
+    pull: missing
+    timeout: 300
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_library
+
+- name: Pull and recreate pinned media library images
+  # See the equivalent task in media_acquisition, including why this is gated
+  # on a variable rather than a `never` tag.
+  community.docker.docker_compose_v2:
+    project_src: "{{ media_library.stack_dir }}"
+    state: present
+    pull: always
+    recreate: auto
+    timeout: 600
+  when:
+    - not ansible_check_mode
+    - media_update | default(false) | bool
+  tags:
+    - media
+    - media_library
+    - media_update
+
+- name: Configure the media library services
+  ansible.builtin.include_tasks: configure.yml
+  when:
+    - media_library.configure.enabled
+    - not ansible_check_mode
+  tags:
+    - media
+    - media_library
+    - media_config

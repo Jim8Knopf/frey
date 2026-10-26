@@ -1,0 +1,54 @@
+{#
+  ============================================================================
+  qBittorrent seed configuration - managed by Ansible role: media_acquisition
+  ============================================================================
+
+  This file holds only what Ansible must set BEFORE the container's first
+  start: the WebUI credentials and the reverse-proxy settings needed to reach
+  it at all. Everything else - save paths, categories, listen port, DHT/PeX,
+  speed limits - is applied afterwards through the WebUI API, which is
+  idempotent and safe against a running container.
+
+  That split is deliberate. The archived role tried to drive qBittorrent with
+  twenty `lineinfile` tasks, each carrying `ignore_errors: true`, against a
+  file that does not exist yet on a fresh install - so on first deploy every
+  one of them silently did nothing.
+
+  WHY ServerDomains MATTERS: qBittorrent validates the Host header and
+  answers "Unauthorized" to anything it does not recognise. Reached through
+  Traefik the Host is qbittorrent.frey, not localhost, so without this the
+  WebUI is unreachable the moment it sits behind a proxy. The old stack never
+  hit this because it published a raw host port.
+#}
+[LegalNotice]
+Accepted=true
+
+[Preferences]
+WebUI\Port={{ media_acquisition.services.qbittorrent.port }}
+WebUI\Username={{ media_acquisition.services.qbittorrent.web_username }}
+WebUI\Password_PBKDF2="{{ qbittorrent_password_hash }}"
+WebUI\Address=*
+# Accept any Host header: Traefik presents qbittorrent.{{ frey.local_domain }}.
+WebUI\ServerDomains=*
+WebUI\HostHeaderValidation=false
+WebUI\CSRFProtection=false
+WebUI\ClickjackingProtection=true
+# Let the container's own healthcheck query the API without logging in.
+WebUI\LocalHostAuth=false
+WebUI\UseUPnP=false
+
+[BitTorrent]
+# Everything lands under the single /data tree so imports can hardlink.
+Session\DefaultSavePath=/data/torrents
+Session\Port={{ media_acquisition.services.qbittorrent.listen_port }}
+Session\UseRandomPort=false
+# No temporary directory: a completed torrent must not be copied across
+# directories, or the hardlink advantage is lost again.
+Session\TempPathEnabled=false
+Session\AnonymousMode=false
+Session\DHTEnabled=true
+Session\PeXEnabled=true
+Session\LSDEnabled=true
+Session\UseUPnP=false
+Session\UseNATPMP=false
+Session\GlobalMaxRatio=-1

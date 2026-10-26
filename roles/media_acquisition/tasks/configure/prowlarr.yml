@@ -1,0 +1,198 @@
+---
+# ==============================================================================
+# Prowlarr: the indexer hub
+#
+# Prowlarr is registered WITH each *arr rather than the other way round. Add
+# Sonarr, Radarr, Lidarr and Chaptarr here as "applications" and Prowlarr
+# pushes every indexer you add - now and in future - into all of them. Add an
+# indexer once, in one UI, and the whole stack has it.
+#
+# Byparr is registered as an indexer proxy using the FlareSolverr
+# implementation, because FlareSolverr is archived upstream and Byparr is a
+# drop-in for its API. Only indexers carrying the `cloudflare` tag go through
+# it, so the browser engine is not in the path for trackers that do not need
+# it.
+#
+# Indexers themselves are deliberately NOT created here: they need your own
+# tracker credentials. Add them at prowlarr.{{ frey.local_domain }} and they
+# propagate automatically.
+# ==============================================================================
+
+- name: "prowlarr: read existing tags"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/tag"
+    method: GET
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_tags
+  failed_when: false
+  changed_when: false
+
+- name: "prowlarr: create the Cloudflare proxy tag"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/tag"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body:
+      label: "{{ media_acquisition.services.byparr.proxy_tag }}"
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  when:
+    - media_acquisition.services.byparr.enabled
+    - prowlarr_tags.json is defined
+    - media_acquisition.services.byparr.proxy_tag not in (prowlarr_tags.json | map(attribute='label') | list)
+  register: prowlarr_tag_add
+  failed_when: false
+
+- name: "prowlarr: re-read tags"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/tag"
+    method: GET
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_tags_after
+  failed_when: false
+  changed_when: false
+  when: media_acquisition.services.byparr.enabled
+
+- name: "prowlarr: read existing indexer proxies"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexerproxy"
+    method: GET
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_proxies
+  failed_when: false
+  changed_when: false
+  when: media_acquisition.services.byparr.enabled
+
+- name: "prowlarr: register Byparr as the Cloudflare solver"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexerproxy"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body:
+      name: Byparr
+      # Byparr speaks the FlareSolverr API, so Prowlarr's FlareSolverr
+      # implementation is the correct one to use.
+      implementation: FlareSolverr
+      implementationName: FlareSolverr
+      configContract: FlareSolverrSettings
+      fields:
+        - name: host
+          value: "http://{{ media_acquisition.services.byparr.hostname }}:{{ media_acquisition.services.byparr.port }}/"
+        - name: requestTimeout
+          value: 60
+      tags: "{{ prowlarr_proxy_tag_ids }}"
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    prowlarr_proxy_tag_ids: >-
+      {{
+        prowlarr_tags_after.json | default([])
+        | selectattr('label', 'equalto', media_acquisition.services.byparr.proxy_tag)
+        | map(attribute='id') | list
+      }}
+  when:
+    - media_acquisition.services.byparr.enabled
+    - prowlarr_proxies.json is defined
+    - "'Byparr' not in (prowlarr_proxies.json | map(attribute='name') | list)"
+  register: prowlarr_proxy_add
+  failed_when: false
+
+- name: "prowlarr: record Byparr registration failure"
+  ansible.builtin.set_fact:
+    media_wiring_failures: "{{ media_wiring_failures + ['prowlarr: Byparr proxy not registered'] }}"
+  when:
+    - prowlarr_proxy_add is defined
+    - not (prowlarr_proxy_add.skipped | default(false))
+    - prowlarr_proxy_add.status is defined
+    - prowlarr_proxy_add.status not in [200, 201]
+
+- name: "prowlarr: read registered applications"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/applications"
+    method: GET
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_apps
+  failed_when: false
+  changed_when: false
+
+- name: "prowlarr: register the Servarr applications"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/applications"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body:
+      name: "{{ item.key | capitalize }}"
+      implementation: "{{ item.value.prowlarr_impl }}"
+      implementationName: "{{ item.value.prowlarr_impl }}"
+      configContract: "{{ item.value.prowlarr_impl }}Settings"
+      # fullSync: Prowlarr owns the indexer list in the target app, so an
+      # indexer removed here disappears there too. That is the point - one
+      # place to manage indexers.
+      syncLevel: fullSync
+      tags: []
+      fields:
+        - name: prowlarrUrl
+          value: "http://{{ media_acquisition.services.prowlarr.hostname }}:{{ media_acquisition.services.prowlarr.port }}"
+        - name: baseUrl
+          value: "http://{{ item.value.hostname }}:{{ item.value.port }}"
+        - name: apiKey
+          value: "{{ media_secrets[item.key] }}"
+        - name: syncCategories
+          value: "{{ item.value.sync_categories }}"
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  loop: >-
+    {{
+      media_acquisition.services | dict2items
+      | selectattr('value.enabled')
+      | selectattr('value.prowlarr_impl', 'defined')
+      | list
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - prowlarr_apps.json is defined
+    - (item.key | capitalize) not in (prowlarr_apps.json | map(attribute='name') | list)
+  register: prowlarr_app_add
+  failed_when: false
+  no_log: true
+
+- name: "prowlarr: record application registration failures"
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (prowlarr_app_add.results | default([])
+           | rejectattr('skipped', 'defined')
+           | selectattr('status', 'defined')
+           | rejectattr('status', 'in', [200, 201])
+           | map(attribute='item.key')
+           | map('regex_replace', '^(.*)$', 'prowlarr: application \1 not registered')
+           | list)
+      }}
+  when: prowlarr_app_add.results is defined

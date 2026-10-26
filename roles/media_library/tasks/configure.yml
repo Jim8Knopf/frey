@@ -1,0 +1,301 @@
+---
+# ==============================================================================
+# MEDIA LIBRARY WIRING
+#
+# Jellyfin is provisioned over its API: the first-run wizard is completed and
+# the three libraries are created pointing at /data/media.
+#
+# BEST EFFORT, ON PURPOSE
+#
+# Jellyfin 12 reworked authentication - legacy authorization is disabled by
+# default and the /emby/* routes are gone - and this path has not been
+# verified against a live 12.x server. So every step here tolerates failure:
+# if the wizard has moved, Jellyfin is still running and the browser wizard
+# still works. A deploy must not fail because an optional convenience did.
+#
+# WHAT IS NOT AUTOMATED, AND WHY
+#
+# Seerr's first run is left to the UI. Its settings live in a JSON file whose
+# schema changes between versions, and a malformed seed does not fail politely
+# - it stops the container from starting. Guessing at it would trade a
+# two-minute form for a chance of a dead request service in a van with no
+# internet to debug from. The values you need are printed at the end of this
+# run instead.
+# ==============================================================================
+
+- name: Define the library API endpoint
+  ansible.builtin.set_fact:
+    media_api_base: "http://{{ frey.service_address }}"
+    library_wiring_notes: []
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Wait for Jellyfin to answer
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/System/Info/Public"
+    method: GET
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+    status_code: 200
+    timeout: "{{ media_library.configure.api_timeout }}"
+  register: jellyfin_public
+  retries: "{{ media_library.configure.api_retries }}"
+  delay: "{{ media_library.configure.api_delay }}"
+  until: jellyfin_public is succeeded
+  failed_when: false
+  changed_when: false
+  when: media_library.services.jellyfin.enabled
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Note when Jellyfin never answered
+  ansible.builtin.set_fact:
+    library_wiring_notes: "{{ library_wiring_notes + ['Jellyfin did not answer; provisioning skipped. Check: docker logs jellyfin'] }}"
+  when:
+    - media_library.services.jellyfin.enabled
+    - jellyfin_public.status is not defined or jellyfin_public.status != 200
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Determine whether Jellyfin still needs its first-run wizard
+  ansible.builtin.set_fact:
+    jellyfin_needs_setup: >-
+      {{
+        media_library.services.jellyfin.enabled
+        and media_library.configure.provision_jellyfin
+        and jellyfin_public.status | default(0) == 200
+        and not (jellyfin_public.json | default({})).StartupWizardCompleted | default(false)
+      }}
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Set Jellyfin server language and metadata region
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/Startup/Configuration"
+    method: POST
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+    body_format: json
+    body:
+      UICulture: "{{ media.languages.primary }}"
+      MetadataCountryCode: "{{ media.languages.metadata_country }}"
+      PreferredMetadataLanguage: "{{ media.languages.primary }}"
+    status_code: [200, 204]
+    timeout: "{{ media_library.configure.api_timeout }}"
+  register: jellyfin_startup_config
+  failed_when: false
+  when: jellyfin_needs_setup | bool
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Create the Jellyfin administrator
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/Startup/User"
+    method: POST
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+    body_format: json
+    body:
+      Name: "{{ media_library.services.jellyfin.admin_username }}"
+      Password: "{{ media_secrets.jellyfin_admin_password }}"
+    status_code: [200, 204]
+    timeout: "{{ media_library.configure.api_timeout }}"
+  register: jellyfin_startup_user
+  failed_when: false
+  no_log: true
+  when: jellyfin_needs_setup | bool
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Disable Jellyfin remote access and port mapping
+  # Nothing about this install should try to punch a hole out to the internet.
+  # The van's uplink is someone else's network.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/Startup/RemoteAccess"
+    method: POST
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+    body_format: json
+    body:
+      EnableRemoteAccess: false
+      EnableAutomaticPortMapping: false
+    status_code: [200, 204]
+    timeout: "{{ media_library.configure.api_timeout }}"
+  failed_when: false
+  when: jellyfin_needs_setup | bool
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Complete the Jellyfin first-run wizard
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/Startup/Complete"
+    method: POST
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+    status_code: [200, 204]
+    timeout: "{{ media_library.configure.api_timeout }}"
+  register: jellyfin_startup_complete
+  failed_when: false
+  when: jellyfin_needs_setup | bool
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Note when the Jellyfin wizard could not be completed
+  ansible.builtin.set_fact:
+    library_wiring_notes: >-
+      {{
+        library_wiring_notes
+        + ['Jellyfin first-run wizard could not be completed over the API
+            (expected on 12.x if the endpoints moved). Finish it at
+            http://jellyfin.' ~ frey.local_domain ~ ' - it takes a minute.']
+      }}
+  when:
+    - jellyfin_needs_setup | bool
+    - jellyfin_startup_complete.status is not defined or jellyfin_startup_complete.status not in [200, 204]
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Authenticate against Jellyfin
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+      # Jellyfin 12 removed the legacy authorization forms; this is the
+      # current scheme and must identify the calling client.
+      Authorization: 'MediaBrowser Client="Ansible", Device="frey", DeviceId="frey-ansible", Version="1.0.0"'
+    body_format: json
+    body:
+      Username: "{{ media_library.services.jellyfin.admin_username }}"
+      Pw: "{{ media_secrets.jellyfin_admin_password }}"
+    status_code: 200
+    timeout: "{{ media_library.configure.api_timeout }}"
+  register: jellyfin_auth
+  failed_when: false
+  changed_when: false
+  no_log: true
+  when:
+    - media_library.services.jellyfin.enabled
+    - media_library.configure.provision_jellyfin
+    - jellyfin_public.status | default(0) == 200
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Read existing Jellyfin libraries
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/Library/VirtualFolders"
+    method: GET
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+      Authorization: 'MediaBrowser Token="{{ jellyfin_auth.json.AccessToken }}"'
+    return_content: true
+    timeout: "{{ media_library.configure.api_timeout }}"
+  register: jellyfin_libraries
+  failed_when: false
+  changed_when: false
+  when: jellyfin_auth.json is defined and jellyfin_auth.json.AccessToken is defined
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Create the Jellyfin libraries
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/Library/VirtualFolders?name={{ item.name | urlencode }}&collectionType={{ item.type }}&refreshLibrary=true"
+    method: POST
+    headers:
+      Host: "jellyfin.{{ frey.local_domain }}"
+      Authorization: 'MediaBrowser Token="{{ jellyfin_auth.json.AccessToken }}"'
+    body_format: json
+    body:
+      LibraryOptions:
+        PathInfos:
+          - Path: "{{ item.path }}"
+        # German metadata first, English as the fallback, matching the
+        # language choice in group_vars.
+        PreferredMetadataLanguage: "{{ media.languages.primary }}"
+        MetadataCountryCode: "{{ media.languages.metadata_country }}"
+    status_code: [200, 204]
+    timeout: "{{ media_library.configure.api_timeout }}"
+  loop: "{{ media_library.services.jellyfin.libraries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - jellyfin_libraries.json is defined
+    - item.name not in (jellyfin_libraries.json | map(attribute='Name') | list)
+  register: jellyfin_library_add
+  failed_when: false
+  tags:
+    - media
+    - media_library
+    - media_config
+
+- name: Note Jellyfin libraries that could not be created
+  ansible.builtin.set_fact:
+    library_wiring_notes: >-
+      {{
+        library_wiring_notes
+        + (jellyfin_library_add.results | default([])
+           | rejectattr('skipped', 'defined')
+           | selectattr('status', 'defined')
+           | rejectattr('status', 'in', [200, 204])
+           | map(attribute='item.name')
+           | map('regex_replace', '^(.*)$',
+                 'Jellyfin library \1 not created; add it in Dashboard > Libraries')
+           | list)
+      }}
+  when: jellyfin_library_add.results is defined
+  tags:
+    - media
+    - media_library
+    - media_config
+
+# ------------------------------------------------------------------------------
+# HAND-OFF
+# ------------------------------------------------------------------------------
+
+- name: Report the remaining manual steps and their values
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        ['Media stack deployed. Remaining one-time steps, with the values you need:']
+        + ['']
+        + ['Seerr - http://' ~ media_library.services.seerr.route_host ~ '.' ~ frey.local_domain]
+        + ['  Jellyfin URL: http://' ~ media_library.services.jellyfin.hostname ~ ':' ~ media_library.services.jellyfin.port]
+        + ['  Sonarr:  http://sonarr:8989   (API key is in ' ~ media_library.configure.key_file ~ ')']
+        + ['  Radarr:  http://radarr:7878   (same file)']
+        + ['']
+        + ['Bazarr - http://bazarr.' ~ frey.local_domain]
+        + ['  Pick subtitle providers and attach a '
+           ~ media.languages.primary ~ '/' ~ media.languages.secondary
+           ~ ' language profile (these live in its database, not its config file)']
+        + ['']
+        + ['Prowlarr - http://prowlarr.' ~ frey.local_domain]
+        + ['  Add your indexers; they propagate to Sonarr/Radarr/Lidarr/Chaptarr automatically']
+        + ['']
+        + (['Notes from this run:'] + library_wiring_notes if library_wiring_notes | length > 0 else [])
+      }}
+  tags:
+    - media
+    - media_library
+    - media_config

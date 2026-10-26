@@ -1,0 +1,31 @@
+{#
+  ============================================================================
+  Servarr seed config.xml - managed by Ansible role: media_acquisition
+  ============================================================================
+
+  Written only when absent, i.e. before the app has ever started. After that
+  the app owns the file and Ansible leaves it alone.
+
+  This is belt and braces alongside the <APP>__AUTH__APIKEY environment
+  variables in the compose file. The environment route is the cleaner one and
+  takes precedence, but it depends on each app honouring its own prefix -
+  verified for Sonarr, Radarr, Prowlarr and Lidarr, not for Chaptarr, which is
+  a Readarr fork whose prefix is not documented. Seeding config.xml works for
+  any Servarr-based app regardless, so the API key Ansible expects is the key
+  the app actually uses either way.
+#}
+<Config>
+  <BindAddress>*</BindAddress>
+  <Port>{{ item.value.port }}</Port>
+  <EnableSsl>False</EnableSsl>
+  <LaunchBrowser>False</LaunchBrowser>
+  <ApiKey>{{ media_secrets[item.key] }}</ApiKey>
+  <AuthenticationMethod>{{ media_acquisition.auth.method }}</AuthenticationMethod>
+  <AuthenticationRequired>{{ media_acquisition.auth.required }}</AuthenticationRequired>
+  <Branch>master</Branch>
+  <LogLevel>info</LogLevel>
+  <UrlBase></UrlBase>
+  <InstanceName>{{ item.key | capitalize }}</InstanceName>
+  <UpdateMechanism>Docker</UpdateMechanism>
+  <AnalyticsEnabled>False</AnalyticsEnabled>
+</Config>

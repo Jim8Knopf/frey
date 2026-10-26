@@ -1,0 +1,55 @@
+{#
+  ============================================================================
+  Bazarr seed configuration - managed by Ansible role: media_acquisition
+  ============================================================================
+
+  Bazarr is configured by a plain YAML file, so its Sonarr and Radarr
+  connections are set here rather than through an API.
+
+  SCOPE, honestly: subtitle language profiles and provider credentials live in
+  Bazarr's database, not in this file, so they cannot be seeded from Ansible.
+  Pick your providers and attach the {{ media.languages.primary }}/{{ media.languages.secondary }}
+  language profile on first visit to bazarr.{{ frey.local_domain }}; that is a
+  one-time step and is listed in docs/MEDIA.md.
+
+  This file is written only when absent, so Bazarr owns it from then on and
+  Ansible will not clobber settings you change in the UI.
+#}
+---
+auth:
+  type: null
+
+general:
+  ip: 0.0.0.0
+  port: {{ media_acquisition.services.bazarr.port }}
+  base_url: ''
+  use_sonarr: {{ media_acquisition.services.sonarr.enabled | lower }}
+  use_radarr: {{ media_acquisition.services.radarr.enabled | lower }}
+  upgrade_subs: true
+  minimum_score: 90
+  minimum_score_movie: 70
+  page_size: 25
+
+{% if media_acquisition.services.sonarr.enabled %}
+sonarr:
+  # Container hostname on the internal media network, not an IP: Docker DNS
+  # resolves it and it survives a container being recreated.
+  ip: {{ media_acquisition.services.sonarr.hostname }}
+  port: {{ media_acquisition.services.sonarr.port }}
+  base_url: ''
+  ssl: false
+  apikey: '{{ media_secrets.sonarr }}'
+  full_update: Daily
+  only_monitored: false
+{% endif %}
+
+{% if media_acquisition.services.radarr.enabled %}
+radarr:
+  ip: {{ media_acquisition.services.radarr.hostname }}
+  port: {{ media_acquisition.services.radarr.port }}
+  base_url: ''
+  ssl: false
+  apikey: '{{ media_secrets.radarr }}'
+  full_update: Daily
+  only_monitored: false
+{% endif %}

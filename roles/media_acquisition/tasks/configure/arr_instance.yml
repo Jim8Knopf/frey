@@ -1,0 +1,134 @@
+---
+# ==============================================================================
+# One Servarr application: root folder + qBittorrent download client
+#
+# Called per app from arrs.yml with `arr` as {key: sonarr, value: {...}}.
+#
+# Idempotency: every step reads the collection first and only POSTs what is
+# missing, matched by name or path. Re-running is a no-op, which is what makes
+# --tags media_config safe to run whenever something looks wrong.
+# ==============================================================================
+
+- name: "{{ arr.key }}: read existing root folders"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/rootfolder"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_rootfolders
+  failed_when: false
+  changed_when: false
+
+- name: "{{ arr.key }}: add the root folder"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/rootfolder"
+    method: POST
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    body_format: json
+    body:
+      path: "{{ item }}"
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  loop: "{{ [arr.value.root_folder] + ([arr.value.ebook_root_folder] if arr.value.ebook_root_folder is defined else []) }}"
+  when:
+    - arr_rootfolders.json is defined
+    - item not in (arr_rootfolders.json | map(attribute='path') | list)
+  register: arr_rootfolder_add
+  failed_when: false
+
+- name: "{{ arr.key }}: record root folder failures"
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (arr_rootfolder_add.results | default([])
+           | rejectattr('skipped', 'defined')
+           | selectattr('status', 'defined')
+           | rejectattr('status', 'in', [200, 201])
+           | map(attribute='item')
+           | map('regex_replace', '^(.*)$', arr.key ~ ': root folder \1 not created')
+           | list)
+      }}
+  when: arr_rootfolder_add.results is defined
+
+- name: "{{ arr.key }}: read existing download clients"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/downloadclient"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_downloadclients
+  failed_when: false
+  changed_when: false
+  when: media_acquisition.services.qbittorrent.enabled
+
+- name: "{{ arr.key }}: add qBittorrent as the download client"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/downloadclient"
+    method: POST
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    body_format: json
+    body:
+      enable: true
+      protocol: torrent
+      priority: 1
+      # Let the *arr clean up after itself once an import has completed.
+      removeCompletedDownloads: true
+      removeFailedDownloads: true
+      name: qBittorrent
+      implementation: QBittorrent
+      implementationName: qBittorrent
+      configContract: QBittorrentSettings
+      tags: []
+      fields:
+        # Container hostname on the internal media network - resolved by
+        # Docker DNS, and stable across container recreation unlike an IP.
+        - name: host
+          value: "{{ media_acquisition.services.qbittorrent.hostname }}"
+        - name: port
+          value: "{{ media_acquisition.services.qbittorrent.port }}"
+        - name: useSsl
+          value: false
+        - name: urlBase
+          value: ""
+        - name: username
+          value: "{{ media_acquisition.services.qbittorrent.web_username }}"
+        - name: password
+          value: "{{ media_secrets.qbittorrent_password }}"
+        # The category field name differs per app, hence category_field.
+        - name: "{{ arr.value.category_field }}"
+          value: "{{ arr.value.category }}"
+        - name: initialState
+          value: 0
+        - name: sequentialOrder
+          value: false
+        - name: firstAndLast
+          value: false
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  when:
+    - media_acquisition.services.qbittorrent.enabled
+    - arr_downloadclients.json is defined
+    - "'qBittorrent' not in (arr_downloadclients.json | map(attribute='name') | list)"
+  register: arr_downloadclient_add
+  failed_when: false
+  no_log: true
+
+- name: "{{ arr.key }}: record download client failure"
+  ansible.builtin.set_fact:
+    media_wiring_failures: "{{ media_wiring_failures + [arr.key ~ ': qBittorrent download client not added'] }}"
+  when:
+    - arr_downloadclient_add is defined
+    - not (arr_downloadclient_add.skipped | default(false))
+    - arr_downloadclient_add.status is defined
+    - arr_downloadclient_add.status not in [200, 201]
