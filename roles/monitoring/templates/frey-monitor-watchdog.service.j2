@@ -1,0 +1,37 @@
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+[Unit]
+Description=Frey monitoring watchdog - notifies if monitoring itself is broken
+Documentation=file://{{ monitoring.bin_dir }}/frey-monitor-watchdog
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart={{ monitoring.bin_dir }}/frey-monitor-watchdog
+User=root
+# Exit code 1 means "found a problem and said so", which is this unit doing its
+# job - not a failure. Without this every detection would also show up in
+# `systemctl --failed`, which the pi collector reports, which would alert about
+# the alert.
+SuccessExitStatus=0 1
+TimeoutStartSec=60
+Nice=5
+
+# systemd creates and owns /run/{{ monitoring.watchdog.service_name }}.
+#
+# NOT ReadWritePaths= for this one. Mount namespacing is set up BEFORE the
+# script runs, so naming a directory that does not exist yet fails the unit
+# outright with 226/NAMESPACE - the script's own `mkdir -p` never gets the
+# chance to run. RuntimeDirectory makes systemd create it first.
+RuntimeDirectory={{ monitoring.watchdog.service_name }}
+# Keep it between runs. This is a oneshot service, so without this the
+# directory is deleted the moment each run finishes - taking the
+# last-notified stamp with it, which is what stops the same "monitoring is
+# broken" message being sent every five minutes.
+RuntimeDirectoryPreserve=yes
+
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

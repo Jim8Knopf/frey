@@ -1,0 +1,202 @@
+{#
+  ============================================================================
+  GATEWAY ALERT RULES - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  The failures that make the van feel broken while every container is healthy.
+
+  THE ASYMMETRY HERE IS DELIBERATE. FreyHub is the critical always-on service -
+  it is how you reach everything, with or without internet - so its alerts are
+  short-fused and loud. The uplink is the opposite: it is expected to come and
+  go, and treating that as a fault would mean a notification every time the van
+  moves. So uplink alerts are warnings, slow, and mostly arrive as part of the
+  reconnect report - which is the right place for them, because the useful
+  information is how long you were actually offline.
+#}
+{% set go = '{{' %}
+{% set og = '}}' %}
+{% set t = monitoring_thresholds %}
+groups:
+
+  # ============================================================================
+  # FREYHUB - the access point
+  # ============================================================================
+  - name: frey_hub
+    rules:
+
+      - alert: FreyHubAccessPointDown
+        expr: frey_ap_up == 0
+        for: {{ t.gateway.ap_down_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: "FreyHub access point is down"
+          description: >-
+            The AP on {{ network_gateway.downstream.interface }} is not up.
+            This is the critical always-on service: with it down there is no
+            way into the Pi except the uplink radio, and no way at all if the
+            van is parked somewhere with no public Wi-Fi.
+            Check `nmcli device status` and
+            `systemctl status NetworkManager`.
+
+      # DNS is load-bearing in a way that is easy to forget: every service is
+      # reached by name, and dnsmasq answers those names locally so they work
+      # offline. If it stops answering, FreyHub looks connected and nothing
+      # resolves - which presents as "everything is broken" rather than as a
+      # DNS problem.
+      - alert: FreyDnsResolutionFailing
+        expr: frey_dns_probe_success == 0
+        for: {{ t.gateway.dns_failing_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: "FreyHub DNS is not answering"
+          description: >-
+            dnsmasq did not resolve a *.{{ frey.service_domain }} name. Every
+            service is reached by name, so this breaks all of them at once
+            while the containers stay perfectly healthy.
+            Check `systemctl status dnsmasq` and
+            `dig @{{ frey.service_address }} jellyfin.{{ frey.service_domain }}`.
+
+      # Clients are associated to the radio but nobody got an address. The
+      # symptom is a Wi-Fi network that connects and then does nothing, which
+      # is far more confusing than an AP that is simply absent.
+      - alert: FreyDhcpNotLeasing
+        expr: frey_dhcp_leases_active == 0 and frey_ap_stations > 0
+        for: {{ t.gateway.dhcp_broken_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: 'FreyHub has {{ go }} $value {{ og }} client(s) but no DHCP leases'
+          description: >-
+            Devices are associated to the AP and none of them has an address,
+            so FreyHub joins and then does nothing. Usually dnsmasq's DHCP
+            half failing while DNS still answers.
+
+  # ============================================================================
+  # NAT - the clients' route to the internet
+  # ============================================================================
+  - name: frey_nat
+    rules:
+
+      # Only meaningful when there IS an uplink. Without one there is nothing
+      # to masquerade to and the absence of rules is correct.
+      - alert: FreyNatRulesMissing
+        expr: frey_nat_masquerade_rules == 0 and frey_uplink_connected == 1
+        for: {{ t.gateway.nat_missing_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: "Uplink is up but NAT is not configured"
+          description: >-
+            There is a working uplink and no masquerade rule, so FreyHub
+            clients have local services but no internet - and from a phone
+            that looks like the whole network is broken.
+            Check `systemctl status frey-gateway-nat` and
+            `iptables -t nat -S`.
+
+      - alert: FreyDefaultRouteMissing
+        expr: frey_default_route_present == 0 and frey_uplink_connected == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Uplink is connected but there is no default route"
+          description: >-
+            Associated to a network with no route out of it. Often how a
+            half-completed DHCP exchange on a public network presents.
+
+  # ============================================================================
+  # THE UPLINK
+  #
+  # Warnings, all of them. No uplink is a normal state in a van.
+  # ============================================================================
+  - name: frey_uplink
+    rules:
+
+      - alert: FreyUplinkDown
+        expr: frey_uplink_usable == 0
+        for: {{ t.gateway.uplink_down_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: "No usable uplink"
+          description: >-
+            No internet for {{ t.gateway.uplink_down_for }}. Normal when
+            parked off-grid, and nothing below the Pi depends on it - FreyHub,
+            Jellyfin and Audiobookshelf all carry on. You are most likely
+            reading this in a reconnect report, in which case it has already
+            fixed itself and the useful part is how long it lasted.
+
+      # A captive portal is the nastiest uplink state because it looks online
+      # to an application: DNS resolves, TCP connects, and every request comes
+      # back as a sign-in page. media_acquisition already treats this as "not
+      # usable"; this is what tells you to go and sign in.
+      - alert: FreyUplinkCaptivePortal
+        expr: frey_uplink_connectivity{state="portal"} == 1
+        for: {{ t.gateway.captive_portal_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: "Uplink is behind a captive portal"
+          description: >-
+            Associated and intercepted - the network answers every request
+            with a sign-in page. Downloading is paused automatically. Signing
+            in from any FreyHub client authorises the whole hub, because their
+            traffic is NATed behind the Pi.
+
+      # A radio that reassociates constantly is worse than one that is simply
+      # down: every flap resets NAT, re-runs the dispatcher hooks and restarts
+      # the media gating.
+      - alert: FreyUplinkFlapping
+        expr: changes(frey_uplink_connected[1h]) > {{ t.gateway.flapping_changes }}
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Uplink has changed state {{ go }} $value {{ og }} times in an hour'
+          description: >-
+            The USB radio on {{ network_gateway.upstream.interface }} is
+            flapping. Marginal signal, a failing adapter or a dying USB port.
+            Each flap re-runs the NAT setup and the download gating, so this
+            is more disruptive than being cleanly offline.
+
+  # ============================================================================
+  # RADIO AND INTERFACE ERRORS
+  #
+  # Counters come from the gateway host collector rather than node-exporter -
+  # see the long note in the compose template. In short: /proc/net is
+  # per-namespace, so a containerised exporter cannot see wlan0 at all.
+  # ============================================================================
+  - name: frey_interfaces
+    rules:
+
+      - alert: FreyInterfaceErrors
+        expr: >-
+          rate(frey_net_receive_errors_total[10m])
+          + rate(frey_net_transmit_errors_total[10m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Errors on {{ go }} $labels.device {{ og }}'
+          description: >-
+            Sustained interface errors. On
+            {{ network_gateway.upstream.interface }} this usually means the USB
+            adapter or its power; on
+            {{ network_gateway.downstream.interface }} it is worth taking
+            seriously, because that radio carries FreyHub.
+
+      - alert: FreyHubNoClients
+        expr: frey_ap_stations == 0 and frey_ap_up == 1
+        for: 24h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No device has used FreyHub for 24 hours"
+          description: >-
+            The AP is up and nothing has associated for a day. Harmless if the
+            van is unused - but it is also what a broadcasting-but-unjoinable
+            AP looks like (wrong passphrase after a vault change, or a radio
+            that accepts no clients), and that failure is otherwise invisible.

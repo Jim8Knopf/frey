@@ -1,0 +1,232 @@
+{#
+  ============================================================================
+  PROMETHEUS - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Validated with `promtool check config` before Prometheus is told to reload,
+  so a mistake here is a failed deploy rather than monitoring that silently
+  stopped evaluating rules.
+#}
+{% set m = monitoring %}
+{% set svc = m.services %}
+global:
+  scrape_interval: {{ monitoring_retention.scrape_interval }}
+  scrape_timeout: 10s
+  evaluation_interval: {{ m.prometheus.evaluation_interval }}
+
+  # Stamped onto every series and every alert. One Pi today, but the label is
+  # what makes a second one - or a restore onto new hardware - distinguishable
+  # instead of silently merged.
+  external_labels:
+    node: {{ frey.node_name }}
+
+{% if svc.alertmanager.enabled | bool %}
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "{{ svc.alertmanager.container_name }}:{{ svc.alertmanager.port }}"
+      timeout: 10s
+{% endif %}
+
+# Generated from monitoring_thresholds in
+# inventory/group_vars/all/monitoring.yml. Every number any rule compares
+# against is in that one block.
+rule_files:
+  - /etc/prometheus/{{ m.prometheus.rules_dir }}/*.yml
+
+scrape_configs:
+
+  # ---------------------------------------------------------------------------
+  # THE STACK WATCHING ITSELF
+  #
+  # Not vanity: `up == 0` on any of these is the alert that tells you the
+  # monitoring is broken, which is the failure that otherwise goes unnoticed
+  # for weeks because everything looks quiet.
+  # ---------------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:{{ svc.prometheus.port }}"]
+
+{% if svc.alertmanager.enabled | bool %}
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["{{ svc.alertmanager.container_name }}:{{ svc.alertmanager.port }}"]
+
+  # The relay exports its own queue depth and last-successful-send time, which
+  # is how "alerts are piling up waiting for an uplink" becomes visible rather
+  # than something you discover when they all arrive at once.
+  - job_name: alert_relay
+    static_configs:
+      - targets: ["{{ svc.alert_relay.container_name }}:{{ svc.alert_relay.port }}"]
+{% endif %}
+
+{% if svc.node_exporter.enabled | bool %}
+  # ---------------------------------------------------------------------------
+  # THE HOST
+  #
+  # Includes everything the host collectors write into the textfile directory:
+  # Pi throttling and PMIC power, NVMe SMART, uplink state, AP clients, DHCP
+  # leases, DNS answers, NAT rules, container state - and whatever van sensors
+  # get added later. They arrive here as ordinary metrics with no extra scrape
+  # target to configure.
+  # ---------------------------------------------------------------------------
+  - job_name: node
+    static_configs:
+      - targets: ["{{ svc.node_exporter.container_name }}:{{ svc.node_exporter.port }}"]
+    relabel_configs:
+      - target_label: instance
+        replacement: {{ frey.node_name }}
+{% endif %}
+
+{% if svc.cadvisor.enabled | bool %}
+  - job_name: cadvisor
+    # cAdvisor's housekeeping runs on a 30s cycle, so scraping faster than
+    # that returns the same numbers twice and costs CPU for nothing.
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["{{ svc.cadvisor.container_name }}:{{ svc.cadvisor.port }}"]
+    metric_relabel_configs:
+      # cAdvisor emits a series per cgroup, including the slices that are not
+      # containers at all. Only named containers are of any use here, and
+      # dropping the rest roughly halves the series count.
+      - source_labels: [name]
+        regex: ^$
+        action: drop
+{% endif %}
+
+{% if svc.loki.enabled | bool %}
+  - job_name: loki
+    static_configs:
+      - targets: ["{{ svc.loki.container_name }}:{{ svc.loki.port }}"]
+
+  - job_name: alloy
+    static_configs:
+      - targets: ["{{ svc.alloy.container_name }}:{{ svc.alloy.port }}"]
+{% endif %}
+
+{% if svc.grafana.enabled | bool %}
+  - job_name: grafana
+    static_configs:
+      - targets: ["{{ svc.grafana.container_name }}:{{ svc.grafana.port }}"]
+{% endif %}
+
+{% if service_proxy.traefik.metrics.enabled | default(false) | bool %}
+  # ---------------------------------------------------------------------------
+  # TRAEFIK
+  #
+  # Per-router and per-service request counts, status codes and latency. This
+  # is what answers "is it slow, or is it broken", and it is counted at the
+  # one point every request already passes through - so it needs nothing from
+  # the services themselves.
+  #
+  # The metrics entrypoint is container-internal and published nowhere, which
+  # is why this scrape only works from the proxy network.
+  # ---------------------------------------------------------------------------
+  - job_name: traefik
+    static_configs:
+      - targets: ["{{ service_proxy.traefik.container_name }}:{{ service_proxy.traefik.metrics.port }}"]
+{% endif %}
+
+{% if svc.blackbox.enabled | bool %}
+  - job_name: blackbox
+    static_configs:
+      - targets: ["{{ svc.blackbox.container_name }}:{{ svc.blackbox.port }}"]
+
+  # ---------------------------------------------------------------------------
+  # DOES THE SERVICE ACTUALLY ANSWER
+  #
+  # The only job here that tests what a browser experiences. Everything else
+  # measures what the Pi believes about itself.
+  #
+  # HOW THE RELABELLING WORKS, because it does not look like the usual blackbox
+  # example. Normally `targets` are URLs and one module probes them all. It
+  # cannot be that here: the probe has to reach the Traefik CONTAINER (the Pi's
+  # own *.hub.frey names do not resolve inside a container, and the host
+  # address is firewalled off from Docker bridges), which means the Host header
+  # and the TLS SNI have to carry the service name instead - and blackbox can
+  # only set those per module.
+  #
+  # So: one generated module per service, `targets` are bare service names, and
+  # these rules turn a name into "ask blackbox to run module frey_<name>
+  # against the Traefik container".
+  #
+  # The reward for the complication is that it survives Traefik being
+  # recreated and changing IP, which a generated extra_hosts list would not.
+  # ---------------------------------------------------------------------------
+  - job_name: service_probe
+    metrics_path: /probe
+    # A probe is a real HTTPS request through the proxy; it is not free, and
+    # a service that has been down for 30 seconds is not yet news.
+    scrape_interval: 30s
+    scrape_timeout: 20s
+    static_configs:
+{% set core_hosts = monitoring_probe_hostnames | select('in', monitoring_probe_core) | list %}
+{% set extra_hosts = monitoring_probe_hostnames | reject('in', monitoring_probe_core) | list %}
+{% if core_hosts | length > 0 %}
+      # core: playback and the ability to log in. Failure buzzes your phone.
+      - targets:
+{% for host in core_hosts %}
+          - {{ host }}
+{% endfor %}
+        labels:
+          tier: core
+{% endif %}
+{% if extra_hosts | length > 0 %}
+      # extra: an inconvenience rather than an emergency. Silent warning.
+      - targets:
+{% for host in extra_hosts %}
+          - {{ host }}
+{% endfor %}
+        labels:
+          tier: extra
+{% endif %}
+    relabel_configs:
+      # Keep the service name before __address__ gets rewritten to blackbox.
+      - source_labels: [__address__]
+        target_label: service
+      - source_labels: [__address__]
+        target_label: instance
+      # One module per service, generated into blackbox.yml.
+      - source_labels: [__address__]
+        regex: (.+)
+        replacement: frey_${1}
+        target_label: __param_module
+      # Always the proxy itself; the module decides which name it asks for.
+      - target_label: __param_target
+        replacement: https://{{ service_proxy.traefik.container_name }}/
+      - target_label: __address__
+        replacement: "{{ svc.blackbox.container_name }}:{{ svc.blackbox.port }}"
+
+{% if monitoring_probe_extra_targets | default([]) | length > 0 %}
+  # ---------------------------------------------------------------------------
+  # EXTRA PROBES
+  #
+  # Anything reached by address rather than by service name, from
+  # monitoring_probe_extra_targets. These use the ordinary blackbox pattern -
+  # the target IS the URL - because there is no Host header to fake.
+  # ---------------------------------------------------------------------------
+  - job_name: extra_probe
+    metrics_path: /probe
+    scrape_interval: 30s
+    scrape_timeout: 20s
+    params:
+      module: [frey_url]
+    static_configs:
+{% for t in monitoring_probe_extra_targets %}
+      - targets:
+          - "{{ t.url }}"
+        labels:
+          tier: {{ t.tier | default('extra') }}
+          service: {{ t.name }}
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ svc.blackbox.container_name }}:{{ svc.blackbox.port }}"
+{% endif %}
+{% endif %}

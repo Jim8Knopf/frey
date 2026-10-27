@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-monitor-watchdog - who watches the watchers
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+# =============================================================================
+#
+# THE PROBLEM THIS SOLVES
+#
+# Everything else in this stack reports a fault by generating an alert, which
+# travels Prometheus -> Alertmanager -> relay -> ntfy. Every link in that chain
+# can fail, and when one does the result is silence - which is
+# indistinguishable from "nothing is wrong". You would carry on believing you
+# were covered, for weeks.
+#
+# So this runs on the HOST, from a systemd timer, and needs none of that chain:
+# no Prometheus, no Alertmanager, not even Docker beyond asking whether the
+# containers are there. It talks to ntfy directly with curl.
+#
+# It is the only component here that can tell you the monitoring itself is
+# dead. It is deliberately dumb for that reason - the less it depends on, the
+# fewer ways it has to fail quietly alongside everything else.
+#
+# WHAT IT CHECKS
+#
+#   1. The containers that must be running, are.
+#   2. The relay answers its health endpoint.
+#   3. The relay has delivered something recently, OR is holding a queue
+#      because there is no uplink - which is correct behaviour, not a fault.
+#
+# RUN IT BY HAND
+#
+#   frey-monitor-watchdog           # check and notify if needed
+#   frey-monitor-watchdog status    # check and print, never notify
+#
+# =============================================================================
+
+set -uo pipefail
+
+NTFY_URL="{{ monitoring_alerting.ntfy.server }}/{{ monitoring_secrets.ntfy_topic }}"
+NTFY_TOKEN="{{ monitoring_alerting.ntfy.token | default('', true) }}"
+NTFY_TIMEOUT={{ monitoring_alerting.ntfy.timeout }}
+RELAY="http://127.0.0.1:{{ monitoring.services.alert_relay.port }}"
+STATE_DIR="{{ monitoring.watchdog.state_dir }}"
+STAMP="${STATE_DIR}/last-notified"
+REPEAT_SECONDS=$(( {{ monitoring_alerting.watchdog.repeat_hours }} * 3600 ))
+NODE="{{ frey.node_name }}"
+
+# The containers whose absence means monitoring is not working. Grafana is
+# deliberately NOT here: it is only a viewer, and its being down costs you
+# dashboards, not alerts.
+REQUIRED=(
+{% for name, cfg in monitoring.services.items() %}
+{% if cfg.enabled and name in ['prometheus', 'alertmanager', 'alert_relay'] %}
+  "{{ cfg.container_name }}"
+{% endif %}
+{% endfor %}
+)
+
+MODE="${1:-notify}"
+mkdir -p "${STATE_DIR}"
+
+problems=()
+
+# -----------------------------------------------------------------------------
+# 1. Are the containers running?
+# -----------------------------------------------------------------------------
+if command -v docker >/dev/null 2>&1; then
+  running=$(docker ps --format '{% raw %}{{.Names}}{% endraw %}' 2>/dev/null)
+  if [[ -z "${running}" ]]; then
+    problems+=("docker is not answering - the whole stack is unreachable")
+  else
+    for container in "${REQUIRED[@]}"; do
+      grep -qx "${container}" <<< "${running}" \
+        || problems+=("container '${container}' is not running")
+    done
+  fi
+else
+  problems+=("docker is not installed")
+fi
+
+# -----------------------------------------------------------------------------
+# 2. and 3. Is the relay alive, and has it delivered anything?
+#
+# The relay is reached on 127.0.0.1 because this runs on the host, and the
+# relay's port is not published - so this check only works via the container's
+# own network. It is queried through docker exec for that reason.
+# -----------------------------------------------------------------------------
+relay_metrics=""
+if command -v docker >/dev/null 2>&1; then
+  relay_metrics=$(docker exec "{{ monitoring.services.alert_relay.container_name }}" \
+    python3 -c "
+import urllib.request
+print(urllib.request.urlopen('${RELAY}/metrics', timeout=5).read().decode())
+" 2>/dev/null)
+fi
+
+if [[ -z "${relay_metrics}" ]]; then
+  problems+=("the notification relay is not answering - nothing can reach your phone")
+else
+  metric() {
+    awk -v key="$1" '$1 == key { print $2; exit }' <<< "${relay_metrics}"
+  }
+
+  last_success=$(metric frey_alert_relay_last_success_timestamp_seconds)
+  last_watchdog=$(metric frey_alert_relay_last_watchdog_timestamp_seconds)
+  queue_depth=$(metric frey_alert_relay_queue_depth)
+  now=$(date +%s)
+
+  # --------------------------------------------------------------------------
+  # Prometheus sends a Watchdog alert every minute, forever. If the relay has
+  # not seen one recently, the chain between Prometheus and the relay is
+  # broken even though both may look alive.
+  #
+  # Tolerated when it has NEVER seen one: that is a cold start, not a fault.
+  # --------------------------------------------------------------------------
+  if [[ -n "${last_watchdog}" ]] && [[ "${last_watchdog%.*}" -gt 0 ]]; then
+    age=$(( now - ${last_watchdog%.*} ))
+    if (( age > {{ monitoring_alerting.watchdog.stale_after_minutes }} * 60 )); then
+      problems+=("no heartbeat from Prometheus for $(( age / 60 )) minutes")
+    fi
+  fi
+
+  # --------------------------------------------------------------------------
+  # A relay that has delivered nothing for a long time is either healthy and
+  # idle (nothing has gone wrong - the normal case) or unable to reach ntfy.
+  # Those are told apart by the queue: alerts waiting means it tried and
+  # failed, which is correct behaviour while the van has no uplink and is NOT
+  # reported as a fault here. The relay will flush them with a report.
+  # --------------------------------------------------------------------------
+  if [[ -n "${queue_depth}" ]] && (( ${queue_depth%.*} > 0 )); then
+    echo "note: ${queue_depth%.*} alert(s) held for want of an uplink (expected, not a fault)"
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# Report
+# -----------------------------------------------------------------------------
+{# `${#` opens a Jinja comment, so the array-length form is escaped here. #}
+if (( {% raw %}${#problems[@]}{% endraw %} == 0 )); then
+  echo "monitoring is healthy"
+  exit 0
+fi
+
+printf 'PROBLEM: %s\n' "${problems[@]}"
+
+if [[ "${MODE}" == "status" ]]; then
+  exit 1
+fi
+
+# Do not say the same thing every five minutes.
+if [[ -r "${STAMP}" ]]; then
+  last=$(cat "${STAMP}" 2>/dev/null || echo 0)
+  if (( $(date +%s) - ${last:-0} < REPEAT_SECONDS )); then
+    echo "(already notified within the last {{ monitoring_alerting.watchdog.repeat_hours }}h)"
+    exit 1
+  fi
+fi
+
+body=$(printf 'Frey monitoring on %s is not working:\n\n' "${NODE}";
+        printf '  - %s\n' "${problems[@]}";
+        printf '\nUntil this is fixed, no alert from this Pi can reach you -\n';
+        printf 'so treat anything quiet as unverified.\n\n';
+        printf 'On the Pi:\n';
+        printf '  docker ps -a --filter label=frey.module=monitoring\n';
+        printf '  docker logs --tail 50 prometheus\n';
+        printf '  docker logs --tail 50 alert-relay\n')
+
+# Sent with curl rather than through the relay, for the obvious reason.
+auth=()
+[[ -n "${NTFY_TOKEN}" ]] && auth=(-H "Authorization: Bearer ${NTFY_TOKEN}")
+
+if curl -fsS --max-time "${NTFY_TIMEOUT}" \
+    -H "X-Title: CRITICAL: Frey monitoring is down" \
+    -H "X-Priority: 5" \
+    -H "X-Tags: skull" \
+    "${auth[@]}" \
+    -d "${body}" \
+    "${NTFY_URL}" >/dev/null; then
+  date +%s > "${STAMP}"
+  echo "notified"
+else
+  # No uplink. Nothing to be done but try again next time - and deliberately
+  # NOT recording a stamp, so the message is sent the moment there is internet.
+  echo "could not notify (no uplink?); will retry"
+fi
+
+exit 1

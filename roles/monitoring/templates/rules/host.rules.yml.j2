@@ -1,0 +1,377 @@
+{#
+  ============================================================================
+  HOST ALERT RULES - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Generated from monitoring_thresholds in
+  inventory/group_vars/all/monitoring.yml. Change a number there, not here.
+
+  `go`/`og` stand in for Go template braces, the same trick
+  roles/identity/templates/authelia-configuration.yml.j2 uses: Prometheus
+  annotations are Go templates and Jinja would otherwise eat them.
+#}
+{% set go = '{{' %}
+{% set og = '}}' %}
+{% set t = monitoring_thresholds %}
+{% set root = '/' %}
+groups:
+
+  # ============================================================================
+  # DISK
+  #
+  # One filesystem matters on this Pi: / on the NVMe, which holds the Docker
+  # data root, every database and the whole media library. Everything else is
+  # tmpfs and overlay noise, excluded at the collector.
+  # ============================================================================
+  - name: frey_disk
+    rules:
+
+      - alert: FreyDiskCritical
+        expr: >-
+          100 * node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+          / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}
+          < {{ t.disk.critical_percent }}
+        for: {{ t.disk.for_critical }}
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Disk {{ go }} $labels.mountpoint {{ og }} almost full ({{ go }} printf "%.1f" $value {{ og }}% free)'
+          description: >-
+            Under {{ t.disk.critical_percent }}% left. At this point Docker
+            cannot write, the *arr and Jellyfin SQLite databases risk
+            corruption on their next write, and qBittorrent will start
+            erroring on every active torrent.
+            Fastest wins: pause downloading, then look at
+            {{ media.data_dir }}/downloads for imports that never completed.
+
+      - alert: FreyDiskLow
+        expr: >-
+          100 * node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+          / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}
+          < {{ t.disk.low_percent }}
+        for: {{ t.disk.for_warning }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Disk {{ go }} $labels.mountpoint {{ og }} at {{ go }} printf "%.1f" $value {{ og }}% free'
+          description: >-
+            Below {{ t.disk.low_percent }}% free. Worth clearing now rather
+            than at {{ t.disk.critical_percent }}%, when the databases are
+            already at risk.
+
+      # ------------------------------------------------------------------------
+      # THE PROACTIVE ONE
+      #
+      # Everything above tells you the disk IS full. This tells you it is
+      # GOING to be, while there is still time to do something unhurried about
+      # it. On a 4 TB disk filling steadily, this fires weeks before the
+      # others - which is the whole point of monitoring rather than checking.
+      #
+      # Gated on being under 30% already, because predict_linear on a mostly
+      # empty disk extrapolates ordinary noise into nonsense.
+      # ------------------------------------------------------------------------
+      - alert: FreyDiskFillingUp
+        expr: >-
+          predict_linear(
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[{{ t.disk.predict_window }}],
+            {{ t.disk.predict_full_days }} * 24 * 3600
+          ) < 0
+          and
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+          / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.3
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $labels.mountpoint {{ og }} will be full within {{ t.disk.predict_full_days }} days'
+          description: >-
+            Based on the last {{ t.disk.predict_window }} of growth. Nothing is
+            broken yet - this is the warning that lets you deal with it on a
+            good uplink instead of in a hurry.
+
+      # A read-only root is how a dying NVMe announces itself: the kernel
+      # remounts to protect the data. Everything will misbehave from here, and
+      # no amount of restarting containers will help.
+      - alert: FreyRootFilesystemReadOnly
+        expr: frey_rootfs_readonly == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Root filesystem has gone read-only"
+          description: >-
+            The kernel remounted / read-only, which almost always means the
+            NVMe is failing or has thrown an I/O error. Nothing will write
+            until this is resolved. Check `dmesg -T | tail -50` and
+            `nvme smart-log /dev/nvme0` before rebooting - a reboot may not
+            come back.
+
+  # ============================================================================
+  # MEMORY AND CPU
+  # ============================================================================
+  - name: frey_resources
+    rules:
+
+      - alert: FreyMemoryCritical
+        expr: >-
+          100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+          < {{ t.memory.critical_percent }}
+        for: {{ t.memory.for_critical }}
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Memory almost gone ({{ go }} printf "%.1f" $value {{ og }}% available)'
+          description: >-
+            Under {{ t.memory.critical_percent }}% available. The kernel is
+            about to start OOM-killing, and it does not pick politely - it may
+            take hostapd or dnsmasq, which means losing FreyHub itself.
+
+      - alert: FreyMemoryLow
+        expr: >-
+          100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+          < {{ t.memory.low_percent }}
+        for: {{ t.memory.for_warning }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Memory down to {{ go }} printf "%.1f" $value {{ og }}% available'
+          description: >-
+            Below {{ t.memory.low_percent }}% available. On 16 GB that is
+            unusual and worth understanding - check the containers panel for
+            which one grew.
+
+      - alert: FreyOomKill
+        expr: increase(node_vmstat_oom_kill[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The kernel OOM-killed a process"
+          description: >-
+            Something was killed to reclaim memory. Find out what before it
+            happens again: `journalctl -k --since '-30m' | grep -i oom`. If it
+            took a gateway process, FreyHub may be degraded without the
+            container checks noticing.
+
+      - alert: FreyLoadHigh
+        expr: >-
+          node_load15
+          / on(instance) group_left
+          count by (instance) (count by (instance, cpu) (node_cpu_seconds_total))
+          > {{ t.cpu.load_per_core_warning }}
+        for: {{ t.cpu.for_warning }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Sustained load {{ go }} printf "%.1f" $value {{ og }} per core'
+          description: >-
+            Load has been above {{ t.cpu.load_per_core_warning }} per core for
+            {{ t.cpu.for_warning }}. The usual cause here is a Jellyfin
+            software transcode - the Pi 5 has no hardware encoder, so every
+            transcode competes with the gateway. Check what is playing before
+            blaming anything else.
+
+  # ============================================================================
+  # TEMPERATURE, POWER AND THROTTLING
+  #
+  # The van-specific group, and the most valuable one here. The Pi 5 reports
+  # under-voltage and throttling directly, and in a vehicle those are not
+  # theoretical: they mean the supply is sagging or the cabin is too hot.
+  # Neither shows up anywhere else until something is already corrupted.
+  # ============================================================================
+  - name: frey_thermal_power
+    rules:
+
+      - alert: FreySocTempCritical
+        expr: frey_soc_temp_celsius > {{ t.temperature.soc_critical }}
+        for: {{ t.temperature.for_critical }}
+        labels:
+          severity: critical
+        annotations:
+          summary: 'SoC at {{ go }} printf "%.1f" $value {{ og }} C'
+          description: >-
+            Above {{ t.temperature.soc_critical }} C. The Pi 5 soft-throttles
+            at 80 and hard-throttles at 85, so performance is already going.
+            Improve airflow, get it out of direct sun, or stop whatever is
+            transcoding.
+
+      - alert: FreySocTempWarning
+        expr: frey_soc_temp_celsius > {{ t.temperature.soc_warning }}
+        for: {{ t.temperature.for_warning }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'SoC running warm at {{ go }} printf "%.1f" $value {{ og }} C'
+          description: >-
+            Above {{ t.temperature.soc_warning }} C for
+            {{ t.temperature.for_warning }}. Not throttling yet - this is the
+            window in which moving the airflow is easy.
+
+      # --------------------------------------------------------------------------
+      # UNDER-VOLTAGE: the single most useful alert on this list for a van.
+      #
+      # It means the 5 V supply is sagging under load - a tired DC-DC
+      # converter, a thin or long cable, a leisure battery going flat. Left
+      # alone it corrupts filesystems, and it is the most likely cause of an
+      # NVMe that mysteriously develops errors.
+      #
+      # Critical after one minute rather than the usual grace period: by the
+      # time this is sustained, writes have already been happening at a voltage
+      # the flash was not promised.
+      # --------------------------------------------------------------------------
+      - alert: FreyUndervoltage
+        expr: frey_undervoltage_now == 1
+        for: {{ t.power.undervoltage_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: "Under-voltage detected - the Pi's supply is sagging"
+          description: >-
+            The Pi reports the 5 V rail below spec right now. This corrupts
+            filesystems and is a common cause of unexplained NVMe errors.
+            Check the supply, the cable and the battery state of charge before
+            anything else - no software change fixes this.
+
+      - alert: FreyUndervoltageOccurred
+        expr: frey_undervoltage_occurred == 1 and frey_undervoltage_now == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Under-voltage happened since boot"
+          description: >-
+            Not happening now, but it has since the last boot - so it is
+            intermittent, which is worse to diagnose later than now. Usually
+            the supply sagging under a load peak. Clears on reboot.
+
+      - alert: FreyThrottling
+        expr: frey_throttled_now == 1 or frey_freq_capped_now == 1
+        for: {{ t.power.throttling_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Pi is throttling"
+          description: >-
+            The clock is being capped, from heat or from voltage. Check
+            temperature and under-voltage together - if both look fine, the
+            supply is the suspect.
+
+  # ============================================================================
+  # NVMe HEALTH
+  #
+  # The drive holds everything: the databases, the media, the OS. It reports
+  # its own wear and its own error counts, and the only reason those usually go
+  # unnoticed is that nobody reads them. At 0% used today, these thresholds are
+  # about having the alarm already wired up years before it matters.
+  # ============================================================================
+  - name: frey_nvme
+    rules:
+
+      - alert: FreyNvmeCriticalWarning
+        expr: frey_nvme_critical_warning != 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} raised a critical warning'
+          description: >-
+            The drive itself is reporting a fault - spare blocks exhausted,
+            degraded reliability, over temperature or read-only mode. Run
+            `nvme smart-log /dev/nvme0` and take a backup before anything
+            else.
+
+      - alert: FreyNvmeMediaErrors
+        expr: increase(frey_nvme_media_errors_total[1h]) > {{ t.nvme.media_errors }}
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} reported media errors'
+          description: >-
+            Uncorrectable data errors. On a drive holding the only copy of
+            anything, one is enough to act on. Check under-voltage too - a
+            sagging supply produces these on an otherwise healthy drive.
+
+      - alert: FreyNvmeWearCritical
+        expr: frey_nvme_wear_percent > {{ t.nvme.wear_critical_percent }}
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} at {{ go }} $value {{ og }}% of rated life'
+          description: >-
+            Past {{ t.nvme.wear_critical_percent }}% of its endurance rating.
+            Plan a replacement. Write volume is dominated by Loki and the
+            Prometheus TSDB, so monitoring_enable.logs is the biggest lever if
+            you need to slow it down.
+
+      - alert: FreyNvmeWearHigh
+        expr: frey_nvme_wear_percent > {{ t.nvme.wear_warning_percent }}
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} at {{ go }} $value {{ og }}% of rated life'
+          description: >-
+            Past {{ t.nvme.wear_warning_percent }}%. Years of warning, not
+            days - but worth knowing while a replacement can be bought
+            unhurried.
+
+      - alert: FreyNvmeHot
+        expr: frey_nvme_temperature_celsius > {{ t.temperature.nvme_warning }}
+        for: {{ t.temperature.for_warning }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} at {{ go }} $value {{ og }} C'
+          description: >-
+            Above {{ t.temperature.nvme_warning }} C. NVMe drives throttle
+            themselves when hot, which shows up as everything feeling slow
+            with no CPU load to explain it.
+
+      # An unclean shutdown in a van means the power was cut - the ignition,
+      # a flat battery, a knocked connector. The drive counts them, and the
+      # count is the only durable evidence it happened.
+      - alert: FreyUnsafeShutdown
+        expr: increase(frey_nvme_unsafe_shutdowns_total[2h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Pi lost power without shutting down"
+          description: >-
+            The NVMe recorded an unsafe shutdown, so the Pi was cut off rather
+            than halted. Each one risks filesystem and database damage. If
+            this keeps happening, the fix is a supply that outlasts the
+            ignition, not anything in software.
+
+  # ============================================================================
+  # THE HOST GENERALLY
+  # ============================================================================
+  - name: frey_system
+    rules:
+
+      - alert: FreySystemdUnitsFailed
+        expr: frey_systemd_units_failed > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $value {{ og }} systemd unit(s) in failed state'
+          description: >-
+            Run `systemctl --failed`. Worth reading even when everything looks
+            fine: this is where a failed NAT setup, a dead collector timer or a
+            broken deadman rollback shows up.
+
+      - alert: FreyRebooted
+        expr: time() - node_boot_time_seconds < 600
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Pi rebooted"
+          description: >-
+            Up for under ten minutes. If you did not do it deliberately, check
+            FreyUnsafeShutdown and FreyUndervoltage - in a van an unexplained
+            reboot is usually power, not software.

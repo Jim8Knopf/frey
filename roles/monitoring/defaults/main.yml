@@ -1,0 +1,368 @@
+---
+# ==============================================================================
+# MONITORING - PROMETHEUS, LOKI, GRAFANA, AND THE PART THAT FINDS YOU
+#
+# WHAT GOES WHERE
+#
+#   inventory/group_vars/all/monitoring.yml   thresholds, retention, what is
+#                                             core, what is muted. Edit this.
+#   this file                                 container plumbing: uids, ports,
+#                                             memory caps, networks, the
+#                                             Grafana OIDC wiring. Edit only
+#                                             when adding a component.
+#
+# WHY THIS IS NOT THE ARCHIVED monitoring ROLE
+#
+# archive/legacy-stack/roles/monitoring/ had Prometheus, Grafana, Loki and 30
+# alert rules, and it could not have warned anyone about anything: there was no
+# Alertmanager and no receiver, so every one of those rules fired into a void.
+# It also downloaded its ten dashboards from grafana.com during the deploy,
+# which means a van with no uplink got a working metrics database and an empty
+# Grafana. Both are fixed here rather than carried over:
+#
+#   - alerts have somewhere to go, and that somewhere survives being offline
+#   - dashboards are files in this role, so a deploy needs no internet
+#   - every config is validated by the tool that owns it before anything
+#     restarts, the way roles/identity/ validates Authelia's
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+#
+# No remote access. No tunnel, no exposed port, no third party holding a
+# dashboard. Grafana is reachable on FreyHub and nowhere else; the only thing
+# that leaves the van is an outbound notification. That was a decision, not an
+# omission - see docs/MONITORING.md.
+# ==============================================================================
+
+monitoring:
+  stack_dir: "{{ frey.base_dir }}/stacks/monitoring"
+  appdata_dir: "{{ frey.base_dir }}/appdata/monitoring"
+  config_dir: "{{ frey.base_dir }}/monitoring"
+
+  # --------------------------------------------------------------------------
+  # THE TEXTFILE DIRECTORY
+  #
+  # node-exporter reads every *.prom file here and exposes its contents as
+  # ordinary metrics. Everything the Pi knows about itself but no off-the-shelf
+  # exporter reports - throttling bits, PMIC power rails, NVMe SMART, how many
+  # clients FreyHub has - arrives through this directory, and so will the van's
+  # temperature sensors.
+  #
+  # Deliberately outside appdata_dir: this is an interface other things write
+  # to, not private state belonging to one container.
+  # --------------------------------------------------------------------------
+  textfile_dir: "{{ frey.base_dir }}/metrics/textfile"
+  bin_dir: /usr/local/bin
+
+  # --------------------------------------------------------------------------
+  # THE UID EVERYTHING RUNS AS
+  #
+  # One uid for the four containers that store data, matching the pattern
+  # roles/identity/ uses. Pinned rather than left to each image's default,
+  # because the alternative is four different owners on four data directories
+  # and a crash loop the first time an image changes which user it drops to.
+  #
+  # Prometheus, Alertmanager, Loki and Grafana all run happily as an arbitrary
+  # uid. node-exporter, cAdvisor and Alloy do not - they read the host, the
+  # cgroup tree, the Docker socket and the journal - so they stay root with
+  # read-only mounts. That split is as small as it can be.
+  # --------------------------------------------------------------------------
+  user:
+    name: frey_monitoring
+    uid: 3200
+    gid: 3200
+
+  # --------------------------------------------------------------------------
+  # PRIVATE NETWORK
+  #
+  # MUST NOT overlap FreyHub's 10.20.0.0/24, the media network's 172.28.0.0/16
+  # or identity's 172.29.0.0/24.
+  #
+  # The stack talks to itself here rather than on the shared proxy network.
+  # Nothing in it authenticates - Prometheus has no login, the relay accepts
+  # any POST as an alert - so it should not be reachable from a media container
+  # that happens to get compromised by a malicious release.
+  #
+  # Grafana, Prometheus and Alertmanager additionally join the proxy network,
+  # because Traefik has to reach them to serve their UIs, and because Traefik's
+  # own metrics endpoint only exists there.
+  # --------------------------------------------------------------------------
+  network:
+    name: monitoring_internal
+    subnet: 172.30.0.0/24
+
+  # --------------------------------------------------------------------------
+  # COMPONENTS
+  #
+  # Memory caps on everything. Monitoring must never be the reason the Pi is
+  # short of memory: a runaway Prometheus query that starved Jellyfin or the
+  # access point would be a self-inflicted outage caused by the thing meant to
+  # prevent outages. The caps are generous against measured use (the whole
+  # stack sits near 1 GB of the Pi's 16) and exist only as a ceiling.
+  # --------------------------------------------------------------------------
+  services:
+    prometheus:
+      enabled: "{{ monitoring_enable.metrics | bool }}"
+      image: "prom/prometheus:{{ monitoring_versions.prometheus }}"
+      container_name: prometheus
+      port: 9090
+      mem_limit: 1536m
+
+    alertmanager:
+      enabled: "{{ monitoring_enable.alerting | bool }}"
+      image: "prom/alertmanager:{{ monitoring_versions.alertmanager }}"
+      container_name: alertmanager
+      port: 9093
+      mem_limit: 256m
+
+    alert_relay:
+      enabled: "{{ monitoring_enable.alerting | bool }}"
+      image: "python:{{ monitoring_versions.relay_base }}"
+      container_name: alert-relay
+      port: 8080
+      mem_limit: 128m
+
+    node_exporter:
+      enabled: "{{ monitoring_enable.metrics and monitoring_enable.node_exporter }}"
+      image: "prom/node-exporter:{{ monitoring_versions.node_exporter }}"
+      container_name: node-exporter
+      port: 9100
+      mem_limit: 192m
+
+    cadvisor:
+      enabled: "{{ monitoring_enable.metrics and monitoring_enable.cadvisor }}"
+      # Not on Docker Hub. v0.53.0 and v0.54.0 do not exist as tags at all, so
+      # do not assume the next number up is available - check first.
+      image: "gcr.io/cadvisor/cadvisor:{{ monitoring_versions.cadvisor }}"
+      container_name: cadvisor
+      port: 8080
+      mem_limit: 384m
+
+    blackbox:
+      enabled: "{{ monitoring_enable.metrics and monitoring_enable.blackbox }}"
+      image: "prom/blackbox-exporter:{{ monitoring_versions.blackbox_exporter }}"
+      container_name: blackbox
+      port: 9115
+      mem_limit: 128m
+
+    loki:
+      enabled: "{{ monitoring_enable.logs | bool }}"
+      image: "grafana/loki:{{ monitoring_versions.loki }}"
+      container_name: loki
+      port: 3100
+      mem_limit: 768m
+
+    alloy:
+      enabled: "{{ monitoring_enable.logs | bool }}"
+      image: "grafana/alloy:{{ monitoring_versions.alloy }}"
+      container_name: alloy
+      port: 12345
+      mem_limit: 384m
+
+    grafana:
+      enabled: "{{ monitoring_enable.grafana | bool }}"
+      image: "grafana/grafana:{{ monitoring_versions.grafana }}"
+      container_name: grafana
+      port: 3000
+      mem_limit: 512m
+
+  # --------------------------------------------------------------------------
+  # GRAFANA
+  # --------------------------------------------------------------------------
+  grafana:
+    url: "https://{{ monitoring_hosts.grafana }}.{{ frey.service_domain }}"
+
+    # A local administrator kept alongside single sign-on, deliberately. If
+    # Authelia is down - which is one of the things this stack exists to tell
+    # you about - OIDC login is down with it, and the dashboards showing you
+    # why would be unreachable at exactly the wrong moment. The password is
+    # generated on the Pi and printed once.
+    admin_user: admin
+
+    # ------------------------------------------------------------------------
+    # SINGLE SIGN-ON
+    #
+    # The client is already declared in roles/identity/defaults/main.yml -
+    # grafana was in the OIDC catalogue before this module existed, complete
+    # with the frey_groups claims policy it needs. Adding `grafana: {auth:
+    # oidc}` to identity.yml is what switches it on.
+    #
+    # THE INTERESTING PART: auth_url is an HTTPS name your BROWSER visits,
+    # while token_url and api_url are plain HTTP to the container directly.
+    # That is not a shortcut, it is the only arrangement that works here:
+    #
+    #   - Grafana's backend has to call the token endpoint itself. The Pi's
+    #     /etc/resolv.conf points at whatever DNS the campground handed out,
+    #     so auth.hub.frey does not resolve inside a container at all (and
+    #     dnsmasq only answers queries arriving on the AP radio, so pointing
+    #     at it does not help either - it times out).
+    #   - Even with a name, Grafana would then have to trust the Frey CA, and
+    #     the image runs as a non-root uid that cannot update its trust store.
+    #
+    # Talking to authelia:9091 over the private Docker network sidesteps both.
+    # The traffic never leaves the host, and OIDC does not care which URL the
+    # back-channel used - tokens are validated against the issuer string,
+    # which stays https://auth.hub.frey either way.
+    # ------------------------------------------------------------------------
+    oidc:
+      client_id: grafana
+
+      # ----------------------------------------------------------------------
+      # These are built from identity_hosts, which lives in
+      # inventory/group_vars/all/identity.yml, and NOT from the identity
+      # role's own `identity` dict.
+      #
+      # That is not a style preference. A role's defaults are only in scope
+      # while that role is running, so `identity.urls.auth` is undefined here
+      # unless the identity role happens to have been included earlier in the
+      # same play - which it is today, purely because site.yml includes every
+      # enabled module in order. Depending on that would mean this module
+      # breaks the moment identity is removed from frey.modules.enabled, which
+      # is exactly the case it is supposed to survive. The same reasoning is
+      # why frey.pki_public_dir is declared in main.yml rather than in
+      # roles/frey_pki/defaults/.
+      # ----------------------------------------------------------------------
+      auth_host: "{{ identity_hosts.auth | default('auth') }}.{{ frey.service_domain }}"
+
+      # The container name and port Authelia listens on, for the server-side
+      # half of the exchange. Duplicated from roles/identity/defaults/main.yml
+      # for the scope reason above - if you ever change Authelia's port there,
+      # change it here too. It is an upstream default and has not moved.
+      authelia_container: authelia
+      authelia_port: 9091
+
+      scopes: "openid profile email groups"
+      # frey_admins get Grafana admin, everyone else read-only. Grafana
+      # evaluates this as JMESPath against the ID token claims, which is why
+      # the client needs the frey_groups claims policy: Grafana reads groups
+      # from the token, not from the userinfo endpoint.
+      role_attribute_path: "contains(groups[*], 'frey_admins') && 'Admin' || 'Viewer'"
+      # Refresh tokens need offline_access in the client's allowed scopes, and
+      # the grafana entry in the OIDC catalogue does not grant it. Enabling
+      # this without that would fail every token refresh, so it stays off and
+      # the 12-hour Authelia session governs how often you log in.
+      use_refresh_token: false
+
+  # --------------------------------------------------------------------------
+  # PROMETHEUS
+  # --------------------------------------------------------------------------
+  prometheus:
+    # Where the stack's own rule files land, below config_dir.
+    rules_dir: rules
+    # How long an alert rule evaluation may take before it is abandoned.
+    evaluation_interval: 30s
+    # External URL so a notification can link back to something clickable on
+    # FreyHub.
+    external_url: "https://{{ monitoring_hosts.prometheus }}.{{ frey.service_domain }}"
+
+  alertmanager:
+    external_url: "https://{{ monitoring_hosts.alertmanager }}.{{ frey.service_domain }}"
+    # How long Alertmanager waits to bundle alerts that fire together, so one
+    # power brown-out is one notification rather than nine.
+    group_wait: 30s
+    group_interval: 5m
+    # How often an unresolved problem is repeated. Criticals re-notify daily;
+    # warnings, which arrive silently, only weekly.
+    repeat_interval_critical: 24h
+    repeat_interval_warning: 168h
+
+  # --------------------------------------------------------------------------
+  # THE NOTIFICATION RELAY
+  #
+  # Python standard library only - urllib and http.server, no pip install, no
+  # requirements file, nothing to resolve at build time. That is the point: it
+  # is the component that has to work when the van has no internet, so it must
+  # not need internet to start.
+  #
+  # It runs the official python image with the script bind-mounted rather than
+  # a built image, so there is no Dockerfile, no local registry and no build
+  # step on an ARM host.
+  # --------------------------------------------------------------------------
+  relay:
+    # State lives outside the container so a queue of held alerts survives a
+    # restart, an image change and a reboot.
+    data_dir: "{{ frey.base_dir }}/appdata/monitoring/alert-relay"
+    script_path: /opt/frey-alert-relay/alert-relay.py
+    log_level: info
+
+  # --------------------------------------------------------------------------
+  # HOST COLLECTORS
+  #
+  # One systemd timer runs the enabled scripts; each writes one .prom file into
+  # textfile_dir. They are shell rather than a Python exporter on purpose:
+  # everything they read is already a command line tool on this Pi (vcgencmd,
+  # nvme, nmcli, iw, docker), and a 40-line shell script that writes a file is
+  # far easier to reason about at 2 a.m. than a daemon.
+  # --------------------------------------------------------------------------
+  collectors:
+    service_name: frey-metrics
+    # bind9-dnsutils provides `dig`, which the gateway collector uses to prove
+    # FreyHub's DNS is actually answering rather than merely listening.
+    packages:
+      - bind9-dnsutils
+
+  watchdog:
+    service_name: frey-monitor-watchdog
+    state_dir: /run/frey-monitor-watchdog
+
+  # --------------------------------------------------------------------------
+  # SECRETS
+  #
+  # Generated on the Pi on first run, persisted, reused forever after - the
+  # same read-merge-write pattern the identity and media modules use, and the
+  # same reasoning: a secret that only has to be the same tomorrow as it was
+  # today does not belong in version control.
+  #
+  # The ntfy topic is the exception worth understanding. It is not a password
+  # in the usual sense, it is a channel name on a public relay, and knowing it
+  # is the only thing required to read your alerts. So it is generated long
+  # (32 hex characters) rather than chosen, and printed once at the end of the
+  # first deploy so you can subscribe your phone to it.
+  # --------------------------------------------------------------------------
+  configure:
+    key_file: "{{ frey.base_dir }}/appdata/monitoring/.monitoring-keys.json"
+    secret_keys:
+      - ntfy_topic
+      - grafana_admin_password
+    # The identity module's own secret store, read (never written) to pick up
+    # the Grafana OIDC client secret it generated.
+    identity_key_file: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+    # 30 x 10s = five minutes. Grafana builds its database on a cold start and
+    # Authelia has been observed taking nearly two minutes on this Pi, so a
+    # 5-second poll exhausted its budget and filled the log with
+    # FAILED-RETRYING before the stack had finished coming up.
+    health_retries: 30
+    health_delay: 10
+
+# ==============================================================================
+# DERIVED - PROBE TARGETS
+#
+# Every service in the auth matrix is probed on its first hostname, so a
+# service added to identity.yml is monitored with no second edit. The tier
+# decides whether a failure buzzes or waits: monitoring_probe_core in
+# monitoring.yml is the whole list of things worth being woken up for.
+#
+# Probed over HTTPS through Traefik, exactly as a browser would, because that
+# is the only path that catches the failure container metrics cannot see - a
+# healthy container behind a router Traefik dropped, answering 404.
+# ==============================================================================
+# One flat list of hostnames. Which of them are CORE is decided by
+# monitoring_probe_core in monitoring.yml and applied when the scrape config is
+# rendered, so there is no second list to keep in step.
+#
+# This is also the list the blackbox container gets as extra_hosts. See the
+# note in the compose template for why that is extra_hosts and not DNS: in
+# short, the Pi's resolver points at whatever network the van is parked next
+# to, and dnsmasq only answers queries arriving on the AP radio.
+monitoring_probe_hostnames: >-
+  {{
+    (
+      (
+        identity_services | default({}) | dict2items
+        | map(attribute='value.hosts') | map('first') | list
+      )
+      + [
+          identity_hosts.auth | default('auth'),
+          identity_hosts.directory | default('users'),
+        ]
+    ) | unique | sort
+  }}

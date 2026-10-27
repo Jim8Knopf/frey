@@ -1,0 +1,220 @@
+{#
+  ============================================================================
+  GRAFANA ALLOY - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Ships container logs and the system journal into Loki.
+
+  Alloy rather than Promtail: Promtail reached end of life in March 2026 and
+  receives no further fixes, so a new stack starting on it would be starting
+  on something already unsupported. The config language is more verbose; the
+  components do the same job.
+
+  Validated with `alloy validate` before anything restarts - which matters
+  more here than anywhere else in this role, because a syntax error in this
+  file does not stop Alloy from starting, it stops it from shipping, and the
+  symptom is Grafana quietly showing no logs.
+#}
+{% set m = monitoring %}
+{% set svc = m.services %}
+
+logging {
+  level  = "warn"
+  format = "logfmt"
+}
+
+// ============================================================================
+// CONTAINER LOGS
+//
+// Discovered from the Docker socket rather than listed, so a new service is
+// shipped the moment it starts - no deploy, no config edit. That is the
+// property worth having: monitoring that falls behind the stack is monitoring
+// you stop trusting.
+// ============================================================================
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "15s"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Docker reports names with a leading slash.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.*)"
+    target_label  = "container"
+  }
+
+  // Every Frey stack labels its containers with frey.module, so logs can be
+  // filtered by module in Grafana - {frey_module="media_acquisition"} - rather
+  // than by remembering which of twenty-one container names belong to it.
+  rule {
+    source_labels = ["__meta_docker_container_label_frey_module"]
+    target_label  = "frey_module"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "docker"
+  }
+
+  rule {
+    target_label = "node"
+    replacement  = "{{ frey.node_name }}"
+  }
+}
+
+{% if monitoring_logs.all_containers | bool %}
+loki.source.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.containers.output
+  forward_to       = [loki.process.clean.receiver]
+  refresh_interval = "15s"
+}
+{% endif %}
+
+{% if monitoring_logs.journal | bool %}
+// ============================================================================
+// THE SYSTEM JOURNAL
+//
+// systemd units, the kernel, NetworkManager, dnsmasq, hostapd.
+//
+// This is the half that matters when the network misbehaves. An AP radio
+// reset, a USB Wi-Fi adapter browning out, a DHCP lease storm, the deadman
+// rollback firing - all of it appears here and nowhere else. Container logs
+// alone would show you a perfectly healthy stack on an unreachable Pi.
+// ============================================================================
+
+discovery.relabel "journal" {
+  targets = []
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  rule {
+    source_labels = ["__journal__hostname"]
+    target_label  = "node"
+  }
+
+  rule {
+    source_labels = ["__journal_syslog_identifier"]
+    target_label  = "syslog_identifier"
+  }
+
+  // Kept under its own name rather than as `level`. The journal's priority is
+  // better information than a regex guess for kernel messages, which often
+  // carry no severity word at all - but `level` has to mean the same thing
+  // across container logs and the journal or filtering by it is a trap. So
+  // `level` is always the detected level, and this is the extra detail.
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "journal_priority"
+  }
+}
+
+loki.source.journal "system" {
+  // Only read back this far on start-up. Without a bound, a restart re-ships
+  // the entire journal and writes a fortnight of logs in one burst.
+  max_age       = "{{ monitoring_logs.journal_max_age }}"
+  relabel_rules = discovery.relabel.journal.rules
+  forward_to    = [loki.process.clean.receiver]
+  labels        = {
+    job  = "journal",
+    node = "{{ frey.node_name }}",
+  }
+}
+{% endif %}
+
+// ============================================================================
+// WHAT NOT TO KEEP
+//
+// Dropped here, before storage, rather than filtered at query time. On an NVMe
+// that also holds the *arr databases and the media library, log volume is a
+// real cost: the chatty services in this stack emit far more debug than
+// signal, and none of it has ever been read.
+//
+// The level label is extracted first, so you can still filter by severity in
+// Grafana on what remains.
+// ============================================================================
+
+loki.process "clean" {
+  forward_to = [loki.write.default.receiver]
+
+  // One `level` label meaning the same thing for every source, so that
+  // {level="error"} in Grafana is a filter you can trust rather than one that
+  // happens to work for containers and not for the kernel. Covers logfmt
+  // (level=error), bracketed ([ERROR]) and bare leading-word formats, which
+  // between them cover everything this Pi runs.
+  stage.regex {
+    expression = "(?i)(^|[\\s\\[\\|])(?P<level>trace|debug|info|warn|warning|error|fatal|critical)([\\s\\]\\|:]|$)"
+  }
+
+  // LOWERCASE IT. The match is case-insensitive, so without this the label
+  // takes whatever case the line used and you get ERROR, Error and error as
+  // three different label values - sixteen of them were observed across this
+  // Pi's containers. That breaks `level="error"` as a filter (it silently
+  // misses two thirds of the errors) and triples the label's cardinality for
+  // no information.
+{# The template stage is a GO template, so it has to be hidden from Jinja -
+   otherwise Jinja evaluates `ToLower` as one of its own variables and the
+   deploy fails with "'ToLower' is undefined". #}
+  stage.template {
+    source   = "level"
+    template = "{% raw %}{{ ToLower .Value }}{% endraw %}"
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+
+{#
+  Alloy's strings are Go-style, so a regex has to be escaped on the way in:
+  backslashes doubled, then quotes escaped (in that order - doing it the other
+  way round would re-escape the backslash this step just added).
+
+  This is done here rather than in monitoring.yml on purpose. `\b` is a VALID
+  Go escape meaning backspace, so a pattern hand-escaped as `\\b` renders to
+  `\b`, compiles without complaint, and then matches a literal backspace
+  instead of a word boundary - a filter that silently never fires. Keeping the
+  patterns as plain regexes and escaping them once, here, makes that
+  impossible.
+#}
+{% for pattern in monitoring_logs.drop_patterns %}
+  stage.drop {
+    expression          = "{{ pattern | replace('\\', '\\\\') | replace('"', '\\"') }}"
+    drop_counter_reason = "frey_noise"
+  }
+{% endfor %}
+
+  // A single line longer than this is a stack trace dump or a base64 payload,
+  // not something anyone will read in a log viewer.
+  stage.drop {
+    longer_than         = "16KB"
+    drop_counter_reason = "frey_oversized"
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://{{ svc.loki.container_name }}:{{ svc.loki.port }}/loki/api/v1/push"
+  }
+
+  // Loki is on the same host over a Docker bridge, so a failed push means
+  // Loki itself is down or restarting - worth retrying briefly, not worth
+  // buffering for hours. Logs are the one thing here that are allowed to be
+  // lossy; alerts are not, which is why they go through a different path
+  // entirely.
+  external_labels = {}
+}

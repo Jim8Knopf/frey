@@ -1,0 +1,250 @@
+{#
+  ============================================================================
+  SELF-MONITORING ALERT RULES - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Monitoring that dies quietly is worse than no monitoring, because you believe
+  you are covered. Everything in this file exists to make that impossible.
+
+  There are three layers, and each one catches what the layer above cannot:
+
+    1. up == 0 and the collector metrics below. Catches a dead exporter, a
+       stalled collector, a failed config reload. Needs Prometheus to be alive.
+
+    2. The Watchdog alert, which fires forever and is never notified about. The
+       relay records each arrival; if they stop, the relay says so. Catches a
+       dead Prometheus or Alertmanager, which layer 1 cannot by definition.
+
+    3. A systemd timer on the HOST that checks the containers and the relay's
+       heartbeat and notifies ntfy directly. Needs no Docker and no Prometheus,
+       so it still speaks when the whole stack is down - including when the
+       relay itself is the thing that died.
+#}
+{% set go = '{{' %}
+{% set og = '}}' %}
+{% set t = monitoring_thresholds %}
+groups:
+
+  # ============================================================================
+  # THE DEAD MAN'S SWITCH
+  # ============================================================================
+  - name: frey_watchdog
+    rules:
+
+      # Always firing, by design. It is routed to its own receiver and never
+      # produces a notification - the relay simply notes that it arrived. The
+      # ABSENCE of this is the signal.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Monitoring pipeline heartbeat"
+          description: >-
+            This alert always fires and is never notified about. If the relay
+            stops receiving it, the relay tells you that monitoring itself is
+            broken.
+
+  # ============================================================================
+  # THE STACK
+  # ============================================================================
+  - name: frey_monitoring_stack
+    rules:
+
+      - alert: FreyPrometheusTargetDown
+        expr: up == 0
+        for: {{ t.monitoring.target_down_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Scrape target {{ go }} $labels.job {{ og }} is down'
+          description: >-
+            Prometheus cannot reach {{ go }} $labels.instance {{ og }}, so
+            whatever it measures is now unmonitored and every alert depending
+            on it has silently stopped evaluating. That second part is why
+            this is not merely cosmetic.
+
+      # A config that fails to load leaves the OLD config running. Everything
+      # looks fine and your edit simply had no effect - which is the most
+      # annoying possible failure for a change to alert thresholds.
+      - alert: FreyPrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus rejected its configuration"
+          description: >-
+            The last reload failed, so Prometheus is still running the
+            previous config and any change you just deployed is not in effect.
+            `docker logs --tail 50 prometheus`.
+
+      - alert: FreyAlertmanagerConfigReloadFailed
+        expr: alertmanager_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager rejected its configuration"
+          description: >-
+            Running the previous config. Routing and inhibition changes have
+            not taken effect.
+
+      # The relay is what actually delivers, so Alertmanager failing to reach
+      # it means alerts are being evaluated and going nowhere.
+      - alert: FreyAlertDeliveryFailing
+        expr: >-
+          increase(alertmanager_notifications_failed_total[1h])
+          > {{ t.monitoring.notification_failures }}
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager cannot reach the notification relay"
+          description: >-
+            Alerts are being evaluated and not delivered. This is the failure
+            that makes every other alert in this stack worthless, so it is
+            critical even though nothing is "broken" in the van.
+            `docker logs --tail 50 alert-relay`.
+
+      - alert: FreyPrometheusTsdbFailures
+        expr: increase(prometheus_tsdb_compactions_failed_total[2h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus is failing to compact its database"
+          description: >-
+            Usually disk or a corrupted block. Left alone the database grows
+            and queries get slower until it will not start. Check disk space
+            first.
+
+  # ============================================================================
+  # DELIVERY AND THE OFFLINE QUEUE
+  # ============================================================================
+  - name: frey_alert_delivery
+    rules:
+
+      # Informational, and arrives after the fact by definition - you cannot
+      # be told about a backlog while the backlog exists. It is here so that
+      # the reconnect report has a counterpart in the dashboards, and so a
+      # queue that never drains is visible.
+      - alert: FreyAlertQueueBacklog
+        expr: frey_alert_relay_queue_depth > 0
+        for: {{ t.monitoring.queue_backlog_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $value {{ og }} alert(s) waiting for an uplink'
+          description: >-
+            Held on disk with the time they really fired, and they will be
+            delivered with a summary as soon as there is internet. Nothing is
+            lost. If this persists while the uplink IS up, the ntfy topic or
+            token is wrong - check `docker logs alert-relay`.
+
+      - alert: FreyAlertRelayDown
+        expr: frey_alert_relay_up == 0 or absent(frey_alert_relay_up)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The notification relay is not running"
+          description: >-
+            Nothing can reach your phone while this is true. The host-side
+            watchdog timer should also have told you independently; if it did
+            not, check `systemctl status {{ monitoring.watchdog.service_name }}.timer`.
+
+  # ============================================================================
+  # COLLECTORS
+  #
+  # The host scripts are where everything van-specific comes from - throttling,
+  # power, NVMe health, AP clients, DNS, NAT, and later the cabin temperature.
+  # If one stops, those metrics do not go to zero, they simply stop updating,
+  # and the dashboards keep showing the last value they saw. That is the most
+  # dangerous failure mode in the whole stack: monitoring that looks fine and
+  # is lying.
+  #
+  # node-exporter timestamps each textfile, which is what makes staleness
+  # detectable at all.
+  # ============================================================================
+  - name: frey_collectors
+    rules:
+
+      - alert: FreyCollectorFailing
+        expr: frey_collector_success == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Host collector {{ go }} $labels.collector {{ og }} is failing'
+          description: >-
+            It ran and could not gather its metrics. Run it by hand to see
+            why: `{{ monitoring.bin_dir }}/frey-metrics {{ go }} $labels.collector {{ og }}`.
+
+      - alert: FreyCollectorStale
+        expr: time() - node_textfile_mtime_seconds > 600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Metrics file {{ go }} $labels.file {{ og }} has stopped updating'
+          description: >-
+            Not written for over ten minutes, so every metric in it is now
+            frozen at its last value - the dashboards will look healthy and be
+            wrong. Check
+            `systemctl status {{ monitoring.collectors.service_name }}.timer`.
+
+      - alert: FreyTextfileParseErrors
+        # A gauge, not a counter - 1 while a file in the directory will not
+        # parse, 0 otherwise. `increase()` on it would be meaningless.
+        expr: node_textfile_scrape_error > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "node-exporter could not parse a metrics file"
+          description: >-
+            A .prom file in {{ monitoring.textfile_dir }} is malformed, so its
+            metrics are being dropped. If you have just added a van sensor,
+            this is almost certainly it - check the file is written
+            tmp-then-rename, because a half-written file parses as garbage.
+
+{% if monitoring_enable.logs | bool %}
+  # ============================================================================
+  # LOGS
+  # ============================================================================
+  - name: frey_logs
+    rules:
+
+      - alert: FreyLogIngestionStopped
+        expr: rate(loki_distributor_bytes_received_total[30m]) == 0
+        for: {{ t.monitoring.logs_stalled_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: "No logs have arrived in Loki"
+          description: >-
+            Twenty-one containers and a system journal do not fall silent, so
+            this means Alloy has stopped shipping - most likely a bad
+            config.alloy, which does not stop Alloy from starting, only from
+            working. `docker logs --tail 50 alloy`.
+
+      - alert: FreyLokiRejectingWrites
+        # Loki's own rejections only - rate limits, lines too old, bad labels.
+        # The lines deliberately thrown away as noise are dropped by Alloy
+        # before they ever reach Loki, so they are counted in Alloy's metrics
+        # and never appear here.
+        expr: increase(loki_discarded_samples_total[1h]) > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Loki is discarding log lines ({{ go }} $labels.reason {{ og }})'
+          description: >-
+            Loki is rejecting writes - usually a rate limit, which means one
+            container has started shouting. Find it in the log volume panel
+            before it costs NVMe life. `reason=greater_than_max_sample_age`
+            instead means the Pi's clock jumped, which happens after a cold
+            boot with no uplink and no RTC battery.
+{% endif %}

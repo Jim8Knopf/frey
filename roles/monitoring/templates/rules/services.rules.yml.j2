@@ -1,0 +1,222 @@
+{#
+  ============================================================================
+  SERVICE ALERT RULES - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Two different questions, and they catch different failures:
+
+    probe_success        does the service ANSWER, through Traefik, over HTTPS,
+                         the way a browser asks? This is the one that catches a
+                         healthy container behind a router Traefik dropped -
+                         which answers 404 and which container metrics call
+                         fine.
+
+    frey_container_*     is the container even there? From `docker ps` on the
+                         host, not from cAdvisor, because cAdvisor stops
+                         reporting a container that has gone away - so the
+                         metric you need to detect "it is missing" is exactly
+                         the one that disappears with it.
+
+  tier (core/extra) comes from monitoring_probe_core in monitoring.yml. core
+  buzzes, extra waits.
+#}
+{% set go = '{{' %}
+{% set og = '}}' %}
+{% set t = monitoring_thresholds %}
+groups:
+
+  # ============================================================================
+  # DOES IT ANSWER
+  # ============================================================================
+  - name: frey_service_probes
+    rules:
+
+      - alert: FreyServiceProbeFailingCore
+        expr: probe_success{tier="core"} == 0
+        for: {{ t.services.core_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ go }} $labels.service {{ og }} is not answering'
+          description: >-
+            No valid response through Traefik for {{ t.services.core_for }}.
+            This is a core service - playback or the ability to log in.
+            Note that a 302 to the login page counts as healthy, so this means
+            a genuine failure: 404 (Traefik dropped the router), 502/503 (the
+            container is gone), or a TLS error.
+            Start with `docker ps -a | grep {{ go }} $labels.service {{ og }}`
+            then `docker logs --tail 50`.
+
+      - alert: FreyServiceProbeFailingExtra
+        expr: probe_success{tier="extra"} == 0
+        for: {{ t.services.extra_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $labels.service {{ og }} is not answering'
+          description: >-
+            No valid response through Traefik for {{ t.services.extra_for }}.
+            An inconvenience rather than an emergency, which is why this
+            arrives quietly.
+
+      # Slow is a different problem from broken, and it has a different cause
+      # (usually something transcoding, or the disk busy) - so it is its own
+      # alert rather than a probe failure.
+      - alert: FreyServiceSlow
+        expr: probe_duration_seconds{tier="core"} > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $labels.service {{ og }} taking {{ go }} printf "%.1f" $value {{ og }}s to answer'
+          description: >-
+            Responding, but slowly, for 15 minutes. Check load first - a
+            software transcode on a Pi 5 will do this to everything, because
+            there is no hardware encoder to offload it to.
+
+  # ============================================================================
+  # CERTIFICATES
+  #
+  # frey_pki reissues at 30 days remaining, automatically, as part of any
+  # deploy. So a warning at 14 days does not mean "renew the certificate", it
+  # means RENEWAL ITSELF HAS STOPPED WORKING - which is the interesting
+  # failure, and one that would otherwise surface as every device in the van
+  # refusing to connect on the same afternoon.
+  # ============================================================================
+  - name: frey_certificates
+    rules:
+
+      - alert: FreyCertificateExpiringCritical
+        expr: >-
+          (min by (service) (probe_ssl_earliest_cert_expiry) - time())
+          < {{ t.services.cert_expiry_critical_days }} * 86400
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Certificate expires in under {{ t.services.cert_expiry_critical_days }} days'
+          description: >-
+            Automatic renewal has clearly failed. When this expires every
+            browser and every app in the van stops trusting the Pi at once.
+            Fix now: re-run the playbook with `--tags pki`.
+
+      - alert: FreyCertificateExpiring
+        expr: >-
+          (min by (service) (probe_ssl_earliest_cert_expiry) - time())
+          < {{ t.services.cert_expiry_warning_days }} * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Certificate expires in {{ go }} printf "%.0f" $value {{ og }}s'
+          description: >-
+            frey_pki renews at 30 days remaining, so being under
+            {{ t.services.cert_expiry_warning_days }} means renewal is not
+            running. Re-run `--tags pki` and work out why the regular deploy
+            stopped doing it.
+
+  # ============================================================================
+  # CONTAINERS
+  # ============================================================================
+  - name: frey_containers
+    rules:
+
+      - alert: FreyContainerStopped
+        expr: frey_container_running == 0
+        for: {{ t.containers.stopped_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Container {{ go }} $labels.name {{ og }} is not running'
+          description: >-
+            Expected to be up (restart policy unless-stopped) and it is not,
+            so Docker has given up restarting it or it was stopped by hand.
+            `docker logs --tail 100 {{ go }} $labels.name {{ og }}`.
+
+      # Looping is worse than stopped and looks healthier: `docker ps` shows it
+      # up, the probe may even catch it in a working moment, and it never
+      # actually does its job.
+      - alert: FreyContainerRestartLoop
+        expr: >-
+          increase(frey_container_restarts_total[{{ t.containers.restart_window }}])
+          >= {{ t.containers.restarts_in_window }}
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Container {{ go }} $labels.name {{ og }} is restarting in a loop'
+          description: >-
+            {{ t.containers.restarts_in_window }}+ restarts in
+            {{ t.containers.restart_window }}. It is not recovering, it is
+            looping - usually a bad config, a missing path, or a dependency
+            that is not ready. The logs from the last start are the ones to
+            read.
+
+      - alert: FreyContainerUnhealthy
+        expr: frey_container_health{status="unhealthy"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Container {{ go }} $labels.name {{ og }} reports unhealthy'
+          description: >-
+            Its own healthcheck is failing while the process stays up. The
+            container believes it is broken, which is worth more than any
+            outside guess.
+
+      - alert: FreyContainerMemoryHigh
+        expr: >-
+          container_memory_working_set_bytes{name!=""}
+          / container_spec_memory_limit_bytes{name!=""}
+          > {{ t.containers.memory_high_ratio }}
+          and container_spec_memory_limit_bytes{name!=""} > 0
+        for: {{ t.containers.memory_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Container {{ go }} $labels.name {{ og }} near its memory limit'
+          description: >-
+            Above {{ (t.containers.memory_high_ratio * 100) | int }}% of its
+            cap for {{ t.containers.memory_for }}. The next step is Docker
+            killing it, which will present as a restart loop. Either it has a
+            leak or its cap is too low.
+
+  # ============================================================================
+  # TRAEFIK
+  #
+  # Counted at the one point every request already passes through, so it needs
+  # nothing from the services themselves.
+  # ============================================================================
+  - name: frey_proxy
+    rules:
+
+      - alert: FreyProxyServerErrors
+        expr: >-
+          sum by (service) (rate(traefik_service_requests_total{code=~"5.."}[10m]))
+          / sum by (service) (rate(traefik_service_requests_total[10m]))
+          > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} printf "%.0f" $value {{ og }}% of requests to {{ go }} $labels.service {{ og }} are failing'
+          description: >-
+            More than 10% server errors for 15 minutes. The service is
+            answering, so this is not a routing problem - it is the
+            application itself erroring.
+
+      # Identity being down takes every forward-auth service with it, so it is
+      # called out separately rather than being one probe among many.
+      - alert: FreyIdentityDown
+        expr: probe_success{service=~"{{ identity_hosts.auth }}|{{ identity_hosts.directory }}"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Single sign-on ({{ go }} $labels.service {{ og }}) is down'
+          description: >-
+            Authelia or LLDAP is not answering, so every service behind
+            forward auth is inaccessible even though its own container is
+            fine - and Grafana's OIDC login is down with it. Use Grafana's
+            local admin account to get at these dashboards.

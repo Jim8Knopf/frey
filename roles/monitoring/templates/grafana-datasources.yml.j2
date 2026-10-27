@@ -1,0 +1,60 @@
+{#
+  ============================================================================
+  GRAFANA DATASOURCES - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Provisioned from a file rather than clicked in, so a rebuilt Pi comes up with
+  working dashboards instead of a Grafana waiting to be configured.
+
+  `deleteDatasources` first, so renaming or re-pointing one actually takes
+  effect instead of leaving an orphan behind that dashboards still reference.
+#}
+{% set m = monitoring %}
+{% set svc = m.services %}
+apiVersion: 1
+
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+  - name: Loki
+    orgId: 1
+
+datasources:
+{% if svc.prometheus.enabled | bool %}
+  - name: Prometheus
+    type: prometheus
+    uid: frey-prometheus
+    access: proxy
+    # Container name on the private monitoring network. Never a hostname:
+    # *.hub.frey does not resolve inside a container on this Pi.
+    url: "http://{{ svc.prometheus.container_name }}:{{ svc.prometheus.port }}"
+    isDefault: true
+    editable: false
+    jsonData:
+      # Must match Prometheus's scrape interval or Grafana picks silly step
+      # sizes and draws gappy graphs on wide time ranges.
+      timeInterval: "{{ monitoring_retention.scrape_interval }}"
+      httpMethod: POST
+      # A year of retention means some panels ask for a lot; the ARM core
+      # needs longer than the 30s default to answer.
+      queryTimeout: 120s
+      prometheusType: Prometheus
+      prometheusVersion: "{{ monitoring_versions.prometheus | regex_replace('^v', '') }}"
+      # Lets a panel link straight from a metric to the matching logs.
+      exemplarTraceIdDestinations: []
+{% endif %}
+{% if svc.loki.enabled | bool %}
+  - name: Loki
+    type: loki
+    uid: frey-loki
+    access: proxy
+    url: "http://{{ svc.loki.container_name }}:{{ svc.loki.port }}"
+    editable: false
+    jsonData:
+      maxLines: 2000
+      timeout: 120
+      # Jump from a log line's container label straight to that container's
+      # metrics, which is the move you always want to make next.
+      derivedFields: []
+{% endif %}

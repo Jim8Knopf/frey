@@ -1,0 +1,111 @@
+{#
+  ============================================================================
+  LOKI - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Verified with `loki -verify-config` before anything restarts.
+
+  Single binary, local filesystem, no object store, no ring worth the name.
+  One Pi writing its own logs does not need a distributed system, and every
+  component skipped here is one that cannot wake up unhealthy at 2 a.m.
+#}
+{% set m = monitoring %}
+{% set svc = m.services %}
+
+# No multi-tenancy. There is one tenant, and turning auth on would mean every
+# query and every push carrying a header to say so, for no gain.
+auth_enabled: false
+
+server:
+  http_listen_address: 0.0.0.0
+  http_listen_port: {{ svc.loki.port }}
+  grpc_listen_port: 9096
+  log_level: warn
+  # Grafana asks for wide time ranges over a slow ARM core; the default 30s
+  # turns a fortnight-wide log panel into a timeout.
+  http_server_read_timeout: 120s
+  http_server_write_timeout: 120s
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+    # The index cache is pure duplication of what is already on disk here, so
+    # it is kept small: this is an SD-card-sized working set on a machine
+    # where write volume is the thing worth minimising.
+    cache_ttl: 24h
+  filesystem:
+    directory: /loki/chunks
+
+limits_config:
+  retention_period: {{ monitoring_retention.logs_time }}
+  # A log loop in one container must not be able to push out everything else's
+  # history, and on a van's NVMe it must not be able to write flat out either.
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  per_stream_rate_limit: 3MB
+  per_stream_rate_limit_burst: 10MB
+  # Label cardinality is what kills a small Loki. Containers come and go, so
+  # the shipper is configured to label by container name and module and
+  # nothing per-request.
+  max_label_names_per_series: 20
+  max_query_series: 2000
+  max_query_parallelism: 4
+  # The Pi's clock can jump after a cold boot with no uplink and no RTC
+  # battery, which produces logs stamped in the past. Accept a week of that
+  # rather than silently dropping the boot that explains the outage.
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  # Needed for Grafana's log volume histogram, which is the fastest way to
+  # see "something started erroring at 03:12".
+  volume_enabled: true
+  allow_structured_metadata: true
+
+compactor:
+  working_directory: /loki/compactor
+  # Without this, retention_period above is decoration: nothing ever deletes.
+  # The archived stack's Loki had exactly this gap and grew without limit.
+  retention_enabled: true
+  delete_request_store: filesystem
+  compaction_interval: 10m
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 50
+
+pattern_ingester:
+  enabled: false
+
+ruler:
+  # Alerting on logs is deliberately not wired up. Everything worth alerting
+  # on here is already a metric, and a second alerting path with its own
+  # Alertmanager connection is a second thing to keep correct.
+  enable_api: false
+
+# No phoning home. It fails on a van with no uplink and logs an error every
+# time it does.
+analytics:
+  reporting_enabled: false
+
+frontend:
+  compress_responses: true

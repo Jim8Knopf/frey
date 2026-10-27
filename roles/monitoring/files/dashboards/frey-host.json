@@ -1,0 +1,355 @@
+{
+  "uid": "frey-host",
+  "title": "Frey Host & Hardware",
+  "description": "The Pi itself: CPU, memory, disk, thermals, power, and the NVMe that holds everything.",
+  "tags": ["frey", "host"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "graphTooltip": 1,
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "CPU and memory",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU by mode",
+      "description": "Stacked to 100%. iowait is the one to watch on a Pi - it means waiting for the NVMe, not for the cores.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (mode) (rate(node_cpu_seconds_total{mode!=\"idle\"}[5m])) / scalar(count(count by (cpu) (node_cpu_seconds_total))) * 100",
+          "legendFormat": "{{mode}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" },
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes", "legendFormat": "used" },
+        { "refId": "B", "expr": "node_memory_Cached_bytes + node_memory_Buffers_bytes", "legendFormat": "cache and buffers" },
+        { "refId": "C", "expr": "node_memory_MemAvailable_bytes", "legendFormat": "available" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+
+    {
+      "type": "row",
+      "title": "Thermals and power",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "SoC temperature",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [ { "refId": "A", "expr": "frey_soc_temp_celsius", "legendFormat": "SoC" } ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisSoftMin": 30,
+            "axisSoftMax": 90,
+            "thresholdsStyle": { "mode": "dashed" },
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "orange", "value": 75 },
+              { "color": "red", "value": 82 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Throttling and under-voltage",
+      "description": "The van-specific panel. Under-voltage means the supply is sagging, and it corrupts filesystems - it is not a performance note.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_undervoltage_now", "legendFormat": "under-voltage" },
+        { "refId": "B", "expr": "frey_throttled_now", "legendFormat": "throttled" },
+        { "refId": "C", "expr": "frey_freq_capped_now", "legendFormat": "clock capped" },
+        { "refId": "D", "expr": "frey_soft_temp_limit_now", "legendFormat": "soft temp limit" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 0, "fillOpacity": 85, "spanNulls": false },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "clear", "color": "green", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "ACTIVE", "color": "red", "index": 1 } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "left",
+        "rowHeight": 0.8,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Power by rail",
+      "description": "Volts times amps per PMIC rail, plus the total. Its own panel because watts and degrees do not belong on one axis.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_pi_power_watts", "legendFormat": "total" },
+        { "refId": "B", "expr": "topk(5, frey_pmic_rail_power_watts)", "legendFormat": "{{rail}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "decimals": 2,
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "total" },
+            "properties": [ { "id": "custom.lineWidth", "value": 3 } ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+
+    {
+      "type": "row",
+      "title": "Storage",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Disk space free",
+      "description": "A year of retention is what makes the trend here worth reading.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"}",
+          "legendFormat": "{{mountpoint}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "table",
+      "title": "NVMe health",
+      "description": "The drive's own report. percentage_used is its wear estimate; unsafe shutdowns count the times the van cut the power.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_nvme_wear_percent", "instant": true, "format": "table", "legendFormat": "life used %" },
+        { "refId": "B", "expr": "frey_nvme_temperature_celsius", "instant": true, "format": "table" },
+        { "refId": "C", "expr": "frey_nvme_media_errors_total", "instant": true, "format": "table" },
+        { "refId": "D", "expr": "frey_nvme_unsafe_shutdowns_total", "instant": true, "format": "table" },
+        { "refId": "E", "expr": "frey_nvme_data_units_written_total * 512000", "instant": true, "format": "table" },
+        { "refId": "F", "expr": "frey_nvme_power_on_hours", "instant": true, "format": "table" }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "node": true },
+            "renameByName": {
+              "Value #A": "life used %",
+              "Value #B": "temp C",
+              "Value #C": "media errors",
+              "Value #D": "unsafe shutdowns",
+              "Value #E": "written",
+              "Value #F": "power-on hours"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "left", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "written" },
+            "properties": [ { "id": "unit", "value": "bytes" } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "media errors" },
+            "properties": [
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "life used %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 80 }, { "color": "red", "value": 90 } ] } },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "type": "timeseries",
+      "title": "Disk I/O",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(node_disk_read_bytes_total{device=~\"nvme.*|mmcblk.*|sd.*\"}[5m])", "legendFormat": "{{device}} read" },
+        { "refId": "B", "expr": "rate(node_disk_written_bytes_total{device=~\"nvme.*|mmcblk.*|sd.*\"}[5m])", "legendFormat": "{{device}} write" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector health",
+      "description": "Whether the host scripts are still producing metrics. A stalled collector does not zero its metrics, it freezes them - so the dashboards would look fine and be wrong.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_collector_duration_seconds", "legendFormat": "{{collector}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    }
+  ]
+}

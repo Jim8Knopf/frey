@@ -1,0 +1,654 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-metrics - everything the Pi knows about itself that no exporter reports
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+# =============================================================================
+#
+# WHY THIS EXISTS AT ALL
+#
+# The off-the-shelf exporters cover a server in a rack. They do not cover a
+# Raspberry Pi in a van, and the gap is exactly the part that matters here:
+#
+#   throttling and under-voltage   The Pi reports both directly, and in a
+#                                  vehicle they mean the supply is sagging or
+#                                  the cabin is too hot. Nothing else sees it.
+#   PMIC power rails               Real current draw per rail. The beginning of
+#                                  answering "what does the van actually use".
+#   NVMe SMART                     Wear, media errors, unsafe shutdowns. The
+#                                  drive holds everything and reports its own
+#                                  health; nobody reads it.
+#   AP clients, DHCP, DNS, NAT     Whether FreyHub is actually serving, as
+#                                  opposed to merely running.
+#   network counters               Because /proc/net is per network namespace,
+#                                  a containerised node-exporter cannot see
+#                                  wlan0 at all. See the compose template.
+#   container state                From docker itself, because cAdvisor stops
+#                                  reporting a container that has gone away -
+#                                  so the metric needed to detect "missing" is
+#                                  the one that disappears with it.
+#
+# HOW IT GETS INTO PROMETHEUS
+#
+# Each collector writes one file into the textfile directory, which
+# node-exporter reads and exposes as ordinary metrics. No daemon, no port, no
+# exporter to keep alive.
+#
+# THE tmp-then-rename IS NOT OPTIONAL. node-exporter will happily read a
+# half-written file and either report nonsense or fail the whole scrape. Every
+# write here goes through emit().
+#
+# THIS IS ALSO THE SENSOR SEAM. A cabin thermometer is another collector
+# function and one line in monitoring_host_collectors. See THE SENSOR SEAM in
+# inventory/group_vars/all/monitoring.yml.
+#
+# RUN IT BY HAND
+#
+#   frey-metrics all
+#   frey-metrics pi
+#   frey-metrics gateway
+#
+# =============================================================================
+
+set -uo pipefail
+
+TEXTFILE_DIR="{{ monitoring.textfile_dir }}"
+AP_IFACE="{{ network_gateway.downstream.interface }}"
+UPLINK_IFACE="{{ network_gateway.upstream.interface }}"
+AP_CONNECTION="{{ network_gateway.downstream.connection_name }}"
+DNS_PROBE_NAME="{{ monitoring_hosts.grafana }}.{{ frey.service_domain }}"
+DNS_SERVER="{{ frey.service_address }}"
+DOWNSTREAM_CIDR="{{ network_gateway.downstream.network_cidr }}"
+
+mkdir -p "${TEXTFILE_DIR}"
+
+# -----------------------------------------------------------------------------
+# emit <collector> - read metrics on stdin, publish them atomically
+# -----------------------------------------------------------------------------
+emit() {
+  local collector="$1"
+  local target="${TEXTFILE_DIR}/frey-${collector}.prom"
+  local tmp="${target}.$$"
+  cat > "${tmp}"
+  chmod 0644 "${tmp}"
+  mv -f "${tmp}" "${target}"
+}
+
+# A number, or nothing. Guards every parse below: a vcgencmd that prints an
+# error string must not become a metric with a garbage value, because a
+# malformed .prom file makes node-exporter drop the whole scrape.
+num() {
+  local value="${1:-}"
+  value="${value//,/}"
+  if [[ "${value}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+    printf '%s' "${value}"
+  fi
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# =============================================================================
+# PI - temperature, throttling, power, and the host generally
+# =============================================================================
+collect_pi() {
+  local started ok temp throttled bits failed_units rootfs_ro
+  started=$(date +%s.%N)
+  ok=1
+
+  # --- Temperature ---------------------------------------------------------
+  temp=""
+  if have vcgencmd; then
+    temp=$(num "$(vcgencmd measure_temp 2>/dev/null | sed -n "s/^temp=\([0-9.]*\).*/\1/p")")
+  fi
+  [[ -z "${temp}" && -r /sys/class/thermal/thermal_zone0/temp ]] && \
+    temp=$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp)
+  [[ -z "${temp}" ]] && ok=0
+
+  # --- Throttling ----------------------------------------------------------
+  #
+  # get_throttled is a bitmask, and the two halves mean different things:
+  # bits 0-3 are happening NOW, bits 16-19 have happened SINCE BOOT. The
+  # "since boot" half is the useful one for an intermittent supply problem,
+  # because by the time you look, "now" is usually clear.
+  #
+  #   0 / 16  under-voltage
+  #   1 / 17  ARM frequency capped
+  #   2 / 18  currently throttled
+  #   3 / 19  soft temperature limit active
+  bits=0
+  if have vcgencmd; then
+    throttled=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/^throttled=0x\([0-9a-fA-F]*\).*/\1/p')
+    if [[ -n "${throttled}" ]]; then
+      bits=$((16#${throttled}))
+    else
+      ok=0
+    fi
+  fi
+  bit() { echo $(( (bits >> $1) & 1 )); }
+
+  # --- Failed systemd units ------------------------------------------------
+  # node-exporter's systemd collector needs a dbus socket mounted into the
+  # container; this is one line here instead.
+  failed_units=$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | grep -c .)
+
+  # --- Read-only root ------------------------------------------------------
+  # How a dying NVMe announces itself: the kernel remounts to protect data.
+  rootfs_ro=0
+  awk '$2 == "/" { print $4 }' /proc/mounts 2>/dev/null | grep -q '\bro\b' && rootfs_ro=1
+
+  {
+    echo "# HELP frey_soc_temp_celsius SoC temperature."
+    echo "# TYPE frey_soc_temp_celsius gauge"
+    [[ -n "${temp}" ]] && echo "frey_soc_temp_celsius ${temp}"
+
+    echo "# HELP frey_throttled_flags Raw vcgencmd get_throttled bitmask."
+    echo "# TYPE frey_throttled_flags gauge"
+    echo "frey_throttled_flags ${bits}"
+
+    echo "# HELP frey_undervoltage_now Supply voltage is below spec right now."
+    echo "# TYPE frey_undervoltage_now gauge"
+    echo "frey_undervoltage_now $(bit 0)"
+    echo "# HELP frey_freq_capped_now ARM frequency is capped right now."
+    echo "# TYPE frey_freq_capped_now gauge"
+    echo "frey_freq_capped_now $(bit 1)"
+    echo "# HELP frey_throttled_now The SoC is being throttled right now."
+    echo "# TYPE frey_throttled_now gauge"
+    echo "frey_throttled_now $(bit 2)"
+    echo "# HELP frey_soft_temp_limit_now Soft temperature limit is active."
+    echo "# TYPE frey_soft_temp_limit_now gauge"
+    echo "frey_soft_temp_limit_now $(bit 3)"
+
+    echo "# HELP frey_undervoltage_occurred Under-voltage has happened since boot."
+    echo "# TYPE frey_undervoltage_occurred gauge"
+    echo "frey_undervoltage_occurred $(bit 16)"
+    echo "# HELP frey_freq_capped_occurred Frequency capping has happened since boot."
+    echo "# TYPE frey_freq_capped_occurred gauge"
+    echo "frey_freq_capped_occurred $(bit 17)"
+    echo "# HELP frey_throttled_occurred Throttling has happened since boot."
+    echo "# TYPE frey_throttled_occurred gauge"
+    echo "frey_throttled_occurred $(bit 18)"
+    echo "# HELP frey_soft_temp_limit_occurred Soft temperature limit has been hit since boot."
+    echo "# TYPE frey_soft_temp_limit_occurred gauge"
+    echo "frey_soft_temp_limit_occurred $(bit 19)"
+
+    echo "# HELP frey_systemd_units_failed Number of systemd units in failed state."
+    echo "# TYPE frey_systemd_units_failed gauge"
+    echo "frey_systemd_units_failed ${failed_units}"
+
+    echo "# HELP frey_rootfs_readonly The root filesystem is mounted read-only."
+    echo "# TYPE frey_rootfs_readonly gauge"
+    echo "frey_rootfs_readonly ${rootfs_ro}"
+
+    # --- PMIC power ---------------------------------------------------------
+    #
+    # The Pi 5's power management chip exposes per-rail voltage and current.
+    # Summing volts*amps gives a good estimate of board draw - the start of
+    # answering "how much does the van's server actually cost in amp-hours",
+    # which is why this is collected now rather than when a battery monitor
+    # arrives.
+    if have vcgencmd; then
+      vcgencmd pmic_read_adc 2>/dev/null | awk '
+        {
+          # Lines look like:  3V3_SYS_A current(1)=0.05074836A
+          #                   3V3_SYS_V volt(1)=3.30234375V
+          name = $1
+          split($2, parts, "=")
+          value = parts[2]
+          gsub(/[AV]$/, "", value)
+          if (value !~ /^-?[0-9.]+$/) next
+          suffix = substr(name, length(name) - 1)
+          rail = substr(name, 1, length(name) - 2)
+          if (suffix == "_A") amps[rail] = value
+          else if (suffix == "_V") volts[rail] = value
+        }
+        END {
+          print "# HELP frey_pmic_rail_amperes Current on a PMIC rail."
+          print "# TYPE frey_pmic_rail_amperes gauge"
+          for (r in amps) printf "frey_pmic_rail_amperes{rail=\"%s\"} %s\n", r, amps[r]
+          print "# HELP frey_pmic_rail_volts Voltage on a PMIC rail."
+          print "# TYPE frey_pmic_rail_volts gauge"
+          for (r in volts) printf "frey_pmic_rail_volts{rail=\"%s\"} %s\n", r, volts[r]
+          print "# HELP frey_pmic_rail_power_watts Estimated power on a PMIC rail."
+          print "# TYPE frey_pmic_rail_power_watts gauge"
+          total = 0
+          for (r in amps) {
+            if (r in volts) {
+              w = amps[r] * volts[r]
+              total += w
+              printf "frey_pmic_rail_power_watts{rail=\"%s\"} %.4f\n", r, w
+            }
+          }
+          print "# HELP frey_pi_power_watts Estimated total board power, summed over PMIC rails."
+          print "# TYPE frey_pi_power_watts gauge"
+          printf "frey_pi_power_watts %.3f\n", total
+        }
+      '
+    fi
+
+    collector_meta pi "${ok}" "${started}"
+  } | emit pi
+}
+
+# =============================================================================
+# NVMe - the drive that holds everything
+# =============================================================================
+collect_nvme() {
+  local started ok device
+  started=$(date +%s.%N)
+  ok=1
+
+  if ! have nvme; then
+    { echo "# nvme-cli not installed"; collector_meta nvme 0 "${started}"; } | emit nvme
+    return
+  fi
+
+  {
+    echo "# HELP frey_nvme_critical_warning Drive's own composite critical warning bitmask."
+    echo "# TYPE frey_nvme_critical_warning gauge"
+    echo "# HELP frey_nvme_temperature_celsius Drive temperature."
+    echo "# TYPE frey_nvme_temperature_celsius gauge"
+    echo "# HELP frey_nvme_wear_percent Percentage of rated endurance consumed."
+    echo "# TYPE frey_nvme_wear_percent gauge"
+    echo "# HELP frey_nvme_available_spare_percent Spare blocks remaining."
+    echo "# TYPE frey_nvme_available_spare_percent gauge"
+    echo "# HELP frey_nvme_media_errors_total Uncorrectable data errors."
+    echo "# TYPE frey_nvme_media_errors_total counter"
+    echo "# HELP frey_nvme_data_units_written_total Data units written (512000 bytes each)."
+    echo "# TYPE frey_nvme_data_units_written_total counter"
+    echo "# HELP frey_nvme_power_on_hours Hours powered on."
+    echo "# TYPE frey_nvme_power_on_hours counter"
+    echo "# HELP frey_nvme_unsafe_shutdowns_total Power lost without a clean shutdown."
+    echo "# TYPE frey_nvme_unsafe_shutdowns_total counter"
+    echo "# HELP frey_nvme_power_cycles_total Power cycles."
+    echo "# TYPE frey_nvme_power_cycles_total counter"
+    echo "# HELP frey_nvme_error_log_entries_total Entries in the drive's error log."
+    echo "# TYPE frey_nvme_error_log_entries_total counter"
+
+    for device in /dev/nvme[0-9]; do
+      [[ -e "${device}" ]] || continue
+      local name log
+      name=$(basename "${device}")
+      log=$(nvme smart-log "${device}" 2>/dev/null) || { ok=0; continue; }
+
+      # smart-log prints "key : value", where value may carry a unit, a
+      # percent sign, thousands separators, or a parenthesised second form
+      # ("39 °C (312 K)"). Take the first number and nothing else.
+      field() {
+        echo "${log}" | sed -n "s/^$1[[:space:]]*:[[:space:]]*//p" \
+          | head -n1 | tr -d ',%' | awk '{print $1}'
+      }
+
+      local value
+      for pair in \
+        "critical_warning:frey_nvme_critical_warning" \
+        "temperature:frey_nvme_temperature_celsius" \
+        "percentage_used:frey_nvme_wear_percent" \
+        "available_spare:frey_nvme_available_spare_percent" \
+        "media_errors:frey_nvme_media_errors_total" \
+        "data_units_written:frey_nvme_data_units_written_total" \
+        "power_on_hours:frey_nvme_power_on_hours" \
+        "unsafe_shutdowns:frey_nvme_unsafe_shutdowns_total" \
+        "power_cycles:frey_nvme_power_cycles_total" \
+        "num_err_log_entries:frey_nvme_error_log_entries_total"
+      do
+        value=$(num "$(field "${pair%%:*}")")
+        [[ -n "${value}" ]] && echo "${pair##*:}{device=\"${name}\"} ${value}"
+      done
+    done
+
+    collector_meta nvme "${ok}" "${started}"
+  } | emit nvme
+}
+
+# =============================================================================
+# GATEWAY - is FreyHub actually serving, and is there a way out
+# =============================================================================
+collect_gateway() {
+  local started ok connectivity state usable connected signal metered
+  local ap_up stations leases dns_ok dns_seconds nat_rules default_route rtt
+  started=$(date +%s.%N)
+  ok=1
+
+  # --- Connectivity --------------------------------------------------------
+  #
+  # full | limited | portal | none | unknown, and the distinction is the whole
+  # point: a captive portal looks online to an application. This is the same
+  # verdict roles/media_acquisition/ gates downloading on, deliberately, so
+  # the dashboard and the download gating never disagree.
+  connectivity=$(nmcli -t -f CONNECTIVITY general status 2>/dev/null | head -n1)
+  [[ -z "${connectivity}" ]] && { connectivity=unknown; ok=0; }
+  usable=0
+  [[ "${connectivity}" == "full" ]] && usable=1
+
+  # --- Uplink radio --------------------------------------------------------
+  connected=0
+  nmcli -t -f DEVICE,STATE device 2>/dev/null \
+    | grep -q "^${UPLINK_IFACE}:connected" && connected=1
+
+  # iw rather than `nmcli dev wifi list`, which triggers a scan - and a scan on
+  # the uplink radio costs throughput and can briefly disassociate it.
+  signal=""
+  if have iw; then
+    signal=$(num "$(iw dev "${UPLINK_IFACE}" link 2>/dev/null \
+      | sed -n 's/^[[:space:]]*signal:[[:space:]]*\(-\?[0-9]*\).*/\1/p' | head -n1)")
+  fi
+
+  # Only an explicit "yes" counts, never "yes (guessed)" - see the long note in
+  # roles/media_acquisition/templates/frey-media-gate.sh.j2 about why a guess
+  # must not be treated as fact.
+  metered=0
+  [[ "$(nmcli -t -f GENERAL.METERED device show "${UPLINK_IFACE}" 2>/dev/null | cut -d: -f2)" == "yes" ]] \
+    && metered=1
+
+  rtt=""
+  local gw
+  gw=$(ip route show default 2>/dev/null | awk '/default/ {print $3; exit}')
+  if [[ -n "${gw}" ]]; then
+    rtt=$(num "$(ping -c1 -W2 -n "${gw}" 2>/dev/null \
+      | sed -n 's/.*time=\([0-9.]*\).*/\1/p' | head -n1)")
+  fi
+
+  # --- FreyHub -------------------------------------------------------------
+  ap_up=0
+  nmcli -t -f DEVICE,STATE,CONNECTION device 2>/dev/null \
+    | grep -q "^${AP_IFACE}:connected:${AP_CONNECTION}" && ap_up=1
+
+  stations=0
+  if have iw; then
+    stations=$(iw dev "${AP_IFACE}" station dump 2>/dev/null | grep -c '^Station')
+  fi
+
+  # dnsmasq's lease file moves between distributions, so look rather than
+  # assume. An absent file is zero leases, which is also the truth.
+  leases=0
+  local lease_file
+  for lease_file in /var/lib/misc/dnsmasq.leases /var/lib/dnsmasq/dnsmasq.leases \
+                    /var/lib/NetworkManager/dnsmasq-"${AP_IFACE}".leases; do
+    if [[ -r "${lease_file}" ]]; then
+      leases=$(grep -c . "${lease_file}" 2>/dev/null)
+      break
+    fi
+  done
+
+  # --- DNS -----------------------------------------------------------------
+  #
+  # Actually resolve a name, rather than check that dnsmasq is listening.
+  # Every service in the van is reached by name and those names are answered
+  # locally so they work offline; "the process is up" has never been the
+  # question worth asking.
+  dns_ok=0
+  dns_seconds=""
+  if have dig; then
+    local t0 t1 answer
+    t0=$(date +%s.%N)
+    answer=$(dig +short +time=2 +tries=1 "@${DNS_SERVER}" "${DNS_PROBE_NAME}" 2>/dev/null | head -n1)
+    t1=$(date +%s.%N)
+    [[ "${answer}" == "${DNS_SERVER}" ]] && dns_ok=1
+    dns_seconds=$(awk -v a="${t0}" -v b="${t1}" 'BEGIN{printf "%.4f", b-a}')
+  fi
+
+  # --- NAT and routing -----------------------------------------------------
+  nat_rules=0
+  if have iptables; then
+    nat_rules=$(iptables -t nat -S POSTROUTING 2>/dev/null \
+      | grep -c -- "-s ${DOWNSTREAM_CIDR}.*MASQUERADE")
+    # Fall back to counting any masquerade rule: the gateway role may word it
+    # differently, and zero here would be a false alarm.
+    [[ "${nat_rules}" -eq 0 ]] && nat_rules=$(iptables -t nat -S POSTROUTING 2>/dev/null \
+      | grep -c MASQUERADE)
+  fi
+
+  default_route=$(ip route show default 2>/dev/null | grep -c '^default')
+
+  {
+    echo "# HELP frey_uplink_connectivity NetworkManager's connectivity verdict, one series per state."
+    echo "# TYPE frey_uplink_connectivity gauge"
+    local s
+    for s in full limited portal none unknown; do
+      if [[ "${s}" == "${connectivity}" ]]; then
+        echo "frey_uplink_connectivity{state=\"${s}\"} 1"
+      else
+        echo "frey_uplink_connectivity{state=\"${s}\"} 0"
+      fi
+    done
+
+    echo "# HELP frey_uplink_usable The uplink is genuinely usable (full connectivity, not a portal)."
+    echo "# TYPE frey_uplink_usable gauge"
+    echo "frey_uplink_usable ${usable}"
+    echo "# HELP frey_uplink_connected The uplink radio is associated to a network."
+    echo "# TYPE frey_uplink_connected gauge"
+    echo "frey_uplink_connected ${connected}"
+    echo "# HELP frey_uplink_metered The network is explicitly marked metered."
+    echo "# TYPE frey_uplink_metered gauge"
+    echo "frey_uplink_metered ${metered}"
+
+    if [[ -n "${signal}" ]]; then
+      echo "# HELP frey_uplink_signal_dbm Uplink signal strength."
+      echo "# TYPE frey_uplink_signal_dbm gauge"
+      echo "frey_uplink_signal_dbm ${signal}"
+    fi
+    if [[ -n "${rtt}" ]]; then
+      echo "# HELP frey_uplink_gateway_rtt_milliseconds Round trip to the uplink's default gateway."
+      echo "# TYPE frey_uplink_gateway_rtt_milliseconds gauge"
+      echo "frey_uplink_gateway_rtt_milliseconds ${rtt}"
+    fi
+
+    echo "# HELP frey_ap_up The FreyHub access point is up on its interface."
+    echo "# TYPE frey_ap_up gauge"
+    echo "frey_ap_up ${ap_up}"
+    echo "# HELP frey_ap_stations Devices currently associated to FreyHub."
+    echo "# TYPE frey_ap_stations gauge"
+    echo "frey_ap_stations ${stations}"
+    echo "# HELP frey_dhcp_leases_active Active DHCP leases handed out to FreyHub clients."
+    echo "# TYPE frey_dhcp_leases_active gauge"
+    echo "frey_dhcp_leases_active ${leases}"
+
+    echo "# HELP frey_dns_probe_success FreyHub DNS resolved a local service name."
+    echo "# TYPE frey_dns_probe_success gauge"
+    echo "frey_dns_probe_success ${dns_ok}"
+    if [[ -n "${dns_seconds}" ]]; then
+      echo "# HELP frey_dns_probe_seconds Time taken to resolve a local service name."
+      echo "# TYPE frey_dns_probe_seconds gauge"
+      echo "frey_dns_probe_seconds ${dns_seconds}"
+    fi
+
+    echo "# HELP frey_nat_masquerade_rules Masquerade rules for the downstream network."
+    echo "# TYPE frey_nat_masquerade_rules gauge"
+    echo "frey_nat_masquerade_rules ${nat_rules}"
+    echo "# HELP frey_default_route_present A default route exists."
+    echo "# TYPE frey_default_route_present gauge"
+    echo "frey_default_route_present ${default_route}"
+
+    # --- Interface counters -------------------------------------------------
+    #
+    # From the host's /proc/net/dev, because a containerised node-exporter
+    # cannot read these: /proc/net resolves per network namespace, so it sees
+    # its own veth and never wlan0. Verified on this Pi.
+    echo "# HELP frey_net_receive_bytes_total Bytes received on a host interface."
+    echo "# TYPE frey_net_receive_bytes_total counter"
+    echo "# HELP frey_net_transmit_bytes_total Bytes transmitted on a host interface."
+    echo "# TYPE frey_net_transmit_bytes_total counter"
+    echo "# HELP frey_net_receive_errors_total Receive errors on a host interface."
+    echo "# TYPE frey_net_receive_errors_total counter"
+    echo "# HELP frey_net_transmit_errors_total Transmit errors on a host interface."
+    echo "# TYPE frey_net_transmit_errors_total counter"
+    echo "# HELP frey_net_receive_drops_total Dropped received packets."
+    echo "# TYPE frey_net_receive_drops_total counter"
+    echo "# HELP frey_net_transmit_drops_total Dropped transmitted packets."
+    echo "# TYPE frey_net_transmit_drops_total counter"
+    awk -F'[: ]+' '
+      NR > 2 {
+        iface = $2
+        # The radios and any wired interface. Docker veths and bridges are
+        # noise - cAdvisor and Traefik already account for container traffic.
+        if (iface !~ /^(wlan|eth|en|usb)/) next
+        printf "frey_net_receive_bytes_total{device=\"%s\"} %s\n",   iface, $3
+        printf "frey_net_receive_errors_total{device=\"%s\"} %s\n",  iface, $5
+        printf "frey_net_receive_drops_total{device=\"%s\"} %s\n",   iface, $6
+        printf "frey_net_transmit_bytes_total{device=\"%s\"} %s\n",  iface, $11
+        printf "frey_net_transmit_errors_total{device=\"%s\"} %s\n", iface, $13
+        printf "frey_net_transmit_drops_total{device=\"%s\"} %s\n",  iface, $14
+      }
+    ' /proc/net/dev
+
+    collector_meta gateway "${ok}" "${started}"
+  } | emit gateway
+}
+
+# =============================================================================
+# DOCKER - container state, from docker rather than from cAdvisor
+# =============================================================================
+collect_docker() {
+  local started ok
+  started=$(date +%s.%N)
+  ok=1
+
+  if ! have docker; then
+    { echo "# docker not installed"; collector_meta docker 0 "${started}"; } | emit docker
+    return
+  fi
+
+  local inspected
+  # One inspect for every container rather than one per container: on a Pi with
+  # twenty-one of them, the per-call overhead is most of the runtime.
+  #
+  # Fields: name, running, restart policy, restart count, health, oom-killed
+  inspected=$(docker ps -aq 2>/dev/null | xargs -r docker inspect \
+    --format '{% raw %}{{.Name}}|{{.State.Running}}|{{.HostConfig.RestartPolicy.Name}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.State.OOMKilled}}|{{index .Config.Labels "frey.module"}}{% endraw %}' 2>/dev/null)
+  [[ -z "${inspected}" ]] && ok=0
+
+  {
+    echo "# HELP frey_container_running Container is running. Only reported for containers that are SUPPOSED to be."
+    echo "# TYPE frey_container_running gauge"
+    echo "# HELP frey_container_restarts_total Docker's restart count for a container."
+    echo "# TYPE frey_container_restarts_total counter"
+    echo "# HELP frey_container_health Container healthcheck status, one series per status."
+    echo "# TYPE frey_container_health gauge"
+    echo "# HELP frey_container_oom_killed The container was killed for exceeding its memory limit."
+    echo "# TYPE frey_container_oom_killed gauge"
+
+    local line name running policy restarts health oom module status
+    while IFS='|' read -r name running policy restarts health oom module; do
+      [[ -z "${name}" ]] && continue
+      name="${name#/}"
+      module="${module:-none}"
+
+      # ------------------------------------------------------------------
+      # Only containers with an always-restart policy get a running metric.
+      #
+      # A container with policy "no" that has exited may have done exactly
+      # what it was asked to - a one-shot job, a migration, something run by
+      # hand. Alerting on those would train you to ignore the alert, which
+      # costs more than the coverage is worth.
+      # ------------------------------------------------------------------
+      if [[ "${policy}" == "always" || "${policy}" == "unless-stopped" ]]; then
+        if [[ "${running}" == "true" ]]; then
+          echo "frey_container_running{name=\"${name}\",module=\"${module}\"} 1"
+        else
+          echo "frey_container_running{name=\"${name}\",module=\"${module}\"} 0"
+        fi
+      fi
+
+      restarts=$(num "${restarts}")
+      [[ -n "${restarts}" ]] && \
+        echo "frey_container_restarts_total{name=\"${name}\",module=\"${module}\"} ${restarts}"
+
+      for status in healthy unhealthy starting none; do
+        if [[ "${health}" == "${status}" ]]; then
+          echo "frey_container_health{name=\"${name}\",module=\"${module}\",status=\"${status}\"} 1"
+        else
+          echo "frey_container_health{name=\"${name}\",module=\"${module}\",status=\"${status}\"} 0"
+        fi
+      done
+
+      if [[ "${oom}" == "true" ]]; then
+        echo "frey_container_oom_killed{name=\"${name}\",module=\"${module}\"} 1"
+      else
+        echo "frey_container_oom_killed{name=\"${name}\",module=\"${module}\"} 0"
+      fi
+    done <<< "${inspected}"
+
+    local total running_count
+    total=$(echo "${inspected}" | grep -c .)
+    running_count=$(echo "${inspected}" | awk -F'|' '$2 == "true"' | grep -c .)
+    echo "# HELP frey_containers_total Containers known to Docker."
+    echo "# TYPE frey_containers_total gauge"
+    echo "frey_containers_total ${total}"
+    echo "# HELP frey_containers_running Containers currently running."
+    echo "# TYPE frey_containers_running gauge"
+    echo "frey_containers_running ${running_count}"
+
+    collector_meta docker "${ok}" "${started}"
+  } | emit docker
+}
+
+# =============================================================================
+# Every collector reports whether it worked and how long it took.
+#
+# This is what makes a BROKEN collector visible. Without it a failed collector
+# does not make its metrics go to zero - it makes them stop updating, and the
+# dashboards keep cheerfully showing the last value they saw. Monitoring that
+# looks fine and is lying is the worst failure mode in the whole stack.
+# =============================================================================
+collector_meta() {
+  local collector="$1" ok="$2" started="$3"
+  local duration
+  duration=$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN{printf "%.3f", b-a}')
+  echo "# HELP frey_collector_success The collector gathered its metrics successfully."
+  echo "# TYPE frey_collector_success gauge"
+  echo "frey_collector_success{collector=\"${collector}\"} ${ok}"
+  echo "# HELP frey_collector_duration_seconds How long the collector took."
+  echo "# TYPE frey_collector_duration_seconds gauge"
+  echo "frey_collector_duration_seconds{collector=\"${collector}\"} ${duration}"
+}
+
+# =============================================================================
+# THE SENSOR SEAM
+#
+# Adding the van's cabin temperature looks like this, and nothing else in the
+# stack has to change - it is scraped, stored for a year, graphable and
+# alertable on the same terms as everything above:
+#
+#   collect_van() {
+#     local started temp
+#     started=$(date +%s.%N)
+#     temp=$(num "$(awk '{print $1/1000}' /sys/bus/w1/devices/28-*/temperature)")
+#     {
+#       echo "# HELP van_temp_celsius Cabin temperature."
+#       echo "# TYPE van_temp_celsius gauge"
+#       [[ -n "${temp}" ]] && echo "van_temp_celsius{location=\"cabin\"} ${temp}"
+#       collector_meta van "$([[ -n "${temp}" ]] && echo 1 || echo 0)" "${started}"
+#     } | emit van
+#   }
+#
+# Then add `van` to monitoring_host_collectors in monitoring.yml. The timer
+# already runs on the right clock.
+#
+# Once a sensor is not physically wired to the Pi - a battery monitor, a Zigbee
+# thermometer, an ESP32 node - stop writing scripts and add an MQTT broker.
+# See docs/MONITORING.md.
+# =============================================================================
+
+main() {
+  local requested="${1:-all}"
+  local collectors=({{ monitoring_host_collectors | join(' ') }})
+
+  if [[ "${requested}" != "all" ]]; then
+    collectors=("${requested}")
+  fi
+
+  local collector
+  for collector in "${collectors[@]}"; do
+    case "${collector}" in
+      pi) collect_pi ;;
+      nvme) collect_nvme ;;
+      gateway) collect_gateway ;;
+      docker) collect_docker ;;
+      *)
+        echo "frey-metrics: unknown collector '${collector}'" >&2
+        exit 64
+        ;;
+    esac
+  done
+}
+
+main "$@"

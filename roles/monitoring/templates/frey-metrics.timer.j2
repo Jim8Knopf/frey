@@ -1,0 +1,21 @@
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+[Unit]
+Description=Frey host metrics collection timer
+Documentation=file://{{ monitoring.bin_dir }}/frey-metrics
+
+[Timer]
+# Start collecting shortly after boot rather than waiting a full interval: the
+# minutes right after an unexpected reboot are exactly when you want data, and
+# an unexpected reboot in a van usually means the power was cut.
+OnBootSec=30s
+OnUnitActiveSec={{ monitoring_retention.host_collector_interval }}
+AccuracySec=5s
+# Spread the runs out instead of landing on the same instant as every other
+# timer on the system.
+RandomizedDelaySec=3s
+Unit={{ monitoring.collectors.service_name }}.service
+# Catch up after a suspend or a long clock jump rather than silently skipping.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

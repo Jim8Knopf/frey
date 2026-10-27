@@ -1,0 +1,39 @@
+{#
+  ============================================================================
+  GRAFANA DASHBOARD PROVIDER - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Dashboards are FILES IN THIS ROLE, not downloads.
+
+  The archived stack fetched ten dashboards from grafana.com during the deploy.
+  On a van with no uplink that produces a working metrics database and an empty
+  Grafana - the exact situation in which you most want to look at a dashboard.
+  Everything here is on disk before the container starts.
+
+  The trade is that these are hand-built for this Pi rather than community
+  dashboards with a thousand panels. That is mostly an advantage: the metrics
+  that matter in a van - throttling, PMIC power, AP clients, captive-portal
+  state, NVMe wear - do not appear on any community dashboard, because no
+  community dashboard knows this machine lives in a van.
+#}
+apiVersion: 1
+
+providers:
+  - name: Frey
+    orgId: 1
+    folder: Frey
+    type: file
+    # Editing a provisioned dashboard in the UI is allowed, but the next
+    # deploy overwrites it - the file in the role is the source of truth. Save
+    # anything you want to keep as a copy in a different folder.
+    disableDeletion: false
+    allowUiUpdates: true
+    # Nothing to poll for: the files only change on a deploy, and a deploy
+    # restarts the container anyway.
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards
+      # Mirrors the directory layout, so adding a subfolder of dashboards
+      # needs no change here.
+      foldersFromFilesStructure: false
