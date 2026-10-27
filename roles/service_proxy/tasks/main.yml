@@ -152,6 +152,7 @@
     pull: true
     networks:
       - name: "{{ service_proxy.traefik.network }}"
+        aliases: "{{ service_proxy.traefik.network_aliases | default([]) }}"
     networks_cli_compatible: true
     published_ports:
       - "{{ service_proxy.bind_address }}:{{ service_proxy.traefik.http_port }}:80"

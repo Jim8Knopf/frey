@@ -22,3 +22,24 @@ labels:
 networks:
   - frey_proxy
 ```
+
+## Container-Side DNS: `traefik.network_aliases`
+
+The gateway wildcard answers `*.frey` for FreyHub clients. It does **not**
+answer for containers — those resolve through Docker's embedded resolver, which
+knows container names and nothing else. A container calling a Frey hostname
+therefore gets `Could not resolve host`, and aiming it at the gateway address
+instead times out, because the firewall opens 443 on the downstream radio only
+and a Docker bridge is not that interface.
+
+`service_proxy.traefik.network_aliases` attaches extra DNS names to Traefik on
+`frey_proxy`, so any container on that network can reach a service by its real
+hostname, over TLS, with the certificate still valid.
+
+It defaults to the Authelia hostname, because OIDC is the case that needs it:
+an app logging in against Authelia makes a server-side call to the issuer for
+discovery and token exchange, and that call fails without this even when the
+app is configured perfectly. See `docs/IDENTITY.md`.
+
+Only names Traefik already has a router for are worth adding — an alias is DNS,
+not routing.

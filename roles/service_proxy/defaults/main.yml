@@ -34,6 +34,36 @@ service_proxy:
     http_port: 80
     https_port: 443
 
+    # ---------------------------------------------------------------------
+    # EXTRA DNS NAMES FOR TRAEFIK, ON THE PROXY NETWORK
+    #
+    # Names that must resolve to Traefik from INSIDE a container, as opposed
+    # to from a FreyHub client. Docker's embedded resolver answers these for
+    # every container on the proxy network; dnsmasq's *.frey wildcard does
+    # not reach them, because containers resolve through Docker, not through
+    # the gateway.
+    #
+    # WHY THIS EXISTS: an app doing OIDC makes a server-side call to the
+    # issuer - to fetch the discovery document and to exchange the
+    # authorization code for a token. The browser's redirect works fine
+    # without this; that back-channel call does not. In the Jellyfin SSO
+    # plugin's case it fails as "Could not resolve host: auth.hub.frey".
+    #
+    # Pointing the container at the gateway address instead does NOT work:
+    # the firewall opens 443 on the downstream radio only, and a request
+    # from a Docker bridge does not arrive on it, so it times out. Traefik's
+    # own address on the shared network is the one path that works, and
+    # addressing it by the issuer's real hostname keeps the TLS certificate
+    # valid - the name is in it, and the containers already trust the Frey
+    # CA. Reaching Authelia by container name would break issuer validation
+    # instead, since the issuer URL has to match exactly.
+    #
+    # Harmless when identity is not deployed: the name simply resolves to a
+    # Traefik that has no router for it.
+    # ---------------------------------------------------------------------
+    network_aliases:
+      - "{{ identity_hosts.auth | default('auth') }}.{{ frey.service_domain }}"
+
     # Force EVERY request to HTTPS at the entrypoint, including services with
     # no authentication in front of them.
     #

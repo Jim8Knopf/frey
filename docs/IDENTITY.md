@@ -224,6 +224,45 @@ then fill in the provider.
 **Jellyfin's local accounts keep working throughout.** If the plugin misbehaves
 on 12.3, that is your way back in — do not delete the local administrator.
 
+### The Back-Channel Call, And Why Containers Need A DNS Alias
+
+An OIDC app does not only redirect your browser. It also calls the issuer
+**itself**, server-side, to fetch the discovery document and to exchange the
+authorization code for a token. Those two calls come from inside the container,
+and a container does not resolve names the way a FreyHub client does: it asks
+Docker's embedded resolver, which has never heard of `auth.hub.frey`. dnsmasq's
+`*.frey` wildcard answers the LAN, not the container network.
+
+So a correctly configured plugin fails anyway, and the symptom names the cause
+if you know to look for it:
+
+```text
+curl: (6) Could not resolve host: auth.hub.frey
+```
+
+Pointing the container at the gateway address instead does not help. The
+firewall opens 443 on the downstream radio only, and a packet from a Docker
+bridge does not arrive on that interface, so it times out rather than being
+refused — which reads like a hang, not a block.
+
+`service_proxy.traefik.network_aliases` fixes it by giving Traefik the name
+`auth.hub.frey` **on the proxy network**, so Docker's resolver answers every
+container on it. Traefik then routes by Host header exactly as it does for a
+browser. Addressing Traefik rather than Authelia directly is what keeps TLS
+valid: the hostname is in the certificate, the containers already trust the
+Frey CA, and the issuer URL still matches byte-for-byte. Reaching Authelia by
+container name would resolve fine and then fail issuer validation instead.
+
+This applies to every `oidc` service, so Audiobookshelf needs it too; one alias
+covers both.
+
+```bash
+# Should print 200, and must work WITHOUT -k - if it only works with -k,
+# the container is not trusting the Frey CA.
+docker exec jellyfin curl -sS -o /dev/null -w '%{http_code}\n' \
+  https://auth.hub.frey/.well-known/openid-configuration
+```
+
 ## Verifying
 
 ```bash
