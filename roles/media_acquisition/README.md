@@ -62,17 +62,43 @@ qBittorrent itself looks perfectly healthy — with a `Username` in its config
 that appears nowhere in this repository. The deploy is authoritative and will
 put the vault's values back.
 
-If the two sides have already diverged and Ansible can no longer log in, the
-seed template will not help: it is written with `force: false` and never
-touches an existing config. Break the deadlock by clearing the stored
-credential and letting a deploy rewrite it:
+### Rotating the password, and the deadlock to avoid
+
+Changing `qbittorrent_password` in the vault is **not** a plain re-deploy.
+`setPreferences` is the only route to a running container, and reaching it
+requires logging in with the credential you are trying to replace — so the
+deploy authenticates with the new password against a qBittorrent that still
+has the old one, fails, and retries for the full ten-minute API budget.
+
+The order that works, and the reason for each step:
 
 ```bash
+# 1. Stop it FIRST. A running qBittorrent holds its preferences in memory and
+#    writes the whole file back out, silently discarding anything Ansible put
+#    there - including the hash this procedure depends on.
 sudo docker stop qbittorrent
-sudo sed -i '/^Username=/d; /^Password_PBKDF2=/d' \
-  /opt/frey/appdata/qbittorrent/qBittorrent/qBittorrent.conf
-sudo docker start qbittorrent
+
+# 2. Move the config aside. Clearing just the password line is not enough once
+#    qBittorrent has migrated the file (see below): the role writes the legacy
+#    key, and a migrated config ignores it.
+sudo mv /opt/frey/appdata/qbittorrent/qBittorrent/qBittorrent.conf \
+        /opt/frey/appdata/qbittorrent/qBittorrent/qBittorrent.conf.old
+
+# 3. Deploy while it is still stopped. The seed template writes a fresh config
+#    with both vault credentials, the container comes back up, and the wiring
+#    stage then logs in and corrects all four *arrs.
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+  --tags media_acquisition --vault-password-file .vault_pass
 ```
+
+Losing the old config costs nothing: every other preference is re-applied
+through the API in the same run, and the torrents and their categories live in
+`BT_backup/` and `categories.json`, not in `qBittorrent.conf`.
+
+If you skip step 1, the symptom is qBittorrent logging
+*"The WebUI administrator password was not set. A temporary password is
+provided for this session"* on every start, because its own rewrite dropped
+the seeded hash and it fell back to a random one.
 
 qBittorrent reads the legacy `[Preferences]` `WebUI\…` keys this role seeds and
 migrates them into a `[WebUI]` section of its own on first write, which is why

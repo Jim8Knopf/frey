@@ -261,9 +261,19 @@
     - arr_downloadclients.json is defined
     - "'qBittorrent' in (arr_downloadclients.json | map(attribute='name') | list)"
     - arr_qbt_existing.id is defined
-    - arr_qbt_stored_username != media_acquisition.services.qbittorrent.web_username
   register: arr_downloadclient_fix
   failed_when: false
+  # Unconditional, not gated on a difference, because a password change is
+  # invisible from here: the Servarr API returns the password censored, so
+  # there is nothing to compare it against. Gating on the username alone
+  # would propagate a renamed user and silently skip a rotated password -
+  # the more likely of the two, and the one whose failure looks identical.
+  #
+  # Re-sending the same credential is a no-op to the app, so the cost of
+  # being unconditional is one PUT per *arr per run.
+  changed_when:
+    - arr_downloadclient_fix.status | default(0) in [200, 202]
+    - arr_qbt_stored_username != media_acquisition.services.qbittorrent.web_username
   no_log: true
 
 - name: "{{ arr.key }}: record download client credential failure"
