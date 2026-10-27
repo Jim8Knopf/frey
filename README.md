@@ -32,6 +32,9 @@ roles/security_baseline/                 # Firewall, fail2ban, network hardening
 roles/rpi_nvme/                          # Pi/NVMe runtime tuning
 roles/media_acquisition/                 # *arrs + qBittorrent (needs uplink)
 roles/media_library/                     # Jellyfin, Audiobookshelf, Seerr (offline-capable)
+roles/monitoring/                        # Metrics, logs, dashboards, phone alerts
+inventory/group_vars/all/monitoring.yml  # Alert thresholds, retention, what is core
+scripts/monitoring-check.sh              # Assert the monitoring is actually monitoring
 docs/                                    # Active architecture docs
 archive/legacy-stack/                    # Previous service stack, docs, roles
 ```
@@ -189,6 +192,55 @@ of the stack at it automatically.
 See [docs/MEDIA.md](docs/MEDIA.md). Note that the Pi 5 has no hardware video
 encoder, so the quality profiles deliberately chase direct play rather than
 relying on transcoding.
+
+## Monitoring
+
+The van tells you when something is wrong, rather than you finding out.
+
+Dashboards at **`grafana.hub.frey`**, logged in with your Frey account. Alerts
+reach your phone through **ntfy** — and when the van has no uplink they are held
+on disk with the time they really fired, then delivered with a short "while you
+were offline" report that also names anything which broke and recovered on its
+own. That last part is invisible everywhere else.
+
+Two severities, deliberately. `critical` buzzes; `warning` arrives silently.
+
+It watches the ordinary things — CPU, memory, disk, containers — and the ones
+that actually matter in a vehicle:
+
+- **under-voltage and throttling**, which the Pi reports directly and which mean
+  the supply is sagging or the cabin is too hot. Under-voltage corrupts
+  filesystems, so it is loud and immediate.
+- **NVMe wear, media errors and unsafe shutdowns** — the drive's own count of the
+  times the power was cut rather than halted.
+- **real board power draw**, per PMIC rail. The start of answering what the van's
+  server costs in amp-hours.
+- **FreyHub actually serving**: AP clients, DHCP leases, DNS answering, NAT
+  present — and captive-portal state, which looks online to an application and
+  is not.
+- **whether each service answers through Traefik over HTTPS**, as a browser
+  would ask. That catches the failure container metrics call healthy: a perfectly
+  running container behind a router Traefik has dropped.
+
+```bash
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+  --tags monitoring --vault-password-file .vault_pass
+```
+
+Thresholds, retention and what counts as a core service all live in one file,
+`inventory/group_vars/all/monitoring.yml`. To check it is genuinely working
+rather than merely running:
+
+```bash
+scripts/monitoring-check.sh            # every target up, rules loaded, collectors fresh
+scripts/monitoring-check.sh --test     # prove a notification reaches your phone
+```
+
+Temperature and other van sensors are not wired up yet, but the seam for them
+is: anything that writes a `.prom` file into `/opt/frey/metrics/textfile/` becomes
+a monitored metric on the same terms as CPU temperature.
+
+See [docs/MONITORING.md](docs/MONITORING.md).
 
 ## Add A Module
 

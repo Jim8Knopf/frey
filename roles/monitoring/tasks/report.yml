@@ -1,0 +1,106 @@
+---
+# ==============================================================================
+# REPORT
+#
+# The one thing a deploy produces that you have to act on: the ntfy topic.
+# Printed once, on the run that generates it, because printing it every time
+# trains you to skim past the end of a deploy - which is where the thing you
+# must act on appears.
+#
+# It is deliberately not in the vault. A topic you have to invent, paste into
+# secrets.yml and keep in sync is a worse secret than one generated on the Pi:
+# the old stack's setup guide opened with eight openssl commands to run and
+# paste by hand, every one a chance to put the wrong value in the wrong key.
+# Put vault_ntfy_topic in secrets.yml if you want to pin it anyway.
+# ==============================================================================
+
+- name: Report how to subscribe to alerts
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        [
+          "",
+          "============================================================",
+          " SUBSCRIBE YOUR PHONE TO FREY'S ALERTS",
+          "============================================================",
+          "",
+          " 1. Install ntfy (App Store / Play Store / F-Droid).",
+          " 2. Add a subscription to this topic:",
+          "",
+          "        " ~ monitoring_secrets.ntfy_topic,
+          "",
+          "    on server " ~ monitoring_alerting.ntfy.server,
+          "",
+          " 3. Check it works end to end:",
+          "",
+          "        scripts/monitoring-check.sh --test",
+          "",
+          " THE TOPIC NAME IS THE PASSWORD. Anyone who knows it can read",
+          " your alerts and send you fake ones. It is not printed again -",
+          " it is kept on the Pi in:",
+          "",
+          "        " ~ monitoring.configure.key_file,
+          "",
+          "============================================================",
+          "",
+        ] | join('\n')
+      }}
+  when:
+    - monitoring_enable.alerting | bool
+    - monitoring_topic_is_new | default(false) | bool
+  tags: [monitoring, metrics]
+
+- name: Report the Grafana local administrator password
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        [
+          "",
+          "Grafana local administrator (the fallback for when single sign-on",
+          "is the thing that is broken - which this stack exists to tell you):",
+          "",
+          "    url:       " ~ monitoring.grafana.url,
+          "    username:  " ~ monitoring.grafana.admin_user,
+          "    password:  " ~ monitoring_secrets.grafana_admin_password,
+          "",
+          "Normally you log in with your Frey account instead.",
+          "",
+        ] | join('\n')
+      }}
+  when:
+    - monitoring_enable.grafana | bool
+    - monitoring_topic_is_new | default(false) | bool
+  tags: [monitoring, metrics]
+
+- name: Report where everything is
+  ansible.builtin.debug:
+    # The whole sum is parenthesised before `join`: in Jinja a filter binds
+    # tighter than `+`, so without these brackets this is list + string.
+    msg: >-
+      {{
+        (
+          [
+            "",
+            "Monitoring is deployed.",
+            "",
+            "    dashboards    " ~ monitoring.grafana.url,
+            "    metrics       " ~ monitoring.prometheus.external_url,
+            "    alerts        " ~ monitoring.alertmanager.external_url,
+            "",
+            "    check         scripts/monitoring-check.sh",
+            "    thresholds    inventory/group_vars/all/monitoring.yml",
+            "",
+          ]
+          + (
+              [
+                "Single sign-on is OFF for Grafana: no OIDC client secret was",
+                "found. Deploy identity first, or use the local admin account.",
+                "",
+              ]
+              if (monitoring_enable.grafana | bool)
+                 and not (monitoring_grafana_oidc | default(false) | bool)
+              else []
+            )
+        ) | join('\n')
+      }}
+  tags: [monitoring, metrics]

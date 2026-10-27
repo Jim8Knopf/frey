@@ -1,0 +1,30 @@
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+[Unit]
+Description=Frey host metrics collection
+Documentation=file://{{ monitoring.bin_dir }}/frey-metrics
+# Needs docker for the container collector, but must not fail without it:
+# collecting Pi temperature and NVMe health is useful on a Pi whose Docker is
+# the thing that is broken.
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart={{ monitoring.bin_dir }}/frey-metrics all
+# Root, because vcgencmd, nvme-cli, iptables and the Docker socket all need it.
+User=root
+# A collector that hangs must not block the next run forever. Shorter than the
+# timer interval so runs can never pile up.
+TimeoutStartSec={{ (monitoring_retention.host_collector_interval | regex_replace('[^0-9]', '') | int) * 2 }}
+Nice=10
+IOSchedulingClass=idle
+
+# Modest hardening. Everything here reads; the one thing it writes is the
+# textfile directory.
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ monitoring.textfile_dir }}
+
+[Install]
+WantedBy=multi-user.target

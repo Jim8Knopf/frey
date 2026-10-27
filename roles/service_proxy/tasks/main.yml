@@ -136,6 +136,19 @@
             if service_proxy.traefik.redirect_http_to_https | bool
             else []
           )
+        + (
+            [
+              '--entrypoints.metrics.address=:' ~ service_proxy.traefik.metrics.port,
+              '--metrics.prometheus=true',
+              '--metrics.prometheus.entryPoint=metrics',
+              '--metrics.prometheus.addEntryPointsLabels=true',
+              '--metrics.prometheus.addServicesLabels=true',
+              '--metrics.prometheus.addRoutersLabels='
+                ~ (service_proxy.traefik.metrics.add_router_labels | ternary('true', 'false')),
+            ]
+            if service_proxy.traefik.metrics.enabled | default(false) | bool
+            else []
+          )
         + ['--log.level=INFO']
       }}
   tags:

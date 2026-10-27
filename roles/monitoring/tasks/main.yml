@@ -1,0 +1,653 @@
+---
+# ==============================================================================
+# MONITORING
+#
+# Metrics, logs, dashboards, and the part that finds you when something breaks.
+#
+# ORDER MATTERS IN TWO PLACES
+#
+#   Images are pulled BEFORE the configs are written, because every config is
+#   then validated by the tool that owns it - promtool, amtool, loki, alloy -
+#   and that needs the image on disk. This is the same principle
+#   roles/identity/ applies with `authelia validate-config`: a mistake becomes
+#   a failed deploy, not monitoring that silently stopped working.
+#
+#   The host collectors run once BEFORE the containers come up, so the first
+#   scrape has data instead of a gap.
+# ==============================================================================
+
+- name: Validate monitoring configuration
+  ansible.builtin.assert:
+    that:
+      - monitoring.stack_dir | length > 0
+      - monitoring.config_dir | length > 0
+      - monitoring.textfile_dir | length > 0
+      # Must not collide with FreyHub, the media network (172.28.0.0/16) or
+      # identity (172.29.0.0/24). The archived media role used FreyHub's own
+      # range for a container network, which would have blackholed the access
+      # point - the one service that must never break.
+      - not monitoring.network.subnet.startswith('10.20.0.')
+      - not monitoring.network.subnet.startswith('172.28.')
+      - not monitoring.network.subnet.startswith('172.29.')
+      # The central knobs file must be present, or every image tag, threshold
+      # and on/off switch silently resolves to nothing.
+      - monitoring_versions is defined
+      - monitoring_enable is defined
+      - monitoring_thresholds is defined
+      - monitoring_alerting is defined
+      # Alerting with no metrics has nothing to alert on.
+      - not (monitoring_enable.alerting | bool) or (monitoring_enable.metrics | bool)
+    fail_msg: >-
+      monitoring configuration is invalid. The internal Docker network
+      ({{ monitoring.network.subnet }}) must not overlap FreyHub's
+      {{ network_gateway.downstream.network_cidr }}, the media network or the
+      identity network, and inventory/group_vars/all/monitoring.yml must
+      define monitoring_versions, monitoring_enable, monitoring_thresholds and
+      monitoring_alerting. Alerting also requires metrics to be enabled.
+  tags: [monitoring, metrics, monitoring_config]
+
+# ------------------------------------------------------------------------------
+# PACKAGES
+#
+# `dig` to prove FreyHub's DNS actually answers rather than merely listens, and
+# `iw` to count the devices associated to the access point. Both are used by
+# the gateway collector, and both are declared here rather than assumed -
+# network_gateway does not install either.
+# ------------------------------------------------------------------------------
+- name: Install host collector dependencies
+  ansible.builtin.apt:
+    name: "{{ monitoring.collectors.packages + ['iw'] }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: monitoring_enable.host_collectors | bool
+  tags: [monitoring, metrics]
+
+- name: Ensure the monitoring group exists
+  ansible.builtin.group:
+    name: "{{ monitoring.user.name }}"
+    gid: "{{ monitoring.user.gid }}"
+    state: present
+  tags: [monitoring, metrics]
+
+- name: Ensure the monitoring user exists
+  ansible.builtin.user:
+    name: "{{ monitoring.user.name }}"
+    uid: "{{ monitoring.user.uid }}"
+    group: "{{ monitoring.user.name }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+  tags: [monitoring, metrics]
+
+- name: Ensure monitoring configuration directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ monitoring.stack_dir }}"
+    - "{{ monitoring.config_dir }}"
+    - "{{ monitoring.config_dir }}/{{ monitoring.prometheus.rules_dir }}"
+    - "{{ monitoring.config_dir }}/grafana"
+    - "{{ monitoring.config_dir }}/grafana/provisioning"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/datasources"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/dashboards"
+    - "{{ monitoring.config_dir }}/grafana/dashboards"
+    # The interface other things write metrics into - including, later, the
+    # van's sensors. World-readable on purpose: node-exporter mounts it.
+    - "{{ monitoring.textfile_dir }}"
+  tags: [monitoring, metrics]
+
+- name: Ensure monitoring data directories exist
+  # Owned by the uid the containers run as. Pinned rather than left to each
+  # image's default, because four images choosing four different users is four
+  # chances at a crash loop nobody can diagnose from the logs.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ monitoring.user.uid }}"
+    group: "{{ monitoring.user.gid }}"
+    mode: "0750"
+  loop:
+    - "{{ monitoring.appdata_dir }}"
+    - "{{ monitoring.appdata_dir }}/prometheus"
+    - "{{ monitoring.appdata_dir }}/alertmanager"
+    - "{{ monitoring.appdata_dir }}/loki"
+    - "{{ monitoring.appdata_dir }}/grafana"
+    - "{{ monitoring.relay.data_dir }}"
+  tags: [monitoring, metrics]
+
+- name: Ensure the Alloy data directory exists
+  # Alloy is one of the three that stay root - it reads the Docker socket and
+  # the journal - so its own directory is root too.
+  ansible.builtin.file:
+    path: "{{ monitoring.appdata_dir }}/alloy"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when: monitoring_enable.logs | bool
+  tags: [monitoring, metrics]
+
+# ------------------------------------------------------------------------------
+# SECRETS
+#
+# AFTER the directories, not before: the generated ntfy topic and Grafana
+# password are persisted into appdata_dir, so that directory has to exist
+# first. (A check run does not catch this, because check mode never actually
+# writes the file.)
+# ------------------------------------------------------------------------------
+- name: Resolve monitoring secrets
+  ansible.builtin.include_tasks:
+    file: secrets.yml
+    apply:
+      tags: [monitoring, metrics, monitoring_config]
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Ensure the private monitoring network exists
+  community.docker.docker_network:
+    name: "{{ monitoring.network.name }}"
+    driver: bridge
+    state: present
+    ipam_config:
+      - subnet: "{{ monitoring.network.subnet }}"
+  when: not ansible_check_mode
+  tags: [monitoring, metrics]
+
+# ------------------------------------------------------------------------------
+# IMAGES
+#
+# Pulled one at a time with retries, not by compose. See the equivalent task in
+# roles/media_acquisition/: compose pulls in parallel, which starves a weak
+# uplink and times out. Serial pulls are far more likely to finish on a
+# campground connection.
+# ------------------------------------------------------------------------------
+- name: Pre-pull monitoring images one at a time
+  community.docker.docker_image_pull:
+    name: "{{ item }}"
+  loop: >-
+    {{
+      monitoring.services | dict2items
+      | selectattr('value.enabled', 'truthy')
+      | map(attribute='value.image')
+      | list | unique
+    }}
+  loop_control:
+    label: "{{ item }}"
+  register: monitoring_pull
+  retries: 8
+  delay: 30
+  until: monitoring_pull is succeeded
+  # ignore_errors, not failed_when: false - failed_when would hide a failed
+  # pull entirely and the next task is what turns it into a readable error.
+  ignore_errors: true
+  when: not ansible_check_mode
+  tags: [monitoring, metrics]
+
+- name: Fail clearly when monitoring images are missing
+  ansible.builtin.fail:
+    msg: >-
+      Could not pull {{ monitoring_pull_failures | length }} image(s) after 8
+      attempts: {{ monitoring_pull_failures | join(', ') }}.
+      Re-run `--tags monitoring` on a better connection. Note that cAdvisor is
+      not on Docker Hub and some of its version numbers were never published
+      at all - check the tag exists before changing monitoring_versions.
+  vars:
+    monitoring_pull_failures: >-
+      {{
+        monitoring_pull.results | default([])
+        | selectattr('failed', 'defined')
+        | selectattr('failed')
+        | map(attribute='item') | list
+      }}
+  when:
+    - monitoring_pull.results is defined
+    - monitoring_pull_failures | length > 0
+  tags: [monitoring, metrics]
+
+# ------------------------------------------------------------------------------
+# CONFIGURATION
+# ------------------------------------------------------------------------------
+- name: Deploy the Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ monitoring.config_dir }}/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_prometheus_config
+  when: monitoring_enable.metrics | bool
+  notify: Reload Prometheus
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the alert rules
+  ansible.builtin.template:
+    src: "rules/{{ item }}.rules.yml.j2"
+    dest: "{{ monitoring.config_dir }}/{{ monitoring.prometheus.rules_dir }}/{{ item }}.rules.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - host
+    - gateway
+    - services
+    - monitoring
+  register: monitoring_rules
+  when: monitoring_enable.metrics | bool
+  notify: Reload Prometheus
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Alertmanager configuration
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ monitoring.config_dir }}/alertmanager.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_alertmanager_config
+  when: monitoring_enable.alerting | bool
+  notify: Reload Alertmanager
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the notification relay
+  ansible.builtin.copy:
+    src: alert-relay.py
+    dest: "{{ monitoring.config_dir }}/alert-relay.py"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_relay_script
+  when: monitoring_enable.alerting | bool
+  notify: Restart monitoring relay
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Check the notification relay parses
+  # The relay is bind-mounted rather than built into an image, so there is no
+  # build step to catch a syntax error - it would present as a container that
+  # restarts forever and an alerting chain that silently delivers nothing.
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -m
+      - py_compile
+      - "{{ monitoring.config_dir }}/alert-relay.py"
+  changed_when: false
+  when:
+    - monitoring_enable.alerting | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the blackbox configuration
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: "{{ monitoring.config_dir }}/blackbox.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_blackbox_config
+  when:
+    - monitoring_enable.metrics | bool
+    - monitoring_enable.blackbox | bool
+  notify: Reload blackbox exporter
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Loki configuration
+  ansible.builtin.template:
+    src: loki.yml.j2
+    dest: "{{ monitoring.config_dir }}/loki.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_loki_config
+  when: monitoring_enable.logs | bool
+  notify: Restart Loki
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Alloy configuration
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: "{{ monitoring.config_dir }}/config.alloy"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_alloy_config
+  when: monitoring_enable.logs | bool
+  notify: Restart Alloy
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Grafana datasources
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: "{{ monitoring.config_dir }}/grafana/provisioning/datasources/frey.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_enable.grafana | bool
+  notify: Restart Grafana
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Grafana dashboard provider
+  ansible.builtin.template:
+    src: grafana-dashboards.yml.j2
+    dest: "{{ monitoring.config_dir }}/grafana/provisioning/dashboards/frey.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_enable.grafana | bool
+  notify: Restart Grafana
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the dashboards
+  # Files in this role, not downloads. The archived stack fetched its
+  # dashboards from grafana.com during the deploy, which on a van with no
+  # uplink produced a working metrics database and an empty Grafana.
+  ansible.builtin.copy:
+    src: dashboards/
+    dest: "{{ monitoring.config_dir }}/grafana/dashboards/"
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_enable.grafana | bool
+  notify: Restart Grafana
+  tags: [monitoring, metrics, monitoring_config]
+
+# ------------------------------------------------------------------------------
+# VALIDATION
+#
+# Each config checked by the tool that owns it, before anything restarts. This
+# is the single most valuable set of tasks in the role: the failure mode it
+# prevents is monitoring that comes up looking healthy and evaluates no rules.
+#
+# Alloy earns it most. A bad config.alloy does not stop Alloy from starting -
+# it stops it from shipping, and the only symptom is Grafana quietly showing
+# no logs at all.
+# ------------------------------------------------------------------------------
+- name: Validate the Prometheus configuration and rules
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}:/etc/prometheus:ro"
+      - "{{ monitoring.services.prometheus.image }}"
+      - promtool
+      - check
+      - config
+      - /etc/prometheus/prometheus.yml
+  register: monitoring_promtool
+  changed_when: false
+  when:
+    - monitoring_enable.metrics | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the Alertmanager configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}/alertmanager.yml:/alertmanager.yml:ro"
+      - --entrypoint
+      - amtool
+      - "{{ monitoring.services.alertmanager.image }}"
+      - check-config
+      - /alertmanager.yml
+  changed_when: false
+  when:
+    - monitoring_enable.alerting | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the Loki configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}/loki.yml:/loki.yml:ro"
+      - "{{ monitoring.services.loki.image }}"
+      - -verify-config
+      - -config.file=/loki.yml
+  changed_when: false
+  when:
+    - monitoring_enable.logs | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the Alloy configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}/config.alloy:/config.alloy:ro"
+      - "{{ monitoring.services.alloy.image }}"
+      - validate
+      - /config.alloy
+  changed_when: false
+  when:
+    - monitoring_enable.logs | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the dashboards are well-formed JSON
+  # A malformed dashboard is silently ignored by Grafana's provisioner, so the
+  # symptom is a folder that is simply missing a dashboard nobody notices.
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import glob, json, sys
+        bad = []
+        for path in sorted(glob.glob(sys.argv[1] + "/*.json")):
+            try:
+                json.load(open(path))
+            except Exception as exc:
+                bad.append("%s: %s" % (path, exc))
+        if bad:
+            sys.exit("\n".join(bad))
+        print("%d dashboard(s) ok" % len(glob.glob(sys.argv[1] + "/*.json")))
+      - "{{ monitoring.config_dir }}/grafana/dashboards"
+  changed_when: false
+  when:
+    - monitoring_enable.grafana | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+# ------------------------------------------------------------------------------
+# HOST COLLECTORS
+#
+# Installed and run BEFORE the containers, so node-exporter's first scrape
+# finds data rather than an empty directory.
+# ------------------------------------------------------------------------------
+- name: Deploy the host metrics collector
+  ansible.builtin.template:
+    src: frey-metrics.sh.j2
+    dest: "{{ monitoring.bin_dir }}/frey-metrics"
+    owner: root
+    group: root
+    mode: "0755"
+    validate: "bash -n %s"
+  when: monitoring_enable.host_collectors | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Deploy the host metrics collector units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - "{{ monitoring.collectors.service_name }}.service"
+    - "{{ monitoring.collectors.service_name }}.timer"
+  notify: Reload systemd
+  when: monitoring_enable.host_collectors | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Deploy the monitoring watchdog
+  # The layer that still speaks when the whole Docker stack is down, including
+  # when the relay itself is what died. It needs no Prometheus and no
+  # Alertmanager - it curls ntfy directly.
+  ansible.builtin.template:
+    src: frey-monitor-watchdog.sh.j2
+    dest: "{{ monitoring.bin_dir }}/frey-monitor-watchdog"
+    owner: root
+    group: root
+    mode: "0750"
+    validate: "bash -n %s"
+  no_log: true
+  when:
+    - monitoring_enable.alerting | bool
+    - monitoring_alerting.watchdog.enabled | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Deploy the monitoring watchdog units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - "{{ monitoring.watchdog.service_name }}.service"
+    - "{{ monitoring.watchdog.service_name }}.timer"
+  notify: Reload systemd
+  when:
+    - monitoring_enable.alerting | bool
+    - monitoring_alerting.watchdog.enabled | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Apply systemd changes before enabling timers
+  ansible.builtin.meta: flush_handlers
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Enable the host metrics timer
+  ansible.builtin.systemd:
+    name: "{{ monitoring.collectors.service_name }}.timer"
+    enabled: true
+    state: started
+  when:
+    - monitoring_enable.host_collectors | bool
+    # In check mode the unit file was never written, so there is nothing to
+    # enable and systemd would fail on a unit it cannot see.
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Enable the monitoring watchdog timer
+  ansible.builtin.systemd:
+    name: "{{ monitoring.watchdog.service_name }}.timer"
+    enabled: true
+    state: started
+  when:
+    - monitoring_enable.alerting | bool
+    - monitoring_alerting.watchdog.enabled | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Collect host metrics once so the first scrape has data
+  ansible.builtin.command:
+    argv:
+      - "{{ monitoring.bin_dir }}/frey-metrics"
+      - all
+  changed_when: false
+  when:
+    - monitoring_enable.host_collectors | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_collectors]
+
+# ------------------------------------------------------------------------------
+# THE STACK
+# ------------------------------------------------------------------------------
+- name: Deploy the monitoring compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ monitoring.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+    validate: "docker compose -f %s config --quiet"
+  register: monitoring_compose
+  no_log: true
+  tags: [monitoring, metrics]
+
+- name: Start the monitoring stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ monitoring.stack_dir }}"
+    state: present
+    remove_orphans: true
+    # `missing` still costs a registry HEAD per service, which is what times
+    # out on a van's uplink. Images are already pulled above.
+    pull: never
+    timeout: 300
+  when: not ansible_check_mode
+  tags: [monitoring, metrics]
+
+- name: Pull and recreate pinned monitoring images
+  # Gated on a variable rather than a `never` tag, matching the media modules:
+  #     -e monitoring_update=true
+  community.docker.docker_compose_v2:
+    project_src: "{{ monitoring.stack_dir }}"
+    state: present
+    pull: always
+    recreate: auto
+    timeout: 600
+  when:
+    - not ansible_check_mode
+    - monitoring_update | default(false) | bool
+  tags: [monitoring, metrics, monitoring_update]
+
+- name: Wait for the stack to become healthy
+  # Checked through Docker rather than over the network: nothing here
+  # publishes a host port, and ufw's default-deny INPUT blocks a Docker bridge
+  # from reaching the host anyway (verified on this Pi), so there is no path
+  # from an Ansible task to these ports except through the containers.
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - '{{ "{{" }}.State.Health.Status{{ "}}" }}'
+      - "{{ item }}"
+  loop: >-
+    {{
+      monitoring.services | dict2items
+      | selectattr('value.enabled', 'truthy')
+      | map(attribute='value.container_name')
+      | list
+    }}
+  loop_control:
+    label: "{{ item }}"
+  register: monitoring_health
+  retries: "{{ monitoring.configure.health_retries }}"
+  delay: "{{ monitoring.configure.health_delay }}"
+  until: monitoring_health.stdout in ['healthy', '<no value>', '']
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+  tags: [monitoring, metrics]
+
+- name: Report what to do next
+  ansible.builtin.include_tasks:
+    file: report.yml
+    apply:
+      tags: [monitoring, metrics]
+  tags: [monitoring, metrics]

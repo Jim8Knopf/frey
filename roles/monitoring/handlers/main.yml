@@ -1,0 +1,86 @@
+---
+# ==============================================================================
+# HANDLERS
+#
+# RELOAD WHERE POSSIBLE, RESTART ONLY WHERE NECESSARY.
+#
+# Prometheus, Alertmanager and blackbox all reload their configuration on
+# SIGHUP. That matters more here than it would elsewhere: a restart of
+# Prometheus is a gap in the data AND a gap in the alerting, and it would
+# happen at exactly the moment you had just changed the alerting. Reloading
+# keeps both running.
+#
+# Every handler tolerates the container not existing. A first deploy writes
+# every config before anything is running, which would otherwise fail the run
+# on a container that is about to be created a few tasks later.
+# ==============================================================================
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Reload Prometheus
+  ansible.builtin.command:
+    argv:
+      - docker
+      - kill
+      - -s
+      - HUP
+      - "{{ monitoring.services.prometheus.container_name }}"
+  changed_when: true
+  failed_when: false
+
+- name: Reload Alertmanager
+  ansible.builtin.command:
+    argv:
+      - docker
+      - kill
+      - -s
+      - HUP
+      - "{{ monitoring.services.alertmanager.container_name }}"
+  changed_when: true
+  failed_when: false
+
+- name: Reload blackbox exporter
+  ansible.builtin.command:
+    argv:
+      - docker
+      - kill
+      - -s
+      - HUP
+      - "{{ monitoring.services.blackbox.container_name }}"
+  changed_when: true
+  failed_when: false
+
+# Loki, Alloy, Grafana and the relay have no reload signal, so these do have
+# to restart. All four are stateless enough for that to be free: Loki's chunks
+# and Grafana's database are on disk, and the relay persists its queue of held
+# alerts before exiting - so a restart does not lose a notification that is
+# waiting for an uplink.
+- name: Restart Loki
+  community.docker.docker_container:
+    name: "{{ monitoring.services.loki.container_name }}"
+    state: started
+    restart: true
+  failed_when: false
+
+- name: Restart Alloy
+  community.docker.docker_container:
+    name: "{{ monitoring.services.alloy.container_name }}"
+    state: started
+    restart: true
+  failed_when: false
+
+- name: Restart Grafana
+  community.docker.docker_container:
+    name: "{{ monitoring.services.grafana.container_name }}"
+    state: started
+    restart: true
+  failed_when: false
+
+- name: Restart monitoring relay
+  community.docker.docker_container:
+    name: "{{ monitoring.services.alert_relay.container_name }}"
+    state: started
+    restart: true
+  failed_when: false

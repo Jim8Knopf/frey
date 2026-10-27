@@ -1,0 +1,562 @@
+---
+# ==============================================================================
+#
+#   FREY MONITORING - THE ONLY FILE YOU NORMALLY EDIT
+#
+#   What is watched, when it shouts, and how loudly. Image versions and on/off
+#   switches live here too, same as media.yml and identity.yml.
+#
+#   Everything structural - the Prometheus scrape config, the alert rules, the
+#   Grafana dashboards, the notification relay - stays in roles/monitoring/.
+#   You should not need to open those to run this day to day.
+#
+# ------------------------------------------------------------------------------
+#   THE THREE THINGS YOU WILL ACTUALLY DO
+#
+#   Change when something shouts:
+#       Edit monitoring_thresholds below. Every number any alert compares
+#       against is in that one block; the rules themselves are generated.
+#
+#   Stop something shouting:
+#       Add its alert name to monitoring_alerting.muted. Nothing is deleted,
+#       so you can unmute it later and the history is still there.
+#
+#   See it:
+#       https://grafana.hub.frey - log in with your Frey account.
+#
+# ------------------------------------------------------------------------------
+#   APPLY
+#
+#   Day to day, once it is up:
+#
+#       ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+#         --tags monitoring --vault-password-file .vault_pass
+#
+#   THE FIRST DEPLOY IS DIFFERENT, because three other modules have to do
+#   something before this one can work:
+#
+#       pki        reissues the certificate to cover grafana.hub.frey,
+#                  prometheus.hub.frey and alertmanager.hub.frey. (The existing
+#                  *.hub.frey wildcard already covers them, so this is
+#                  belt-and-braces rather than strictly required.)
+#       identity   generates the Grafana OIDC client secret. Without it Grafana
+#                  comes up with only its local admin account and single
+#                  sign-on is off.
+#       proxy      tells Traefik to publish its own metrics. That is a
+#                  service_proxy change, so the monitoring tag alone will not
+#                  do it, and the traefik scrape target would stay down.
+#
+#   So run the whole playbook the first time - it is idempotent, and a second
+#   run reports zero changes:
+#
+#       ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+#         --vault-password-file .vault_pass
+#
+#   Or, if you would rather keep the blast radius small, in this order:
+#
+#       --tags pki,identity,proxy,monitoring
+#
+# ------------------------------------------------------------------------------
+#   CHECK IT
+#
+#       scripts/monitoring-check.sh            # is everything actually up
+#       scripts/monitoring-check.sh --test     # ...and send a test alert
+#
+# ==============================================================================
+
+
+# ==============================================================================
+# IMAGE VERSIONS
+#
+# Pinned, for the same reason media.yml and identity.yml pin: an unattended
+# pull on a campground Wi-Fi can hand you a broken stack with no internet left
+# to fix it. Monitoring earns the pin twice over - it is the thing you need
+# working when everything else is not.
+#
+# Verified multi-arch (linux/arm64) as of 2026-10-27. cAdvisor is the one to
+# watch: v0.53.0 and v0.54.0 were never published at all, so a "bump to the
+# next number" is not safe here - check the tag exists before changing it.
+#
+# To see what is out of date:  scripts/monitoring-check.sh --updates
+# ==============================================================================
+monitoring_versions:
+  prometheus: v3.15.1
+  alertmanager: v0.34.1
+  node_exporter: v1.12.1
+  blackbox_exporter: v0.29.1
+  cadvisor: v0.55.1
+  grafana: 13.2.4
+  loki: 3.7.9
+  alloy: v1.21.2
+  # Base image for the notification relay in roles/monitoring/files/.
+  # The relay is Python standard library only - no pip, no requirements file,
+  # nothing to resolve at build time, so this never needs to be online.
+  relay_base: 3.14.10-alpine3.24
+
+
+# ==============================================================================
+# WHICH PIECES RUN
+#
+# Four layers, and they are independent on purpose:
+#
+#   metrics   Prometheus + node-exporter + cAdvisor + blackbox. The numbers.
+#   alerting  Alertmanager + the ntfy relay. The part that finds you.
+#   logs      Loki + Alloy. The part that tells you WHY, and the part that
+#             costs the most disk writes. Turn it off first if the NVMe ever
+#             becomes a worry.
+#   grafana   The dashboards. Purely a viewer - turning it off loses no data
+#             and stops no alert.
+#
+# alerting without metrics is pointless, and the role asserts that.
+# ==============================================================================
+monitoring_enable:
+  metrics: true
+  alerting: true
+  logs: true
+  grafana: true
+
+  # Individual collectors, for when one of them misbehaves.
+  node_exporter: true
+  cadvisor: true
+  blackbox: true
+  # Host scripts that produce the metrics nothing off-the-shelf provides:
+  # Pi throttling and PMIC power, NVMe SMART, AP clients, DHCP leases, DNS
+  # answers, NAT rules, container state. This is also where future van sensors
+  # plug in - see THE SENSOR SEAM at the bottom of this file.
+  host_collectors: true
+
+
+# ==============================================================================
+# WHERE IT LIVES
+#
+# All three are reached through Traefik at <name>.hub.frey and none of them
+# publishes a port on the host.
+#
+# Grafana logs in against Authelia (auth: oidc in identity.yml), so it knows
+# who you are and makes frey_admins members Grafana admins. Prometheus and
+# Alertmanager have no login of their own at all, so they sit behind forward
+# auth - which is also why they are in identity.yml rather than just here.
+# ==============================================================================
+monitoring_hosts:
+  grafana: grafana
+  prometheus: prometheus
+  alertmanager: alertmanager
+
+
+# ==============================================================================
+# HOW LONG TO KEEP THINGS
+#
+# A year of metrics, two weeks of logs. The asymmetry is deliberate.
+#
+# METRICS are tiny and get more valuable with age. A year means you can answer
+# "is the NVMe running hotter than it did last summer", "is disk growth
+# accelerating", "how much power does the van actually draw overnight" - none
+# of which a fortnight of data can tell you. At this scrape volume a year is a
+# few GB against 3.4 TB free.
+#
+# LOGS are the opposite: bulky, write-heavy, and almost only ever read about
+# something that happened recently. Two weeks covers "what broke while we were
+# parked up" and stops there.
+#
+# Both have a SIZE cap as well as a time cap, and the size cap is the one that
+# actually protects the Pi: it is what stops a log loop or a metrics explosion
+# from filling the disk that the databases and the media library share.
+# Whichever limit is hit first wins.
+# ==============================================================================
+monitoring_retention:
+  metrics_time: 365d
+  # Hard ceiling for the Prometheus TSDB. Reached first, oldest data is
+  # dropped early - which is the correct failure, rather than a full disk.
+  metrics_size: 20GB
+
+  logs_time: 336h        # 14 days
+  logs_size_mb: 10240    # 10 GB, enforced by the role's own janitor
+
+  # How often metrics are collected. 15s is the useful floor for catching a
+  # brown-out or a thermal spike; anything faster mostly stores noise.
+  scrape_interval: 15s
+  # The host scripts are shelling out to vcgencmd, nvme-cli and nmcli, so they
+  # run on their own slower clock.
+  host_collector_interval: 30s
+
+
+# ==============================================================================
+# ALERTING
+#
+# THE SHAPE OF IT
+#
+#   Prometheus      decides something is wrong
+#   Alertmanager    groups it, silences duplicates, waits out flapping
+#   alert-relay     turns it into a phone notification, and holds it when the
+#                   van has no uplink
+#   ntfy            delivers it
+#
+# WHY A RELAY AND NOT ALERTMANAGER'S OWN WEBHOOK
+#
+# Because of the van. Alertmanager can POST to a webhook, but if that POST
+# fails because there is no internet, the notification is simply lost - and
+# "parked off-grid for two days" is exactly when you most want to know what
+# happened. The relay is about 400 lines of Python standard library whose whole
+# job is to survive that: it writes undelivered alerts to disk with the time
+# they really fired, and when an uplink appears it sends a short report of what
+# you missed and then the alerts themselves.
+#
+# It also means alerts that broke and fixed themselves while you were offline
+# still get mentioned - which is usually the most interesting kind.
+#
+# LOUD AND QUIET
+#
+# Two severities, and only two, so that the distinction stays meaningful:
+#
+#   critical   the van is degraded now, or is about to be. Buzzes your phone.
+#   warning    worth doing something about this week. Arrives silently.
+#
+# If you find yourself wanting to mute a critical, it was the wrong severity -
+# change it in monitoring_thresholds or move the rule, rather than training
+# yourself to ignore the loud ones.
+# ==============================================================================
+monitoring_alerting:
+  # --------------------------------------------------------------------------
+  # NTFY
+  #
+  # ntfy.sh is a public relay: the Pi POSTs out to it and your phone
+  # subscribes. Nothing listens on an inbound port, nothing needs a domain,
+  # and it works from behind campground NAT and through a captive portal the
+  # moment sign-in completes.
+  #
+  # THE TOPIC NAME IS THE PASSWORD. Anyone who knows it can read your alerts
+  # and send you fake ones, so it is generated long and random on the Pi
+  # (not committed here) and printed once at the end of the first deploy.
+  # Subscribe to it on your phone and it is done.
+  #
+  # To pin it yourself instead, put vault_ntfy_topic in secrets.yml.
+  #
+  # To self-host ntfy later, set `server` to your own instance. Be clear about
+  # the trade: a self-hosted ntfy on this Pi is only reachable from FreyHub,
+  # so it would tell you about problems only while you are standing next to
+  # the van - which is the one situation you do not need a notification for.
+  # --------------------------------------------------------------------------
+  ntfy:
+    server: https://ntfy.sh
+    topic: "{{ vault_ntfy_topic | default('') }}"
+    # Only needed for a private or self-hosted instance that requires auth.
+    token: "{{ vault_ntfy_token | default('') }}"
+    # Seconds. Short, because a captive portal will happily accept a
+    # connection and then never answer, and a blocked relay delivers nothing.
+    timeout: 10
+
+  # --------------------------------------------------------------------------
+  # PRIORITY AND NOISE
+  #
+  # ntfy priorities: 1 min, 2 low, 3 default, 4 high, 5 max.
+  # 5 bypasses the phone's Do Not Disturb on Android. 2 arrives with no sound
+  # and no vibration, which is what "warnings are silent" means here.
+  # --------------------------------------------------------------------------
+  priority:
+    critical: 5
+    warning: 2
+    resolved: 2
+
+  # A recovery notice is only worth sending for something that buzzed you.
+  # Getting a "resolved" for a warning you never heard about is pure noise.
+  send_resolved:
+    critical: true
+    warning: false
+
+  # --------------------------------------------------------------------------
+  # OFFLINE BEHAVIOUR
+  # --------------------------------------------------------------------------
+  offline:
+    # Hold undelivered alerts and send them when an uplink appears.
+    queue: true
+    # Lead the flush with "while you were offline: ..." - including alerts
+    # that resolved themselves, which are invisible otherwise.
+    reconnect_report: true
+    # Send at most this many individual notifications per flush; the rest are
+    # summarised in one message. ntfy.sh's free tier allows 250 messages a
+    # day, and a crash loop that ran for two days offline could otherwise
+    # burn the lot in one go.
+    max_flush_messages: 15
+    # Drop anything older than this instead of delivering it. A week-old
+    # warning is history, not news.
+    max_age_hours: 72
+    # How often to retry a held queue.
+    retry_interval_seconds: 60
+
+  # --------------------------------------------------------------------------
+  # MUTED ALERTS
+  #
+  # Alert names listed here are still evaluated, still visible in Grafana and
+  # still recorded - they just never notify. Use it for something you have
+  # consciously decided to live with.
+  #
+  #   muted:
+  #     - FreyNvmeWearHigh
+  # --------------------------------------------------------------------------
+  muted: []
+
+  # --------------------------------------------------------------------------
+  # THE DEAD MAN'S SWITCH
+  #
+  # Monitoring that dies quietly is worse than no monitoring, because you
+  # believe you are covered. Two layers guard against it:
+  #
+  #   Prometheus sends a Watchdog alert every minute, forever. If the relay
+  #   stops seeing it, the relay tells you - so a dead Prometheus or a dead
+  #   Alertmanager is itself an alert.
+  #
+  #   A systemd timer on the HOST checks the containers and the relay's own
+  #   heartbeat, and notifies ntfy directly. That one needs no Docker and no
+  #   Prometheus, so it still speaks when the whole stack is down.
+  # --------------------------------------------------------------------------
+  watchdog:
+    enabled: true
+    # Tell me if the Watchdog alert has not arrived for this long.
+    stale_after_minutes: 10
+    # How often the host-side checker runs.
+    host_check_interval: 5min
+    # Do not repeat the same "monitoring is broken" message more often
+    # than this.
+    repeat_hours: 6
+
+
+# ==============================================================================
+# THRESHOLDS - WHERE EVERY NUMBER LIVES
+#
+# The alert rules in roles/monitoring/templates/rules/ are generated from
+# these. Change a number here, re-run with --tags monitoring, and the rule
+# changes; there is no second place to keep in sync.
+#
+# `_critical` buzzes, `_warning` is silent. The `_for` values are how long a
+# condition must hold before it counts, and they matter more than the
+# thresholds do: almost everything here spikes harmlessly for a few seconds.
+# ==============================================================================
+monitoring_thresholds:
+
+  # --- Disk ------------------------------------------------------------------
+  disk:
+    # Percent FREE remaining.
+    low_percent: 15
+    critical_percent: 5
+    for_warning: 30m
+    for_critical: 5m
+    # The proactive one: shout if the current trend says the filesystem runs
+    # out within this many days. A 4 TB disk filling steadily gives you weeks
+    # of warning, and this is what turns that into a notification instead of
+    # something you notice at 2%.
+    predict_full_days: 7
+    predict_window: 6h
+
+  # --- Memory ----------------------------------------------------------------
+  memory:
+    # Percent AVAILABLE remaining.
+    low_percent: 10
+    critical_percent: 5
+    for_warning: 15m
+    for_critical: 5m
+
+  # --- CPU and load ----------------------------------------------------------
+  cpu:
+    # 15-minute load average per core. Sustained 2.0 means everything on the
+    # Pi is waiting for everything else.
+    load_per_core_warning: 2.0
+    for_warning: 20m
+
+  # --- Temperature -----------------------------------------------------------
+  #
+  # The Pi 5 starts soft-throttling at 80 C and hard-throttles at 85 C. In a
+  # van in summer this is a real limit, not a theoretical one, so the warning
+  # sits well below it to give you time to move the airflow rather than find
+  # out by watching Jellyfin stutter.
+  temperature:
+    soc_warning: 75
+    soc_critical: 82
+    for_warning: 10m
+    for_critical: 2m
+    nvme_warning: 70
+    nvme_critical: 80
+
+  # --- Power -----------------------------------------------------------------
+  #
+  # Under-voltage is the single most useful alert on this list for a van. The
+  # Pi 5 reports it directly, and it means the supply is sagging - a tired
+  # DC-DC converter, a thin cable, a battery going flat under load. Left
+  # alone it corrupts filesystems. It is critical immediately, not after a
+  # grace period, because by the time it is sustained the damage is done.
+  power:
+    undervoltage_for: 1m
+    throttling_for: 5m
+
+  # --- NVMe health -----------------------------------------------------------
+  #
+  # percentage_used is the drive's own wear estimate: 100 means it has used
+  # its rated endurance. At 0% today, these are early-warning numbers rather
+  # than anything imminent - which is the point of setting them now.
+  nvme:
+    wear_warning_percent: 80
+    wear_critical_percent: 90
+    # Any media error, ever, is worth knowing about on a drive holding the
+    # only copy of anything.
+    media_errors: 0
+
+  # --- Services --------------------------------------------------------------
+  #
+  # A probe goes through Traefik over HTTPS exactly as a browser would, so it
+  # catches the failure container metrics cannot see: a perfectly healthy
+  # container behind a router Traefik dropped, which answers 404.
+  services:
+    # `core` is the half of the van that must work with no internet: playback
+    # and the login page. `extra` is everything whose absence is an
+    # inconvenience, and it gets a warning rather than a buzz.
+    core_for: 5m
+    extra_for: 15m
+    # Certificates. frey_pki renews at 30 days remaining, so a warning at 14
+    # means renewal itself has stopped working.
+    cert_expiry_warning_days: 14
+    cert_expiry_critical_days: 3
+
+  # --- Containers ------------------------------------------------------------
+  containers:
+    # A container that restarted this many times in the window is looping,
+    # not recovering.
+    restarts_in_window: 3
+    restart_window: 15m
+    stopped_for: 5m
+    # Fraction of its own memory limit.
+    memory_high_ratio: 0.9
+    memory_for: 15m
+
+  # --- Gateway and network ---------------------------------------------------
+  #
+  # FreyHub is the critical always-on service, so its alerts are short-fused.
+  # The uplink is the opposite: it is expected to come and go, and treating
+  # that as a fault would mean a notification every time the van moves.
+  gateway:
+    ap_down_for: 2m
+    dns_failing_for: 3m
+    nat_missing_for: 5m
+    # Only worth mentioning after half an hour, and it is a warning: no
+    # uplink is a normal state in a van. You will usually receive this as
+    # part of the reconnect report, which is exactly right - it tells you
+    # how long you were actually offline.
+    uplink_down_for: 30m
+    captive_portal_for: 10m
+    # Uplink transitions in an hour before it counts as flapping. A radio
+    # that reassociates constantly is worse than one that is simply down.
+    flapping_changes: 10
+    # Clients are associated to the AP but none of them got a DHCP lease,
+    # which means FreyHub looks connected and does nothing.
+    dhcp_broken_for: 10m
+
+  # --- Monitoring itself -----------------------------------------------------
+  monitoring:
+    target_down_for: 10m
+    # Alerts have been waiting for an uplink this long. Informational - they
+    # are queued, not lost - but it confirms the queue is working.
+    queue_backlog_for: 2h
+    # Alertmanager could not deliver this many notifications in an hour.
+    notification_failures: 3
+    logs_stalled_for: 30m
+
+
+# ==============================================================================
+# WHAT GETS PROBED, AND HOW LOUDLY
+#
+# Every service in identity.yml is probed automatically, on its first
+# hostname. That is deliberate: a service added to the auth matrix starts
+# being monitored with no second edit, so monitoring cannot silently fall
+# behind the stack.
+#
+# This list only decides which of them are CORE - the ones whose failure
+# buzzes your phone rather than waiting for you to look. Keep it short. The
+# test is "would I want to be woken up", and in a van parked off-grid that is
+# playback and the ability to log in, not whether Prowlarr is reachable.
+# ==============================================================================
+monitoring_probe_core:
+  - jellyfin
+  - audiobookshelf
+  - auth
+  - users
+  - grafana
+
+# Extra things to probe that are not services in identity.yml - the gateway
+# itself, and anything you reach by address rather than name.
+#
+#   monitoring_probe_extra_targets:
+#     - { name: traefik_https, url: "https://10.20.0.1/", tier: core }
+monitoring_probe_extra_targets: []
+
+
+# ==============================================================================
+# LOGS
+#
+# Which containers' logs are worth keeping, and which lines to throw away
+# before they ever hit the disk. The *arrs and qBittorrent are extremely
+# chatty at debug level, and on an NVMe that also holds the databases, log
+# volume is a real cost rather than a theoretical one.
+# ==============================================================================
+monitoring_logs:
+  # Every container Docker knows about, with its frey.module label attached,
+  # so you can filter by module in Grafana rather than by remembering names.
+  all_containers: true
+  # The system journal: systemd units, the kernel, NetworkManager, dnsmasq.
+  # This is where an AP radio reset or a USB Wi-Fi adapter brown-out shows up,
+  # so it is the half you actually want when the network misbehaves.
+  journal: true
+  journal_max_age: 12h
+
+  # Dropped before storage. These are the lines that are pure volume.
+  drop_patterns:
+    - "(?i)\\blevel=(trace|debug)\\b"
+    - "(?i)^\\s*(TRACE|DEBUG)\\b"
+    # Traefik logs every single request at INFO if access logs are on; the
+    # same information is already in its Prometheus metrics, counted.
+    - "\\\"ClientAddr\\\":"
+
+
+# ==============================================================================
+# THE SENSOR SEAM - temperature in the van, and whatever comes after it
+#
+# This is the part that is built but not yet used, so that adding the first
+# real sensor is a small job rather than a redesign.
+#
+# node-exporter reads every *.prom file in:
+#
+#     /opt/frey/metrics/textfile/
+#
+# Anything that drops a file there is a monitored metric: it is scraped,
+# stored for a year, graphable in Grafana and alertable in exactly the same
+# way as CPU temperature. No broker, no exporter, no container.
+#
+# A DS18B20 on the Pi's 1-Wire bus would be about six lines:
+#
+#     cat > /opt/frey/metrics/textfile/van.prom.tmp <<EOF
+#     # HELP van_temp_celsius Cabin temperature
+#     # TYPE van_temp_celsius gauge
+#     van_temp_celsius{location="cabin"} $(awk '{print $2/1000}' \
+#       /sys/bus/w1/devices/28-*/temperature)
+#     EOF
+#     mv /opt/frey/metrics/textfile/van.prom.tmp \
+#        /opt/frey/metrics/textfile/van.prom
+#
+# The .tmp-then-mv matters: node-exporter will happily scrape a half-written
+# file and report nonsense.
+#
+# Add the script to monitoring_host_collectors below and the existing systemd
+# timer runs it on the same clock as everything else.
+#
+# WHEN TO ADD MQTT INSTEAD
+#
+# The moment a sensor is not physically wired to the Pi. Battery monitors,
+# Zigbee thermometers and ESP32 nodes all speak MQTT, and at that point a
+# broker plus an MQTT-to-Prometheus bridge is the right answer rather than a
+# script per device. Nothing here has to change to allow it - that is why
+# this is a seam and not a rewrite. See docs/MONITORING.md.
+# ==============================================================================
+monitoring_host_collectors:
+  # Shipped with the role. Each is a script in roles/monitoring/templates/
+  # that writes one .prom file.
+  - pi          # SoC temperature, throttling and under-voltage, PMIC power
+  - nvme        # SMART wear, temperature, media errors, bytes written
+  - gateway     # uplink state, AP clients, DHCP leases, DNS, NAT
+  - docker      # container running state and restart counts

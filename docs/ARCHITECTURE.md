@@ -72,6 +72,37 @@ installed it 404s with a perfectly healthy container.
 
 `security_baseline` applies a default-deny firewall, allows required downstream LAN ports, preserves the current Ansible SSH path, enables fail2ban for SSH, and keeps services bound to the private Frey address.
 
+Worth knowing, because it shapes the monitoring module: the firewall's allow
+rules are scoped to an interface (`on wlan0`, `on wlan1`), and INPUT is
+default-deny. A packet from a Docker bridge to the host therefore does not match
+any allow rule and is dropped. That is why nothing in `monitoring` reaches the
+host by address - no host-networked exporter, and no probe of
+`https://10.20.0.1`. Everything is container-to-container.
+
+## Monitoring
+
+`monitoring` runs last, and the order is load-bearing: it reads the Grafana OIDC
+client secret that `identity` generates, and it derives what to probe from
+`identity_services`, so a service added to the auth matrix is monitored with no
+second edit.
+
+Four layers, independently switchable: metrics (Prometheus, node-exporter,
+cAdvisor, blackbox), alerting (Alertmanager plus a notification relay), logs
+(Loki and Alloy), and Grafana - which is purely a viewer, so turning it off
+loses no data and stops no alert.
+
+The relay is the part the van makes necessary. Alertmanager drops a notification
+it cannot deliver, so the relay holds undelivered alerts on disk with the time
+they really fired and flushes them with a summary when an uplink appears.
+
+Everything the Pi knows about itself but no exporter reports - throttling,
+under-voltage, PMIC power, NVMe SMART, AP clients, DHCP leases, DNS, NAT,
+container state - arrives through node-exporter's textfile directory, written by
+a systemd timer on the host. That directory is also the seam for the van's
+future sensors.
+
+See [MONITORING.md](MONITORING.md).
+
 ## Pi/NVMe Tuning
 
 `rpi_nvme` enables trim, limits journal growth, and applies conservative VM tuning. Docker data is stored under `/opt/frey/docker` by `service_proxy`, which should live on the M.2/NVMe-backed filesystem.

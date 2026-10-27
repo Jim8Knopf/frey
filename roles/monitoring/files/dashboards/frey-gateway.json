@@ -1,0 +1,259 @@
+{
+  "uid": "frey-gateway",
+  "title": "Frey Gateway & Network",
+  "description": "FreyHub, the public Wi-Fi uplink, DNS, DHCP and NAT. The failures that make the van feel broken while every container is healthy.",
+  "tags": ["frey", "network"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "graphTooltip": 1,
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "type": "state-timeline",
+      "title": "Uplink state over time",
+      "description": "'Captive portal' is the state worth knowing: it looks online to an application, and downloading pauses itself there. Signing in from any FreyHub client authorises the whole hub.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(frey_uplink_connectivity{state=\"full\"} * 4 + frey_uplink_connectivity{state=\"portal\"} * 3 + frey_uplink_connectivity{state=\"limited\"} * 2 + frey_uplink_connectivity{state=\"none\"} * 1)",
+          "legendFormat": "uplink"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 0, "fillOpacity": 85, "spanNulls": false },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "unknown", "color": "text", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "offline", "color": "blue", "index": 1 } } },
+            { "type": "value", "options": { "2": { "text": "limited", "color": "yellow", "index": 2 } } },
+            { "type": "value", "options": { "3": { "text": "captive portal", "color": "orange", "index": 3 } } },
+            { "type": "value", "options": { "4": { "text": "online", "color": "green", "index": 4 } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "center",
+        "rowHeight": 0.7,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "FreyHub clients",
+      "description": "Associated to the radio, and holding a DHCP lease. The two diverging means the network joins and then does nothing.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_ap_stations", "legendFormat": "associated" },
+        { "refId": "B", "expr": "frey_dhcp_leases_active", "legendFormat": "with a lease" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Uplink signal",
+      "description": "dBm, so less negative is better. A radio that flaps is worse than one that is simply down: every flap re-runs NAT and the download gating.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_uplink_signal_dbm", "legendFormat": "signal" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dBm",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "axisSoftMin": -90,
+            "axisSoftMax": -30,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "DNS answer time",
+      "description": "An actual resolution of a service name against FreyHub's own dnsmasq, answered locally so it works offline.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_dns_probe_seconds", "legendFormat": "resolve time" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "min": 0,
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Gateway plumbing",
+      "description": "The things that are either there or not. NAT missing while the uplink is up means clients have local services but no internet - which from a phone looks like the whole network is broken.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_ap_up", "legendFormat": "FreyHub AP" },
+        { "refId": "B", "expr": "frey_dns_probe_success", "legendFormat": "DNS answering" },
+        { "refId": "C", "expr": "clamp_max(frey_nat_masquerade_rules, 1)", "legendFormat": "NAT rules" },
+        { "refId": "D", "expr": "clamp_max(frey_default_route_present, 1)", "legendFormat": "default route" },
+        { "refId": "E", "expr": "frey_uplink_connected", "legendFormat": "uplink associated" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 0, "fillOpacity": 85, "spanNulls": false },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "MISSING", "color": "red", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "present", "color": "green", "index": 1 } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "left",
+        "rowHeight": 0.8,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput by interface",
+      "description": "Host counters, read straight from /proc/net/dev by the gateway collector - a containerised exporter sees only its own veth.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(frey_net_receive_bytes_total[5m]) * 8", "legendFormat": "{{device}} in" },
+        { "refId": "B", "expr": "rate(frey_net_transmit_bytes_total[5m]) * 8", "legendFormat": "{{device}} out" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Interface errors and drops",
+      "description": "Its own panel rather than a second axis on throughput: errors are counted in packets, traffic in bits.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(frey_net_receive_errors_total[10m])", "legendFormat": "{{device}} rx errors" },
+        { "refId": "B", "expr": "rate(frey_net_transmit_errors_total[10m])", "legendFormat": "{{device}} tx errors" },
+        { "refId": "C", "expr": "rate(frey_net_receive_drops_total[10m])", "legendFormat": "{{device}} rx drops" },
+        { "refId": "D", "expr": "rate(frey_net_transmit_drops_total[10m])", "legendFormat": "{{device}} tx drops" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "pps",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Network journal",
+      "description": "NetworkManager, dnsmasq, wpa_supplicant and the kernel. Where an AP radio reset or a USB adapter browning out actually appears.",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 23 },
+      "datasource": { "type": "loki", "uid": "frey-loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"journal\"} |~ \"(?i)(NetworkManager|dnsmasq|wpa_supplicant|hostapd|wlan[01]|dhcp)\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "dedupStrategy": "exact",
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}

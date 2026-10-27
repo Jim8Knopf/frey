@@ -253,6 +253,41 @@ identity_services:
     hosts: [qbittorrent]
     api_bypass: true
 
+  # --- Monitoring ------------------------------------------------------------
+  #
+  # Adding a service here does two things beyond authentication: it puts the
+  # hostname in the certificate (identity_hostnames), and it adds the service
+  # to what the monitoring module probes. Monitoring therefore cannot fall
+  # behind the stack, which is the whole reason it reads this file.
+  grafana:
+    # oidc, not forward_auth, and it is worth knowing why. Grafana has real
+    # roles, so logging in against Authelia lets frey_admins become Grafana
+    # admins and everyone else read-only - which forward auth cannot express.
+    # Its client was already in identity's OIDC catalogue, with the
+    # frey_groups claims policy it needs to read groups from the ID token.
+    #
+    # It also keeps a local admin account, deliberately: if Authelia is down -
+    # one of the things monitoring exists to tell you about - OIDC login is
+    # down with it, and that is the worst moment for the dashboards showing
+    # you why to be unreachable. The password is printed on first deploy.
+    auth: oidc
+    groups: [frey_admins]
+    hosts: [grafana]
+
+  prometheus:
+    # No authentication of its own whatsoever, and its query API can read
+    # every metric from the whole van.
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [prometheus]
+
+  alertmanager:
+    # Also unauthenticated, and it can silence alerts - which is to say it can
+    # switch off the thing that would tell you something is wrong.
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [alertmanager]
+
 
 # ==============================================================================
 # DERIVED - nothing to edit below here

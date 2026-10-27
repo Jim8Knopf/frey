@@ -1,0 +1,17 @@
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+[Unit]
+Description=Frey monitoring watchdog timer
+Documentation=file://{{ monitoring.bin_dir }}/frey-monitor-watchdog
+
+[Timer]
+# Two minutes after boot, not immediately: the containers need a moment to
+# come up, and announcing "monitoring is down" during every reboot would make
+# this the boy who cried wolf.
+OnBootSec=2min
+OnUnitActiveSec={{ monitoring_alerting.watchdog.host_check_interval }}
+AccuracySec=30s
+RandomizedDelaySec=15s
+Unit={{ monitoring.watchdog.service_name }}.service
+
+[Install]
+WantedBy=timers.target

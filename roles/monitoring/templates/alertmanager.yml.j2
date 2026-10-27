@@ -1,0 +1,143 @@
+{#
+  ============================================================================
+  ALERTMANAGER - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Validated with `amtool check-config` before anything restarts.
+
+  Alertmanager's job here is grouping and patience: turn nine rules firing
+  off one power brown-out into one notification, and do not mention anything
+  that only lasted twenty seconds. Delivery - and surviving having no uplink -
+  is the relay's job, not Alertmanager's.
+#}
+{% set m = monitoring %}
+{% set svc = m.services %}
+global:
+  # How long after Prometheus stops sending an alert it counts as resolved.
+  # Deliberately longer than Prometheus's evaluation interval, so a slow
+  # evaluation cycle is not read as a recovery.
+  resolve_timeout: 5m
+
+route:
+  receiver: frey_relay
+  # Grouped by what went wrong and where. Including `service` means one failing
+  # service is one notification, rather than every service being bundled into a
+  # single "something is down" message that tells you nothing.
+  group_by: ["alertname", "severity", "service"]
+  group_wait: {{ m.alertmanager.group_wait }}
+  group_interval: {{ m.alertmanager.group_interval }}
+  repeat_interval: {{ m.alertmanager.repeat_interval_critical }}
+
+  routes:
+    # ------------------------------------------------------------------------
+    # THE DEAD MAN'S SWITCH
+    #
+    # Watchdog fires constantly and forever, and is never notified about. The
+    # relay simply records that it arrived. If it STOPS arriving - Prometheus
+    # crashed, Alertmanager crashed, the rules failed to load - the relay
+    # notices the silence and tells you.
+    #
+    # Monitoring that dies quietly is worse than no monitoring, because you
+    # believe you are covered.
+    # ------------------------------------------------------------------------
+    - matchers:
+        - alertname = "Watchdog"
+      receiver: frey_watchdog
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 1m
+
+    # ------------------------------------------------------------------------
+    # Warnings arrive silently on the phone, so repeating them often would be
+    # pointless noise in a notification tray. Once a week is enough to stop
+    # something being forgotten entirely.
+    # ------------------------------------------------------------------------
+    - matchers:
+        - severity = "warning"
+      receiver: frey_relay
+      repeat_interval: {{ m.alertmanager.repeat_interval_warning }}
+
+# ==============================================================================
+# INHIBITIONS - say it once, and say the useful one
+#
+# Every rule here encodes a cause-and-effect that would otherwise arrive as two
+# or three separate alerts describing one event. The aim is that the first
+# notification is the one that tells you what to actually do.
+# ==============================================================================
+inhibit_rules:
+  # A critical about something always wins over a warning about the same thing.
+  # This is what stops "disk below 15%" arriving alongside "disk below 5%".
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ["alertname", "instance", "service"]
+
+  - source_matchers:
+      - alertname = "FreyDiskCritical"
+    target_matchers:
+      - alertname =~ "FreyDiskLow|FreyDiskFillingUp"
+    equal: ["mountpoint"]
+
+  # Under-voltage is the CAUSE of throttling and of the clock being capped.
+  # Reporting the symptom alongside it would send you looking at temperature
+  # when the actual problem is the power supply or the battery.
+  - source_matchers:
+      - alertname = "FreyUndervoltage"
+    target_matchers:
+      - alertname =~ "FreyThrottling|FreySocTempWarning"
+
+  - source_matchers:
+      - alertname = "FreySocTempCritical"
+    target_matchers:
+      - alertname =~ "FreySocTempWarning|FreyThrottling"
+
+  # A read-only root filesystem means the NVMe is failing and everything on the
+  # Pi is about to misbehave. Nothing else is worth a separate notification
+  # until that is dealt with.
+  - source_matchers:
+      - alertname = "FreyRootFilesystemReadOnly"
+    target_matchers:
+      - severity = "warning"
+
+  # If the Pi itself is out of memory, individual containers being near their
+  # own limits is a consequence, not a second problem.
+  - source_matchers:
+      - alertname = "FreyMemoryCritical"
+    target_matchers:
+      - alertname = "FreyContainerMemoryHigh"
+
+  # No uplink makes the acquisition stack unreachable-by-design and stops the
+  # *arrs talking to indexers. That is the documented behaviour of
+  # media_acquisition's uplink gating, not a fault.
+  - source_matchers:
+      - alertname = "FreyUplinkDown"
+    target_matchers:
+      - alertname = "FreyServiceProbeFailingExtra"
+
+receivers:
+  # ----------------------------------------------------------------------------
+  # Everything goes to the relay, which is what turns an alert into a phone
+  # notification and holds it when the van has no uplink. Alertmanager has
+  # email and webhook senders of its own and neither survives being offline:
+  # a failed send is simply dropped, and "parked off-grid for two days" is
+  # exactly when you most want to know what happened.
+  # ----------------------------------------------------------------------------
+  - name: frey_relay
+    webhook_configs:
+      - url: "http://{{ svc.alert_relay.container_name }}:{{ svc.alert_relay.port }}/alert"
+        send_resolved: true
+        # 0 = no limit. Truncating a batch would silently lose alerts, and the
+        # relay does its own flood control with a cap and a summary.
+        max_alerts: 0
+        http_config:
+          follow_redirects: false
+
+  - name: frey_watchdog
+    webhook_configs:
+      - url: "http://{{ svc.alert_relay.container_name }}:{{ svc.alert_relay.port }}/alert"
+        send_resolved: false
+        max_alerts: 0
+        http_config:
+          follow_redirects: false

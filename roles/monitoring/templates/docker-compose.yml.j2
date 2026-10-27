@@ -1,0 +1,627 @@
+{#
+  ============================================================================
+  MONITORING STACK - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Same design rules as the other stacks: no published ports, pinned images,
+  every container memory-capped, reached only through Traefik.
+
+  THREE THINGS HERE ARE NOT THE OBVIOUS CHOICE. All three are forced by how
+  this Pi is actually wired, and all three were verified on the device rather
+  than assumed.
+
+  1. node-exporter runs on the BRIDGE, not host networking, and its network
+     collectors are switched OFF.
+
+     Host networking is the usual advice, and it cannot work here: ufw runs
+     default-deny on INPUT with allow rules scoped to `on wlan0` / `on wlan1`,
+     so a packet from a Docker bridge to the host is dropped. Prometheus could
+     never scrape it. (Tested: container -> 172.18.0.1:22 times out.)
+
+     Mounting the host /proc does not rescue the network metrics either:
+     /proc/net resolves per network namespace, so a containerised exporter
+     reading a mounted /proc still reports its own eth0 and never sees wlan0.
+     (Tested: it listed eth0 only.)
+
+     Everything else in /proc and /sys is NOT namespaced, so CPU, memory,
+     load, filesystems and disk I/O are all correct through the mounts below.
+     Real interface counters come from the gateway host collector instead,
+     which runs as root on the host and already reports uplink state and AP
+     clients - so network metrics end up in one coherent place rather than
+     split between a half-blind exporter and a script.
+
+  2. blackbox probes the TRAEFIK CONTAINER with a per-service Host header,
+     rather than probing https://<service>.hub.frey by name.
+
+     By name is impossible: the Pi's /etc/resolv.conf points at whatever DNS
+     the campground handed out, so *.hub.frey is NXDOMAIN inside a container,
+     and pointing the container at dnsmasq does not help because dnsmasq is
+     bound to the AP radio and ignores queries arriving over a Docker bridge.
+     (Tested: NXDOMAIN by default, timeout with --dns 10.20.0.1.)
+
+     Reaching Traefik on the host address 10.20.0.1:443 is blocked by the same
+     firewall rule as (1). So the probe goes to the container directly over
+     the shared proxy network, with the Host header and the TLS SNI set to the
+     name being tested. That exercises the real path - routing, certificate,
+     forward auth - and it keeps working when Traefik is recreated and changes
+     IP, which an extra_hosts list would not.
+
+     roles/media_acquisition/ reached the same conclusion for the same reason;
+     see the Host-header note in frey-media-gate.sh.
+
+  3. Grafana's OIDC back-channel is plain HTTP to authelia:9091.
+
+     Same DNS problem, plus the Grafana image runs as a non-root uid that
+     cannot add the Frey CA to its trust store. The browser still goes to
+     https://auth.hub.frey; only the server-to-server token call is internal,
+     and it never leaves the host. See roles/monitoring/defaults/main.yml.
+#}
+{% set m = monitoring %}
+{% set svc = m.services %}
+{% set tz = frey.timezone %}
+{% set run_as = m.user.uid ~ ':' ~ m.user.gid %}
+
+{% macro logging() %}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+{%- endmacro %}
+
+{#
+  The same three-router pattern the media modules use. See the long comment in
+  roles/media_library/templates/docker-compose.yml.j2 for why there are three
+  and what each one is for; the short version is that <name>.frey still works
+  and redirects to <name>.hub.frey, and a service behind forward auth must be
+  HTTPS-only because Authelia's session cookie is Secure.
+#}
+{% macro proxy_labels(route, name, port, aliases=[]) %}
+{% set canonical = [] %}
+{% set legacy = [] %}
+{% set every = [] %}
+{% for h in [route] + aliases %}
+{% set _ = canonical.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
+{% set _ = legacy.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
+{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% endfor %}
+{% set protected = route in (identity_protect | default([])) %}
+{% set middlewares = ['secure-headers@file'] + (['authelia@file'] if protected else []) %}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
+      - "traefik.http.routers.{{ name }}.rule={{ canonical | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}.tls=true"
+      - "traefik.http.routers.{{ name }}.middlewares={{ middlewares | join(',') }}"
+      - "traefik.http.routers.{{ name }}-legacy.rule={{ legacy | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}-legacy.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}-legacy.tls=true"
+      - "traefik.http.routers.{{ name }}-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.{{ name }}-legacy.service={{ name }}"
+      - "traefik.http.routers.{{ name }}-http.rule={{ every | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}-http.entrypoints=web"
+      - "traefik.http.routers.{{ name }}-http.service={{ name }}"
+{#
+  Monitoring has no television problem: every one of these is read in a
+  browser, so they are all HTTPS-only and the plain-HTTP router always
+  redirects. Grafana in particular MUST be - its OIDC login sets a Secure
+  cookie, so over HTTP it would log in and bounce straight back to the portal.
+#}
+      - "traefik.http.routers.{{ name }}-http.middlewares=to-canonical@file"
+      - "frey.module=monitoring"
+{%- endmacro %}
+
+networks:
+  {{ frey.proxy_network }}:
+    external: true
+  {{ m.network.name }}:
+    external: true
+
+services:
+{% if svc.prometheus.enabled | bool %}
+  # ============================================================================
+  # PROMETHEUS - the metrics database and the thing that decides what is wrong
+  #
+  # Alert rules live in {{ m.config_dir }}/{{ m.prometheus.rules_dir }}/ and are
+  # generated from monitoring_thresholds, so every number any alert compares
+  # against is in one file you can read.
+  #
+  # --web.enable-lifecycle is what lets a deploy POST /-/reload instead of
+  # restarting the container. A restart would be a gap in the data and, worse,
+  # a gap in the alerting - exactly when you have just changed the alerting.
+  # ============================================================================
+  prometheus:
+    image: {{ svc.prometheus.image }}
+    container_name: {{ svc.prometheus.container_name }}
+    hostname: prometheus
+    restart: unless-stopped
+    user: "{{ run_as }}"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time={{ monitoring_retention.metrics_time }}
+      # The cap that actually protects the Pi. Time and size are both limits
+      # and whichever is reached first wins, so a metrics explosion drops old
+      # data instead of filling the disk the databases and the library share.
+      - --storage.tsdb.retention.size={{ monitoring_retention.metrics_size }}
+      - --web.listen-address=0.0.0.0:{{ svc.prometheus.port }}
+      - --web.external-url={{ m.prometheus.external_url }}
+      - --web.route-prefix=/
+      - --web.enable-lifecycle
+      - --log.level=warn
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ m.config_dir }}:/etc/prometheus:ro"
+      - "{{ m.appdata_dir }}/prometheus:/prometheus"
+    networks:
+      - {{ m.network.name }}
+      # Needed to scrape Traefik's own metrics endpoint, which only exists on
+      # the proxy network, and for Traefik to serve this UI.
+      - {{ frey.proxy_network }}
+    mem_limit: {{ svc.prometheus.mem_limit }}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:{{ svc.prometheus.port }}/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+{{ logging() }}
+{{ proxy_labels(monitoring_hosts.prometheus, 'prometheus', svc.prometheus.port) }}
+
+{% endif %}
+{% if svc.alertmanager.enabled | bool %}
+  # ============================================================================
+  # ALERTMANAGER - grouping, silencing and waiting out flapping
+  #
+  # It does NOT talk to ntfy directly. It POSTs to alert-relay, which is the
+  # piece that survives having no uplink. See the relay below.
+  # ============================================================================
+  alertmanager:
+    image: {{ svc.alertmanager.image }}
+    container_name: {{ svc.alertmanager.container_name }}
+    hostname: alertmanager
+    restart: unless-stopped
+    user: "{{ run_as }}"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=0.0.0.0:{{ svc.alertmanager.port }}
+      - --web.external-url={{ m.alertmanager.external_url }}
+      - --log.level=warn
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ m.config_dir }}/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"
+      - "{{ m.appdata_dir }}/alertmanager:/alertmanager"
+    networks:
+      - {{ m.network.name }}
+      - {{ frey.proxy_network }}
+    mem_limit: {{ svc.alertmanager.mem_limit }}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:{{ svc.alertmanager.port }}/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+{{ logging() }}
+{{ proxy_labels(monitoring_hosts.alertmanager, 'alertmanager', svc.alertmanager.port) }}
+
+  # ============================================================================
+  # ALERT RELAY - the part that works when the van does not
+  #
+  # Turns an Alertmanager webhook into an ntfy notification, and holds it on
+  # disk when there is no uplink. Python standard library only: no pip, no
+  # requirements file, no build step, nothing to resolve at start-up. That is
+  # the point - this is the component that must come up on a Pi that has been
+  # parked off-grid for two days.
+  #
+  # The script is bind-mounted read-only from the role rather than baked into
+  # an image, so there is no Dockerfile and no ARM build.
+  #
+  # Not routed through Traefik. Nothing outside this stack has any business
+  # talking to it: it treats any POST as an alert.
+  # ============================================================================
+  alert-relay:
+    image: {{ svc.alert_relay.image }}
+    container_name: {{ svc.alert_relay.container_name }}
+    hostname: alert-relay
+    restart: unless-stopped
+    user: "{{ run_as }}"
+    command: ["python3", "-u", "{{ m.relay.script_path }}"]
+    environment:
+      - TZ={{ tz }}
+      - PYTHONDONTWRITEBYTECODE=1
+      - FREY_NODE={{ frey.node_name }}
+      - RELAY_LISTEN=0.0.0.0:{{ svc.alert_relay.port }}
+      - RELAY_LOG_LEVEL={{ m.relay.log_level }}
+      - NTFY_SERVER={{ monitoring_alerting.ntfy.server }}
+      - NTFY_TOPIC={{ monitoring_secrets.ntfy_topic }}
+      - NTFY_TOKEN={{ monitoring_alerting.ntfy.token | default('', true) }}
+      - NTFY_TIMEOUT={{ monitoring_alerting.ntfy.timeout }}
+      - PRIORITY_CRITICAL={{ monitoring_alerting.priority.critical }}
+      - PRIORITY_WARNING={{ monitoring_alerting.priority.warning }}
+      - PRIORITY_RESOLVED={{ monitoring_alerting.priority.resolved }}
+      - SEND_RESOLVED_CRITICAL={{ monitoring_alerting.send_resolved.critical | ternary('1', '0') }}
+      - SEND_RESOLVED_WARNING={{ monitoring_alerting.send_resolved.warning | ternary('1', '0') }}
+      - QUEUE_ENABLED={{ monitoring_alerting.offline.queue | ternary('1', '0') }}
+      - RECONNECT_REPORT={{ monitoring_alerting.offline.reconnect_report | ternary('1', '0') }}
+      - MAX_FLUSH_MESSAGES={{ monitoring_alerting.offline.max_flush_messages }}
+      - MAX_AGE_HOURS={{ monitoring_alerting.offline.max_age_hours }}
+      - RETRY_INTERVAL={{ monitoring_alerting.offline.retry_interval_seconds }}
+      - WATCHDOG_ENABLED={{ monitoring_alerting.watchdog.enabled | ternary('1', '0') }}
+      - WATCHDOG_STALE_MINUTES={{ monitoring_alerting.watchdog.stale_after_minutes }}
+      - WATCHDOG_REPEAT_HOURS={{ monitoring_alerting.watchdog.repeat_hours }}
+      - MUTED_ALERTS={{ monitoring_alerting.muted | join(',') }}
+      - GRAFANA_URL={{ m.grafana.url }}
+    volumes:
+      - "{{ m.config_dir }}/alert-relay.py:{{ m.relay.script_path }}:ro"
+      # The queue of held alerts lives outside the container, so it survives a
+      # restart, an image change and a reboot.
+      - "{{ m.relay.data_dir }}:/data"
+    networks:
+      - {{ m.network.name }}
+    mem_limit: {{ svc.alert_relay.mem_limit }}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:{{ svc.alert_relay.port }}/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+{{ logging() }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=monitoring"
+
+{% endif %}
+{% if svc.node_exporter.enabled | bool %}
+  # ============================================================================
+  # NODE EXPORTER - the host itself
+  #
+  # Read note (1) at the top of this file before changing the networking or the
+  # disabled collectors. The short version: host networking cannot be scraped
+  # through ufw, and a mounted /proc cannot see the host's interfaces because
+  # /proc/net is per-namespace. CPU, memory, load, filesystems and disk I/O are
+  # all correct through these mounts; the network collectors would report this
+  # container's veth, so they are off rather than quietly wrong.
+  #
+  # The textfile collector is the important part for this van: it is how Pi
+  # throttling, PMIC power, NVMe SMART, AP client counts and - later - cabin
+  # temperature all become ordinary Prometheus metrics. See THE SENSOR SEAM in
+  # inventory/group_vars/all/monitoring.yml.
+  # ============================================================================
+  node-exporter:
+    image: {{ svc.node_exporter.image }}
+    container_name: {{ svc.node_exporter.container_name }}
+    hostname: node-exporter
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --path.udev.data=/host/root/run/udev/data
+      - --web.listen-address=0.0.0.0:{{ svc.node_exporter.port }}
+      - --collector.textfile.directory=/textfile
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+)($|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|squashfs|sysfs|tracefs)$$
+      # Namespaced to this container and therefore misleading - see note (1).
+      - --no-collector.netdev
+      - --no-collector.netclass
+      - --no-collector.netstat
+      - --no-collector.sockstat
+      - --no-collector.arp
+      - --no-collector.conntrack
+      # Not present on a Pi, and each one costs a scrape error.
+      - --no-collector.ipvs
+      - --no-collector.infiniband
+      - --no-collector.mdadm
+      - --no-collector.nfs
+      - --no-collector.nfsd
+      - --no-collector.zfs
+      - --no-collector.xfs
+      - --no-collector.btrfs
+      - --no-collector.fibrechannel
+      - --no-collector.tapestats
+      # Needs a dbus socket mounted in to work; failed units are reported by
+      # the pi host collector instead, which already runs as root.
+      - --no-collector.systemd
+      - --log.level=warn
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      # rslave so that filesystems mounted after the container started - a USB
+      # disk, a remounted NVMe - still show up.
+      - /:/host/root:ro,rslave
+      - "{{ m.textfile_dir }}:/textfile:ro"
+    networks:
+      - {{ m.network.name }}
+    mem_limit: {{ svc.node_exporter.mem_limit }}
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=monitoring"
+
+{% endif %}
+{% if svc.cadvisor.enabled | bool %}
+  # ============================================================================
+  # CADVISOR - per-container CPU, memory and restarts
+  #
+  # privileged, which is not something this project does lightly. cAdvisor
+  # reads the cgroup tree, /dev/kmsg and block-device data; without it on a Pi
+  # it starts, reports a subset, and logs permission errors - a half-working
+  # container-metrics source is worse than an obviously broken one. Every mount
+  # it gets is read-only, and it is on the private network with no route in.
+  #
+  # The disabled metrics are the expensive ones. Per-container network and TCP
+  # accounting means walking every container's namespace on every scrape, which
+  # on a 21-container Pi costs more CPU than the numbers are worth - and
+  # Traefik already counts per-service traffic properly.
+  # ============================================================================
+  cadvisor:
+    image: {{ svc.cadvisor.image }}
+    container_name: {{ svc.cadvisor.container_name }}
+    hostname: cadvisor
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --port={{ svc.cadvisor.port }}
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --global_housekeeping_interval=60s
+      - --store_container_labels=false
+      # Keep the one label that lets a dashboard group by Frey module.
+      - --whitelisted_container_labels=frey.module
+      - --disable_metrics=network,tcp,udp,advtcp,process,sched,hugetlb,referenced_memory,cpu_topology,resctrl,memory_numa,percpu
+      - --event_storage_event_limit=default=0
+      - --event_storage_age_limit=default=0
+    environment:
+      - TZ={{ tz }}
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - "{{ service_proxy.docker.data_root }}:{{ service_proxy.docker.data_root }}:ro"
+      - /dev/disk:/dev/disk:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - {{ m.network.name }}
+    mem_limit: {{ svc.cadvisor.mem_limit }}
+{{ logging() }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=monitoring"
+
+{% endif %}
+{% if svc.blackbox.enabled | bool %}
+  # ============================================================================
+  # BLACKBOX EXPORTER - does the service actually answer
+  #
+  # The only check here that tests what you experience rather than what the Pi
+  # believes. A container can be healthy, its process happy and its memory
+  # fine, while Traefik has dropped the router that points at it and every
+  # request 404s. Container metrics call that healthy. This calls it down.
+  #
+  # It also gets certificate expiry for free, because it does a real TLS
+  # handshake: probe_ssl_earliest_cert_expiry is what makes "frey_pki stopped
+  # renewing" an alert instead of a surprise in eleven months.
+  #
+  # Read note (2) at the top of this file for why it probes the Traefik
+  # container with a Host header instead of using DNS. It is on the proxy
+  # network for exactly that reason.
+  # ============================================================================
+  blackbox:
+    image: {{ svc.blackbox.image }}
+    container_name: {{ svc.blackbox.container_name }}
+    hostname: blackbox
+    restart: unless-stopped
+    user: "{{ run_as }}"
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+      - --web.listen-address=0.0.0.0:{{ svc.blackbox.port }}
+      - --log.level=warn
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ m.config_dir }}/blackbox.yml:/etc/blackbox/blackbox.yml:ro"
+      # The Frey root certificate, so a probe verifies the chain properly
+      # rather than skipping verification - which would make the certificate
+      # expiry metric meaningless.
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+    networks:
+      - {{ m.network.name }}
+      - {{ frey.proxy_network }}
+    mem_limit: {{ svc.blackbox.mem_limit }}
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=monitoring"
+
+{% endif %}
+{% if svc.loki.enabled | bool %}
+  # ============================================================================
+  # LOKI - the logs
+  #
+  # Single binary, filesystem storage, no object store and no ring. At one Pi's
+  # volume anything more is machinery for its own sake.
+  #
+  # This is the heaviest writer in the stack. If the NVMe ever becomes a
+  # concern, set monitoring_enable.logs to false: metrics and alerting carry on
+  # untouched, and you lose searchable history, not the ability to be warned.
+  # ============================================================================
+  loki:
+    image: {{ svc.loki.image }}
+    container_name: {{ svc.loki.container_name }}
+    hostname: loki
+    restart: unless-stopped
+    user: "{{ run_as }}"
+    command:
+      - -config.file=/etc/loki/loki.yml
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ m.config_dir }}/loki.yml:/etc/loki/loki.yml:ro"
+      - "{{ m.appdata_dir }}/loki:/loki"
+    networks:
+      - {{ m.network.name }}
+    mem_limit: {{ svc.loki.mem_limit }}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:{{ svc.loki.port }}/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+{{ logging() }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=monitoring"
+
+  # ============================================================================
+  # ALLOY - ships container logs and the system journal into Loki
+  #
+  # Alloy rather than Promtail: Promtail reached end of life in March 2026 and
+  # takes no further fixes, so starting a new stack on it would be starting on
+  # something already unsupported.
+  #
+  # Root, because it reads the Docker socket and the journal. The journal is
+  # the half that matters when the network misbehaves - an AP radio reset or a
+  # USB Wi-Fi adapter browning out appears there and nowhere else.
+  # ============================================================================
+  alloy:
+    image: {{ svc.alloy.image }}
+    container_name: {{ svc.alloy.container_name }}
+    hostname: alloy
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:{{ svc.alloy.port }}
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ m.config_dir }}/config.alloy:/etc/alloy/config.alloy:ro"
+      - "{{ m.appdata_dir }}/alloy:/var/lib/alloy/data"
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      # Without this the journal reader cannot work out which machine the logs
+      # belong to and silently reads nothing.
+      - /etc/machine-id:/etc/machine-id:ro
+    networks:
+      - {{ m.network.name }}
+    mem_limit: {{ svc.alloy.mem_limit }}
+{{ logging() }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=monitoring"
+
+{% endif %}
+{% if svc.grafana.enabled | bool %}
+  # ============================================================================
+  # GRAFANA - the dashboards
+  #
+  # Purely a viewer. Turning it off loses no data and stops no alert.
+  #
+  # Dashboards and datasources are provisioned from files in this role, so a
+  # deploy needs no internet. The archived stack downloaded ten dashboards from
+  # grafana.com during the run, which on a van with no uplink produced a
+  # working metrics database and an empty Grafana.
+  #
+  # Logs in against Authelia, and keeps a local admin as the fallback: if
+  # Authelia is down - one of the things this stack exists to tell you about -
+  # OIDC login is down with it, and that is the worst possible moment for the
+  # dashboards to be unreachable.
+  # ============================================================================
+  grafana:
+    image: {{ svc.grafana.image }}
+    container_name: {{ svc.grafana.container_name }}
+    hostname: grafana
+    restart: unless-stopped
+    user: "{{ run_as }}"
+    environment:
+      - TZ={{ tz }}
+      - GF_SERVER_ROOT_URL={{ m.grafana.url }}
+      - GF_SERVER_ENFORCE_DOMAIN=false
+      - GF_SERVER_HTTP_PORT={{ svc.grafana.port }}
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_SECURITY_ADMIN_USER={{ m.grafana.admin_user }}
+      - GF_SECURITY_ADMIN_PASSWORD={{ monitoring_secrets.grafana_admin_password }}
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_CONTENT_TYPE_PROTECTION_HEADER=true
+      # Everything that would phone home. All of it fails on a van with no
+      # uplink, and a Grafana that spends every page load waiting for a
+      # timeout is a Grafana nobody opens.
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+      - GF_ANALYTICS_FEEDBACK_LINKS_ENABLED=false
+      - GF_NEWS_NEWS_FEED_ENABLED=false
+      - GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED=true
+      - GF_USERS_DEFAULT_THEME=dark
+      - GF_LOG_LEVEL=warn
+{% if monitoring_grafana_oidc | bool %}
+      # --- Single sign-on ---------------------------------------------------
+      - GF_AUTH_GENERIC_OAUTH_ENABLED=true
+      - GF_AUTH_GENERIC_OAUTH_NAME=Frey
+      - GF_AUTH_GENERIC_OAUTH_ICON=signin
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_ID={{ m.grafana.oidc.client_id }}
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET={{ monitoring_grafana_oidc_secret }}
+      - GF_AUTH_GENERIC_OAUTH_SCOPES={{ m.grafana.oidc.scopes }}
+      # Browser-facing. HTTPS, by name, because your phone goes here.
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://{{ m.grafana.oidc.auth_host }}/api/oidc/authorization
+      # Server-facing. Plain HTTP straight to the container - see note (3).
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=http://{{ m.grafana.oidc.authelia_container }}:{{ m.grafana.oidc.authelia_port }}/api/oidc/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=http://{{ m.grafana.oidc.authelia_container }}:{{ m.grafana.oidc.authelia_port }}/api/oidc/userinfo
+      - GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH=preferred_username
+      - GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH=name
+      - GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_PATH=email
+      - GF_AUTH_GENERIC_OAUTH_GROUPS_ATTRIBUTE_PATH=groups
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH={{ m.grafana.oidc.role_attribute_path }}
+      # Nobody gets admin by accident if the claim is missing.
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=false
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN=true
+      - GF_AUTH_GENERIC_OAUTH_USE_PKCE=true
+      - GF_AUTH_GENERIC_OAUTH_USE_REFRESH_TOKEN={{ m.grafana.oidc.use_refresh_token | ternary('true', 'false') }}
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
+      - GF_AUTH_OAUTH_AUTO_LOGIN=false
+      - GF_AUTH_SIGNOUT_REDIRECT_URL=https://{{ m.grafana.oidc.auth_host }}/logout
+{% endif %}
+    volumes:
+      - "{{ m.appdata_dir }}/grafana:/var/lib/grafana"
+      - "{{ m.config_dir }}/grafana/provisioning:/etc/grafana/provisioning:ro"
+      - "{{ m.config_dir }}/grafana/dashboards:/var/lib/grafana/dashboards:ro"
+    networks:
+      - {{ m.network.name }}
+      - {{ frey.proxy_network }}
+    mem_limit: {{ svc.grafana.mem_limit }}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:{{ svc.grafana.port }}/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+{{ logging() }}
+{{ proxy_labels(monitoring_hosts.grafana, 'grafana', svc.grafana.port) }}
+{% endif %}

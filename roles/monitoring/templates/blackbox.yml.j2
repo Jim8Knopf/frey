@@ -1,0 +1,107 @@
+{#
+  ============================================================================
+  BLACKBOX EXPORTER - managed by Ansible role: monitoring
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  ONE MODULE PER SERVICE, which is unusual, and generated rather than written.
+
+  The probe cannot use the service's own name: *.hub.frey does not resolve
+  inside a container (the Pi's resolver points at whatever DNS the campground
+  handed out, and dnsmasq only answers on the AP radio), and reaching Traefik
+  on the host address is blocked by ufw's default-deny INPUT. So every probe
+  goes to the Traefik container over the shared proxy network, and the service
+  name is carried in the Host header and the TLS SNI instead - both of which
+  blackbox can only set per module.
+
+  Prometheus turns a bare service name into the right module; see the
+  service_probe job in prometheus.yml.
+#}
+{#
+  ----------------------------------------------------------------------------
+  WHAT COUNTS AS ALIVE, for every generated module below.
+
+  Written once here rather than above each module: there is one of these per
+  service, so a comment inside the loop would be repeated seventeen times and
+  the file would be mostly prose.
+
+  302 is a PASS, and that is the whole point. A service behind forward auth
+  redirects an unauthenticated request to the login page, so a 302 proves
+  Traefik routed it, TLS worked and Authelia answered. 401 and 403 are the
+  same story for the *arr API paths, which demand an X-Api-Key this probe
+  deliberately does not have.
+
+  404 is NOT in the list, deliberately. That is what Traefik returns when it
+  has dropped a router - a rule that failed to parse, or a middleware that
+  does not exist yet - and it is the exact failure container metrics call
+  healthy. Leaving 404 out is what makes this probe worth running.
+
+  502 and 503 are likewise failures: the router is there, the container
+  behind it is not.
+
+  Redirects are not followed, because following one would need DNS for
+  auth.hub.frey, which is the thing that does not work in here. The redirect
+  itself is the signal.
+
+  The certificate is verified against the Frey root rather than skipped.
+  Skipping would also throw away probe_ssl_earliest_cert_expiry, which is the
+  metric that catches frey_pki quietly failing to renew.
+  ----------------------------------------------------------------------------
+#}
+{% set m = monitoring %}
+{% set valid_status = [200, 204, 301, 302, 303, 307, 308, 401, 403] %}
+modules:
+
+{% for host in monitoring_probe_hostnames %}
+  # {{ host }}.{{ frey.service_domain }}
+  frey_{{ host }}:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      headers:
+        Host: {{ host }}.{{ frey.service_domain }}
+      tls_config:
+        server_name: {{ host }}.{{ frey.service_domain }}
+        ca_file: /frey-ca.crt
+        insecure_skip_verify: false
+      valid_status_codes: {{ valid_status }}
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      follow_redirects: false
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+{% endfor %}
+{% if monitoring_probe_extra_targets | default([]) | length > 0 %}
+  # ---------------------------------------------------------------------------
+  # For monitoring_probe_extra_targets: things reached by address, where the
+  # URL is the target and there is no Host header to fake.
+  # ---------------------------------------------------------------------------
+  frey_url:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      tls_config:
+        ca_file: /frey-ca.crt
+        insecure_skip_verify: false
+      valid_status_codes: {{ valid_status }}
+      follow_redirects: false
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+{% endif %}
+
+  # ---------------------------------------------------------------------------
+  # Kept for hand-run checks from the Prometheus UI - probing a TCP port or a
+  # host that answers no HTTP at all. Not scraped by any job.
+  # ---------------------------------------------------------------------------
+  frey_tcp:
+    prober: tcp
+    timeout: 10s
+    tcp:
+      preferred_ip_protocol: ip4
+
+  # No icmp module on purpose. The prober needs CAP_NET_RAW, and this container
+  # runs as an unprivileged uid with no-new-privileges, so an icmp module would
+  # be listed, look available, and fail every time it was used. Pinging the
+  # uplink gateway is done by the gateway host collector, which is root and can.
+

@@ -1,0 +1,699 @@
+{
+  "uid": "frey-overview",
+  "title": "Frey Overview",
+  "description": "The one screen. Is the van's network serving, is the Pi healthy, is anything shouting.",
+  "tags": ["frey", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "graphTooltip": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "annotations": {
+    "list": [
+      {
+        "name": "Firing alerts",
+        "enable": true,
+        "iconColor": "red",
+        "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+        "expr": "ALERTS{alertstate=\"firing\", severity=\"critical\"}",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "{{severity}}"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Is the van served",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "FreyHub",
+      "description": "The access point. The critical always-on service: with this down there is no way in except the uplink radio.",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_ap_up", "instant": true }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "Up", "color": "green", "index": 1 } } }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Clients",
+      "description": "Devices associated to FreyHub right now, and how many hold a DHCP lease.",
+      "gridPos": { "h": 4, "w": 3, "x": 4, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_ap_stations", "instant": true, "legendFormat": "associated" },
+        { "refId": "B", "expr": "frey_dhcp_leases_active", "instant": true, "legendFormat": "leases" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "text" } },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Uplink",
+      "description": "NetworkManager's verdict. 'Captive portal' looks online to an application and is not - downloading pauses itself in that state.",
+      "gridPos": { "h": 4, "w": 4, "x": 7, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "max(frey_uplink_connectivity{state=\"full\"} * 4 + frey_uplink_connectivity{state=\"portal\"} * 3 + frey_uplink_connectivity{state=\"limited\"} * 2 + frey_uplink_connectivity{state=\"none\"} * 1)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Unknown", "color": "text", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "Offline", "color": "blue", "index": 1 } } },
+            { "type": "value", "options": { "2": { "text": "Limited", "color": "yellow", "index": 2 } } },
+            { "type": "value", "options": { "3": { "text": "Captive portal", "color": "orange", "index": 3 } } },
+            { "type": "value", "options": { "4": { "text": "Online", "color": "green", "index": 4 } } }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Services down",
+      "description": "Core services not answering through Traefik. A 302 to the login page counts as answering.",
+      "gridPos": { "h": 4, "w": 3, "x": 11, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "count(probe_success{tier=\"core\"} == 0) or vector(0)", "instant": true }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Alerts firing",
+      "description": "Critical first. Criticals also go to your phone; warnings arrive silently.",
+      "gridPos": { "h": 4, "w": 4, "x": 14, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "count(ALERTS{alertstate=\"firing\", severity=\"critical\"}) or vector(0)", "instant": true, "legendFormat": "critical" },
+        { "refId": "B", "expr": "count(ALERTS{alertstate=\"firing\", severity=\"warning\"}) or vector(0)", "instant": true, "legendFormat": "warning" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "critical" },
+            "properties": [
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "warning" },
+            "properties": [
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Alerts held offline",
+      "description": "Waiting for an uplink, stamped with when they really fired. They will arrive with a 'while you were offline' report. Nothing is lost.",
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_alert_relay_queue_depth or vector(0)", "instant": true }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "blue", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "DNS",
+      "description": "Not 'is dnsmasq listening' but 'did it actually resolve a service name'. Every service is reached by name, so this breaks all of them at once.",
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_dns_probe_success", "instant": true }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "FAILING", "color": "red", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "OK", "color": "green", "index": 1 } } }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+
+    {
+      "type": "row",
+      "title": "Is the Pi healthy",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "SoC temperature",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [ { "refId": "A", "expr": "frey_soc_temp_celsius", "instant": true } ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "orange", "value": 75 },
+              { "color": "red", "value": 82 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Power draw",
+      "description": "Summed across the PMIC rails. The beginning of answering what the van's server costs in amp-hours.",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [ { "refId": "A", "expr": "frey_pi_power_watts", "instant": true } ],
+      "fieldConfig": {
+        "defaults": { "unit": "watt", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "text" } },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Power supply",
+      "description": "Under-voltage means the 5V rail is sagging - a tired converter, a thin cable, a battery going flat. It corrupts filesystems.",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "frey_undervoltage_now * 2 + (frey_undervoltage_occurred and frey_undervoltage_now == 0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OK", "color": "green", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "Sagged since boot", "color": "orange", "index": 1 } } },
+            { "type": "value", "options": { "2": { "text": "UNDER-VOLTAGE", "color": "red", "index": 2 } } }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Disk free",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "100 * node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 5 },
+              { "color": "yellow", "value": 15 },
+              { "color": "green", "value": 25 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Memory available",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 5 },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 20 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "NVMe life used",
+      "description": "The drive's own wear estimate. 100 means it has used its rated endurance.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [ { "refId": "A", "expr": "max(frey_nvme_wear_percent)", "instant": true } ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "orange", "value": 80 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+
+    {
+      "type": "row",
+      "title": "Over time",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "state-timeline",
+      "title": "Service availability",
+      "description": "Each service, up or down, over time. Identity is the row label - never colour alone.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "probe_success", "legendFormat": "{{service}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 0, "fillOpacity": 85, "spanNulls": false },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "down", "color": "red", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "up", "color": "green", "index": 1 } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "left",
+        "rowHeight": 0.9,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Temperatures",
+      "description": "SoC and NVMe. Both in degrees, so they share one axis honestly.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_soc_temp_celsius", "legendFormat": "SoC" },
+        { "refId": "B", "expr": "frey_nvme_temperature_celsius", "legendFormat": "NVMe {{device}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": false,
+            "axisSoftMin": 30,
+            "axisSoftMax": 90,
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "orange", "value": 75 },
+              { "color": "red", "value": 82 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU load per core",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_load1 / on(instance) group_left count by (instance) (count by (instance, cpu) (node_cpu_seconds_total))",
+          "legendFormat": "1 min"
+        },
+        {
+          "refId": "B",
+          "expr": "node_load15 / on(instance) group_left count by (instance) (count by (instance, cpu) (node_cpu_seconds_total))",
+          "legendFormat": "15 min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Radio throughput",
+      "description": "From the host's own counters. A containerised exporter cannot see these interfaces - /proc/net is per network namespace.",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(frey_net_receive_bytes_total[5m]) * 8", "legendFormat": "{{device}} in" },
+        { "refId": "B", "expr": "rate(frey_net_transmit_bytes_total[5m]) * 8", "legendFormat": "{{device}} out" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Board power",
+      "description": "Separate panel rather than a second axis on the load chart: two measures of different scale get two charts.",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_pi_power_watts", "legendFormat": "total" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "decimals": 2,
+          "min": 0,
+          "color": { "mode": "fixed", "fixedColor": "purple" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+
+    {
+      "type": "row",
+      "title": "What is shouting",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Firing alerts",
+      "description": "The table view, so alert identity never depends on colour.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=\"firing\", severity!=\"none\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "alertstate": true,
+              "job": true,
+              "node": true,
+              "instance": false
+            },
+            "indexByName": { "severity": 0, "alertname": 1, "service": 2, "instance": 3 }
+          }
+        },
+        { "id": "sortBy", "options": { "fields": {}, "sort": [ { "field": "severity", "desc": false } ] } }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "left", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "severity" },
+            "properties": [
+              { "id": "custom.width", "value": 110 },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "critical": { "text": "critical", "color": "red", "index": 0 } } },
+                { "type": "value", "options": { "warning": { "text": "warning", "color": "orange", "index": 1 } } }
+              ] },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" }
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Recent errors",
+      "description": "Everything the stack logged at error level or worse, containers and the system journal together.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 35 },
+      "datasource": { "type": "loki", "uid": "frey-loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{node=~\".+\"} |~ \"(?i)\\\\b(error|fatal|critical|panic)\\\\b\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "exact",
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}

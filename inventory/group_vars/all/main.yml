@@ -72,6 +72,16 @@ frey:
       # so a single run comes up fully connected.
       - media_acquisition
       - media_library
+      # Monitoring runs LAST, and the order is load-bearing in two ways.
+      #
+      # It reads the Grafana OIDC client secret that `identity` generates, so
+      # single sign-on for the dashboards only works if identity has run.
+      #
+      # It also derives what to probe from identity_services, so every service
+      # the other modules deploy is already being watched by the time this
+      # runs - a service added to the auth matrix starts being monitored with
+      # no second edit anywhere.
+      - monitoring
 
     available:
       network_gateway:
@@ -114,6 +124,11 @@ frey:
         tags:
           - media
           - media_acquisition
+      monitoring:
+        role: monitoring
+        tags:
+          - monitoring
+          - metrics
 
 # ==============================================================================
 # MEDIA - SHARED CONFIGURATION
@@ -293,6 +308,30 @@ service_proxy:
     exposed_by_default: false
     http_port: 80
     https_port: 443
+
+    # ------------------------------------------------------------------------
+    # Traefik's own Prometheus metrics, counted at the one point every request
+    # already passes through - so "is it slow or is it broken" is answered for
+    # every service at once, with nothing needed from the services.
+    #
+    # Declared HERE as well as in roles/service_proxy/defaults/ for the reason
+    # the frey.pki_public_dir comment above gives: a role's defaults are only
+    # in scope while that role is running, and the monitoring module has to
+    # read these to build its scrape config. Relying on service_proxy's
+    # defaults happens to work today only because site.yml includes every
+    # enabled module in order.
+    #
+    # The entrypoint is container-internal and published nowhere; Prometheus
+    # reaches it over the shared proxy network.
+    #
+    # Enabling monitoring is what turns this on, so there is no second switch
+    # to forget - but Traefik only learns about it when service_proxy runs, so
+    # the first deploy needs `--tags proxy,monitoring` (or a full run).
+    # ------------------------------------------------------------------------
+    metrics:
+      enabled: "{{ 'monitoring' in (frey.modules.enabled | default([])) }}"
+      port: 8082
+      add_router_labels: true
 
 security_baseline:
   packages:

@@ -34,6 +34,31 @@ service_proxy:
     http_port: 80
     https_port: 443
 
+    # ------------------------------------------------------------------------
+    # PROMETHEUS METRICS
+    #
+    # Traefik is the one point every request already passes through, so
+    # counting there answers "is it slow or is it broken" for every service
+    # at once, and needs nothing from the services themselves.
+    #
+    # Derived from whether the monitoring module is enabled rather than being
+    # a second switch to forget. The consequence worth knowing: a deploy that
+    # has just enabled monitoring must include the proxy tag as well, or
+    # Traefik will not have been told to publish anything:
+    #
+    #     --tags proxy,monitoring
+    #
+    # The entrypoint is container-internal and published nowhere. Prometheus
+    # reaches it over the shared proxy network; nothing outside can.
+    # ------------------------------------------------------------------------
+    metrics:
+      enabled: "{{ 'monitoring' in (frey.modules.enabled | default([])) }}"
+      port: 8082
+      # Per-router labels are what make a dropped router visible in the
+      # metrics as well as in the probes. The cardinality cost is bounded by
+      # the number of routers, which is about thirty here.
+      add_router_labels: true
+
     # Force EVERY request to HTTPS at the entrypoint, including services with
     # no authentication in front of them.
     #
