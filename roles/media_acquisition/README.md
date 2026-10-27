@@ -38,6 +38,53 @@ vault_media_api_keys:
   sonarr: "32 hex characters"
   radarr: "32 hex characters"
   qbittorrent_password: "something you choose"
+  qbittorrent_username: "media_admin"      # optional; defaults to admin
+```
+
+### Changing qBittorrent's WebUI login
+
+Both halves live in the vault, and the vault is the only place to change
+them. One deploy moves all four consumers together: qBittorrent's own
+preferences, the download-client entry in each of the four *arrs, and the
+download-gate script.
+
+```bash
+ansible-vault edit inventory/group_vars/all/secrets.yml \
+  --vault-password-file .vault_pass
+ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+  --tags media_config --vault-password-file .vault_pass
+```
+
+**Do not change them in qBittorrent's web UI.** That moves one side only. The
+*arrs keep sending the old credential, every poll comes back `401`, and they
+report *"All download clients are unavailable due to failures"* while
+qBittorrent itself looks perfectly healthy — with a `Username` in its config
+that appears nowhere in this repository. The deploy is authoritative and will
+put the vault's values back.
+
+If the two sides have already diverged and Ansible can no longer log in, the
+seed template will not help: it is written with `force: false` and never
+touches an existing config. Break the deadlock by clearing the stored
+credential and letting a deploy rewrite it:
+
+```bash
+sudo docker stop qbittorrent
+sudo sed -i '/^Username=/d; /^Password_PBKDF2=/d' \
+  /opt/frey/appdata/qbittorrent/qBittorrent/qBittorrent.conf
+sudo docker start qbittorrent
+```
+
+qBittorrent reads the legacy `[Preferences]` `WebUI\…` keys this role seeds and
+migrates them into a `[WebUI]` section of its own on first write, which is why
+the stored keys are bare names rather than the prefixed ones in the template.
+
+A banned IP (*"Your IP address has been banned after too many failed
+authentication attempts"*) is held in memory only, so `docker restart
+qbittorrent` clears it. Read the current password with:
+
+```bash
+sudo python3 -c 'import json; print(json.load(
+  open("/opt/frey/appdata/.media-keys.json"))["qbittorrent_password"])'
 ```
 
 ## Service Hostnames

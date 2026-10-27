@@ -503,6 +503,17 @@
     - media
     - media_acquisition
     - media_gating
+    # media_config too, even though no systemd unit belongs to that tag.
+    # Everything queued earlier in the run gets flushed here, and the one
+    # that matters is "Restart qbittorrent" from the password restore: the
+    # wiring that follows has to log into qBittorrent, and the credential it
+    # needs is only live once that restart has happened.
+    #
+    # Without this tag a `--tags media_config` run queued the restart, failed
+    # every login against the old credential, skipped the whole wiring stage,
+    # and only then restarted at the end of the play - so recovering took two
+    # runs and the first one looked like it had done nothing.
+    - media_config
 
 - name: Enable the media gating timer
   ansible.builtin.systemd:

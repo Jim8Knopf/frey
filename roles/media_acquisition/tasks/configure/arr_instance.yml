@@ -206,6 +206,75 @@
   failed_when: false
   no_log: true
 
+- name: "{{ arr.key }}: correct the qBittorrent credential on an existing download client"
+  # The add task above only fires when no client named qBittorrent exists, so
+  # on every later run the stored credential is whatever was true the day it
+  # was created. Change the login in the vault and, without this, the *arrs
+  # keep sending the old one: every poll comes back 401 and the app reports
+  # "All download clients are unavailable due to failures" while qBittorrent
+  # itself is healthy and reachable.
+  #
+  # PUT the whole definition back rather than patching a field, because the
+  # Servarr API replaces the resource and silently drops any field omitted.
+  # The username is read back and compared; the password cannot be, since the
+  # API returns it censored, so it is rewritten whenever the username differs
+  # or the client was reported as failing.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/downloadclient/{{ arr_qbt_existing.id }}"
+    method: PUT
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    body_format: json
+    body: >-
+      {{
+        arr_qbt_existing
+        | combine({
+            'fields': (
+              arr_qbt_existing.fields
+              | rejectattr('name', 'in', ['username', 'password'])
+              | list
+            ) + [
+              {'name': 'username',
+               'value': media_acquisition.services.qbittorrent.web_username},
+              {'name': 'password', 'value': media_secrets.qbittorrent_password}
+            ]
+          })
+      }}
+    status_code: [200, 202]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    arr_qbt_existing: >-
+      {{
+        (arr_downloadclients.json | default([])
+         | selectattr('name', 'equalto', 'qBittorrent')
+         | list | first) | default({}, true)
+      }}
+    arr_qbt_stored_username: >-
+      {{
+        (arr_qbt_existing.fields | default([])
+         | selectattr('name', 'equalto', 'username')
+         | map(attribute='value') | list | first) | default('', true)
+      }}
+  when:
+    - media_acquisition.services.qbittorrent.enabled | bool
+    - arr_downloadclients.json is defined
+    - "'qBittorrent' in (arr_downloadclients.json | map(attribute='name') | list)"
+    - arr_qbt_existing.id is defined
+    - arr_qbt_stored_username != media_acquisition.services.qbittorrent.web_username
+  register: arr_downloadclient_fix
+  failed_when: false
+  no_log: true
+
+- name: "{{ arr.key }}: record download client credential failure"
+  ansible.builtin.set_fact:
+    media_wiring_failures: "{{ media_wiring_failures + [arr.key ~ ': qBittorrent credential not corrected'] }}"
+  when:
+    - arr_downloadclient_fix is defined
+    - not (arr_downloadclient_fix.skipped | default(false))
+    - arr_downloadclient_fix.status is defined
+    - arr_downloadclient_fix.status not in [200, 202]
+
 - name: "{{ arr.key }}: record download client failure"
   ansible.builtin.set_fact:
     media_wiring_failures: "{{ media_wiring_failures + [arr.key ~ ': qBittorrent download client not added'] }}"

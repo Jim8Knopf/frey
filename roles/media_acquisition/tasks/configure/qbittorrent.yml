@@ -111,6 +111,26 @@
       web_ui_host_header_validation_enabled: false
       web_ui_csrf_protection_enabled: false
       bypass_local_auth: true
+      # ---------------------------------------------------------------------
+      # THE WEBUI CREDENTIAL, PUSHED FROM THE SECRET STORE
+      #
+      # Both halves, every run, through the API - which is the only way a
+      # change in the vault reaches a qBittorrent that is already running.
+      # The seed template is written with `force: false`, so it never touches
+      # an existing install, and the file-level password restore only fires
+      # when there is no password at all. Without this, editing the vault
+      # changed what the *arrs send and nothing about what qBittorrent
+      # expects, so every poll 401'd and the whole stack reported "all
+      # download clients unavailable".
+      #
+      # qBittorrent hashes web_ui_password itself and applies both live, with
+      # no restart. Re-sending the same values is a no-op to it.
+      #
+      # This is also why you should not change these in qBittorrent's web UI:
+      # this task is authoritative and will put them back. Change the vault.
+      # ---------------------------------------------------------------------
+      web_ui_username: "{{ media_acquisition.services.qbittorrent.web_username }}"
+      web_ui_password: "{{ media_secrets.qbittorrent_password }}"
   register: qbt_set_prefs
   failed_when: false
   # The API has no "did anything change" response, so compare what we asked
@@ -119,6 +139,8 @@
     - qbt_prefs.content is defined
     - (qbt_prefs.content | from_json).save_path | default('') != '/data/torrents'
       or not (qbt_prefs.content | from_json).auto_tmm_enabled | default(false)
+      or (qbt_prefs.content | from_json).web_ui_username | default('')
+         != media_acquisition.services.qbittorrent.web_username
   when: qbt_cookie is defined
   no_log: true
 
