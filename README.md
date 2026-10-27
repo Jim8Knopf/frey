@@ -8,7 +8,8 @@ critical always-on service: it is how you reach Immich, the media stack and
 SSH, with or without internet. When a public Wi-Fi network is available, the
 Pi joins it on `wlan1` and shares it through to FreyHub clients.
 
-Services are reached by name as `service.frey`, for example `immich.frey`.
+Services are reached by name as `service.hub.frey`, for example
+`immich.hub.frey`. The shorter `service.frey` still works and redirects there.
 
 Legacy service stacks are archived under `archive/legacy-stack/`.
 
@@ -19,10 +20,14 @@ playbooks/site.yml                       # Thin module orchestrator
 inventory/hosts.yml                      # Target Pi inventory
 inventory/group_vars/all/main.yml        # Active module registry and config
 inventory/group_vars/all/media.yml       # Media image versions, toggles, VPN switch
+inventory/group_vars/all/identity.yml    # Who can log in, and what each service checks
 inventory/group_vars/all/secrets.yml     # Vault: AP passphrase, known networks
 scripts/media-check-updates.sh           # What media images have newer versions
+scripts/identity-check.sh                # Assert SSO is actually enforcing
 roles/network_gateway/                   # FreyHub AP + public Wi-Fi uplink + NAT/DNS
 roles/service_proxy/                     # Docker + Traefik service entrypoint
+roles/frey_pki/                          # Frey CA + the certificate Traefik serves
+roles/identity/                          # LLDAP directory + Authelia single sign-on
 roles/security_baseline/                 # Firewall, fail2ban, network hardening
 roles/rpi_nvme/                          # Pi/NVMe runtime tuning
 roles/media_acquisition/                 # *arrs + qBittorrent (needs uplink)
@@ -113,25 +118,49 @@ separate playbook.
 
 ## Local Services
 
-FreyHub's DNS resolves `frey` and any `*.frey` name to the Pi, answered
-locally so it works with no internet. Traefik then routes hostnames to Docker
-containers by label — new services need no DNS change.
+FreyHub's DNS resolves `frey` and everything beneath it — at any depth — to the
+Pi, answered locally so it works with no internet. Traefik then routes
+hostnames to Docker containers by label, so new services need no DNS change.
+
+Services live at **`<name>.hub.frey`**, served over HTTPS with the Frey
+certificate. `<name>.frey` still works and redirects there; see
+[docs/IDENTITY.md](docs/IDENTITY.md) for why the extra label exists (short
+answer: a single-label domain cannot carry a shared session cookie, so single
+sign-on is impossible without it).
 
 For a new service such as Immich:
 
 - Join the Docker network `frey_proxy`.
-- Add a router rule like ``Host(`immich.frey`)``.
+- Add a router rule like ``Host(`immich.hub.frey`)``.
 - Set the container port with `traefik.http.services.<name>.loadbalancer.server.port`.
+- To put it behind the login page, add one line to `identity_services`.
 
 See [docs/SERVICE_MODULES.md](docs/SERVICE_MODULES.md).
+
+## Logging In
+
+One directory of people, one login page, one place to say who may reach what.
+
+- `https://auth.hub.frey` — the login page
+- `https://users.hub.frey` — where you add people
+- `inventory/group_vars/all/identity.yml` — the only file you normally edit
+
+**Install `ca/frey-root-ca.crt` on your devices first**, or every service shows
+a certificate warning. Jellyfin, Audiobookshelf and Seerr deliberately still
+answer plain HTTP so televisions — which cannot install a private certificate —
+keep working.
+
+See [docs/IDENTITY.md](docs/IDENTITY.md).
 
 ## Media
 
 The media stack is split in two along the line that matters in a van:
 
-- `media_library` — Jellyfin (`jellyfin.frey`), Audiobookshelf
-  (`audiobookshelf.frey`, also `books.frey`) and Seerr (`seerr.frey`, also
-  `requests.frey`). Works with **no internet at all**.
+- `media_library` — Jellyfin (`jellyfin.hub.frey`), Audiobookshelf
+  (`audiobookshelf.hub.frey`, also `books.hub.frey`) and Seerr
+  (`seerr.hub.frey`, also `requests.hub.frey`). Works with **no internet at
+  all**, and these three still answer plain HTTP so a television can reach
+  them.
 - `media_acquisition` — Prowlarr, Sonarr, Radarr, Lidarr, Chaptarr, Bazarr and
   qBittorrent. Needs an uplink, and pauses itself when there isn't one.
 

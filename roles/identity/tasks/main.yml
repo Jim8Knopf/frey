@@ -1,0 +1,384 @@
+---
+# ==============================================================================
+# IDENTITY
+#
+# Order matters here and is not arbitrary:
+#
+#   secrets   ->  files  ->  config  ->  VALIDATE  ->  start  ->  bootstrap
+#
+# The validate step is the important one. It runs `authelia validate-config`
+# against the rendered file in a throwaway container BEFORE the running
+# Authelia is asked to reload it, so a config this version of Authelia does not
+# accept fails the deploy with a precise error instead of leaving you with a
+# login page that will not start - and therefore no way into anything.
+# ==============================================================================
+
+- name: Validate identity configuration
+  ansible.builtin.assert:
+    that:
+      - identity_versions is defined
+      - identity_enable is defined
+      - identity_services is defined
+      - identity_users | length > 0
+      # The cookie domain must contain a period or Authelia refuses to start
+      # and browsers refuse the cookie. See frey.service_domain in
+      # inventory/group_vars/all/main.yml.
+      - "'.' in frey.service_domain"
+      - identity.base_dn | length > 0
+      - not identity.network.subnet.startswith('10.20.0.')
+    fail_msg: >-
+      identity configuration is invalid. inventory/group_vars/all/identity.yml
+      must define identity_versions, identity_enable, identity_services and at
+      least one user; frey.service_domain ({{ frey.service_domain }}) must
+      contain a period, because Authelia rejects a cookie domain without one;
+      and the internal Docker network ({{ identity.network.subnet }}) must not
+      overlap FreyHub's {{ network_gateway.downstream.network_cidr }}.
+  tags: [identity, sso, identity_config]
+
+- name: Require every OIDC service to exist in the catalog
+  ansible.builtin.assert:
+    that:
+      - item.key in identity.oidc_catalog
+    fail_msg: >-
+      '{{ item.key }}' is set to auth: oidc but has no entry in
+      identity.oidc_catalog in roles/identity/defaults/main.yml, so there is
+      nothing to tell Authelia about its redirect URIs. Either add a catalog
+      entry or use auth: forward_auth, which needs nothing from the app.
+  loop: "{{ identity_services | dict2items | selectattr('value.auth', 'equalto', 'oidc') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [identity, sso, identity_config]
+
+- name: Require the Frey certificate to exist before serving HTTPS
+  ansible.builtin.stat:
+    path: "{{ service_proxy.traefik.dynamic_config_dir }}/certs/frey.crt"
+  register: identity_cert_stat
+  tags: [identity, sso]
+
+- name: Fail clearly when the certificate is missing
+  ansible.builtin.fail:
+    msg: >-
+      No Frey certificate at {{ service_proxy.traefik.dynamic_config_dir }}/certs/frey.crt. Single sign-on
+      cannot work over plain HTTP - Authelia's session cookie is Secure, and it
+      refuses plain-HTTP redirect URIs for public OIDC clients entirely. Run
+      the frey_pki module first:
+      ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags pki
+  when:
+    - not identity_cert_stat.stat.exists
+    - not ansible_check_mode
+  tags: [identity, sso]
+
+# ------------------------------------------------------------------------------
+# OWNERSHIP
+#
+# Both containers run as this uid and the secret files are owned by it, so that
+# "can Authelia read its own secrets" has a definite answer that does not
+# depend on what user an upstream image happens to drop to this month.
+# ------------------------------------------------------------------------------
+- name: Ensure the identity group exists
+  ansible.builtin.group:
+    name: "{{ identity.user.name }}"
+    gid: "{{ identity.user.gid }}"
+    state: present
+  tags: [identity, sso]
+
+- name: Ensure the identity user exists
+  ansible.builtin.user:
+    name: "{{ identity.user.name }}"
+    uid: "{{ identity.user.uid }}"
+    group: "{{ identity.user.name }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+  tags: [identity, sso]
+
+# Same reasoning as frey_pki: --check cannot create the directories, so a
+# first-ever dry run would fail writing into them. A --check against a
+# deployed Pi still diffs every file properly.
+- name: Check whether the identity data directory already exists
+  ansible.builtin.stat:
+    path: "{{ identity.appdata_dir }}/secrets"
+  register: identity_dir_stat
+  tags: [identity, sso, identity_config]
+
+- name: Decide whether identity files can be written this run
+  ansible.builtin.set_fact:
+    identity_can_write: "{{ identity_dir_stat.stat.exists or not ansible_check_mode }}"
+  tags: [identity, sso, identity_config]
+
+- name: Note that a dry run cannot write identity files on a fresh host
+  ansible.builtin.debug:
+    msg: >-
+      {{ identity.appdata_dir }} is not set up yet and this is a dry run, so
+      the secret, configuration and stack files are skipped. They will be
+      written for real on the next apply.
+  when: not identity_can_write
+  tags: [identity, sso, identity_config]
+
+- name: Ensure identity directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(identity.user.uid) }}"
+    group: "{{ item.group | default(identity.user.gid) }}"
+    mode: "{{ item.mode | default('0750') }}"
+  loop:
+    - path: "{{ identity.stack_dir }}"
+      owner: root
+      group: root
+      mode: "0750"
+    - path: "{{ identity.appdata_dir }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ identity.appdata_dir }}/lldap"
+    - path: "{{ identity.appdata_dir }}/authelia"
+    # 0500: readable only by the uid the containers run as. The directory is
+    # the real boundary; the files inside are 0400.
+    - path: "{{ identity.appdata_dir }}/secrets"
+      mode: "0500"
+    - path: "{{ identity.appdata_dir }}/bootstrap"
+      mode: "0755"
+    - path: "{{ identity.appdata_dir }}/bootstrap/user-configs"
+      mode: "0755"
+    - path: "{{ identity.appdata_dir }}/bootstrap/group-configs"
+      mode: "0755"
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [identity, sso]
+
+# Secrets are resolved AFTER the directories exist, not before: the persisted
+# key file lives in appdata, so resolving first would try to write it into a
+# directory that is not there yet on a first run.
+- name: Resolve identity secrets
+  ansible.builtin.include_tasks:
+    file: secrets.yml
+    apply:
+      tags: [identity, sso, identity_config]
+  tags: [identity, sso, identity_config]
+
+# ------------------------------------------------------------------------------
+# SECRET FILES
+#
+# One secret per file, which is what Authelia's `secret` template filter reads.
+# This is what keeps configuration.yml free of secrets and therefore safe to
+# show in --check --diff.
+# ------------------------------------------------------------------------------
+- name: Write the Authelia secret files
+  ansible.builtin.copy:
+    content: "{{ identity_secrets[item] }}"
+    dest: "{{ identity.appdata_dir }}/secrets/{{ item }}"
+    owner: "{{ identity.user.uid }}"
+    group: "{{ identity.user.gid }}"
+    mode: "0400"
+  loop:
+    - authelia_session_secret
+    - authelia_storage_encryption_key
+    - authelia_oidc_hmac_secret
+    - authelia_reset_jwt_secret
+    - authelia_ldap_password
+  no_log: true
+  notify: Restart authelia
+  when: identity_can_write
+  tags: [identity, sso, identity_config]
+
+# The OIDC token signing key. Generated in place and never rotated casually:
+# rotating it invalidates every token Authelia has ever issued at once.
+- name: Generate the OIDC token signing key
+  community.crypto.openssl_privatekey:
+    path: "{{ identity.appdata_dir }}/secrets/oidc.jwks.pem"
+    size: 2048
+    type: RSA
+    owner: "{{ identity.user.uid }}"
+    group: "{{ identity.user.gid }}"
+    mode: "0400"
+  notify: Restart authelia
+  when: identity_can_write
+  tags: [identity, sso, identity_config]
+
+# ------------------------------------------------------------------------------
+# CONFIGURATION
+# ------------------------------------------------------------------------------
+- name: Render the Authelia configuration
+  ansible.builtin.template:
+    src: authelia-configuration.yml.j2
+    dest: "{{ identity.appdata_dir }}/authelia/configuration.yml"
+    owner: "{{ identity.user.uid }}"
+    group: "{{ identity.user.gid }}"
+    mode: "0640"
+    # No YAML validate step here, and that is correct: this file is not YAML
+    # until Authelia has run its own template filter over it. The jwks key is
+    # written as a bare `{{ secret ... | mindent ... }}` expression, which a
+    # YAML parser reads as the start of a flow mapping and rejects. The
+    # authoritative check is `authelia validate-config` below, which applies
+    # the filter first and then validates the result against the real schema.
+  notify: Restart authelia
+  when: identity_can_write
+  tags: [identity, sso, identity_config]
+
+- name: Install the Traefik forward-auth middleware
+  ansible.builtin.template:
+    src: traefik-authelia.yml.j2
+    dest: "{{ service_proxy.traefik.dynamic_config_dir }}/authelia.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  when: identity_can_write
+  tags: [identity, sso, identity_config]
+
+- name: Create the identity internal network
+  community.docker.docker_network:
+    name: "{{ identity.network.name }}"
+    driver: bridge
+    ipam_config:
+      - subnet: "{{ identity.network.subnet }}"
+    state: present
+  when: not ansible_check_mode
+  tags: [identity, sso]
+
+- name: Render the identity stack
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ identity.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  # LLDAP takes its secrets as environment variables, so unlike the Authelia
+  # configuration this file does contain them.
+  no_log: true
+  when: identity_can_write
+  tags: [identity, sso, identity_config]
+
+# ------------------------------------------------------------------------------
+# VALIDATE BEFORE STARTING
+#
+# A throwaway container, the real configuration, the real secrets, the pinned
+# version. If this passes, the running Authelia will accept the file too.
+#
+# This is the guard the old stack never had: there, a bad blueprint was
+# discovered by Authentik declining to apply it, hours later, in a log.
+# ------------------------------------------------------------------------------
+- name: Validate the Authelia configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --user
+      - "{{ identity.user.uid }}:{{ identity.user.gid }}"
+      - --volume
+      - "{{ identity.appdata_dir }}/authelia:/config:ro"
+      - --volume
+      - "{{ identity.appdata_dir }}/secrets:/secrets:ro"
+      - --env
+      - X_AUTHELIA_CONFIG_FILTERS=template
+      - "authelia/authelia:{{ identity_versions.authelia }}"
+      - authelia
+      - validate-config
+      - --config
+      - /config/configuration.yml
+  register: identity_validate
+  changed_when: false
+  when:
+    - identity_enable.authelia | bool
+    - not ansible_check_mode
+  tags: [identity, sso, identity_config]
+
+- name: Show the configuration validation result
+  ansible.builtin.debug:
+    msg: "{{ identity_validate.stdout_lines | default([]) }}"
+  when: identity_validate is not skipped
+  tags: [identity, sso, identity_config]
+
+# ------------------------------------------------------------------------------
+# START
+# ------------------------------------------------------------------------------
+# The directory comes up FIRST and on its own, and this ordering is not
+# cosmetic. Authelia runs a startup check that binds to LDAP and exits if it
+# fails - and the account it binds with is created by the bootstrap below. Start
+# both at once on a first deploy and Authelia crash-loops with
+# `LDAP Result Code 49 "Invalid Credentials"` until the bootstrap happens to
+# land, which it recovers from only because of restart: unless-stopped.
+- name: Start the directory
+  community.docker.docker_compose_v2:
+    project_src: "{{ identity.stack_dir }}"
+    services:
+      - lldap
+    state: present
+    pull: missing
+  when:
+    - identity_enable.lldap | bool
+    - not ansible_check_mode
+  tags: [identity, sso]
+
+- name: Wait for LLDAP to become healthy
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}.State.Health.Status{{ '}}' }}"
+      - lldap
+  register: identity_lldap_health
+  until: identity_lldap_health.stdout | trim == 'healthy'
+  retries: "{{ identity.configure.health_retries }}"
+  delay: "{{ identity.configure.health_delay }}"
+  changed_when: false
+  when:
+    - identity_enable.lldap | bool
+    - not ansible_check_mode
+  tags: [identity, sso]
+
+- name: Seed the directory
+  ansible.builtin.include_tasks:
+    file: bootstrap.yml
+    apply:
+      tags: [identity, sso, identity_config]
+  when: identity_enable.lldap | bool
+  tags: [identity, sso, identity_config]
+
+# Only now, with the bind account guaranteed to exist, does Authelia start.
+- name: Deploy the identity stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ identity.stack_dir }}"
+    state: present
+    remove_orphans: true
+    pull: missing
+  when: not ansible_check_mode
+  tags: [identity, sso]
+
+- name: Wait for Authelia to become healthy
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}.State.Health.Status{{ '}}' }}"
+      - authelia
+  register: identity_authelia_health
+  until: identity_authelia_health.stdout | trim == 'healthy'
+  retries: "{{ identity.configure.health_retries }}"
+  delay: "{{ identity.configure.health_delay }}"
+  changed_when: false
+  when:
+    - identity_enable.authelia | bool
+    - not ansible_check_mode
+  tags: [identity, sso]
+
+- name: Configure the Jellyfin SSO plugin
+  ansible.builtin.include_tasks:
+    file: jellyfin.yml
+    apply:
+      tags: [identity, sso, identity_jellyfin]
+  when:
+    - identity.jellyfin.sso_plugin.enabled | bool
+    - identity_services.jellyfin.auth | default('none') == 'oidc'
+  tags: [identity, sso, identity_jellyfin]
+
+- name: Report what you still have to do by hand
+  ansible.builtin.include_tasks:
+    file: report.yml
+    apply:
+      tags: [identity, sso, identity_config]
+  tags: [identity, sso, identity_config]

@@ -1,0 +1,444 @@
+---
+# ==============================================================================
+# Issue the Frey CA and the service certificate Traefik serves.
+#
+# Both are generated on the Pi and never leave it, apart from the root
+# certificate, which is public by nature and gets copied back for installing on
+# devices. Nothing here needs an internet connection.
+# ==============================================================================
+
+- name: Validate PKI configuration
+  ansible.builtin.assert:
+    that:
+      - frey_pki.dir | length > 0
+      - frey_pki.cert_dir | length > 0
+      - frey_pki.leaf.valid_days | int > 0
+      - frey_pki.leaf.valid_days | int <= 398
+      - frey_pki.leaf.renew_before_days | int < frey_pki.leaf.valid_days | int
+    fail_msg: >-
+      frey_pki needs dir, cert_dir and a leaf validity of 1-398 days
+      (Apple rejects longer-lived leaf certificates even from a private CA),
+      with renew_before_days shorter than the validity.
+  tags:
+    - pki
+    - tls
+
+# ------------------------------------------------------------------------------
+# WHICH NAMES GO IN THE CERTIFICATE
+#
+# `*.frey` is included, but it is NOT relied on. Under the Public Suffix List's
+# default rule an unknown TLD is itself a public suffix, which makes `*.frey` a
+# wildcard spanning a public suffix - and strict clients, Chrome included,
+# refuse to match those. So every hostname is also listed explicitly, and the
+# wildcard is just a bonus for tolerant clients.
+#
+# The list builds itself from configuration that already exists: the DNS
+# records the gateway answers for, plus identity_hostnames - every name in the
+# auth matrix in inventory/group_vars/all/identity.yml, aliases included. Add a
+# service there and it lands in the certificate on the next run, because the
+# signing request stops matching and the certificate is reissued.
+#
+# With the identity module absent the list is still correct, just shorter.
+# ------------------------------------------------------------------------------
+- name: Collect the service short names
+  ansible.builtin.set_fact:
+    frey_pki_short_names: >-
+      {{
+        (
+          (frey.dns.records | default([]) | map(attribute='name') | list)
+          + (identity_hostnames | default([]))
+        )
+        | reject('equalto', '@')
+        | unique | sort
+      }}
+  tags:
+    - pki
+    - tls
+
+# Every short name is issued under BOTH domains: <name>.hub.frey because that
+# is where the service actually lives, and <name>.frey because that name still
+# resolves and still has to present a valid certificate before it can redirect
+# anyone to the canonical one.
+- name: Collect the hostnames the certificate must cover
+  ansible.builtin.set_fact:
+    frey_pki_dns_names: >-
+      {{
+        (
+          [
+            frey.local_domain,
+            '*.' ~ frey.local_domain,
+            frey.service_domain,
+            '*.' ~ frey.service_domain,
+          ]
+          + (
+              frey_pki_short_names
+              | map('regex_replace', '$', '.' ~ frey.service_domain)
+              | list
+            )
+          + (
+              frey_pki_short_names
+              | map('regex_replace', '$', '.' ~ frey.local_domain)
+              | list
+            )
+          + (frey_pki.extra_dns_names | default([]))
+        ) | unique | sort
+      }}
+  tags:
+    - pki
+    - tls
+
+- name: Collect the addresses the certificate must cover
+  ansible.builtin.set_fact:
+    frey_pki_ip_addresses: >-
+      {{
+        ([frey.service_address] + frey_pki.extra_ip_addresses | default([]))
+        | unique | sort
+      }}
+  tags:
+    - pki
+    - tls
+
+- name: Build the subject alternative name list
+  ansible.builtin.set_fact:
+    frey_pki_sans: >-
+      {{
+        (frey_pki_dns_names | map('regex_replace', '^', 'DNS:') | list)
+        + (frey_pki_ip_addresses | map('regex_replace', '^', 'IP:') | list)
+      }}
+  tags:
+    - pki
+    - tls
+
+# ------------------------------------------------------------------------------
+# DIRECTORIES
+#
+# The CA directory is 0700: it holds the root private key, which is the one
+# secret here whose loss means visiting every device again.
+# ------------------------------------------------------------------------------
+# --check cannot create a directory, so on a first-ever dry run the key and
+# certificate tasks below would fail on a path that does not exist yet - which
+# looks like a broken role rather than the expected consequence of a dry run.
+# This lets them be skipped in exactly that case, while a --check against an
+# already-deployed Pi still exercises them properly and reports renewals.
+- name: Check whether the CA directory already exists
+  ansible.builtin.stat:
+    path: "{{ frey_pki.dir }}"
+  register: frey_pki_dir_stat
+  tags:
+    - pki
+    - tls
+
+- name: Decide whether certificate material can be touched this run
+  ansible.builtin.set_fact:
+    frey_pki_can_write: "{{ frey_pki_dir_stat.stat.exists or not ansible_check_mode }}"
+  tags:
+    - pki
+    - tls
+
+- name: Note that a dry run cannot issue certificates on a fresh host
+  ansible.builtin.debug:
+    msg: >-
+      {{ frey_pki.dir }} does not exist yet and this is a dry run, so the CA
+      and certificate tasks are skipped. They will run for real on the next
+      apply.
+  when: not frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+- name: Ensure the CA directory exists
+  ansible.builtin.file:
+    path: "{{ frey_pki.dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags:
+    - pki
+    - tls
+
+- name: Ensure the Traefik certificate directory exists
+  ansible.builtin.file:
+    path: "{{ frey_pki.cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - pki
+    - tls
+
+# ------------------------------------------------------------------------------
+# THE ROOT
+#
+# Generated once and then left alone. None of these tasks regenerate an
+# existing root: openssl_privatekey keeps a key whose size already matches, and
+# x509_certificate only rewrites a self-signed certificate that no longer
+# matches its request. Replacing the root is a deliberate act - delete
+# ca.key/ca.crt - because it invalidates every device's installed copy.
+# ------------------------------------------------------------------------------
+- name: Generate the Frey root CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ frey_pki.dir }}/ca.key"
+    size: "{{ frey_pki.ca.key_size }}"
+    type: RSA
+    owner: root
+    group: root
+    mode: "0600"
+  when: frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+- name: Build the Frey root CA signing request
+  community.crypto.openssl_csr:
+    path: "{{ frey_pki.dir }}/ca.csr"
+    privatekey_path: "{{ frey_pki.dir }}/ca.key"
+    common_name: "{{ frey_pki.ca.common_name }}"
+    organization_name: "{{ frey_pki.ca.organization }}"
+    basic_constraints:
+      - "CA:TRUE"
+    basic_constraints_critical: true
+    key_usage:
+      - digitalSignature
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+    owner: root
+    group: root
+    mode: "0600"
+  when: frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+- name: Issue the Frey root CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ frey_pki.dir }}/ca.crt"
+    csr_path: "{{ frey_pki.dir }}/ca.csr"
+    privatekey_path: "{{ frey_pki.dir }}/ca.key"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ frey_pki.ca.valid_days }}d"
+    owner: root
+    group: root
+    mode: "0644"
+  when: frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+# ------------------------------------------------------------------------------
+# THE LEAF
+#
+# Two independent reasons to reissue:
+#
+#   1. The name list changed - handled for free. The request is rewritten, and
+#      x509_certificate reissues any certificate that no longer matches its
+#      request. Adding a service therefore reissues on the next run.
+#
+#   2. Expiry is close - NOT handled for free. The module is happy to leave a
+#      certificate that expires tomorrow in place, so the renewal window is
+#      checked here and forced explicitly.
+# ------------------------------------------------------------------------------
+- name: Check for an existing service certificate
+  ansible.builtin.stat:
+    path: "{{ frey_pki.cert_dir }}/frey.crt"
+  register: frey_pki_leaf_stat
+  tags:
+    - pki
+    - tls
+
+- name: Read the existing service certificate
+  community.crypto.x509_certificate_info:
+    path: "{{ frey_pki.cert_dir }}/frey.crt"
+    valid_at:
+      renewal_horizon: "+{{ frey_pki.leaf.renew_before_days }}d"
+  register: frey_pki_leaf_info
+  when: frey_pki_leaf_stat.stat.exists
+  tags:
+    - pki
+    - tls
+
+- name: Decide whether the service certificate needs reissuing
+  ansible.builtin.set_fact:
+    # True when there is no certificate yet, or when the one there will have
+    # expired by the end of the renewal window.
+    frey_pki_leaf_expiring: >-
+      {{
+        (not frey_pki_leaf_stat.stat.exists)
+        or (not frey_pki_leaf_info.valid_at.renewal_horizon | default(false))
+      }}
+  tags:
+    - pki
+    - tls
+
+- name: Report the service certificate decision
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        'No service certificate yet - issuing one.'
+        if not frey_pki_leaf_stat.stat.exists
+        else (
+          'Service certificate expires ' ~ frey_pki_leaf_info.not_after
+          ~ (
+            ' - inside the ' ~ frey_pki.leaf.renew_before_days
+            ~ ' day renewal window, reissuing.'
+            if frey_pki_leaf_expiring
+            else ' - outside the renewal window, keeping it.'
+          )
+        )
+      }}
+  tags:
+    - pki
+    - tls
+
+- name: Generate the service certificate private key
+  community.crypto.openssl_privatekey:
+    path: "{{ frey_pki.cert_dir }}/frey.key"
+    size: "{{ frey_pki.leaf.key_size }}"
+    type: RSA
+    owner: root
+    group: root
+    mode: "0600"
+  when: frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+- name: Build the service certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ frey_pki.dir }}/frey.csr"
+    privatekey_path: "{{ frey_pki.cert_dir }}/frey.key"
+    common_name: "{{ frey.local_domain }}"
+    subject_alt_name: "{{ frey_pki_sans }}"
+    basic_constraints:
+      - "CA:FALSE"
+    key_usage:
+      - digitalSignature
+      - keyEncipherment
+    extended_key_usage:
+      - serverAuth
+    owner: root
+    group: root
+    mode: "0600"
+  when: frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+- name: Issue the service certificate
+  community.crypto.x509_certificate:
+    path: "{{ frey_pki.cert_dir }}/frey.crt"
+    csr_path: "{{ frey_pki.dir }}/frey.csr"
+    provider: ownca
+    ownca_path: "{{ frey_pki.dir }}/ca.crt"
+    ownca_privatekey_path: "{{ frey_pki.dir }}/ca.key"
+    ownca_not_after: "+{{ frey_pki.leaf.valid_days }}d"
+    # Reissue on name changes happens because the request no longer matches.
+    # Reissue on approaching expiry has to be asked for.
+    force: "{{ frey_pki_leaf_expiring | bool }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload traefik certificates
+  when: frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+# ------------------------------------------------------------------------------
+# TELL TRAEFIK ABOUT IT
+#
+# A file in the directory Traefik already watches, so there is no container
+# restart and no change to service_proxy's command line. This is the default
+# certificate for every router with tls enabled, which is why no service needs
+# a certificate setting of its own.
+# ------------------------------------------------------------------------------
+- name: Configure Traefik to serve the Frey certificate
+  ansible.builtin.template:
+    src: traefik-tls.yml.j2
+    dest: "{{ service_proxy.traefik.dynamic_config_dir }}/tls.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload traefik certificates
+  tags:
+    - pki
+    - tls
+
+# ------------------------------------------------------------------------------
+# MAKING CONTAINERS TRUST THE CA
+#
+# Devices are not the only things that have to trust this certificate. An app
+# doing OIDC makes back-channel calls of its own - fetching the discovery
+# document, exchanging the authorization code for a token - straight to
+# https://auth.{{ frey.service_domain }}. Those calls come from inside the
+# container, do not go through a browser, and fail with an opaque TLS error if
+# the container's trust store has never heard of the Frey CA.
+#
+# linuxserver.io images run any script in /custom-cont-init.d as root before
+# the service starts, which is exactly the hook needed. A service module mounts
+# this directory plus ca.crt and gets a trusting container with no custom
+# image. Non-linuxserver images need their own mechanism - Audiobookshelf is
+# Node, so it takes NODE_EXTRA_CA_CERTS instead.
+# ------------------------------------------------------------------------------
+- name: Ensure the public PKI directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ frey_pki.public_dir }}"
+    - "{{ frey_pki.public_dir }}/container-init"
+  tags:
+    - pki
+    - tls
+
+- name: Install the CA trust script for containers
+  ansible.builtin.copy:
+    src: 10-frey-ca-trust.sh
+    dest: "{{ frey_pki.public_dir }}/container-init/10-frey-ca-trust.sh"
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - pki
+    - tls
+
+- name: Publish a mountable copy of the root certificate
+  ansible.builtin.copy:
+    src: "{{ frey_pki.dir }}/ca.crt"
+    dest: "{{ frey_pki.public_dir }}/frey-root-ca.crt"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: frey_pki_can_write
+  tags:
+    - pki
+    - tls
+
+# ------------------------------------------------------------------------------
+# A COPY FOR THE DEVICES
+#
+# The root certificate is not secret - it is meant to be handed around. Keeping
+# a copy beside the playbook means onboarding a new phone never starts with
+# "ssh into the Pi and find the CA".
+# ------------------------------------------------------------------------------
+- name: Copy the root certificate back for installing on devices
+  ansible.builtin.fetch:
+    src: "{{ frey_pki.dir }}/ca.crt"
+    # Anchored to playbook_dir and stepped up one level deliberately. A bare
+    # relative dest resolves against the PLAYBOOK directory, not the repository
+    # root, so `ca` on its own quietly lands the certificate in playbooks/ca/
+    # - somewhere nobody thinks to look.
+    dest: "{{ playbook_dir }}/../{{ frey_pki.fetch_dir }}/frey-root-ca.crt"
+    flat: true
+  when:
+    - frey_pki.fetch_root_ca | bool
+    - not ansible_check_mode
+  tags:
+    - pki
+    - tls

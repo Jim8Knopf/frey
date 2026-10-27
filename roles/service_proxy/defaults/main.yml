@@ -33,3 +33,27 @@ service_proxy:
     exposed_by_default: false
     http_port: 80
     https_port: 443
+
+    # Force EVERY request to HTTPS at the entrypoint, including services with
+    # no authentication in front of them.
+    #
+    # OFF by default, deliberately, and this is the considered choice rather
+    # than a loose end.
+    #
+    # Services that sit behind Authelia are HTTPS-only regardless of this
+    # setting - they have to be, because Authelia's session cookie is Secure
+    # and would never come back over HTTP - and their plain-HTTP routers
+    # redirect. That is per-service and automatic.
+    #
+    # Turning this on additionally forces HTTPS for the services with no auth,
+    # which in this van means Jellyfin, Audiobookshelf and Seerr. The problem
+    # is who plays them: a smart TV or a games console generally CANNOT install
+    # a private root certificate, and unlike a browser it gives you no way to
+    # proceed anyway. Forcing HTTPS there does not show a warning, it just
+    # stops working, and "the TV cannot see Jellyfin any more" is a bad evening
+    # in a van.
+    #
+    # So: admin tools are protected and encrypted, and the things a television
+    # talks to keep answering plain HTTP until you decide otherwise. Turn this
+    # on once every device that matters trusts the Frey CA.
+    redirect_http_to_https: false

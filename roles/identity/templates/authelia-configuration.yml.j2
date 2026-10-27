@@ -1,0 +1,303 @@
+{#
+  ============================================================================
+  AUTHELIA - managed by Ansible role: identity
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  This file is the entire state of Frey's single sign-on. There is no database
+  to reconcile, no API to call and nothing to re-apply: it is rendered,
+  validated with `authelia validate-config`, and the container restarts. That
+  is the whole reason this stack replaced Authentik.
+
+  IT CONTAINS NO SECRETS. Every secret is pulled at startup from a file in
+  /secrets by Authelia's own `secret` template filter, enabled by
+  X_AUTHELIA_CONFIG_FILTERS=template in the compose file. That keeps the file
+  that actually holds the policy - who may reach what - readable and safe to
+  show in `--check --diff`, which was never true of the old stack's blueprints.
+
+  Schema is pinned to Authelia {{ identity_versions.authelia }}. The options
+  here move between minor releases, so read roles/identity/README.md before
+  bumping the version.
+#}
+{% set go = '{{' %}
+{% set og = '}}' %}
+{% set auth_host = identity.hosts.auth ~ '.' ~ frey.service_domain %}
+{% set oidc_services = identity_services | dict2items | selectattr('value.auth', 'equalto', 'oidc') | list %}
+{% set fwd_services = identity_services | dict2items | selectattr('value.auth', 'equalto', 'forward_auth') | list %}
+---
+theme: '{{ identity.authelia.theme }}'
+
+server:
+  address: 'tcp://0.0.0.0:{{ identity.authelia.port }}'
+
+log:
+  level: '{{ identity.authelia.log_level }}'
+  format: 'text'
+
+# ------------------------------------------------------------------------------
+# SECOND FACTORS
+#
+# Enrollable but not required - see identity.authelia.default_policy in
+# roles/identity/defaults/main.yml for why one_factor is the default in a van.
+# Anyone who wants TOTP can enrol it from the portal at any time.
+# ------------------------------------------------------------------------------
+totp:
+  disable: false
+  issuer: '{{ frey.service_domain }}'
+  algorithm: 'sha1'
+  digits: 6
+  period: 30
+
+webauthn:
+  disable: false
+  display_name: 'Frey'
+
+identity_validation:
+  reset_password:
+    jwt_secret: '{{ go }} secret "/secrets/authelia_reset_jwt_secret" {{ og }}'
+
+# ------------------------------------------------------------------------------
+# WHERE THE PEOPLE ARE
+#
+# LLDAP, over plain LDAP on a private Docker network. A bind carries the
+# password in cleartext, which is exactly why identity_internal exists and why
+# this traffic never crosses the shared proxy network.
+#
+# The bind account is a normal read-only user, NOT the LLDAP admin. The old
+# stack's equivalent is the single thing that broke it: an Authentik service
+# account cannot do a password bind at all, so Jellyfin's LDAP auth failed with
+# "Invalid Credentials" and was never fixed. See
+# archive/legacy-stack/LDAP_SSO_ISSUES.md.
+# ------------------------------------------------------------------------------
+authentication_backend:
+  password_reset:
+    disable: false
+  # How long a user's group membership may be stale. Short, because removing
+  # somebody from a group is usually something you want to take effect now.
+  refresh_interval: '1m'
+
+  ldap:
+    implementation: 'lldap'
+    address: 'ldap://lldap:{{ identity.ldap.port }}'
+    timeout: '5s'
+    start_tls: false
+    base_dn: '{{ identity.base_dn }}'
+    additional_users_dn: 'ou=people'
+    additional_groups_dn: 'ou=groups'
+    users_filter: '(&(|({username_attribute}={input})({mail_attribute}={input}))(objectClass=person))'
+    groups_filter: '(&(member={dn})(objectClass=groupOfNames))'
+    user: 'uid={{ identity.ldap.bind_user }},ou=people,{{ identity.base_dn }}'
+    password: '{{ go }} secret "/secrets/authelia_ldap_password" {{ og }}'
+    attributes:
+      username: 'uid'
+      display_name: 'cn'
+      mail: 'mail'
+      member_of: 'memberOf'
+      group_name: 'cn'
+
+# ------------------------------------------------------------------------------
+# THE SESSION
+#
+# The cookie domain is {{ frey.service_domain }} and that is load-bearing.
+# Authelia requires a domain with at least one period, and a browser refuses
+# Set-Cookie for a bare public suffix - which, under the Public Suffix List's
+# default rule for unknown TLDs, `{{ frey.local_domain }}` is. A cookie scoped
+# to {{ frey.service_domain }} reaches every service below it, which is what
+# makes one login cover all of them.
+# ------------------------------------------------------------------------------
+session:
+  secret: '{{ go }} secret "/secrets/authelia_session_secret" {{ og }}'
+  cookies:
+    - domain: '{{ frey.service_domain }}'
+      authelia_url: 'https://{{ auth_host }}'
+      name: 'authelia_session'
+      same_site: 'lax'
+      expiration: '{{ identity.authelia.session.expiration }}'
+      inactivity: '{{ identity.authelia.session.inactivity }}'
+      remember_me: '{{ identity.authelia.session.remember_me }}'
+
+# Brute-force protection. Local to Authelia and independent of the fail2ban in
+# security_baseline, which only watches sshd.
+regulation:
+  max_retries: 5
+  find_time: '2m'
+  ban_time: '10m'
+
+storage:
+  encryption_key: '{{ go }} secret "/secrets/authelia_storage_encryption_key" {{ og }}'
+  # SQLite, on the NVMe. Authelia stores sessions, TOTP secrets and OIDC
+  # consents - small, and not worth a Postgres container. The old stack ran
+  # Postgres AND Redis for Authentik; neither is needed here.
+  local:
+    path: '/config/db.sqlite3'
+
+# Nothing in the van sends mail, and an SMTP notifier that cannot reach a relay
+# while parked off-grid is a failure waiting to happen. Password-reset and
+# 2FA-enrolment links are written to a file on the Pi instead; read it with
+# the command in roles/identity/README.md.
+notifier:
+  disable_startup_check: false
+  filesystem:
+    filename: '/config/notification.txt'
+
+# ------------------------------------------------------------------------------
+# FORWARD AUTH - WHO MAY REACH WHAT
+#
+# Generated from identity_services in inventory/group_vars/all/identity.yml.
+# default_policy is deny: a host that is not listed here is not reachable
+# through forward auth at all, rather than quietly open.
+#
+# Only forward_auth services appear. Services set to `oidc` or `none` are never
+# routed through Authelia by Traefik, so these rules never see them.
+# ------------------------------------------------------------------------------
+access_control:
+  default_policy: 'deny'
+  rules:
+    # The portal must be reachable before anyone can log in. Without this the
+    # default deny would lock the login page itself.
+    - domain: '{{ auth_host }}'
+      policy: 'bypass'
+{% for item in fwd_services %}
+{% for host in item.value.hosts %}
+
+    # {{ item.key }}
+{% if item.value.api_bypass | default(false) %}
+    # Machine access first, because the first matching rule wins. An API client
+    # cannot answer a 302 to a login page, and these APIs are genuinely driven
+    # through the proxy - the media wiring in
+    # roles/media_acquisition/tasks/configure/ talks to them over Traefik with
+    # a Host header. They carry their own X-Api-Key authentication, which is
+    # why media_acquisition.auth.required must stay Enabled.
+    - domain: '{{ host }}.{{ frey.service_domain }}'
+      policy: 'bypass'
+      resources:
+        - '^/api([/?].*)?$'
+        - '^/feed([/?].*)?$'
+        - '^/ping$'
+
+{% endif %}
+    - domain: '{{ host }}.{{ frey.service_domain }}'
+      policy: '{{ item.value.policy | default(identity.authelia.default_policy) }}'
+{% if item.value.groups | length > 0 %}
+      subject:
+{% for group in item.value.groups %}
+        - 'group:{{ group }}'
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+
+# ------------------------------------------------------------------------------
+# OIDC - APPS THAT LOG IN AGAINST AUTHELIA THEMSELVES
+#
+# One client per service with auth: oidc. The redirect URIs come from the
+# catalog in roles/identity/defaults/main.yml, because they are a property of
+# the app rather than a choice.
+#
+# Note how few there are per app. The old stack listed eight to ten - http and
+# https, DNS name, two different LAN addresses, a mobile scheme - because it
+# had no single stable base URL to redirect to. There is one now.
+#
+# A note on editing the client loop below: do NOT put a {# Jinja comment #} on
+# its own line inside an indented block. Ansible renders templates with
+# trim_blocks on, so the newline after the closing marker is eaten and the
+# indentation of the next line is appended to the line before it - which
+# produced a 16-space `client_secret` under an 8-space `public`, and a YAML
+# parse error 80 lines further down. Keep commentary in this header block.
+# ------------------------------------------------------------------------------
+identity_providers:
+  oidc:
+    hmac_secret: '{{ go }} secret "/secrets/authelia_oidc_hmac_secret" {{ og }}'
+
+    # The token signing key. Generated once on the Pi and never rotated
+    # casually: rotating it invalidates every issued token at once.
+    jwks:
+      - key_id: 'frey'
+        algorithm: 'RS256'
+        use: 'sig'
+        key: {{ go }} secret "/secrets/oidc.jwks.pem" | mindent 10 "|" | msquote {{ og }}
+
+    enforce_pkce: 'public_clients_only'
+    enable_client_debug_messages: false
+
+    lifespans:
+      access_token: '1h'
+      authorize_code: '1m'
+      id_token: '1h'
+      refresh_token: '90m'
+
+{% set needs_claims = [] %}
+{% for item in oidc_services %}
+{% if identity.oidc_catalog[item.key].claims_policy | default('') | length > 0 %}
+{% set _ = needs_claims.append(identity.oidc_catalog[item.key].claims_policy) %}
+{% endif %}
+{% endfor %}
+{% if needs_claims | unique | list | length > 0 %}
+    # Some apps read group membership from the ID token rather than fetching it
+    # from the userinfo endpoint, which the specification does not require a
+    # provider to do. This is Authelia's documented escape hatch for them.
+    claims_policies:
+{% for policy in needs_claims | unique | sort %}
+      {{ policy }}:
+        id_token:
+          - 'email'
+          - 'email_verified'
+          - 'name'
+          - 'preferred_username'
+          - 'groups'
+{% endfor %}
+
+{% endif %}
+    # One named policy per OIDC service, so "who may use this app" is answered
+    # in exactly the same place and the same way as it is for forward auth.
+    authorization_policies:
+{% for item in oidc_services %}
+      {{ item.key }}:
+        default_policy: 'deny'
+        rules:
+          - policy: '{{ item.value.policy | default(identity.authelia.default_policy) }}'
+{% if item.value.groups | length > 0 %}
+            subject:
+{% for group in item.value.groups %}
+              - 'group:{{ group }}'
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+    clients:
+{% for item in oidc_services %}
+{% set cat = identity.oidc_catalog[item.key] %}
+      - client_id: '{{ item.key }}'
+        client_name: '{{ cat.client_name }}'
+{% if cat.public %}
+        # A PUBLIC client: it cannot hold a secret, so it proves itself with
+        # PKCE instead. Authelia refuses plain-HTTP redirect URIs for these,
+        # which is why frey_pki has to run first.
+        public: true
+        token_endpoint_auth_method: 'none'
+{% else %}
+        public: false
+        client_secret: '{{ identity_secrets[item.key ~ '_oidc_secret_hash'] | default('$pbkdf2-sha512$CHECK-MODE-ONLY', true) }}'
+        token_endpoint_auth_method: '{{ cat.token_endpoint_auth_method }}'
+{% endif %}
+        authorization_policy: '{{ item.key }}'
+        require_pkce: {{ 'true' if cat.require_pkce else 'false' }}
+        pkce_challenge_method: '{{ cat.pkce_challenge_method }}'
+        consent_mode: 'implicit'
+        redirect_uris:
+{% for uri in cat.redirect_uris %}
+          - '{{ uri }}'
+{% endfor %}
+        scopes:
+{% for scope in cat.scopes %}
+          - '{{ scope }}'
+{% endfor %}
+        response_types:
+          - 'code'
+        grant_types:
+          - 'authorization_code'
+          - 'refresh_token'
+{% if cat.claims_policy | default('') | length > 0 %}
+        claims_policy: '{{ cat.claims_policy }}'
+{% endif %}
+{% endfor %}

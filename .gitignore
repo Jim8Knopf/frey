@@ -13,3 +13,7 @@
 # Python cache
 __pycache__/
 *.pyc
+
+# Root CA fetched back from the Pi by frey_pki. Public, but generated:
+# re-run the pki tag to get a fresh copy.
+ca/

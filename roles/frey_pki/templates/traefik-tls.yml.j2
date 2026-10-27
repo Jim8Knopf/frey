@@ -1,0 +1,38 @@
+{#
+  ============================================================================
+  TRAEFIK TLS - managed by Ansible role: frey_pki
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Paths below are container paths. service_proxy mounts
+  {{ service_proxy.traefik.dynamic_config_dir }} at /etc/traefik/dynamic, and
+  frey_pki writes the certificate into the certs/ subdirectory of that.
+
+  Declaring this as the default certificate of the default store is what lets
+  every service enable TLS with a bare `tls=true` label and no certificate
+  settings of its own.
+#}
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/dynamic/certs/frey.crt
+        keyFile: /etc/traefik/dynamic/certs/frey.key
+
+  certificates:
+    - certFile: /etc/traefik/dynamic/certs/frey.crt
+      keyFile: /etc/traefik/dynamic/certs/frey.key
+      stores:
+        - default
+
+  options:
+    default:
+      # TLS 1.2 is the floor. Everything in the van is modern enough, and the
+      # only clients that would need 1.0/1.1 are ones you would not want
+      # carrying a session cookie anyway.
+      minVersion: VersionTLS12
+      # sniStrict stays off deliberately. A client reaching the Pi by address
+      # rather than name - a health check, curl https://10.20.0.1, an app that
+      # does not send SNI - still gets the default certificate instead of a
+      # handshake failure.
+      sniStrict: false

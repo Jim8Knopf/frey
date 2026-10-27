@@ -1,0 +1,76 @@
+---
+# ==============================================================================
+# JELLYFIN SSO
+#
+# Deliberately does NOT write the plugin's configuration file, and that is a
+# considered choice rather than laziness.
+#
+# Jellyfin has no built-in OIDC, so SSO means a community plugin. The original
+# - 9p4/jellyfin-plugin-sso - was archived in May 2026, and the maintained fork
+# is tested against Jellyfin 12.0 to 12.2 while this deployment runs 12.3. Its
+# configuration XML schema is version-specific and undocumented outside its own
+# source. Templating a guessed schema would produce a plugin that loads,
+# reports itself configured, and silently fails to authenticate anybody - which
+# is strictly worse than an obvious manual step.
+#
+# This is the same mistake the old stack made and the same lesson the media
+# module already learned the hard way: see the note on provision_jellyfin in
+# roles/media_library/defaults/main.yml, where seeding Jellyfin over its
+# Startup API marked the wizard complete and left a server with no usable
+# administrator.
+#
+# So: Authelia's side is fully automatic, the container is made to trust the
+# Frey CA automatically, and the plugin itself is four fields pasted into a UI
+# once. If the plugin turns out to work well on 12.3, templating its XML is a
+# sensible follow-up - with the schema read from the installed plugin rather
+# than guessed.
+# ==============================================================================
+
+- name: Check whether the Jellyfin SSO plugin is installed
+  ansible.builtin.find:
+    paths: "{{ media.appdata_dir }}/jellyfin/plugins"
+    patterns: "*SSO*"
+    file_type: directory
+  register: identity_jellyfin_plugin
+  failed_when: false
+  tags: [identity, sso, identity_jellyfin]
+
+- name: Report the Jellyfin SSO setup
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        [
+          'JELLYFIN SSO - plugin detected at ' ~ (identity_jellyfin_plugin.files | map(attribute='path') | join(', ')),
+          '  Authelia is ready for it. Confirm the plugin settings match:',
+        ]
+        if (identity_jellyfin_plugin.matched | default(0)) > 0
+        else [
+          'JELLYFIN SSO - plugin NOT installed yet. Authelia is ready and waiting.',
+          '',
+          '  1. In Jellyfin: Dashboard -> Plugins -> Repositories -> add',
+          '       Name: ' ~ identity.jellyfin.sso_plugin.repository_name,
+          '       URL:  ' ~ identity.jellyfin.sso_plugin.repository_url,
+          '  2. Catalogue -> install the SSO plugin, then restart Jellyfin.',
+          '  3. Dashboard -> Plugins -> SSO, add a provider with:',
+        ]
+      }}
+  tags: [identity, sso, identity_jellyfin]
+
+- name: Report the Jellyfin SSO provider values
+  ansible.builtin.debug:
+    msg:
+      - "       Provider name:  {{ identity.jellyfin.sso_plugin.provider_name }}"
+      - "         (must match exactly - it is the last path element of the"
+      - "          redirect URI Authelia will accept)"
+      - "       OIDC endpoint:  {{ identity.urls.auth }}"
+      - "       Client ID:      jellyfin"
+      - "       Client secret:  (none - this is a public client using PKCE)"
+      - "       Scopes:         {{ identity.oidc_catalog.jellyfin.scopes | join(' ') }}"
+      - "       Redirect URI:   {{ identity.oidc_catalog.jellyfin.redirect_uris | first }}"
+      - "       Fetch groups from userinfo: ENABLED"
+      - "       Admin role / group: {{ identity.jellyfin.sso_plugin.admin_group }}"
+      - ""
+      - "  Jellyfin's own local accounts keep working throughout. If the plugin"
+      - "  misbehaves on 12.3, that is your way back in - do not delete the"
+      - "  local administrator."
+  tags: [identity, sso, identity_jellyfin]

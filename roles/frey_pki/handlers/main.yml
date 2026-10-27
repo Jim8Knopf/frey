@@ -1,0 +1,13 @@
+---
+# Traefik watches its dynamic directory and picks up a changed tls.yml on its
+# own, but it does NOT reliably re-read certificate files whose contents
+# changed underneath an unchanged configuration - which is exactly what a
+# renewal is. Restarting the container is a sub-second interruption to HTTP
+# and touches neither SSH nor the access point.
+- name: Reload traefik certificates
+  community.docker.docker_container:
+    name: "{{ service_proxy.traefik.container_name }}"
+    state: started
+    restart: true
+  when: not ansible_check_mode
+  listen: Reload traefik certificates

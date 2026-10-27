@@ -9,8 +9,23 @@
   `media_acquisition` (needs uplink), with downloads gated on real uplink
   state. See [MEDIA.md](MEDIA.md).
 
+- Single sign-on: LLDAP + Authelia, replacing the archived Authentik stack.
+  One templated YAML file instead of 947 lines of blueprint-reapply machinery
+  and five Django ORM scripts. Validated with `authelia validate-config` before
+  anything restarts, and a second run reports zero changes.
+- A private CA with a self-renewing certificate, replacing step-ca and ACME.
+  No extra container and nothing that needs an uplink.
+
 ## Near Term
 
+- Template the Jellyfin SSO plugin's configuration XML, once the plugin has
+  proven itself on Jellyfin 12.3 and its schema can be read off an installed
+  copy rather than guessed. Until then it stays a documented manual step.
+- Configure Audiobookshelf OIDC automatically if upstream ever grows an API or
+  environment variable for it. Today the web UI is the only way.
+- Force HTTPS everywhere (`service_proxy.traefik.redirect_http_to_https`) once
+  every client device trusts the Frey CA. Blocked on televisions, which cannot
+  install a private root certificate.
 - Add a `base_system` module for hostname, timezone, package updates, SSH hardening, and common users.
 - Add a `healthcheck` module that verifies upstream Wi-Fi, DHCP leases, DNS resolution, and NAT.
 - **Add a `backup` module.** Now overdue rather than merely desirable: the

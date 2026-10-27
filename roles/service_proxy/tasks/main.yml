@@ -105,6 +105,44 @@
     - proxy
     - docker
 
+# ------------------------------------------------------------------------------
+# TRAEFIK COMMAND LINE
+#
+# Built as a list rather than written inline, because the HTTP-to-HTTPS
+# redirect is conditional and an entrypoint redirection can only be set on the
+# static command line, not in the watched dynamic directory.
+# ------------------------------------------------------------------------------
+- name: Build the Traefik command line
+  ansible.builtin.set_fact:
+    service_proxy_traefik_command: >-
+      {{
+        [
+          '--global.checknewversion=false',
+          '--global.sendanonymoususage=false',
+          '--api.dashboard=' ~ (service_proxy.traefik.dashboard_enabled | ternary('true', 'false')),
+          '--providers.docker=true',
+          '--providers.docker.exposedbydefault=' ~ (service_proxy.traefik.exposed_by_default | ternary('true', 'false')),
+          '--providers.docker.network=' ~ service_proxy.traefik.network,
+          '--providers.file.directory=/etc/traefik/dynamic',
+          '--providers.file.watch=true',
+          '--entrypoints.web.address=:80',
+          '--entrypoints.websecure.address=:443',
+        ]
+        + (
+            [
+              '--entrypoints.web.http.redirections.entrypoint.to=websecure',
+              '--entrypoints.web.http.redirections.entrypoint.scheme=https',
+            ]
+            if service_proxy.traefik.redirect_http_to_https | bool
+            else []
+          )
+        + ['--log.level=INFO']
+      }}
+  tags:
+    - services
+    - proxy
+    - docker
+
 - name: Run Traefik reverse proxy
   community.docker.docker_container:
     name: "{{ service_proxy.traefik.container_name }}"
@@ -121,18 +159,7 @@
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - "{{ service_proxy.traefik.dynamic_config_dir }}:/etc/traefik/dynamic:ro"
-    command:
-      - "--global.checknewversion=false"
-      - "--global.sendanonymoususage=false"
-      - "--api.dashboard={{ service_proxy.traefik.dashboard_enabled | ternary('true', 'false') }}"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault={{ service_proxy.traefik.exposed_by_default | ternary('true', 'false') }}"
-      - "--providers.docker.network={{ service_proxy.traefik.network }}"
-      - "--providers.file.directory=/etc/traefik/dynamic"
-      - "--providers.file.watch=true"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--log.level=INFO"
+    command: "{{ service_proxy_traefik_command }}"
     labels:
       frey.module: service_proxy
     security_opts:

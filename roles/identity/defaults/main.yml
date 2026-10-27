@@ -1,0 +1,290 @@
+---
+# ==============================================================================
+# IDENTITY - LLDAP + AUTHELIA
+#
+# One directory of people, one login page, two ways for a service to use it.
+#
+#   LLDAP     the user directory. Tiny LDAP server with a web UI, so adding a
+#             person to the van is a form, not a playbook run.
+#   AUTHELIA  the login page. OIDC provider for apps that can log in against
+#             it themselves, and a forward-auth endpoint Traefik can ask about
+#             apps that cannot.
+#
+# WHAT GOES WHERE
+#
+#   inventory/group_vars/all/identity.yml   who exists, which groups, and the
+#                                           auth mode per service. Edit this.
+#   this file                               app-specific OIDC facts: redirect
+#                                           URIs, scopes, whether the client is
+#                                           public. Edit only when adding a new
+#                                           kind of app.
+#
+# WHY NOT AUTHENTIK, WHICH THE OLD STACK USED
+#
+# Authentik's only infrastructure-as-code path is blueprints, and blueprints
+# are what failed. archive/legacy-stack/roles/infrastructure/tasks/main.yml
+# ran to 947 lines, much of it machinery to force blueprints to re-apply -
+# including SQL against Authentik's own Postgres to find and delete rows in
+# the blueprintinstance table - plus five Django ORM scripts under
+# authentik-ensure/ for the things blueprints could not express at all.
+# Jellyfin LDAP never worked; see archive/legacy-stack/LDAP_SSO_ISSUES.md.
+#
+# Authelia's entire state is this one YAML file. There is no API to call, no
+# database to reconcile and nothing to re-apply: render the file, validate it,
+# restart. LLDAP's users and groups come from JSON files through its own
+# idempotent bootstrap script. Both are things --check --diff can show you
+# before they happen, which was never true of the old stack.
+# ==============================================================================
+
+identity:
+  stack_dir: "{{ frey.base_dir }}/stacks/identity"
+  appdata_dir: "{{ frey.base_dir }}/appdata/identity"
+
+  # The uid both containers end up running as, and the owner of the secret
+  # files. Pinned rather than left to the images' defaults: the secrets are
+  # mode 0400, so an image that quietly changed which user it drops to would
+  # turn that into an unreadable-secret crash loop.
+  #
+  # They get there by different routes, which the compose file explains:
+  # Authelia is started directly as this uid, while LLDAP must start as root
+  # and drop to it itself.
+  user:
+    name: frey_identity
+    uid: 3100
+    gid: 3100
+
+  # LLDAP's built-in administrator. Used by the bootstrap script and to get
+  # into the directory UI the very first time; after that use your own account,
+  # which identity_users puts in the lldap_admin group.
+  lldap_admin_user: admin
+
+  # Small on purpose. Neither of these should ever be the reason the Pi is
+  # short of memory, and a runaway auth service must not be able to starve
+  # Jellyfin or the access point.
+  lldap_mem_limit: 256m
+  authelia_mem_limit: 512m
+
+  # Private network for the Authelia/LLDAP conversation. LDAP binds carry
+  # passwords in cleartext, so that traffic stays on a Docker network of its
+  # own rather than crossing the shared proxy network with every other service.
+  network:
+    name: identity_internal
+    subnet: 172.29.0.0/24
+
+  # Set in inventory/group_vars/all/identity.yml, because frey_pki needs these
+  # names too and role defaults are only in scope while their own role runs.
+  hosts:
+    auth: "{{ identity_hosts.auth }}"
+    directory: "{{ identity_hosts.directory }}"
+
+  # Full URLs, derived once so nothing else has to remember the scheme. HTTPS
+  # is not negotiable: Authelia marks its session cookie Secure, and a cookie
+  # set over HTTPS is never sent back over HTTP - a forward-auth service on
+  # plain HTTP would redirect to the portal forever.
+  urls:
+    auth: "https://{{ identity_hosts.auth }}.{{ frey.service_domain }}"
+    directory: "https://{{ identity_hosts.directory }}.{{ frey.service_domain }}"
+
+  # Single-label base DN, matching the local domain. LLDAP is happy with one
+  # component and it keeps every DN in this file readable.
+  base_dn: dc=frey
+
+  ldap:
+    # The account Authelia binds with to look users up. A normal LLDAP user in
+    # the built-in lldap_strict_readonly group - deliberately NOT the admin
+    # account, so a leaked bind password cannot edit the directory.
+    #
+    # The old stack's equivalent is the one thing that broke it: Authentik
+    # service accounts only support token auth, never a password bind, so the
+    # LDAP bind failed with "Invalid Credentials" and was never fixed.
+    bind_user: authelia
+    port: 3890
+
+  web:
+    # LLDAP's own UI port, reached through Traefik rather than published.
+    port: 17170
+
+  authelia:
+    port: 9091
+    log_level: info
+    theme: dark
+
+    session:
+      # Short enough that a forgotten unlocked laptop is not a standing
+      # invitation, long enough not to be irritating on a tablet.
+      expiration: 12h
+      inactivity: 2h
+      remember_me: 1M
+
+    # one_factor: username and password only.
+    # two_factor: additionally TOTP, WebAuthn or Duo.
+    #
+    # one_factor is the default because FreyHub is a private WPA2 network in a
+    # van, and because a second factor you cannot complete - phone flat, no
+    # internet, authenticator app on the device you are locked out of - is a
+    # worse failure than the one it prevents. TOTP is still enrollable per
+    # person, and flipping a service to two_factor is one word in identity.yml.
+    default_policy: one_factor
+
+  # ----------------------------------------------------------------------------
+  # OIDC CLIENT CATALOG
+  #
+  # App-specific facts that are properties of the app, not choices you make:
+  # where it wants to be redirected back to, which scopes it needs, whether it
+  # can keep a secret. identity.yml decides WHICH of these are switched on and
+  # WHO may use them; this decides HOW each one is spoken to.
+  #
+  # The old stack listed eight to ten redirect URIs per app - http and https,
+  # DNS name, two different LAN addresses, mobile scheme - because there was no
+  # single stable base URL. There is one now: https://<service>.hub.frey, served
+  # by Traefik with the Frey certificate. One URI per real callback, no
+  # guessing, and nothing to re-add when an address changes.
+  # ----------------------------------------------------------------------------
+  oidc_catalog:
+
+    audiobookshelf:
+      client_name: Audiobookshelf
+      public: false
+      token_endpoint_auth_method: client_secret_basic
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes:
+        - openid
+        - profile
+        - email
+        - groups
+        # Authelia warns, and will later refuse, if a client is granted the
+        # refresh_token grant without offline_access being an allowed scope.
+        # Allowed, not required - the app asks for what it wants.
+        - offline_access
+      redirect_uris:
+        - "https://audiobookshelf.{{ frey.service_domain }}/auth/openid/callback"
+        - "https://audiobookshelf.{{ frey.service_domain }}/auth/openid/mobile-redirect"
+        # The mobile app's own scheme. Not a URL Traefik ever sees - the phone
+        # intercepts it - but Authelia still has to be told to allow it.
+        - "audiobookshelf://oauth"
+      # Audiobookshelf reads group membership from the userinfo endpoint, the
+      # way the spec intends, so it needs no claims policy.
+      claims_policy: ""
+
+    jellyfin:
+      client_name: Jellyfin
+      # A PUBLIC client, with no secret. That is the jellyfin-sso plugin's
+      # requirement, not a shortcut: the plugin cannot hold a client secret, so
+      # it uses PKCE instead. Authelia refuses plain-HTTP redirect URIs for
+      # public clients, which is why frey_pki is a hard dependency here.
+      public: true
+      token_endpoint_auth_method: none
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes:
+        - openid
+        - profile
+        - email
+        - groups
+        - offline_access
+      redirect_uris:
+        # The trailing element is the provider name configured in the plugin.
+        # It must match identity.jellyfin.provider_name below exactly.
+        - "https://jellyfin.{{ frey.service_domain }}/sso/oidc/callback/authelia"
+      claims_policy: ""
+
+    # ------------------------------------------------------------------------
+    # Not deployed yet, but declared so that the day the module lands, SSO is
+    # already waiting for it. A client nobody uses costs nothing.
+    # ------------------------------------------------------------------------
+    immich:
+      client_name: Immich
+      public: false
+      token_endpoint_auth_method: client_secret_post
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes:
+        - openid
+        - profile
+        - email
+      redirect_uris:
+        - "https://immich.{{ frey.service_domain }}/auth/login"
+        - "https://immich.{{ frey.service_domain }}/user-settings"
+        - "app.immich:///oauth-callback"
+      claims_policy: ""
+
+    grafana:
+      client_name: Grafana
+      public: false
+      token_endpoint_auth_method: client_secret_basic
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes:
+        - openid
+        - profile
+        - email
+        - groups
+      redirect_uris:
+        - "https://grafana.{{ frey.service_domain }}/login/generic_oauth"
+      # Grafana wants groups in the ID token rather than fetching them from
+      # userinfo, which the spec does not require a provider to do. Authelia's
+      # escape hatch for exactly this is a claims policy.
+      claims_policy: frey_groups
+
+    mealie:
+      client_name: Mealie
+      public: false
+      token_endpoint_auth_method: client_secret_basic
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes:
+        - openid
+        - profile
+        - email
+        - groups
+      redirect_uris:
+        - "https://mealie.{{ frey.service_domain }}/login"
+      claims_policy: frey_groups
+
+  # ----------------------------------------------------------------------------
+  # JELLYFIN SSO PLUGIN
+  #
+  # Jellyfin has no built-in OIDC, so single sign-on there means a community
+  # plugin. Read roles/identity/README.md before relying on this: the plugin is
+  # tested against Jellyfin 12.0-12.2 and this deployment runs 12.3, so it is
+  # outside its tested range. Jellyfin's own local accounts keep working
+  # either way, which is the fallback if the plugin misbehaves.
+  # ----------------------------------------------------------------------------
+  jellyfin:
+    sso_plugin:
+      enabled: true
+      # Added to Jellyfin's plugin catalogue so the plugin can be installed
+      # from the UI. Installing it is a manual step on purpose - a plugin DLL
+      # downloaded and dropped in by Ansible has no ABI check and bricks the
+      # server if it mismatches.
+      repository_name: jellyfin-sso
+      repository_url: https://raw.githubusercontent.com/be-nj/jellyfin-sso/main/manifest.json
+      # Must match the last path element of the jellyfin redirect URI above.
+      provider_name: authelia
+      # Jellyfin group that maps to administrator. Members of this LDAP group
+      # get Jellyfin admin on first SSO login.
+      admin_group: frey_admins
+
+  # Generated once on the Pi, then reused. Nothing here is ever printed, and
+  # none of it is in the vault: a secret that only has to be the same tomorrow
+  # as it was today does not need to be in version control.
+  secret_keys:
+    - lldap_admin_password
+    - lldap_jwt_secret
+    - lldap_key_seed
+    - authelia_ldap_password
+    - authelia_session_secret
+    - authelia_storage_encryption_key
+    - authelia_oidc_hmac_secret
+    - authelia_reset_jwt_secret
+
+  configure:
+    key_file: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+    # Users whose initial password Ansible has already handed over. Listed here
+    # so the next run does NOT reset a password the person has since changed.
+    created_file: "{{ frey.base_dir }}/appdata/identity/.identity-users.json"
+    # A cold first start on a Pi takes longer than feels reasonable: Authelia
+    # builds its database and LLDAP generates key material.
+    health_retries: 30
+    health_delay: 5

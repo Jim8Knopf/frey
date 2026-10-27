@@ -1,0 +1,14 @@
+---
+# Authelia reads its configuration once, at startup. There is no reload signal,
+# which is the flip side of having no database: changing policy means
+# restarting, and a restart is a second or two with no login page. Live
+# sessions survive it - they are in the SQLite database, not in memory.
+- name: Restart authelia
+  community.docker.docker_container:
+    name: authelia
+    state: started
+    restart: true
+  when:
+    - identity_enable.authelia | bool
+    - not ansible_check_mode
+  listen: Restart authelia

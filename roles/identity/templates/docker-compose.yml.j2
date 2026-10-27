@@ -1,0 +1,178 @@
+{#
+  ============================================================================
+  IDENTITY STACK - managed by Ansible role: identity
+  Do not edit on the Pi; changes are overwritten on the next deploy.
+  ============================================================================
+
+  Two containers, about 150 MB between them, both up in seconds. For contrast,
+  the stack this replaced needed four - server, worker, Postgres and Redis -
+  and roughly ninety seconds before it would answer a health check. In a van
+  that power-cycles, how long the login page takes to come back after a cold
+  boot is not a footnote: nothing else is reachable until it does.
+
+  Same rules as the media stacks: no published ports, pinned images, every
+  container capped, all traffic through Traefik.
+#}
+{% set i = identity %}
+{% set tz = frey.timezone %}
+{% set run_as = i.user.uid ~ ':' ~ i.user.gid %}
+
+networks:
+  {{ frey.proxy_network }}:
+    external: true
+  {{ i.network.name }}:
+    external: true
+
+services:
+{% if identity_enable.lldap | bool %}
+  # ============================================================================
+  # LLDAP - the directory
+  #
+  # Where people actually live. The web UI at {{ i.urls.directory }} is the
+  # point: adding somebody to the van is a form, not a deploy. Ansible seeds
+  # it and then stays out of the way.
+  # ============================================================================
+  lldap:
+    image: lldap/lldap:{{ identity_versions.lldap }}
+    container_name: lldap
+    hostname: lldap
+    restart: unless-stopped
+    # NO `user:` here, unlike Authelia. LLDAP's entrypoint has to start as root
+    # so it can chown its own files, and then drops to UID:GID itself. Forcing
+    # the user with `user:` makes that chown fail with "Operation not
+    # permitted" and the container restart-loops before it ever listens.
+    environment:
+      - TZ={{ tz }}
+      - UID={{ i.user.uid }}
+      - GID={{ i.user.gid }}
+      - LLDAP_LDAP_BASE_DN={{ i.base_dn }}
+      - LLDAP_LDAP_USER_DN={{ i.lldap_admin_user }}
+      - LLDAP_LDAP_USER_EMAIL={{ i.lldap_admin_user }}@{{ frey.local_domain }}
+      - LLDAP_LDAP_USER_PASS={{ identity_secrets.lldap_admin_password }}
+      # Signs the web UI's own session tokens.
+      - LLDAP_JWT_SECRET={{ identity_secrets.lldap_jwt_secret }}
+      # Derives the key that encrypts stored password hashes. Changing this
+      # makes every existing password unverifiable, so it is generated once
+      # and then persisted like any other secret.
+      - LLDAP_KEY_SEED={{ identity_secrets.lldap_key_seed }}
+      - LLDAP_HTTP_URL={{ i.urls.directory }}
+      - LLDAP_VERBOSE=false
+    volumes:
+      - "{{ i.appdata_dir }}/lldap:/data"
+      # The declarative half: group and user JSON rendered by Ansible, applied
+      # by LLDAP's own idempotent bootstrap script.
+      - "{{ i.appdata_dir }}/bootstrap:/bootstrap:ro"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ i.network.name }}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.routers.lldap.rule=Host(`{{ i.hosts.directory }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.lldap.entrypoints=websecure"
+      - "traefik.http.routers.lldap.tls=true"
+      - "traefik.http.routers.lldap.middlewares=secure-headers@file"
+      - "traefik.http.services.lldap.loadbalancer.server.port={{ i.web.port }}"
+      # The old short name still answers, and sends you to the canonical one.
+      - "traefik.http.routers.lldap-legacy.rule=Host(`{{ i.hosts.directory }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.lldap-legacy.entrypoints=websecure"
+      - "traefik.http.routers.lldap-legacy.tls=true"
+      - "traefik.http.routers.lldap-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.lldap-legacy.service=lldap"
+      # Plain HTTP on either name is upgraded rather than served. This is a
+      # page you type passwords into; it has no business answering over HTTP.
+      - "traefik.http.routers.lldap-http.rule=Host(`{{ i.hosts.directory }}.{{ frey.service_domain }}`) || Host(`{{ i.hosts.directory }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.lldap-http.entrypoints=web"
+      - "traefik.http.routers.lldap-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.lldap-http.service=lldap"
+      - "frey.module=identity"
+    mem_limit: {{ i.lldap_mem_limit }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # LLDAP ships its own check, which verifies the LDAP and HTTP listeners
+      # rather than just that the process exists.
+      test: ["CMD", "/app/lldap", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+{% endif %}
+
+{% if identity_enable.authelia | bool %}
+  # ============================================================================
+  # AUTHELIA - the login page
+  #
+  # Two jobs:
+  #   1. OIDC provider, for apps that can log in against it themselves.
+  #   2. Forward-auth endpoint, which Traefik asks about everything else.
+  #
+  # Its whole configuration is one file. X_AUTHELIA_CONFIG_FILTERS=template
+  # lets that file pull secrets out of /secrets at startup, which is what keeps
+  # the readable config free of them.
+  # ============================================================================
+  authelia:
+    image: authelia/authelia:{{ identity_versions.authelia }}
+    container_name: authelia
+    hostname: authelia
+    restart: unless-stopped
+    user: "{{ run_as }}"
+    environment:
+      - TZ={{ tz }}
+      # Without this the `{% raw %}{{ secret "..." }}{% endraw %}` references in the
+      # configuration are passed through as literal text and Authelia fails to
+      # start with a parse error rather than a missing-secret error.
+      - X_AUTHELIA_CONFIG_FILTERS=template
+    volumes:
+      - "{{ i.appdata_dir }}/authelia:/config"
+      - "{{ i.appdata_dir }}/secrets:/secrets:ro"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ i.network.name }}
+{% if identity_enable.lldap | bool %}
+    depends_on:
+      lldap:
+        # Authelia checks its LDAP backend at startup and exits if it cannot
+        # reach it, so starting before LLDAP is ready is a crash loop.
+        condition: service_healthy
+{% endif %}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.routers.authelia.rule=Host(`{{ i.hosts.auth }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.authelia.entrypoints=websecure"
+      - "traefik.http.routers.authelia.tls=true"
+      - "traefik.http.routers.authelia.middlewares=secure-headers@file"
+      - "traefik.http.services.authelia.loadbalancer.server.port={{ i.authelia.port }}"
+      - "traefik.http.routers.authelia-legacy.rule=Host(`{{ i.hosts.auth }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.authelia-legacy.entrypoints=websecure"
+      - "traefik.http.routers.authelia-legacy.tls=true"
+      - "traefik.http.routers.authelia-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.authelia-legacy.service=authelia"
+      # Same here, and more so: this is the login page itself, and Authelia's
+      # session cookie is Secure. Serving it over HTTP would set a cookie the
+      # browser then refuses to send back.
+      - "traefik.http.routers.authelia-http.rule=Host(`{{ i.hosts.auth }}.{{ frey.service_domain }}`) || Host(`{{ i.hosts.auth }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.authelia-http.entrypoints=web"
+      - "traefik.http.routers.authelia-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.authelia-http.service=authelia"
+      - "frey.module=identity"
+    mem_limit: {{ i.authelia_mem_limit }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # The script the image ships, NOT `authelia healthcheck` - there is no
+      # such subcommand in 4.39, and using it gives a container that is
+      # permanently unhealthy while working perfectly.
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+{% endif %}

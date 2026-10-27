@@ -43,6 +43,31 @@ depends on internet being available.
 
 This means adding `immich.frey` is a service-module concern, not a DNS-module concern.
 
+## Identity
+
+`frey_pki` issues the Frey CA and the certificate Traefik serves. `identity`
+runs LLDAP (the directory) and Authelia (the login page and OIDC provider).
+
+Services live at `<name>.hub.frey`, not `<name>.frey`. That extra label is
+load-bearing: Authelia's session cookie must be scoped to a domain containing a
+period, and under the Public Suffix List's default rule a bare unknown TLD is
+itself a public suffix, so no cookie can span `*.frey`. The old names still
+resolve and redirect.
+
+A service gets single sign-on one of two ways:
+
+- `forward_auth` — a Traefik middleware. Nothing in the service changes.
+- `oidc` — the service logs in against Authelia itself.
+
+Both are chosen per service in `inventory/group_vars/all/identity.yml`, and the
+media modules read one derived list (`identity_protect`) rather than reaching
+into the identity role. That keeps them deployable with identity switched off.
+
+Module order matters: `frey_pki` before `identity` before the service modules.
+Traefik drops a router that names a middleware it does not know about, so a
+service whose labels reference `authelia@file` before the identity module has
+installed it 404s with a perfectly healthy container.
+
 ## Security
 
 `security_baseline` applies a default-deny firewall, allows required downstream LAN ports, preserves the current Ansible SSH path, enables fail2ban for SSH, and keeps services bound to the private Frey address.
