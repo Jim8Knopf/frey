@@ -78,7 +78,6 @@ cleanup_ssh() {
       "${PI_USER}@${PI_ADDR}" >/dev/null 2>&1
   return 0
 }
-trap cleanup_ssh EXIT
 
 # Query a container's own HTTP endpoint from inside it. Nothing publishes a
 # port, so this is the only route in.
@@ -126,15 +125,41 @@ done
 echo
 echo "Scrape targets"
 # -----------------------------------------------------------------------------
-targets="$(curl_in prometheus 'http://127.0.0.1:9090/api/v1/targets?state=any')"
-if [[ -z "${targets}" ]]; then
+# These two API responses run to tens of kilobytes, and getting them intact
+# took two corrections worth recording, because both failures LOOKED like
+# "monitoring is broken" rather than "this script is broken" - the most
+# alarming possible false negative from a tool whose job is reassurance.
+#
+#   1. Do not hand the JSON to python through argv. It gets truncated.
+#   2. Never let ssh's stdout be a regular FILE while multiplexing. Measured
+#      on this Pi, fetching the same 36718-byte response:
+#
+#        capture to a variable          36718   ok
+#        pipe to another command        36718   ok
+#        ssh > file, no multiplexing    36718   ok
+#        ssh > file, multiplexed         3918   TRUNCATED
+#
+#      The persisting master process inherits the redirected descriptor and
+#      the foreground client exits before the rest is written. It has to be
+#      two statements - capture, then write - because even
+#      `printf '%s' "$(ssh ...)" > file` loses data: the file descriptor is
+#      already in place when the master forks.
+#
+# So: capture into a variable, then write that variable out for python.
+TARGETS_JSON="$(mktemp "${TMPDIR:-/tmp}/frey-mon-targets-XXXXXX.json")"
+RULES_JSON="$(mktemp "${TMPDIR:-/tmp}/frey-mon-rules-XXXXXX.json")"
+cleanup_tmp() { rm -f "${TARGETS_JSON}" "${RULES_JSON}"; return 0; }
+trap 'cleanup_ssh; cleanup_tmp' EXIT
+
+targets_json="$(curl_in prometheus 'http://127.0.0.1:9090/api/v1/targets?state=any')"
+printf '%s' "${targets_json}" > "${TARGETS_JSON}"
+if [[ ! -s "${TARGETS_JSON}" ]]; then
   fail "prometheus api" "no response"
 else
-  # The JSON goes in as an argument, not on stdin: stdin is the script itself.
-  if python3 - "${targets}" <<'PYTHON'
+  if python3 - "${TARGETS_JSON}" <<'PYTHON'
 import json, sys
 try:
-    data = json.loads(sys.argv[1])
+    data = json.load(open(sys.argv[1]))
 except Exception as exc:
     print("  \033[31mFAIL\033[0m  targets api%34s%s" % ("", exc))
     sys.exit(1)
@@ -161,13 +186,14 @@ fi
 echo
 echo "Alert rules"
 # -----------------------------------------------------------------------------
-rules="$(curl_in prometheus 'http://127.0.0.1:9090/api/v1/rules')"
-if [[ -z "${rules}" ]]; then
+rules_json="$(curl_in prometheus 'http://127.0.0.1:9090/api/v1/rules')"
+printf '%s' "${rules_json}" > "${RULES_JSON}"
+if [[ ! -s "${RULES_JSON}" ]]; then
   fail "rules api" "no response"
 else
-  summary="$(python3 - "${rules}" <<'PYTHON'
+  summary="$(python3 - "${RULES_JSON}" <<'PYTHON'
 import json, sys
-data = json.loads(sys.argv[1])
+data = json.load(open(sys.argv[1]))
 groups = data.get("data", {}).get("groups", [])
 rules = [r for g in groups for r in g.get("rules", [])]
 alerting = [r for r in rules if r.get("type") == "alerting"]
