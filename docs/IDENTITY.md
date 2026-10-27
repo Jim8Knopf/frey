@@ -27,8 +27,50 @@ ls ca/frey-root-ca.crt
 | iOS / iPadOS | AirDrop or email it, then Settings → General → VPN & Device Management → Install. **Then** Settings → General → About → Certificate Trust Settings and switch it on. iOS needs both steps. |
 | macOS | Double-click → add to Keychain → open it → Trust → Always Trust. |
 | Windows | Right-click → Install Certificate → Local Machine → Trusted Root Certification Authorities. |
-| Linux | `sudo cp ca/frey-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` |
-| Firefox | Trusts its own store, not the system one: Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import. |
+| Linux — Debian/Ubuntu | `sudo cp ca/frey-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` |
+| Linux — **Arch/Manjaro** | `sudo cp ca/frey-root-ca.crt /etc/ca-certificates/trust-source/anchors/ && sudo trust extract-compat` |
+| Firefox | Has its own store and ignores the system one: Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import. |
+| Chrome/Chromium on Linux | Also its own store, separate from Firefox's: `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "Frey Root CA" -i ca/frey-root-ca.crt` |
+
+**The two Linux paths are not interchangeable.** `/usr/local/share/ca-certificates/`
+is Debian's; Arch does not read it at all, so a certificate copied there looks
+installed, stays ignored, and every service keeps failing with no clue as to
+why. Verify rather than assume:
+
+```bash
+curl -I https://auth.hub.frey/     # no --cacert. 200 means trusted.
+```
+
+A `curl: (60)` means the system store does not have it. Note that this proves
+nothing about Firefox or Chrome, which keep their own.
+
+### Remove the old step-ca roots
+
+If the device ever trusted the archived stack, it is still trusting that CA —
+step-ca's root was issued for ten years, so it has until 2035. Those keys live
+in an undeployed stack nobody is guarding. Find and remove them:
+
+```bash
+# Arch/Manjaro
+ls /etc/ca-certificates/trust-source/anchors/ | grep -i frey
+# Debian/Ubuntu
+ls /usr/local/share/ca-certificates/ | grep -i frey
+```
+
+Anything whose subject is **not** `O=Frey, CN=Frey Root CA` is stale. The
+legacy ones are recognisable by name — step-ca was initialised as `Frey CA`,
+giving `CN=Frey CA Root CA`, and an earlier attempt used `O=Frey Hub`. Delete
+the file and re-run `trust extract-compat` or `update-ca-certificates`.
+
+Check Firefox separately — it keeps its own store:
+
+```bash
+certutil -L -d sql:$HOME/.mozilla/firefox/<profile> | grep -i frey
+```
+
+Trust flags matter there. `C,,` or `CT,,` means trusted as a CA; **`,,` means
+the certificate is merely present and will not be trusted for TLS** — which
+looks identical to "installed" in the Firefox UI's certificate list.
 
 ### What about the TV?
 
