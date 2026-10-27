@@ -326,8 +326,12 @@ monitoring:
     # The identity module's own secret store, read (never written) to pick up
     # the Grafana OIDC client secret it generated.
     identity_key_file: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+    # 30 x 10s = five minutes. Grafana builds its database on a cold start and
+    # Authelia has been observed taking nearly two minutes on this Pi, so a
+    # 5-second poll exhausted its budget and filled the log with
+    # FAILED-RETRYING before the stack had finished coming up.
     health_retries: 30
-    health_delay: 5
+    health_delay: 10
 
 # ==============================================================================
 # DERIVED - PROBE TARGETS

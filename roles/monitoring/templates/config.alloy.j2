@@ -159,15 +159,41 @@ loki.process "clean" {
     expression = "(?i)(^|[\\s\\[\\|])(?P<level>trace|debug|info|warn|warning|error|fatal|critical)([\\s\\]\\|:]|$)"
   }
 
+  // LOWERCASE IT. The match is case-insensitive, so without this the label
+  // takes whatever case the line used and you get ERROR, Error and error as
+  // three different label values - sixteen of them were observed across this
+  // Pi's containers. That breaks `level="error"` as a filter (it silently
+  // misses two thirds of the errors) and triples the label's cardinality for
+  // no information.
+{# The template stage is a GO template, so it has to be hidden from Jinja -
+   otherwise Jinja evaluates `ToLower` as one of its own variables and the
+   deploy fails with "'ToLower' is undefined". #}
+  stage.template {
+    source   = "level"
+    template = "{% raw %}{{ ToLower .Value }}{% endraw %}"
+  }
+
   stage.labels {
     values = {
       level = "",
     }
   }
 
+{#
+  Alloy's strings are Go-style, so a regex has to be escaped on the way in:
+  backslashes doubled, then quotes escaped (in that order - doing it the other
+  way round would re-escape the backslash this step just added).
+
+  This is done here rather than in monitoring.yml on purpose. `\b` is a VALID
+  Go escape meaning backspace, so a pattern hand-escaped as `\\b` renders to
+  `\b`, compiles without complaint, and then matches a literal backspace
+  instead of a word boundary - a filter that silently never fires. Keeping the
+  patterns as plain regexes and escaping them once, here, makes that
+  impossible.
+#}
 {% for pattern in monitoring_logs.drop_patterns %}
   stage.drop {
-    expression          = "{{ pattern }}"
+    expression          = "{{ pattern | replace('\\', '\\\\') | replace('"', '\\"') }}"
     drop_counter_reason = "frey_noise"
   }
 {% endfor %}

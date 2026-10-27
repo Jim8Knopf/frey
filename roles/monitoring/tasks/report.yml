@@ -47,7 +47,14 @@
       }}
   when:
     - monitoring_enable.alerting | bool
-    - monitoring_topic_is_new | default(false) | bool
+    # Printed on the run that generates it, or on demand with
+    #     -e monitoring_show_topic=true
+    # The on-demand flag exists because of a real trap: if a run gets as far as
+    # creating the key file and then fails later, the topic is never printed
+    # and the next run thinks it is old news. Without a way to ask for it
+    # again, the only route to your own alerts is cat-ing a JSON file on the Pi.
+    - (monitoring_topic_is_new | default(false) | bool)
+      or (monitoring_show_topic | default(false) | bool)
   tags: [monitoring, metrics]
 
 - name: Report the Grafana local administrator password
@@ -69,7 +76,8 @@
       }}
   when:
     - monitoring_enable.grafana | bool
-    - monitoring_topic_is_new | default(false) | bool
+    - (monitoring_topic_is_new | default(false) | bool)
+      or (monitoring_show_topic | default(false) | bool)
   tags: [monitoring, metrics]
 
 - name: Report where everything is

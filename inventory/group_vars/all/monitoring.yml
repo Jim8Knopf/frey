@@ -505,13 +505,25 @@ monitoring_logs:
   journal: true
   journal_max_age: 12h
 
+  # ---------------------------------------------------------------------------
   # Dropped before storage. These are the lines that are pure volume.
+  #
+  # PLAIN RE2 REGEXES, SINGLE-QUOTED. Write them exactly as the regex should
+  # read - no doubled backslashes. The role escapes them for Alloy's
+  # Go-style string syntax when it renders the config.
+  #
+  # Do not be tempted to escape them here instead. Alloy strings treat `\b` as
+  # a valid escape meaning BACKSPACE, so a hand-escaped `\\b` renders to `\b`,
+  # compiles happily, and then matches a literal backspace character instead
+  # of a word boundary - a filter that silently never fires. `\s` at least
+  # fails loudly, because Go has no such escape.
+  # ---------------------------------------------------------------------------
   drop_patterns:
-    - "(?i)\\blevel=(trace|debug)\\b"
-    - "(?i)^\\s*(TRACE|DEBUG)\\b"
+    - '(?i)\blevel=(trace|debug)\b'
+    - '(?i)^\s*(TRACE|DEBUG)\b'
     # Traefik logs every single request at INFO if access logs are on; the
     # same information is already in its Prometheus metrics, counted.
-    - "\\\"ClientAddr\\\":"
+    - '"ClientAddr":'
 
 
 # ==============================================================================

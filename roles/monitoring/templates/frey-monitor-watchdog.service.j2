@@ -16,10 +16,22 @@ SuccessExitStatus=0 1
 TimeoutStartSec=60
 Nice=5
 
+# systemd creates and owns /run/{{ monitoring.watchdog.service_name }}.
+#
+# NOT ReadWritePaths= for this one. Mount namespacing is set up BEFORE the
+# script runs, so naming a directory that does not exist yet fails the unit
+# outright with 226/NAMESPACE - the script's own `mkdir -p` never gets the
+# chance to run. RuntimeDirectory makes systemd create it first.
+RuntimeDirectory={{ monitoring.watchdog.service_name }}
+# Keep it between runs. This is a oneshot service, so without this the
+# directory is deleted the moment each run finishes - taking the
+# last-notified stamp with it, which is what stops the same "monitoring is
+# broken" message being sent every five minutes.
+RuntimeDirectoryPreserve=yes
+
 NoNewPrivileges=true
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths={{ monitoring.watchdog.state_dir }}
 
 [Install]
 WantedBy=multi-user.target

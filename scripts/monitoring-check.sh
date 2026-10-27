@@ -54,11 +54,31 @@ pass() { printf '  \033[32mok\033[0m    %-44s %s\n' "$1" "${2:-}"; }
 warn() { printf '  \033[33mwarn\033[0m  %-44s %s\n' "$1" "${2:-}"; }
 fail() { printf '  \033[31mFAIL\033[0m  %-44s %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
 
+# ------------------------------------------------------------------------------
+# ONE SSH CONNECTION, REUSED.
+#
+# This script asks the Pi forty-odd separate questions. Without multiplexing
+# that is forty-odd SSH connections in a few seconds, and this Pi runs OpenSSH
+# 10 with PerSourcePenalties enabled and persourcemaxstartups 10 - so a burst
+# like that can get this address locked out of port 22 for up to ten minutes,
+# with every retry extending it. ControlMaster turns the whole run into a
+# single connection that is torn down at the end.
+# ------------------------------------------------------------------------------
+SSH_CTL="$(mktemp -u "${TMPDIR:-/tmp}/frey-mon-ssh-XXXXXX")"
+
 ssh_pi() {
   ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+      -o ControlMaster=auto -o ControlPath="${SSH_CTL}" -o ControlPersist=60 \
       -i "${PI_KEY}" "${PI_USER}@${PI_ADDR}" "$@" 2>/dev/null
 }
+
+cleanup_ssh() {
+  [ -S "${SSH_CTL}" ] && ssh -O exit -o ControlPath="${SSH_CTL}" \
+      "${PI_USER}@${PI_ADDR}" >/dev/null 2>&1
+  return 0
+}
+trap cleanup_ssh EXIT
 
 # Query a container's own HTTP endpoint from inside it. Nothing publishes a
 # port, so this is the only route in.

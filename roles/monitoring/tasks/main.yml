@@ -376,8 +376,12 @@
       - none
       - -v
       - "{{ monitoring.config_dir }}:/etc/prometheus:ro"
-      - "{{ monitoring.services.prometheus.image }}"
+      # The image's entrypoint is /bin/prometheus, so promtool has to be
+      # selected explicitly - otherwise its arguments are handed to the server
+      # and it exits with "unexpected promtool".
+      - --entrypoint
       - promtool
+      - "{{ monitoring.services.prometheus.image }}"
       - check
       - config
       - /etc/prometheus/prometheus.yml
