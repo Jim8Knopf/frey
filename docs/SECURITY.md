@@ -17,7 +17,13 @@ Allowed on the downstream interface:
 - UDP 67 for DHCP.
 - TCP 80/443 for Traefik.
 
-The current Ansible SSH source is allowed on the active control interface so deployment does not cut off access.
+SSH on the **uplink** radio is opened only to networks named explicitly in
+`security_baseline.firewall.ssh_control_sources`, which is empty by default.
+The role used to infer this from the live Ansible connection and fell back to
+"from anywhere" when it could not — see
+[SSH Lockout Prevention](#ssh-lockout-prevention). Deployment is never cut off
+by an empty list, because SSH is always allowed on the downstream interface and
+FreyHub's `10.20.0.1` is the one address that never changes.
 
 ## Service Exposure
 
@@ -26,6 +32,31 @@ Traefik binds to `10.20.0.1`, not all interfaces. Docker services should not pub
 ## SSH Protection
 
 Fail2ban is enabled for `sshd`.
+
+### SSH Lockout Prevention
+
+sshd is the only way into a Pi with no Ethernet port and no console, so it gets
+treated as the critical service it is. On 2026-10-27 it stopped answering: the
+port stayed open and the handshake completed, but every connection was closed
+before the banner. That is invisible to a port check, affects every account at
+once (no username is sent that early), and is unreachable by fail2ban, which
+only ever sees authentication failures. Recovery meant pulling the NVMe.
+
+The baseline now:
+
+- refuses to generate a sourceless SSH rule on the uplink, and retracts the one
+  earlier runs left behind;
+- caps pre-auth connections per source (`PerSourceMaxStartups`) so one scanner
+  cannot exhaust `MaxStartups` for everyone, and shortens `LoginGraceTime` so
+  abandoned slots recycle;
+- gives sshd `OOMScoreAdjust=-1000` and `Restart=always`;
+- runs a watchdog that demands an actual SSH banner and restarts sshd if two
+  probes ten seconds apart both fail;
+- keeps journald persistent, so a repeat is diagnosable instead of being erased
+  by the reboot that recovers the box.
+
+Full detail, including the stock-value table and recovery steps, is in
+[roles/security_baseline/README.md](../roles/security_baseline/README.md).
 
 ## HTTPS
 

@@ -1,0 +1,8 @@
+# Frey SSH lockout prevention. Managed by Ansible role: security_baseline
+[Unit]
+Description=Frey SSH watchdog (restart sshd if it stops presenting a banner)
+Documentation=man:sshd(8)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/frey-ssh-watchdog

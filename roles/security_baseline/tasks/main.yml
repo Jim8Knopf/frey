@@ -50,36 +50,94 @@
   tags:
     - security
 
-- name: Determine SSH control source
+# This used to fall back to 'any' when SSH_CLIENT was missing from the
+# gathered environment - the common case under `become` with pipelining.
+# The rule it produced on the live box read:
+#
+#   -A ufw-user-input -i wlan1 -p tcp --dport 22 -j ACCEPT
+#
+# No source at all: SSH open to every stranger on whatever campground or
+# public Wi-Fi the van parked next to. That is an exposure in its own
+# right, and the most likely origin of the pre-auth connection flood that
+# locked us out of the Pi on 2026-10-27.
+#
+# An undetectable control path must therefore mean NO uplink rule, never a
+# wildcard one. Nothing is lost by that: the downstream rules below always
+# allow SSH on FreyHub, which is the address that never changes.
+- name: Determine the SSH control source
   ansible.builtin.set_fact:
-    security_baseline_control_source: "{{ ansible_facts.env.SSH_CLIENT.split()[0] if ansible_facts.env.SSH_CLIENT is defined else 'any' }}"
+    security_baseline_control_source: "{{ (ansible_facts.env.SSH_CLIENT | default('')).split() | first | default('', true) }}"
   tags:
     - security
 
-- name: Set UFW default incoming policy
-  ansible.builtin.command:
-    cmd: ufw default deny incoming
-  register: security_baseline_ufw_default_in
-  changed_when: "'Default incoming policy changed' in security_baseline_ufw_default_in.stdout"
+- name: Build the list of sources allowed to reach SSH on the uplink
+  ansible.builtin.set_fact:
+    security_baseline_ssh_uplink_sources: >-
+      {{ (
+           (security_baseline.firewall.ssh_control_sources | default([]))
+           + ([security_baseline_control_source] if security_baseline_control_source | length > 0 else [])
+         ) | unique }}
+  tags:
+    - security
+
+- name: Refuse to open SSH to an entire uplink network
+  ansible.builtin.assert:
+    that:
+      - "'any' not in security_baseline_ssh_uplink_sources"
+      - "'0.0.0.0/0' not in security_baseline_ssh_uplink_sources"
+    fail_msg: >-
+      security_baseline would have opened SSH to every host on the uplink.
+      That is how the 2026-10-27 lockout became possible. Name the exact
+      CIDRs in security_baseline.firewall.ssh_control_sources instead.
+  tags:
+    - security
+
+- name: Warn when no uplink SSH rule can be written
+  ansible.builtin.debug:
+    msg: >-
+      No SSH control source could be detected and none is configured, so
+      SSH will NOT be opened on {{ security_baseline.firewall.upstream_interface }}.
+      This is the safe outcome - reach the Pi on FreyHub. To allow an
+      uplink network deliberately, set
+      security_baseline.firewall.ssh_control_sources.
+  when:
+    - security_baseline.firewall.enabled | bool
+    - security_baseline.firewall.allow_ssh_from_control_interface | bool
+    - security_baseline_ssh_uplink_sources | length == 0
+  tags:
+    - security
+
+# `ufw default ...` prints "policy changed" whether or not anything moved,
+# so the old `changed_when` on its stdout reported changed on every run.
+# A firewall that always claims to have changed is a firewall whose real
+# drift nobody can see - read the current policy and only act on a diff.
+- name: Read the current UFW default policies
+  ansible.builtin.slurp:
+    src: /etc/default/ufw
+  register: security_baseline_ufw_defaults
   when: security_baseline.firewall.enabled | bool
   tags:
     - security
 
-- name: Set UFW default outgoing policy
+- name: Set UFW default policies
   ansible.builtin.command:
-    cmd: ufw default allow outgoing
-  register: security_baseline_ufw_default_out
-  changed_when: "'Default outgoing policy changed' in security_baseline_ufw_default_out.stdout"
-  when: security_baseline.firewall.enabled | bool
-  tags:
-    - security
-
-- name: Set UFW default routed policy
-  ansible.builtin.command:
-    cmd: ufw default deny routed
-  register: security_baseline_ufw_default_routed
-  changed_when: "'Default routed policy changed' in security_baseline_ufw_default_routed.stdout"
-  when: security_baseline.firewall.enabled | bool
+    cmd: "ufw default {{ item.policy }} {{ item.direction }}"
+  loop:
+    - direction: incoming
+      policy: deny
+      key: DEFAULT_INPUT_POLICY="DROP"
+    - direction: outgoing
+      policy: allow
+      key: DEFAULT_OUTPUT_POLICY="ACCEPT"
+    - direction: routed
+      policy: deny
+      key: DEFAULT_FORWARD_POLICY="DROP"
+  loop_control:
+    label: "{{ item.direction }}"
+  changed_when: true
+  when:
+    - security_baseline.firewall.enabled | bool
+    - item.key not in (security_baseline_ufw_defaults.content | b64decode)
   tags:
     - security
 
@@ -103,9 +161,12 @@
   tags:
     - security
 
-- name: Allow current Ansible SSH control path
+# One rule per named source. An empty list writes no rule at all, which is
+# the point: no source, no opening.
+- name: Allow known SSH control sources on the uplink
   ansible.builtin.command:
-    cmd: "ufw allow in on {{ ansible_facts.default_ipv4.interface }} proto tcp from {{ security_baseline_control_source }} to any port {{ ansible_port | default(22) }} comment 'Frey Ansible control SSH'"
+    cmd: "ufw allow in on {{ ansible_facts.default_ipv4.interface }} proto tcp from {{ item }} to any port {{ ansible_port | default(22) }} comment 'Frey Ansible control SSH'"
+  loop: "{{ security_baseline_ssh_uplink_sources }}"
   register: security_baseline_ufw_control_ssh
   changed_when: "'Rule added' in security_baseline_ufw_control_ssh.stdout"
   when:
@@ -114,6 +175,26 @@
     - ansible_facts.default_ipv4 is defined
     - ansible_facts.default_ipv4.interface is defined
     - ansible_facts.default_ipv4.interface != security_baseline.firewall.downstream_interface
+  tags:
+    - security
+
+# Runs AFTER the precise rules above, so a detected control source is
+# already allowed before the blanket one goes away.
+- name: Retract the legacy wildcard SSH rule on the uplink
+  ansible.builtin.command:
+    cmd: "ufw delete allow in on {{ security_baseline.firewall.upstream_interface }} proto tcp to any port {{ ansible_port | default(22) }}"
+  register: security_baseline_ufw_legacy_ssh
+  changed_when: "'Rule deleted' in security_baseline_ufw_legacy_ssh.stdout"
+  failed_when:
+    - security_baseline_ufw_legacy_ssh.rc != 0
+    - "'non-existent' not in (security_baseline_ufw_legacy_ssh.stdout + security_baseline_ufw_legacy_ssh.stderr)"
+  when:
+    - security_baseline.firewall.enabled | bool
+    - security_baseline.firewall.remove_legacy_wildcard_ssh | bool
+    # Only ever retract it while FreyHub still admits SSH, so there is
+    # always a way back in.
+    - (ansible_port | default(22)) in security_baseline.firewall.downstream_tcp_ports
+    - not ansible_check_mode
   tags:
     - security
 
@@ -128,13 +209,173 @@
   tags:
     - security
 
+# Same story: `ufw --force enable` always prints the success banner, so
+# ask whether it is already running instead of parsing that.
+- name: Check whether UFW is already active
+  ansible.builtin.command:
+    cmd: ufw status
+  register: security_baseline_ufw_status
+  changed_when: false
+  check_mode: false
+  when: security_baseline.firewall.enabled | bool
+  tags:
+    - security
+
 - name: Enable UFW
   ansible.builtin.command:
     cmd: ufw --force enable
-  register: security_baseline_ufw_enable
-  changed_when: "'Firewall is active and enabled' in security_baseline_ufw_enable.stdout"
+  changed_when: true
   when:
     - security_baseline.firewall.enabled | bool
     - not ansible_check_mode
+    - "'Status: active' not in security_baseline_ufw_status.stdout"
   tags:
     - security
+
+# ==============================================================================
+#   STAYING REACHABLE
+#
+#   Everything below exists because on 2026-10-27 this Pi kept port 22 open,
+#   completed the TCP handshake, and then closed every connection before
+#   sending its banner. No username is transmitted at that stage, so every
+#   account was locked out at once, and recovery meant physically swapping
+#   the boot media. See roles/security_baseline/README.md.
+# ==============================================================================
+
+- name: Harden sshd against pre-auth connection floods
+  when:
+    - security_baseline.ssh.harden | bool
+    - not ansible_check_mode
+  tags:
+    - security
+    - ssh
+  block:
+    - name: Install the sshd resilience drop-in
+      ansible.builtin.template:
+        src: sshd-resilience.conf.j2
+        dest: /etc/ssh/sshd_config.d/10-frey-resilience.conf
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+        # Catches a typo in the drop-in itself before it is ever installed.
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reload sshd
+
+    - name: Verify the complete sshd configuration still parses
+      # The per-file validate above cannot see conflicts with the main
+      # config. This can, and it runs before any handler restarts sshd.
+      ansible.builtin.command:
+        cmd: /usr/sbin/sshd -t
+      changed_when: false
+
+  rescue:
+    - name: Remove the drop-in that sshd rejected
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/10-frey-resilience.conf
+        state: absent
+
+    - name: Fail after rolling the sshd configuration back
+      ansible.builtin.fail:
+        msg: >-
+          sshd rejected the resilience drop-in, so it has been removed and
+          sshd was left running on its previous configuration. Nothing was
+          restarted. Fix the template before re-running.
+
+- name: Ensure the systemd drop-in directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/systemd/system/ssh.service.d
+    - /etc/systemd/journald.conf.d
+  tags:
+    - security
+    - ssh
+
+- name: Protect sshd from the OOM killer and keep it restarting
+  ansible.builtin.template:
+    src: ssh-keepalive.conf.j2
+    dest: /etc/systemd/system/ssh.service.d/10-frey-keepalive.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: security_baseline.ssh.keepalive | bool
+  notify:
+    - Reload systemd
+    - Restart ssh
+  tags:
+    - security
+    - ssh
+
+- name: Install the SSH watchdog
+  ansible.builtin.template:
+    src: frey-ssh-watchdog.j2
+    dest: /usr/local/sbin/frey-ssh-watchdog
+    owner: root
+    group: root
+    mode: "0755"
+  when: security_baseline.ssh.watchdog.enabled | bool
+  tags:
+    - security
+    - ssh
+
+- name: Install the SSH watchdog units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-ssh-watchdog.service
+    - frey-ssh-watchdog.timer
+  when: security_baseline.ssh.watchdog.enabled | bool
+  notify: Reload systemd
+  tags:
+    - security
+    - ssh
+
+- name: Enable the SSH watchdog timer
+  ansible.builtin.systemd:
+    name: frey-ssh-watchdog.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - security_baseline.ssh.watchdog.enabled | bool
+    - not ansible_check_mode
+  tags:
+    - security
+    - ssh
+
+- name: Keep the journal across reboots
+  # A box recovered by power-cycling loses a volatile journal, and with it
+  # every clue about what went wrong.
+  ansible.builtin.template:
+    src: journald-persistent.conf.j2
+    dest: /etc/systemd/journald.conf.d/10-frey-persistent.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: security_baseline.journal.persistent | bool
+  notify: Restart journald
+  tags:
+    - security
+    - journal
+
+- name: Create the persistent journal directory
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+  when: security_baseline.journal.persistent | bool
+  notify: Restart journald
+  tags:
+    - security
+    - journal

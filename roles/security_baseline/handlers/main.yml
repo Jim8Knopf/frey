@@ -4,3 +4,32 @@
     name: fail2ban
     state: restarted
   when: not ansible_check_mode
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: not ansible_check_mode
+
+# Reload, not restart: a reload re-execs the listener without dropping it,
+# which is also enough to clear a saturated MaxStartups backlog. The task
+# that notifies this has already run `sshd -t`, so the config is known good.
+- name: Reload sshd
+  ansible.builtin.systemd:
+    name: ssh
+    state: reloaded
+  when: not ansible_check_mode
+
+# OOMScoreAdjust only takes effect on a real restart. Debian's ssh.service
+# ships KillMode=process, so established sessions - including the one
+# running this play - survive it.
+- name: Restart ssh
+  ansible.builtin.systemd:
+    name: ssh
+    state: restarted
+  when: not ansible_check_mode
+
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+  when: not ansible_check_mode

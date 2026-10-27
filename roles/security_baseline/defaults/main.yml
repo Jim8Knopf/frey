@@ -9,6 +9,19 @@ security_baseline:
     downstream_interface: eth0
     upstream_interface: wlan0
     allow_ssh_from_control_interface: true
+    # Who may reach SSH on the UPLINK radio. Empty is the safe default:
+    # FreyHub (downstream) always allows SSH, so an undetectable control
+    # path costs you nothing but a reconnect to the AP. This list is the
+    # ONLY way to open SSH to an uplink network - the role will never
+    # infer 'from anywhere' on its own again. Use CIDRs, e.g.
+    #   ssh_control_sources: ["192.168.1.0/24"]
+    ssh_control_sources: []
+    # Earlier runs of this role left a sourceless
+    #   allow in on <uplink> proto tcp to any port 22
+    # rule behind. UFW rules are additive, so fixing the generator does not
+    # retract it - this does. Safe because port 22 stays open on FreyHub,
+    # which is how you get back in if the uplink was carrying your session.
+    remove_legacy_wildcard_ssh: true
     downstream_tcp_ports:
       - 22
       - 53
@@ -30,3 +43,45 @@ security_baseline:
     net.ipv4.conf.default.accept_redirects: "0"
     net.ipv4.conf.all.send_redirects: "0"
     net.ipv4.icmp_echo_ignore_broadcasts: "1"
+
+  # ---------------------------------------------------------------------
+  # STAYING REACHABLE
+  #
+  # This Pi has no Ethernet port and no console: sshd is the only way in.
+  # On 2026-10-27 it stopped answering while the port stayed open, and the
+  # only recovery was pulling the boot media. Everything below exists so
+  # that cannot repeat silently.
+  # ---------------------------------------------------------------------
+  ssh:
+    harden: true
+
+    # sshd's defaults are hostile to a console-less box. MaxStartups
+    # 10:30:100 drops EVERY new connection once 100 unauthenticated ones
+    # are in flight, and LoginGraceTime 120 lets each squat a slot for two
+    # minutes. PerSourceMaxStartups is unset by default, so ONE host can
+    # fill all 100 slots alone. That is a total lockout that looks exactly
+    # like a healthy open port, because the close happens before the
+    # banner - no username is ever sent, so every account is affected.
+    login_grace_time: 30
+    max_startups: "30:60:200"
+    # Per-source cap: a scanner on whatever public Wi-Fi the van joined can
+    # now exhaust only its own allowance, never the global pool.
+    per_source_max_startups: 10
+    per_source_net_block_size: "32:128"
+
+    # sshd must never be the process the kernel sacrifices, and it must
+    # always come back.
+    keepalive: true
+
+    # Belt and braces: a port check is not enough, because the failure mode
+    # keeps the port open. The watchdog insists on seeing the banner.
+    watchdog:
+      enabled: true
+      boot_delay: 3min
+      interval: 2min
+
+  # The lockout left no evidence: journald was volatile, so the logs that
+  # would have named the cause died with the reboot.
+  journal:
+    persistent: true
+    max_use: 300M

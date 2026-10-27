@@ -1,0 +1,14 @@
+# Frey SSH lockout prevention. Managed by Ansible role: security_baseline
+[Unit]
+Description=Frey SSH watchdog timer
+
+[Timer]
+# Start checking a few minutes in, so a slow boot is not mistaken for a dead
+# daemon, then keep checking for the life of the system.
+OnBootSec={{ security_baseline.ssh.watchdog.boot_delay }}
+OnUnitActiveSec={{ security_baseline.ssh.watchdog.interval }}
+AccuracySec=15s
+Unit=frey-ssh-watchdog.service
+
+[Install]
+WantedBy=timers.target

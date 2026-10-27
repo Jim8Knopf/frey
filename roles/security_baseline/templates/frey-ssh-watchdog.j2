@@ -1,0 +1,46 @@
+#!/bin/bash
+# Frey SSH watchdog. Managed by Ansible role: security_baseline
+#
+# A port check is not good enough. The lockout this guards against keeps
+# port 22 open and completes the TCP handshake - it just never sends the
+# banner. `ss -ltn` and any TCP-connect probe both call that healthy.
+#
+# So we insist on seeing the banner, and we demand two failures ten seconds
+# apart before acting, so a momentarily busy daemon is not enough to trip a
+# restart. ssh.service ships KillMode=process, so a restart does not drop
+# the sessions of anyone already logged in.
+set -u
+
+PORT={{ security_baseline.ssh.port | default(22) }}
+
+probe() {
+    exec 3<>/dev/tcp/127.0.0.1/"$PORT" || return 1
+    local banner=""
+    # `read` returns on the line terminator, so a short banner does not
+    # hang here the way a fixed-byte-count read would.
+    read -r -t 5 banner <&3
+    exec 3<&- 3>&-
+    [[ $banner == SSH-* ]]
+}
+
+if probe; then
+    exit 0
+fi
+
+logger -t frey-ssh-watchdog "sshd did not present a banner; re-probing in 10s"
+sleep 10
+
+if probe; then
+    logger -t frey-ssh-watchdog "second probe succeeded; no action taken"
+    exit 0
+fi
+
+logger -t frey-ssh-watchdog "sshd unresponsive on both probes - restarting ssh.service"
+systemctl restart ssh.service
+sleep 5
+
+if probe; then
+    logger -t frey-ssh-watchdog "ssh.service restarted and is answering again"
+else
+    logger -t frey-ssh-watchdog "ssh.service STILL not answering after restart"
+fi

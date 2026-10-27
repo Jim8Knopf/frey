@@ -303,6 +303,17 @@ security_baseline:
     downstream_interface: "{{ network_gateway.downstream.interface }}"
     upstream_interface: "{{ network_gateway.upstream.interface }}"
     allow_ssh_from_control_interface: true
+    # Which networks may reach SSH on the UPLINK radio.
+    #
+    # Empty is deliberate and is the safe answer for a van: the uplink is
+    # whatever campground or cafe Wi-Fi is in range, and SSH has no
+    # business being reachable from it. FreyHub always allows SSH, and
+    # 10.20.0.1 is the one address that never changes.
+    #
+    # This list is now the ONLY way SSH opens on the uplink. The role used
+    # to infer it and silently fall back to "from anywhere" - see
+    # roles/security_baseline/README.md, "SSH Lockout Prevention".
+    ssh_control_sources: []
     downstream_tcp_ports:
       - 22
       - 53

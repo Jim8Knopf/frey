@@ -1,0 +1,14 @@
+# Frey SSH lockout prevention. Managed by Ansible role: security_baseline
+#
+# sshd is the only way into this Pi (no Ethernet, no console), so it must
+# never be the process the kernel picks under memory pressure, and a crash
+# must never be terminal.
+[Service]
+# Lowest possible OOM priority: the kernel kills Jellyfin or a *arr before
+# it kills our way in.
+OOMScoreAdjust=-1000
+
+# Keep retrying forever rather than giving up into a failed state. There is
+# nobody on site to run `systemctl start ssh`.
+Restart=always
+RestartSec=5s

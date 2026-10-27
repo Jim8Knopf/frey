@@ -1,0 +1,9 @@
+# Frey SSH lockout prevention. Managed by Ansible role: security_baseline
+#
+# The 2026-10-27 lockout could not be root-caused: journald was volatile,
+# so every log that would have named the culprit died with the reboot that
+# recovered the box. On a machine whose only recovery is physically pulling
+# the boot media, losing the evidence costs another trip.
+[Journal]
+Storage=persistent
+SystemMaxUse={{ security_baseline.journal.max_use }}
