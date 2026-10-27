@@ -329,7 +329,27 @@ media_acquisition:
       listen_port: 51234
       mem_limit: 1g
       cpus: "2.0"
-      web_username: admin
+      # BOTH halves of the credential come from the secret store, not from
+      # here. A username is half of a credential, so it belongs with the
+      # other half rather than in a role default that is committed in clear.
+      #
+      # Resolution order, same as every other media secret:
+      #   1. vault_media_api_keys.qbittorrent_username  (vault always wins)
+      #   2. whatever is already persisted in the key file
+      #   3. 'admin', the fallback for a stack nobody has customised
+      #
+      # Change it in the vault and re-deploy. Ansible then moves BOTH sides at
+      # once - qBittorrent's own config, the four *arr download clients and
+      # the download-gate script - which is the whole point of it living here.
+      # Changing it in qBittorrent's web UI instead changes only one side, and
+      # the *arrs then fail every poll with a 401 until they are corrected by
+      # hand. That is not hypothetical: it is how this default came to be
+      # read from the vault.
+      #
+      # Deliberately NOT in configure.secret_keys: entries there are given a
+      # random 32-hex value when missing, which is right for an API key and
+      # useless for a username.
+      web_username: "{{ (media_secrets | default({})).qbittorrent_username | default('admin', true) }}"
       # Rewrite the stored WebUI password on every run. Leave true so Ansible
       # stays able to log in; set false if you want to manage it by hand.
       enforce_password: true
