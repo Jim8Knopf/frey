@@ -75,6 +75,73 @@ service_proxy:
       idle: 3600s
 
     # ------------------------------------------------------------------------
+    # ACCESS LOG
+    #
+    # One line per request through the proxy, on stdout. Nothing else to
+    # plumb: Alloy already tails every container's stdout into Loki and
+    # labels it from frey.module, so these arrive queryable as
+    #
+    #     {frey_module="service_proxy"}
+    #
+    # This is the log that answers "did the request even reach the service,
+    # and what did the service say" - the question the previous stack could
+    # not answer without it, and the reason the 60-second upload cut had to
+    # be diagnosed from Audiobookshelf's own log instead.
+    #
+    # WHY THIS IS FILTERED RATHER THAN EVERYTHING
+    #
+    # The monitoring module probes every service through Traefik every 30
+    # seconds (prometheus.yml.j2, job service_probe). That alone is tens of
+    # thousands of 200s a day, all of them uninteresting. Logging the lot
+    # would not just be noise: Docker caps this container at
+    # log_max_size x log_max_file = 30 MB, so a day of probe traffic would
+    # push the one failure you went looking for out of the ring buffer.
+    #
+    # Traefik ORs its filters, so the pair below means "every error, plus
+    # anything slow enough to be interesting" - which catches the 499s of a
+    # severed upload AND the successful multi-minute upload that replaces
+    # them, while a 30-second probe cycle writes nothing at all.
+    #
+    # To log every request instead - worth doing briefly while chasing
+    # something specific - set status_codes to "" and min_duration to 0.
+    # ------------------------------------------------------------------------
+    access_log:
+      enabled: true
+
+      # JSON because the consumer is Loki, not a human with `less`. Traefik's
+      # default `common` is CLF, which has to be regex-scraped to get at the
+      # duration or the router name; JSON gives Loki real fields.
+      format: json
+
+      # Status codes worth a line. 499 - Traefik's code for "the client went
+      # away mid-request" - lives in this range, which is precisely the
+      # upload-cut signature.
+      status_codes: 400-599
+
+      # ...plus any request slower than this, whatever its status. Uploads and
+      # long downloads land here; no probe ever does.
+      min_duration: 10s
+
+      # ---------------------------------------------------------------------
+      # DO NOT LOG QUERY STRINGS
+      #
+      # Traefik's own default for query parameters is `keep`, and that is not
+      # safe in this stack. Jellyfin streams and image requests carry
+      # `api_key=` in the URL, and the Servarr APIs accept `apikey=` there
+      # too. Those requests come through this proxy from TVs and phones, so
+      # `keep` would copy working API keys into Loki in plain text, where
+      # they would sit for the whole retention period and show up in any
+      # shared Grafana panel.
+      #
+      # Headers are dropped by Traefik's default already, which is what keeps
+      # the Authelia session cookie and Authorization out; it is pinned here
+      # rather than assumed, because it is a security property and defaults
+      # change.
+      # ---------------------------------------------------------------------
+      query_parameters: drop
+      headers: drop
+
+    # ------------------------------------------------------------------------
     # PROMETHEUS METRICS
     #
     # Traefik is the one point every request already passes through, so

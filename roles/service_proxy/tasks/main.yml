@@ -166,6 +166,30 @@
             if service_proxy.traefik.metrics.enabled | default(false) | bool
             else []
           )
+        + (
+            [
+              '--accesslog=true',
+              '--accesslog.format=' ~ service_proxy.traefik.access_log.format,
+              '--accesslog.fields.headers.defaultmode='
+                ~ service_proxy.traefik.access_log.headers,
+              '--accesslog.fields.queryparameters.defaultmode='
+                ~ service_proxy.traefik.access_log.query_parameters,
+            ]
+            + (
+                ['--accesslog.filters.statuscodes='
+                   ~ service_proxy.traefik.access_log.status_codes]
+                if service_proxy.traefik.access_log.status_codes | default('', true) | string | length > 0
+                else []
+              )
+            + (
+                ['--accesslog.filters.minduration='
+                   ~ service_proxy.traefik.access_log.min_duration]
+                if service_proxy.traefik.access_log.min_duration | default(0, true) | string not in ['0', '0s', '']
+                else []
+              )
+            if service_proxy.traefik.access_log.enabled | default(false) | bool
+            else []
+          )
         + ['--log.level=INFO']
       }}
   tags:
