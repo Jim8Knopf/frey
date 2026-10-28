@@ -111,6 +111,11 @@
 # Built as a list rather than written inline, because the HTTP-to-HTTPS
 # redirect is conditional and an entrypoint redirection can only be set on the
 # static command line, not in the watched dynamic directory.
+#
+# Entrypoint timeouts are static for the same reason, and they are the setting
+# that decides whether a large upload survives - see service_proxy.traefik.timeouts
+# in this role's defaults. Changing them restarts Traefik; that is unavoidable,
+# since Traefik re-reads the dynamic directory but never its own command line.
 # ------------------------------------------------------------------------------
 - name: Build the Traefik command line
   ansible.builtin.set_fact:
@@ -127,6 +132,18 @@
           '--providers.file.watch=true',
           '--entrypoints.web.address=:80',
           '--entrypoints.websecure.address=:443',
+          '--entrypoints.web.transport.respondingTimeouts.readTimeout='
+            ~ service_proxy.traefik.timeouts.read,
+          '--entrypoints.web.transport.respondingTimeouts.writeTimeout='
+            ~ service_proxy.traefik.timeouts.write,
+          '--entrypoints.web.transport.respondingTimeouts.idleTimeout='
+            ~ service_proxy.traefik.timeouts.idle,
+          '--entrypoints.websecure.transport.respondingTimeouts.readTimeout='
+            ~ service_proxy.traefik.timeouts.read,
+          '--entrypoints.websecure.transport.respondingTimeouts.writeTimeout='
+            ~ service_proxy.traefik.timeouts.write,
+          '--entrypoints.websecure.transport.respondingTimeouts.idleTimeout='
+            ~ service_proxy.traefik.timeouts.idle,
         ]
         + (
             [

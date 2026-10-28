@@ -35,6 +35,46 @@ service_proxy:
     https_port: 443
 
     # ------------------------------------------------------------------------
+    # ENTRYPOINT TIMEOUTS
+    #
+    # Traefik's default readTimeout is 60 seconds, and readTimeout covers
+    # reading the WHOLE request - headers and body. That is fine for every
+    # click in every admin UI and fatally wrong for an upload: a 700 MB
+    # audiobook pushed into Audiobookshelf over the van's wifi takes minutes,
+    # so Traefik cuts the connection at exactly sixty seconds, every time,
+    # however much of the file had arrived.
+    #
+    # The failure does not look like a timeout from either end. Traefik logs
+    # HTTP 499 (context canceled) and Audiobookshelf - which only ever sees a
+    # truncated multipart body - answers "Invalid request, no files". The tell
+    # is that it always breaks at the same wall-clock moment rather than at
+    # the same percentage, and that small files upload fine.
+    #
+    # This is the same bug the previous stack hit on Audiobookshelf and
+    # Immich; see archive/legacy-stack/LDAP_SSO_ISSUES.md, issue 3. Half of
+    # that fix was removing a `buffering` middleware, which this stack never
+    # had - templates/traefik-dynamic.yml.j2 defines only secure-headers and
+    # to-canonical. This is the other half.
+    #
+    # Set on both entrypoints because an upload can arrive over either: the
+    # canonical routers are HTTPS, but the plain-HTTP routers serve the same
+    # services unredirected while redirect_http_to_https is off.
+    #
+    # idle is deliberately much longer than the other two. It governs
+    # keep-alive connections sitting between requests, and the long-polling
+    # UIs - qBittorrent, Seerr - hold one open for as long as the tab is.
+    # ------------------------------------------------------------------------
+    timeouts:
+      # Reading a request, body included. The ceiling on how long an upload
+      # may take; raise it if a single file legitimately needs longer.
+      read: 600s
+      # Writing a response. The ceiling on a large download or a long
+      # transcode stream.
+      write: 600s
+      # An established connection with no request in flight.
+      idle: 3600s
+
+    # ------------------------------------------------------------------------
     # PROMETHEUS METRICS
     #
     # Traefik is the one point every request already passes through, so
