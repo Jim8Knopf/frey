@@ -1,4 +1,16 @@
 ---
+# Reload, not restart. The unit's ExecReload runs `sshd -t` first and refuses
+# on a bad config, leaving the working daemon up - a restart would instead
+# fail ExecStartPre and leave the van with no sshd at all. Reload sends HUP,
+# which makes sshd re-exec itself: existing sessions survive (KillMode=process)
+# and the in-memory PerSourcePenalties table is discarded, so applying this
+# role also clears any lockout already in progress.
+- name: Reload sshd
+  ansible.builtin.systemd:
+    name: ssh
+    state: reloaded
+  when: not ansible_check_mode
+
 - name: Restart fail2ban
   ansible.builtin.systemd:
     name: fail2ban

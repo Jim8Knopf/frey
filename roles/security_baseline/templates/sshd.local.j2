@@ -1,6 +1,13 @@
 [sshd]
 enabled = true
 backend = systemd
-maxretry = 5
-findtime = 10m
-bantime = 1h
+maxretry = {{ security_baseline.fail2ban.maxretry | default(5) }}
+findtime = {{ security_baseline.fail2ban.findtime | default('10m') }}
+bantime = {{ security_baseline.fail2ban.bantime | default('1h') }}
+{% if security_baseline.trusted.enabled | bool and security_baseline_trusted_sources | length > 0 %}
+# Never ban this van's own devices. A ban here is a REJECT in the firewall,
+# so unlike an sshd penalty it cannot even be waited out from the laptop -
+# it has to be lifted from the Pi, which is the thing you just lost access
+# to. Resolved from frey.trusted_devices + security_baseline.trusted.
+ignoreip = {{ security_baseline_trusted_sources | join(' ') }}
+{% endif %}

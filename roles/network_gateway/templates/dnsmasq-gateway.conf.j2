@@ -44,6 +44,29 @@ dhcp-option=6,{{ network_gateway.downstream.address }}
 dhcp-option=15,{{ local_domain }}
 # Leases survive restarts so parked clients keep their addresses.
 dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+{% if frey.trusted_devices | default([]) | length > 0 %}
+
+# ---------------------------------------------------------------------------
+# TRUSTED DEVICES - FIXED ADDRESSES
+#
+# The SSH whitelist in roles/security_baseline names addresses, so those
+# addresses have to keep meaning the same machine. Pinning them by MAC is
+# what makes that true across reconnects, lease expiry and reboots.
+#
+# These sit OUTSIDE dhcp-range ({{ network_gateway.downstream.dhcp_range_start }}-{{ network_gateway.downstream.dhcp_range_end }}), so a
+# reserved address can never also be handed to a passing phone. dnsmasq
+# accepts that as long as the address is inside the range's subnet.
+#
+# expand-hosts is on, so each name below also resolves as
+# <name>.{{ local_domain }} from anywhere on FreyHub.
+# ---------------------------------------------------------------------------
+{% for device in frey.trusted_devices %}
+{% if device.comment is defined %}
+# {{ device.comment }}
+{% endif %}
+dhcp-host={{ device.mac }},{{ device.address }},{{ device.name }}
+{% endfor %}
+{% endif %}
 
 cache-size={{ network_gateway.dns.cache_size }}
 
