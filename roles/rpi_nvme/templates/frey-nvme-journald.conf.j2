@@ -1,4 +1,14 @@
 [Journal]
+# Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf,
+# which pins the journal to RAM so an SD card is not worn out by logging. On NVMe
+# that trade is wrong: it throws away every log line on each boot, so the one event
+# worth reading afterwards - an unclean power loss - is exactly the one that is gone.
+#
+# Drop-ins are merged in filename order across all directories, and the name alone
+# decides, not which directory it came from. "frey-nvme.conf" sorts after
+# "40-rpi-volatile-storage.conf", so setting Storage here wins. A drop-in named
+# "10-..." would silently lose to the Pi's "40-...".
+Storage={{ rpi_nvme.journald.storage }}
 SystemMaxUse={{ rpi_nvme.journald.system_max_use }}
 MaxFileSec={{ rpi_nvme.journald.max_file_sec }}
 Compress=yes

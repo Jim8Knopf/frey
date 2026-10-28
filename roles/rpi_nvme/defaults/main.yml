@@ -15,6 +15,10 @@ rpi_nvme:
     vm.vfs_cache_pressure: "50"
 
   journald:
+    # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every
+    # log line on reboot. On NVMe there is no card to spare, and the logs from
+    # before an unclean power loss are the whole point of having them.
+    storage: persistent
     system_max_use: 256M
     max_file_sec: 7day
 

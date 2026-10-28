@@ -7,7 +7,7 @@ Conservative Raspberry Pi service-host tuning for an NVMe-backed install:
 - Enables `fstrim.timer`.
 - Installs NVMe and SMART tooling.
 - Lowers swap tendency and VM cache pressure.
-- Limits persistent journal growth.
+- Makes the journal persistent (Raspberry Pi OS pins it to RAM) and bounds its growth.
 
 This assumes the system is **already** running from NVMe. It does not rewrite
 `/etc/fstab` or touch the bootloader.
