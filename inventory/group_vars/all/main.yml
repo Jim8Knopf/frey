@@ -226,6 +226,14 @@ network_gateway:
   upstream:
     enabled: true
     interface: wlan1
+    # Join open networks nobody declared - the campground/cafe case.
+    # `networks` below can only cover SSIDs known in advance, because
+    # NetworkManager never auto-connects to a profile that does not exist.
+    # Declared networks still win; this only fires while the uplink is down.
+    # Full knobs in roles/network_gateway/defaults/main.yml.
+    autojoin_open:
+      enabled: true
+      ssid_denylist: []
     route_metric: 100
     country: NZ
     # Known networks, declared in the vault so a rebuild reproduces them.

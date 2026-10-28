@@ -72,6 +72,64 @@ vault_uplink_networks:
 Profiles are declarative: removing a network from this list deletes its
 profile from the Pi on the next run.
 
+## Joining Open Networks Nobody Declared
+
+The list above can only ever cover SSIDs you knew about in advance, because
+**NetworkManager never auto-connects to a network it has no profile for.** That
+is the whole problem for a van: the campground, cafe or tourist car park you
+parked next to today is an SSID you have never seen, so the uplink stays down —
+and joining it by hand needs the uplink that is down.
+
+`frey-uplink-autojoin.timer` closes that gap. Every couple of minutes, **only
+while the uplink is down**, it scans the uplink radio, picks the strongest
+genuinely open network and joins it.
+
+```bash
+systemctl status frey-uplink-autojoin.timer
+journalctl -t frey-uplink-autojoin          # every decision it has made
+```
+
+What it will not do, by design:
+
+- **Touch the FreyHub radio.** It asserts the two interfaces differ and exits
+  if they do not. FreyHub is never a casualty of a hunt for internet.
+- **Override a declared network.** Its profiles are written with
+  `autoconnect-priority: 1`, below anything in `networks`, and it does nothing
+  at all while the uplink is already connected or mid-association.
+- **Demand working internet.** A captive portal answers DHCP and then
+  intercepts everything until you sign in from a phone on FreyHub — that counts
+  as joined. A check for real internet here would reject exactly the networks
+  this exists to join.
+- **Join `WEP` or `OWE`.** Only a completely empty security field is open.
+  `WEP` is broken-but-encrypted and `OWE` needs a key exchange an open profile
+  does not describe.
+- **Thrash.** A network that refuses us is skipped for
+  `failure_backoff_seconds` (30 min), so one strong but broken AP cannot keep
+  winning on signal and pin the uplink down.
+
+Its profiles are named `frey-open-*`, deliberately **not** the
+`frey-uplink-*` prefix — the prune step above deletes any `frey-uplink-*`
+profile missing from `networks`, which would wipe these on every run.
+
+Tune or disable in `inventory/group_vars/all/main.yml`:
+
+```yaml
+network_gateway:
+  upstream:
+    autojoin_open:
+      enabled: true
+      ssid_denylist:
+        - "Pay Me WiFi"      # associates happily, never routes
+```
+
+Full set of knobs in `roles/network_gateway/defaults/main.yml`.
+
+**The trade you are making:** auto-joining unknown open networks means the
+van's traffic can leave through an AP you have not vetted, and an "evil twin"
+is trivial to stand up. For an opportunistic media-box uplink that is usually
+the right call, and it is why `ssid_denylist` exists. If it matters to you, put
+a VPN on the uplink and treat the open network as transport only.
+
 ## The Deadman Rollback
 
 This Pi has **no Ethernet port and no console**. The only ways in are the two

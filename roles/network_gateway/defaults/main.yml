@@ -25,6 +25,47 @@ network_gateway:
     # Declared in group_vars/all/secrets.yml so a rebuild reproduces them.
     networks: []
 
+    # -------------------------------------------------------------
+    # Opportunistic open Wi-Fi.
+    #
+    # NetworkManager only auto-connects to networks it already has a
+    # profile for, so `networks` above can only ever cover SSIDs known
+    # in advance. A van meets a new open SSID at every campground, cafe
+    # and car park, and joining one by hand needs the uplink that is
+    # down. This scans for open networks and joins the strongest.
+    #
+    # Declared networks always win: these profiles get a lower
+    # autoconnect-priority and are only created while the uplink is down.
+    # -------------------------------------------------------------
+    autojoin_open:
+      enabled: true
+      # Separate prefix on purpose. The prune step deletes any
+      # `connection_prefix`-* profile that is not in `networks`, which
+      # would wipe these on every run if they shared the prefix.
+      profile_prefix: frey-open
+      # Must stay below the lowest priority in `networks` so a known
+      # network is always preferred when both are in range.
+      autoconnect_priority: 1
+      interval_seconds: 120
+      boot_delay_seconds: 45
+      # Time for the radio to finish reporting results after a rescan.
+      scan_settle_seconds: 8
+      timeout_seconds: 120
+      # nmcli SIGNAL is 0-100, not dBm. Below ~35 an association tends to
+      # succeed and then carry no usable traffic, which is worse than
+      # staying down because it looks connected.
+      min_signal: 35
+      # How long a network that refused us is skipped, so one broken but
+      # strong AP cannot keep winning on signal and pinning the uplink down.
+      failure_backoff_seconds: 1800
+      # Cap on remembered open profiles; oldest-used are pruned first.
+      max_profiles: 20
+      # SSIDs never to join. FreyHub's own SSID is always excluded.
+      # Worth listing: pay-walled chains, and anything that associates
+      # happily but never routes.
+      ssid_denylist: []
+      state_dir: /var/lib/frey/uplink-autojoin
+
   # ---------------------------------------------------------------
   # Downstream: FreyHub. This is the critical always-on service.
   # It must come up and stay up with no upstream of any kind.

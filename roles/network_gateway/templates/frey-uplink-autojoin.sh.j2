@@ -1,0 +1,246 @@
+#!/bin/bash
+# Frey opportunistic open Wi-Fi autojoin.
+# Managed by Ansible role: network_gateway
+#
+# Why this exists
+# ---------------
+# NetworkManager only ever auto-connects to a network it already has a profile
+# for. That is fine for the handful of SSIDs in the vault, and useless for a
+# van: a campground, a cafe or a tourist car park is a different open SSID
+# every time, and none of them can be declared in advance. Without this the
+# uplink simply stays down until somebody SSHes in and joins by hand - which
+# needs the uplink that is down.
+#
+# Rules this must never break
+# ---------------------------
+#   1. It only ever touches the UPSTREAM radio. FreyHub is the critical
+#      always-on service and is never reconfigured here, at any cost.
+#   2. A declared (vault) network always wins. Opportunistic profiles get a
+#      lower autoconnect-priority, and this script does nothing at all while
+#      the uplink is already up.
+#   3. Associating with a CAPTIVE PORTAL is success, not failure. You sign in
+#      afterwards from a phone on FreyHub, and because every client leaves
+#      wearing the Pi's uplink address, that authorises the whole van. A check
+#      demanding real internet here would reject exactly the networks this
+#      script exists to join.
+set -uo pipefail
+
+UPLINK="{{ network_gateway.upstream.interface }}"
+DOWNSTREAM="{{ network_gateway.downstream.interface }}"
+DECLARED_PREFIX="{{ network_gateway.upstream.connection_prefix }}"
+OPEN_PREFIX="{{ network_gateway.upstream.autojoin_open.profile_prefix }}"
+MIN_SIGNAL="{{ network_gateway.upstream.autojoin_open.min_signal }}"
+MAX_PROFILES="{{ network_gateway.upstream.autojoin_open.max_profiles }}"
+FAIL_TTL="{{ network_gateway.upstream.autojoin_open.failure_backoff_seconds }}"
+SCAN_SETTLE="{{ network_gateway.upstream.autojoin_open.scan_settle_seconds }}"
+PRIORITY="{{ network_gateway.upstream.autojoin_open.autoconnect_priority }}"
+STATE_DIR="{{ network_gateway.upstream.autojoin_open.state_dir }}"
+ROUTE_METRIC="{{ network_gateway.upstream.route_metric }}"
+HUB_SSID="{{ network_gateway.downstream.ap.ssid }}"
+
+DENYLIST=(
+{% for ssid in network_gateway.upstream.autojoin_open.ssid_denylist | default([]) %}
+  {{ ssid | quote }}
+{% endfor %}
+)
+
+log() { logger -t frey-uplink-autojoin -- "$1"; echo "$1"; }
+
+# nmcli --terse escapes a literal colon inside a value as '\:'. Asking for SSID
+# LAST means everything from the third field on is the SSID, however many
+# colons it contains, and the escapes can then be undone safely.
+unescape() { printf '%s' "${1//\\:/:}"; }
+
+slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-48; }
+
+mkdir -p "${STATE_DIR}/failed" 2>/dev/null || true
+
+# ---------------------------------------------------------------------
+# Never touch the radio carrying FreyHub.
+# ---------------------------------------------------------------------
+if [ "${UPLINK}" = "${DOWNSTREAM}" ]; then
+  log "refusing to run: uplink and downstream are both ${UPLINK}"
+  exit 0
+fi
+
+if ! ip link show "${UPLINK}" >/dev/null 2>&1; then
+  log "uplink ${UPLINK} is not present (USB adapter gone?); nothing to do"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Do nothing while the uplink is already up. This is the common case, and it
+# keeps a working connection - declared or captive portal - from being torn
+# down by a scan that happens to see something stronger.
+# ---------------------------------------------------------------------
+# nmcli reports this as e.g. "100 (connected)", so take the leading number.
+# NM device states: 20 unavailable, 30 disconnected, 40 prepare, 50 config,
+# 60 need-auth, 70 ip-config, 80 ip-check, 90 secondaries, 100 activated,
+# 110 deactivating, 120 failed.
+dev_state="$(nmcli -g GENERAL.STATE device show "${UPLINK}" 2>/dev/null || true)"
+state_num="${dev_state%%[^0-9]*}"
+if [ -n "${state_num}" ] && [ "${state_num}" -ge 40 ] && [ "${state_num}" -le 100 ]; then
+  # Either already connected, or mid-association. Both mean hands off.
+  exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Scan. A scan is the only way to discover an SSID nobody declared.
+# ---------------------------------------------------------------------
+nmcli device wifi rescan ifname "${UPLINK}" >/dev/null 2>&1 || true
+sleep "${SCAN_SETTLE}"
+
+# NOTE: bash array-length syntax is spelled with a '#' immediately after the
+# brace, which Jinja2 reads as the start of a comment and then fails to
+# render. Every length test below is therefore written another way on purpose.
+mapfile -t scan < <(nmcli -g SIGNAL,SECURITY,SSID device wifi list ifname "${UPLINK}" 2>/dev/null)
+if [ -z "${scan[0]:-}" ]; then
+  log "no scan results on ${UPLINK}"
+  exit 0
+fi
+
+# Declared profiles are NetworkManager's job, not ours. Collect their SSIDs so
+# a vault network is never shadowed by an opportunistic profile for it.
+declared_ssids=()
+while IFS= read -r name; do
+  [ -n "${name}" ] || continue
+  ssid="$(nmcli -g 802-11-wireless.ssid connection show "${name}" 2>/dev/null || true)"
+  [ -n "${ssid}" ] && declared_ssids+=("${ssid}")
+done < <(nmcli -g NAME connection show 2>/dev/null | grep -F "${DECLARED_PREFIX}" || true)
+
+is_declared() {
+  local want="$1" s
+  for s in ${declared_ssids[@]+"${declared_ssids[@]}"}; do
+    [ "${s}" = "${want}" ] && return 0
+  done
+  return 1
+}
+
+is_denied() {
+  local want="$1" s
+  [ "${want}" = "${HUB_SSID}" ] && return 0
+  for s in ${DENYLIST[@]+"${DENYLIST[@]}"}; do
+    [ "${s}" = "${want}" ] && return 0
+  done
+  return 1
+}
+
+# A network that just refused us is skipped until the backoff expires, so a
+# broken-but-strong AP cannot pin the uplink down by always winning on signal.
+is_backed_off() {
+  local marker now age
+  marker="${STATE_DIR}/failed/$(slug "$1")"
+  [ -f "${marker}" ] || return 1
+  now="$(date +%s)"
+  age=$(( now - $(stat -c %Y "${marker}" 2>/dev/null || echo 0) ))
+  [ "${age}" -lt "${FAIL_TTL}" ]
+}
+
+best_ssid=""
+best_signal=-1
+
+for line in "${scan[@]}"; do
+  signal="${line%%:*}"
+  rest="${line#*:}"
+  security="${rest%%:*}"
+  ssid="$(unescape "${rest#*:}")"
+
+  [ -n "${ssid}" ] || continue
+  # Only a completely empty security field is an open network. "WEP" is
+  # broken-but-encrypted, and "OWE" needs a key exchange an open profile does
+  # not describe, so neither can be joined this way.
+  if [ -n "${security}" ] && [ "${security}" != "--" ]; then
+    continue
+  fi
+  [[ "${signal}" =~ ^[0-9]+$ ]] || continue
+  [ "${signal}" -ge "${MIN_SIGNAL}" ] || continue
+  is_denied "${ssid}" && continue
+  is_declared "${ssid}" && continue
+  is_backed_off "${ssid}" && continue
+
+  if [ "${signal}" -gt "${best_signal}" ]; then
+    best_signal="${signal}"
+    best_ssid="${ssid}"
+  fi
+done
+
+if [ -z "${best_ssid}" ]; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Join it.
+# ---------------------------------------------------------------------
+name="${OPEN_PREFIX}-$(slug "${best_ssid}")"
+log "joining open network '${best_ssid}' (signal ${best_signal}) as ${name}"
+
+if ! nmcli -g NAME connection show 2>/dev/null | grep -Fxq "${name}"; then
+  if ! nmcli connection add type wifi \
+        con-name "${name}" \
+        ifname "${UPLINK}" \
+        ssid "${best_ssid}" \
+        autoconnect yes >/dev/null 2>&1; then
+    log "could not create a profile for '${best_ssid}'"
+    touch "${STATE_DIR}/failed/$(slug "${best_ssid}")"
+    exit 0
+  fi
+fi
+
+# No wifi-security section is ever set here: that absence is what makes it an
+# open profile. route-metric matches the declared uplinks so the routing table
+# still prefers FreyHub, and may-fail keeps a dead uplink out of boot's way.
+nmcli connection modify "${name}" \
+  connection.autoconnect yes \
+  connection.autoconnect-priority "${PRIORITY}" \
+  connection.autoconnect-retries 0 \
+  connection.interface-name "${UPLINK}" \
+  802-11-wireless.powersave 2 \
+  ipv4.method auto \
+  ipv4.route-metric "${ROUTE_METRIC}" \
+  ipv4.may-fail true \
+  ipv6.method ignore >/dev/null 2>&1 || true
+
+if nmcli connection up "${name}" ifname "${UPLINK}" >/dev/null 2>&1; then
+  addr="$(ip -4 -brief addr show "${UPLINK}" 2>/dev/null | awk '{print $3}')"
+  # Deliberately NOT checked: whether the internet actually works. A captive
+  # portal answers DHCP and then intercepts everything until you sign in from
+  # a phone, and that counts as joined.
+  log "joined '${best_ssid}' on ${UPLINK} (address ${addr:-none yet})"
+  rm -f "${STATE_DIR}/failed/$(slug "${best_ssid}")"
+else
+  log "failed to join '${best_ssid}'; backing off for ${FAIL_TTL}s"
+  touch "${STATE_DIR}/failed/$(slug "${best_ssid}")"
+  nmcli connection delete "${name}" >/dev/null 2>&1 || true
+  exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Keep the profile list from growing without bound as the van moves around.
+# Oldest-used profiles go first; the one just joined is never a candidate.
+# ---------------------------------------------------------------------
+open_profiles=()
+open_count=0
+while IFS= read -r entry; do
+  [ -n "${entry}" ] || continue
+  open_profiles+=("${entry}")
+  open_count=$(( open_count + 1 ))
+done < <(
+  nmcli -g NAME,TIMESTAMP connection show 2>/dev/null \
+    | awk -F: -v p="${OPEN_PREFIX}-" 'index($1, p) == 1 { print $2 ":" $1 }' \
+    | sort -t: -k1,1n
+)
+
+excess=$(( open_count - MAX_PROFILES ))
+if [ "${excess}" -gt 0 ]; then
+  dropped=0
+  for entry in ${open_profiles[@]+"${open_profiles[@]}"}; do
+    [ "${dropped}" -ge "${excess}" ] && break
+    victim="${entry#*:}"
+    [ "${victim}" = "${name}" ] && continue
+    log "pruning stale open profile ${victim}"
+    nmcli connection delete "${victim}" >/dev/null 2>&1 || true
+    dropped=$(( dropped + 1 ))
+  done
+fi
+
+exit 0

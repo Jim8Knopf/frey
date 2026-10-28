@@ -1,0 +1,16 @@
+[Unit]
+Description=Frey opportunistic open Wi-Fi autojoin
+Documentation=file://{{ frey.base_dir | default('/opt/frey') }}/docs/GATEWAY.md
+# NetworkManager owns the radios, so there is nothing to do before it is up.
+After=NetworkManager.service
+Wants=NetworkManager.service
+# Deliberately NOT ordered after network-online.target. Waiting for a target
+# that may never come is exactly the situation this unit exists to fix.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/frey-uplink-autojoin
+# A scan plus a DHCP attempt. If it has not finished by then it never will,
+# and the timer will simply try again.
+TimeoutStartSec={{ network_gateway.upstream.autojoin_open.timeout_seconds }}
+Nice=10

@@ -1,0 +1,17 @@
+[Unit]
+Description=Frey opportunistic open Wi-Fi autojoin - periodic retry
+Documentation=file://{{ frey.base_dir | default('/opt/frey') }}/docs/GATEWAY.md
+
+[Timer]
+# Run soon after boot: the van is often switched on already parked next to the
+# network it should be joining.
+OnBootSec={{ network_gateway.upstream.autojoin_open.boot_delay_seconds }}
+OnUnitInactiveSec={{ network_gateway.upstream.autojoin_open.interval_seconds }}
+# The script exits immediately when the uplink is already up, so a short
+# interval costs almost nothing and is what makes "drive up and it connects"
+# feel automatic.
+AccuracySec=10s
+Unit=frey-uplink-autojoin.service
+
+[Install]
+WantedBy=timers.target

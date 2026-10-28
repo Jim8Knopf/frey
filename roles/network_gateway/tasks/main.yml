@@ -319,6 +319,80 @@
     - network_gateway.upstream.networks | default([]) | length > 0
   tags: [network, gateway, uplink]
 
+# ---------------------------------------------------------------------
+# Opportunistic open Wi-Fi autojoin.
+#
+# `networks` above can only cover SSIDs known in advance, because
+# NetworkManager never auto-connects to a network it has no profile for.
+# This closes the gap for the open SSID at whatever the van is parked
+# next to today. It only ever drives the upstream radio.
+# ---------------------------------------------------------------------
+- name: Create the autojoin state directory
+  ansible.builtin.file:
+    path: "{{ network_gateway.upstream.autojoin_open.state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Install the open Wi-Fi autojoin script
+  ansible.builtin.template:
+    src: frey-uplink-autojoin.sh.j2
+    dest: /usr/local/sbin/frey-uplink-autojoin
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Install the open Wi-Fi autojoin units
+  ansible.builtin.template:
+    src: "frey-uplink-autojoin.{{ item }}.j2"
+    dest: "/etc/systemd/system/frey-uplink-autojoin.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  register: ngw_autojoin_units
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Enable the open Wi-Fi autojoin timer
+  ansible.builtin.systemd:
+    name: frey-uplink-autojoin.timer
+    enabled: true
+    state: "{{ 'restarted' if ngw_autojoin_units.changed else 'started' }}"
+    daemon_reload: true
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
+# Turning the feature off must also stop it, not just stop managing it.
+- name: Disable the open Wi-Fi autojoin timer when the feature is off
+  ansible.builtin.systemd:
+    name: frey-uplink-autojoin.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  failed_when: false
+  when:
+    - not (network_gateway.upstream.autojoin_open.enabled | bool)
+      or not (network_gateway.upstream.enabled | bool)
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
 - name: Configure the FreyHub access point profile
   ansible.builtin.template:
     src: downstream-ap.nmconnection.j2
