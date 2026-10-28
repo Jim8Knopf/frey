@@ -6,15 +6,6 @@
 # the chain behind NVMe, so a failed NVMe boot falls back to the untouched SD
 # rather than stranding a Pi that has no console.
 
-- name: Require explicit opt-in before touching any disk
-  ansible.builtin.assert:
-    that:
-      - rpi_nvme.migrate.enabled | bool
-    fail_msg: >-
-      Refusing to run. This rewrites {{ rpi_nvme.migrate.target_device }} completely.
-      Re-run with -e nvme_migrate_confirm=yes
-  tags: [nvme_migrate]
-
 - name: Identify the filesystem currently mounted as root
   ansible.builtin.command:
     cmd: findmnt -n -o SOURCE /
@@ -33,6 +24,21 @@
 - name: Stop cleanly if this system already boots from the target device
   ansible.builtin.meta: end_play
   when: (nvme_root_source.stdout | trim) is match('^' ~ rpi_nvme.migrate.target_device)
+  tags: [nvme_migrate]
+
+# Ordered AFTER the already-migrated check on purpose. This playbook is run
+# by hand, but it is also swept up by anything that runs every playbook in
+# playbooks/, and on a Pi that has already migrated there is nothing for it
+# to do - so it must end quietly rather than fail the whole sweep. Asking for
+# -e nvme_migrate_confirm=yes before looking at where root lives turned a
+# finished migration into a red failure on every later run.
+- name: Require explicit opt-in before touching any disk
+  ansible.builtin.assert:
+    that:
+      - rpi_nvme.migrate.enabled | bool
+    fail_msg: >-
+      Refusing to run. This rewrites {{ rpi_nvme.migrate.target_device }} completely.
+      Re-run with -e nvme_migrate_confirm=yes
   tags: [nvme_migrate]
 
 - name: Confirm the target device exists

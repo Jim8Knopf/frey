@@ -46,6 +46,15 @@ media_acquisition:
   #
   # Every integration this role configures is seeded with its key, so nothing
   # here depends on the waiver.
+  #
+  # Set method to `Forms` if you would rather create credentials by hand on
+  # first visit.
+  #
+  # ONE `auth:` KEY ONLY. There were briefly two mappings of this name in this
+  # file, and YAML keeps the last - so this block, added later with the
+  # reasoning above, was silently discarded in favour of a stale
+  # `required: DisabledForLocalAddresses`. Ansible only muttered "Found
+  # duplicate mapping key" on its way past.
   # ---------------------------------------------------------------------------
   auth:
     method: External
@@ -77,26 +86,6 @@ media_acquisition:
         'gluetun' if (media_vpn.enabled | bool)
         else media_acquisition.services.qbittorrent.hostname
       }}
-
-  # ---------------------------------------------------------------------------
-  # AUTHENTICATION
-  #
-  # `External` means "something in front of me authenticates": Servarr does
-  # not prompt, and the API key still guards the API. It is the correct
-  # setting for a reverse-proxied install and the right stepping stone to the
-  # planned auth module - drop Traefik forward-auth in front and nothing here
-  # changes.
-  #
-  # There is deliberately no local-account option: a Servarr local user
-  # cannot be seeded without writing the app's database, so claiming to
-  # automate it would mean lying about what happens. Today the boundary is
-  # the FreyHub passphrase; these UIs are open to anyone on the AP.
-  #
-  # Set method to `Forms` if you would rather create credentials by hand on
-  # first visit.
-  auth:
-    method: External
-    required: DisabledForLocalAddresses
 
   # ---------------------------------------------------------------------------
   # UPLINK GATING

@@ -4,22 +4,27 @@
 - `playbooks/`: Entry points (e.g., `site.yml`) orchestrating all roles via tags.
 - `roles/`: Service stacks and system roles (infrastructure, media, automation, monitoring, wifi, security, etc.).
 - `inventory/hosts.yml`: Target hosts; update for your Raspberry Pi.
-- `group_vars/all/`: Main config (`main.yml`) and encrypted secrets (`secrets.yml`).
+- `inventory/group_vars/all/`: Main config (`main.yml`), per-module config
+  (`identity.yml`, `media.yml`, `monitoring.yml`) and encrypted secrets (`secrets.yml`).
 - `templates/`, `docs/`, `scripts/`, `git-hooks/`: Jinja templates, documentation, maintenance utilities, and repo hooks.
 
 ## Build, Test, and Development Commands
 - Install deps: `ansible-galaxy install -r requirements.yml` (role collections).
 - Full deploy: `ansible-playbook -i inventory/hosts.yml playbooks/site.yml`.
+- `playbooks/nvme_migrate.yml` is destructive and NOT part of a normal deploy; on an
+  already-migrated Pi it detects that and ends the play cleanly, so sweeping every
+  playbook in `playbooks/` is safe.
 - Selective deploy: `ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags media`.
 - Dry run + diff: `ansible-playbook -i inventory/hosts.yml playbooks/site.yml --check --diff`.
-- Edit secrets: `ansible-vault edit group_vars/all/secrets.yml` (use `.vault_pass`).
+- Edit secrets: `ansible-vault edit inventory/group_vars/all/secrets.yml` (`ansible.cfg`
+  points `vault_password_file` at `.vault_pass`, so no flag is needed).
 - Common ops (Pi): `docker ps`, `docker logs -f <svc>`, `docker compose restart` in `/opt/frey/stacks/<stack>`.
 
 ## Coding Style & Naming Conventions
 - YAML: 2-space indentation, no tabs; one document per file.
 - Ansible: snake_case variables; task names are imperative ("Configure Traefik labels").
 - Roles: standard layout (`roles/<name>/{tasks,templates,files,handlers,vars}`); idempotent tasks only.
-- Files/vars: prefer `group_vars/all/main.yml` for toggles; secrets live only in `secrets.yml` (Vault-encrypted).
+- Files/vars: prefer `inventory/group_vars/all/main.yml` for toggles; secrets live only in `secrets.yml` (Vault-encrypted).
 
 ## Testing Guidelines
 - Validate locally with `--check --diff`; then run targeted tags (e.g., `--tags infrastructure`).
@@ -34,7 +39,7 @@
 - Enable hooks: `git config core.hooksPath git-hooks && chmod +x git-hooks/*` (auto-encrypt prompts for `secrets.yml`).
 
 ## Security & Configuration Tips
-- Keep feature toggles in `group_vars/all/main.yml`; rotate credentials in Vault.
+- Keep feature toggles in `inventory/group_vars/all/main.yml`; rotate credentials in Vault.
 - Use `--check` for review, then apply; prefer `--tags` for incremental changes.
 - Service configs and stacks live under `/opt/frey/`; avoid manual edits that fight Ansible.
 
