@@ -735,6 +735,14 @@ def render_metrics():
         "# HELP frey_alert_relay_last_success_timestamp_seconds Last successful delivery.",
         "# TYPE frey_alert_relay_last_success_timestamp_seconds gauge",
         "frey_alert_relay_last_success_timestamp_seconds %.0f" % snapshot["last_success"],
+        # Exported alongside the success timestamp so that "is delivery broken
+        # RIGHT NOW" is answerable. The lifetime counters cannot answer it:
+        # they persist across restarts, so one bad afternoon leaves
+        # failed_total permanently large and indistinguishable from an ongoing
+        # outage. A last_failure NEWER than last_success is the signal.
+        "# HELP frey_alert_relay_last_failure_timestamp_seconds Last failed delivery attempt.",
+        "# TYPE frey_alert_relay_last_failure_timestamp_seconds gauge",
+        "frey_alert_relay_last_failure_timestamp_seconds %.0f" % snapshot["last_failure"],
         "# HELP frey_alert_relay_last_watchdog_timestamp_seconds Last Watchdog alert received.",
         "# TYPE frey_alert_relay_last_watchdog_timestamp_seconds gauge",
         "frey_alert_relay_last_watchdog_timestamp_seconds %.0f" % snapshot["last_watchdog"],
