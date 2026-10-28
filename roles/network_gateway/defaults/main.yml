@@ -66,6 +66,80 @@ network_gateway:
       ssid_denylist: []
       state_dir: /var/lib/frey/uplink-autojoin
 
+    # -------------------------------------------------------------
+    # Keeping the USB radio on the bus.
+    #
+    # The uplink is a Realtek RTL8821CU on USB, and it is the single
+    # most droppable part of this machine. When it falls off the bus
+    # nothing can scan at all - the AP radio is in master mode and
+    # cannot - so the van loses every route to the internet until
+    # somebody power-cycles it.
+    #
+    # Safe by construction: the AP radio is brcmfmac on SDIO (mmc1),
+    # not USB, so nothing in here can touch FreyHub. Verified:
+    #   wlan0 -> /sys/devices/platform/axi/1001100000.mmc/...
+    #   wlan1 -> .../xhci-hcd.0/usb1/1-1/1-1:1.0
+    # -------------------------------------------------------------
+    usb_resilience:
+      enabled: true
+
+      # --- Prevention -------------------------------------------
+      # Both of these are rtw88 module options, applied at boot.
+      module_options:
+        enabled: true
+        # The USB driver re-enumerates the adapter to put it in USB 3
+        # mode, which shows up in dmesg as a disconnect on every single
+        # boot. Its own help text notes USB 3 also interferes with the
+        # 2.4 GHz band - which is where FreyHub lives - so turning the
+        # switch off removes a guaranteed disconnect AND the
+        # interference. The adapter already negotiates 480 Mbps, so
+        # nothing is lost.
+        switch_usb_mode: false
+        # Deep power save is the classic reason an rtw88 USB adapter
+        # stops answering while still appearing on the bus.
+        disable_lps_deep: true
+
+      # A udev rule pinning runtime PM off for the adapter, so the
+      # setting survives re-enumeration rather than being whatever
+      # 60-autosuspend.rules last decided.
+      disable_autosuspend: true
+
+      # --- The USB current budget --------------------------------
+      # OFF BY DEFAULT ON PURPOSE.
+      #
+      # A Pi 5 caps TOTAL USB draw at 600mA until told the supply can
+      # take more; this adapter alone declares bMaxPower 500mA, so it
+      # runs with ~100mA of headroom for transmit spikes. Setting this
+      # true raises the cap to 1.6A and is the real fix for an adapter
+      # that browns out under load.
+      #
+      # It is not the default because it is only safe with a supply
+      # that can genuinely deliver it (the official 27W unit). On a
+      # marginal supply it lets the Pi pull itself into a brownout,
+      # and this machine has already recorded 12 unclean shutdowns -
+      # the exact failure that corrupts the *arr and Jellyfin
+      # databases. Needs a reboot to take effect.
+      raise_usb_current_limit: false
+
+      # --- Recovery ---------------------------------------------
+      watchdog:
+        enabled: true
+        interval_seconds: 60
+        # Consecutive bad checks before touching anything, so a blip
+        # during association never triggers a reset.
+        failures_before_action: 2
+        # Minimum gap between two recovery attempts.
+        cooldown_seconds: 120
+        # Give up and wait for the next window rather than reset in a
+        # loop if the adapter is simply dead or unplugged.
+        max_actions_per_hour: 6
+        state_dir: /var/lib/frey/uplink-usb-watchdog
+        # Matched by vendor:product, because the bus path changes when
+        # the adapter re-enumerates. Empty means auto-detect from the
+        # uplink interface while it is still healthy.
+        usb_id: "0bda:c811"
+        kernel_module: rtw88_8821cu
+
   # ---------------------------------------------------------------
   # Downstream: FreyHub. This is the critical always-on service.
   # It must come up and stay up with no upstream of any kind.
@@ -137,3 +211,6 @@ network_gateway:
     - rfkill
     - wireless-regdb
     - iw
+    # Provides usbreset, which is the uplink watchdog's level-2 recovery:
+    # a port-level reset of just the Wi-Fi adapter.
+    - usbutils

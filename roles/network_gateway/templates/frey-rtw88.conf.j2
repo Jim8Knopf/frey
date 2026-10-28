@@ -1,0 +1,23 @@
+# rtw88 options for the Frey uplink adapter (RTL8821CU).
+# Managed by Ansible role: network_gateway
+#
+# switch_usb_mode=N
+#   The driver otherwise re-enumerates the adapter into USB 3 mode on every
+#   boot, which appears in dmesg as a disconnect:
+#     usb 1-1: USB disconnect, device number 2
+#     usb 1-1: new high-speed USB device number 3
+#   The driver's own help text also notes USB 3 mode interferes with the
+#   2.4 GHz band, and FreyHub is a 2.4 GHz AP. The adapter negotiates
+#   480 Mbps either way, so this costs nothing and removes one guaranteed
+#   disconnect per boot.
+#
+# disable_lps_deep=Y
+#   Deep power save is the usual reason an rtw88 USB adapter stops answering
+#   while still showing up on the bus - the failure that leaves the van with
+#   no way to scan for networks at all.
+{% if not network_gateway.upstream.usb_resilience.module_options.switch_usb_mode | bool %}
+options rtw88_usb switch_usb_mode=N
+{% endif %}
+{% if network_gateway.upstream.usb_resilience.module_options.disable_lps_deep | bool %}
+options rtw88_core disable_lps_deep=Y
+{% endif %}

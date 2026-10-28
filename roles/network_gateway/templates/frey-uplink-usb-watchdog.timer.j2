@@ -1,0 +1,11 @@
+[Unit]
+Description=Frey uplink USB watchdog - periodic check
+
+[Timer]
+OnBootSec={{ network_gateway.upstream.usb_resilience.watchdog.interval_seconds }}
+OnUnitInactiveSec={{ network_gateway.upstream.usb_resilience.watchdog.interval_seconds }}
+AccuracySec=5s
+Unit=frey-uplink-usb-watchdog.service
+
+[Install]
+WantedBy=timers.target

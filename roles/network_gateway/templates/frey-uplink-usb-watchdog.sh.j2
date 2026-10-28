@@ -1,0 +1,240 @@
+#!/bin/bash
+# Frey uplink USB watchdog.
+# Managed by Ansible role: network_gateway
+#
+# Why this exists
+# ---------------
+# The uplink is a Realtek RTL8821CU on USB and it is the most droppable part
+# of this machine. When it falls off the bus, nothing can scan at all - the AP
+# radio is in master mode and cannot scan - so the van loses every route to
+# the internet, and the autojoin timer has no radio to work with. Until now
+# the only recovery was a power cycle, which needs somebody standing there.
+#
+# Why it cannot hurt FreyHub
+# --------------------------
+# FreyHub runs on the built-in brcmfmac radio over SDIO:
+#   wlan0 -> /sys/devices/platform/axi/1001100000.mmc/mmc_host/mmc1/...
+# The uplink is a USB device:
+#   wlan1 -> /sys/devices/platform/axi/.../xhci-hcd.0/usb1/1-1/1-1:1.0
+# Different buses, different drivers. Every action below is scoped to one USB
+# vendor:product or to the uplink netdev by name, so FreyHub is untouchable.
+#
+# What counts as broken
+# ---------------------
+# NOT broken: "disconnected" (state 30). That is the normal state when no
+# known network is in range, and it is the autojoin timer's job, not ours.
+# Resetting the adapter for it would reset the radio every two minutes while
+# parked somewhere remote.
+# Broken: the USB device is gone, or it is present but the kernel has no
+# netdev for it, or the netdev exists and NetworkManager reports it
+# "unavailable" (state 20) - the radio is on the bus but not answering.
+set -uo pipefail
+
+UPLINK="{{ network_gateway.upstream.interface }}"
+DOWNSTREAM="{{ network_gateway.downstream.interface }}"
+USB_ID="{{ network_gateway.upstream.usb_resilience.watchdog.usb_id }}"
+MODULE="{{ network_gateway.upstream.usb_resilience.watchdog.kernel_module }}"
+STATE_DIR="{{ network_gateway.upstream.usb_resilience.watchdog.state_dir }}"
+NEED_FAILS="{{ network_gateway.upstream.usb_resilience.watchdog.failures_before_action }}"
+COOLDOWN="{{ network_gateway.upstream.usb_resilience.watchdog.cooldown_seconds }}"
+MAX_PER_HOUR="{{ network_gateway.upstream.usb_resilience.watchdog.max_actions_per_hour }}"
+
+# Kernel paths as constants rather than inline literals, so the test harness
+# can point them at a fixture tree instead of the real bus.
+SYSFS_USB_DEVICES=/sys/bus/usb/devices
+SYSFS_USB_DRIVERS=/sys/bus/usb/drivers
+SYSFS_NET=/sys/class/net
+
+log() { logger -t frey-uplink-usb-watchdog -- "$1"; echo "$1"; }
+
+mkdir -p "${STATE_DIR}" 2>/dev/null || true
+FAILS_FILE="${STATE_DIR}/consecutive_failures"
+LEVEL_FILE="${STATE_DIR}/escalation_level"
+LAST_FILE="${STATE_DIR}/last_action_at"
+ACTIONS_LOG="${STATE_DIR}/action_times"
+
+read_num() { [ -f "$1" ] && cat "$1" 2>/dev/null || echo 0; }
+now() { date +%s; }
+
+# ---------------------------------------------------------------------
+# Refuse to run in a configuration where we could reach FreyHub.
+# ---------------------------------------------------------------------
+if [ "${UPLINK}" = "${DOWNSTREAM}" ]; then
+  log "refusing to run: uplink and downstream are both ${UPLINK}"
+  exit 0
+fi
+
+# The bus path changes whenever the adapter re-enumerates, so always resolve
+# vendor:product to a current sysfs path rather than remembering a path.
+usb_sysfs_path() {
+  local vid="${USB_ID%%:*}" pid="${USB_ID##*:}" d
+  for d in "${SYSFS_USB_DEVICES}"/*/; do
+    [ -f "${d}/idVendor" ] || continue
+    [ "$(cat "${d}/idVendor" 2>/dev/null)" = "${vid}" ] || continue
+    [ "$(cat "${d}/idProduct" 2>/dev/null)" = "${pid}" ] || continue
+    printf '%s' "${d}"
+    return 0
+  done
+  return 1
+}
+
+usb_present() { usb_sysfs_path >/dev/null 2>&1; }
+netdev_present() { [ -e "${SYSFS_NET}/${UPLINK}" ]; }
+
+nm_state_num() {
+  local s
+  s="$(nmcli -g GENERAL.STATE device show "${UPLINK}" 2>/dev/null || true)"
+  printf '%s' "${s%%[^0-9]*}"
+}
+
+# ---------------------------------------------------------------------
+# Health check.
+# ---------------------------------------------------------------------
+diagnose() {
+  if ! usb_present; then
+    echo "usb-gone"
+    return
+  fi
+  if ! netdev_present; then
+    echo "no-netdev"
+    return
+  fi
+  local st
+  st="$(nm_state_num)"
+  # Empty means NetworkManager does not know the device at all.
+  if [ -z "${st}" ]; then
+    echo "unmanaged"
+    return
+  fi
+  # 20 = unavailable: on the bus, but the radio is not usable.
+  if [ "${st}" -le 20 ]; then
+    echo "unavailable"
+    return
+  fi
+  echo "healthy"
+}
+
+verdict="$(diagnose)"
+
+if [ "${verdict}" = "healthy" ]; then
+  # Recovered (or never broken): clear the ladder so the next real fault
+  # starts again at the cheapest action.
+  if [ "$(read_num "${FAILS_FILE}")" -ne 0 ] || [ "$(read_num "${LEVEL_FILE}")" -ne 0 ]; then
+    log "uplink ${UPLINK} healthy again; resetting escalation ladder"
+  fi
+  echo 0 > "${FAILS_FILE}"
+  echo 0 > "${LEVEL_FILE}"
+  exit 0
+fi
+
+fails=$(( $(read_num "${FAILS_FILE}") + 1 ))
+echo "${fails}" > "${FAILS_FILE}"
+
+if [ "${fails}" -lt "${NEED_FAILS}" ]; then
+  log "uplink ${UPLINK} looks ${verdict} (${fails}/${NEED_FAILS}); waiting for confirmation"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Rate limiting. A dead or unplugged adapter must not become a reset loop.
+# ---------------------------------------------------------------------
+last="$(read_num "${LAST_FILE}")"
+if [ "${last}" -ne 0 ] && [ $(( $(now) - last )) -lt "${COOLDOWN}" ]; then
+  exit 0
+fi
+
+cutoff=$(( $(now) - 3600 ))
+recent=0
+if [ -f "${ACTIONS_LOG}" ]; then
+  : > "${ACTIONS_LOG}.tmp"
+  while read -r t; do
+    [ -n "${t}" ] || continue
+    if [ "${t}" -gt "${cutoff}" ]; then
+      echo "${t}" >> "${ACTIONS_LOG}.tmp"
+      recent=$(( recent + 1 ))
+    fi
+  done < "${ACTIONS_LOG}"
+  mv "${ACTIONS_LOG}.tmp" "${ACTIONS_LOG}"
+fi
+
+if [ "${recent}" -ge "${MAX_PER_HOUR}" ]; then
+  log "uplink ${UPLINK} still ${verdict}, but ${recent} recovery attempts already in the last hour; holding off"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Escalation ladder. Cheapest first; each failed level moves up one.
+# ---------------------------------------------------------------------
+level=$(( $(read_num "${LEVEL_FILE}") + 1 ))
+[ "${level}" -gt 4 ] && level=4
+echo "${level}" > "${LEVEL_FILE}"
+now_ts="$(now)"
+echo "${now_ts}" > "${LAST_FILE}"
+echo "${now_ts}" >> "${ACTIONS_LOG}"
+
+log "uplink ${UPLINK} is ${verdict} after ${fails} checks; recovery level ${level}"
+
+case "${level}" in
+  1)
+    # Cheapest: bounce the interface. Fixes a stuck link with no re-enumeration.
+    if netdev_present; then
+      log "level 1: bouncing ${UPLINK}"
+      ip link set "${UPLINK}" down 2>/dev/null || true
+      sleep 2
+      ip link set "${UPLINK}" up 2>/dev/null || true
+    else
+      log "level 1 skipped: no netdev to bounce"
+    fi
+    ;;
+  2)
+    # USB port-level reset of just this vendor:product.
+    log "level 2: usbreset ${USB_ID}"
+    if command -v usbreset >/dev/null 2>&1; then
+      usbreset "${USB_ID}" >/dev/null 2>&1 || log "usbreset reported a failure"
+    else
+      log "usbreset is not installed; skipping to the next level next time"
+    fi
+    ;;
+  3)
+    # Re-bind the driver to the device, which re-runs probe without a
+    # module reload.
+    path="$(usb_sysfs_path || true)"
+    if [ -n "${path}" ]; then
+      iface_dir=""
+      for c in "${path}"*:*; do
+        [ -d "${c}" ] && iface_dir="$(basename "${c}")" && break
+      done
+      if [ -n "${iface_dir}" ] && [ -d "${SYSFS_USB_DRIVERS}/${MODULE}" ]; then
+        log "level 3: rebinding ${iface_dir} to ${MODULE}"
+        echo "${iface_dir}" > "${SYSFS_USB_DRIVERS}/${MODULE}/unbind" 2>/dev/null || true
+        sleep 2
+        echo "${iface_dir}" > "${SYSFS_USB_DRIVERS}/${MODULE}/bind" 2>/dev/null || true
+      else
+        log "level 3 skipped: no bindable interface for ${MODULE}"
+      fi
+    else
+      log "level 3 skipped: device ${USB_ID} not on the bus"
+    fi
+    ;;
+  4)
+    # Last resort short of a reboot: reload the driver entirely.
+    log "level 4: reloading ${MODULE}"
+    modprobe -r "${MODULE}" 2>/dev/null || log "could not unload ${MODULE}"
+    sleep 3
+    modprobe "${MODULE}" 2>/dev/null || log "could not load ${MODULE}"
+    ;;
+esac
+
+# Give the adapter time to come back, then report. The next run re-checks and
+# either clears the ladder or escalates.
+sleep 8
+after="$(diagnose)"
+if [ "${after}" = "healthy" ]; then
+  log "recovery level ${level} worked; ${UPLINK} is back"
+  echo 0 > "${FAILS_FILE}"
+  echo 0 > "${LEVEL_FILE}"
+else
+  log "recovery level ${level} did not restore ${UPLINK} (still ${after})"
+fi
+
+exit 0
