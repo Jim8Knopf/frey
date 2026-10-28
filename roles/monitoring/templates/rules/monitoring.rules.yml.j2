@@ -143,6 +143,41 @@ groups:
             lost. If this persists while the uplink IS up, the ntfy topic or
             token is wrong - check `docker logs alert-relay`.
 
+      # ----------------------------------------------------------------------
+      # THE RELAY CAN REACH ALERTMANAGER BUT NOT NTFY
+      #
+      # FreyAlertDeliveryFailing above watches Alertmanager -> relay. This
+      # watches relay -> ntfy, which is a different link and the one that
+      # actually reaches your phone. It was missing, and the gap was real: a
+      # relay with a stale ntfy topic failed every send for hours while
+      # looking perfectly healthy from every other angle - running, scraped,
+      # answering its health check.
+      #
+      # Nothing is lost when this fires (the alerts are queued and this one
+      # will be delivered with them), but it is the difference between finding
+      # out now in Grafana and finding out when you eventually look.
+      #
+      # Deliberately not keyed on frey_alert_relay_failed_total alone: that is
+      # a lifetime counter and will sit at a large number forever after one
+      # bad afternoon. `increase` over a window is what distinguishes "is
+      # failing" from "has ever failed".
+      # ----------------------------------------------------------------------
+      - alert: FreyAlertDeliveryToPhoneFailing
+        expr: increase(frey_alert_relay_failed_total[30m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The relay cannot reach ntfy ({{ go }} $value {{ og }} failures in 30m)'
+          description: >-
+            Alerts are being held rather than delivered. Expected while the
+            van has no uplink - in which case this clears itself and arrives
+            as part of the reconnect report.
+            If the uplink IS up, the topic or token is wrong: check
+            `docker logs alert-relay`, and confirm the topic in
+            {{ monitoring.configure.key_file }} matches the one your phone is
+            subscribed to.
+
       - alert: FreyAlertRelayDown
         expr: frey_alert_relay_up == 0 or absent(frey_alert_relay_up)
         for: 10m

@@ -257,6 +257,41 @@ groups:
             temperature and under-voltage together - if both look fine, the
             supply is the suspect.
 
+      # ----------------------------------------------------------------------
+      # THE RAIL ITSELF, BEFORE THE FLAG TRIPS
+      #
+      # frey_undervoltage_now is the Pi admitting the supply has ALREADY gone
+      # out of spec. These two watch the measured EXT5V rail instead, so a
+      # sagging supply shows up on the way down - the difference between
+      # "do something about the power now" and "find out afterwards from the
+      # unsafe-shutdown counter".
+      # ----------------------------------------------------------------------
+      - alert: Frey5vRailCritical
+        expr: frey_pmic_rail_volts{rail="EXT5V"} < {{ t.power.rail_5v_critical }}
+        for: {{ t.power.rail_5v_for }}
+        labels:
+          severity: critical
+        annotations:
+          summary: '5V rail down to {{ go }} printf "%.2f" $value {{ og }}V'
+          description: >-
+            Below {{ t.power.rail_5v_critical }}V, which is where the Pi starts
+            flagging under-voltage. Writes are happening at a voltage the flash
+            was never promised. This is the state that precedes an unclean
+            shutdown and a corrupted database - deal with the supply now.
+
+      - alert: Frey5vRailLow
+        expr: frey_pmic_rail_volts{rail="EXT5V"} < {{ t.power.rail_5v_warning }}
+        for: {{ t.power.rail_5v_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: '5V rail sagging at {{ go }} printf "%.2f" $value {{ og }}V'
+          description: >-
+            Nominal is 5.1V and this Pi normally idles near 5.16V, so below
+            {{ t.power.rail_5v_warning }}V means the supply is under strain -
+            a tired converter, a thin or long cable, or a battery going flat.
+            Nothing is broken yet, which is exactly why you are being told.
+
   # ============================================================================
   # NVMe HEALTH
   #
@@ -333,18 +368,43 @@ groups:
       # An unclean shutdown in a van means the power was cut - the ignition,
       # a flat battery, a knocked connector. The drive counts them, and the
       # count is the only durable evidence it happened.
+      # CRITICAL, not a warning. This Pi had recorded 12 unsafe shutdowns in
+      # 13 hours of total runtime, which is not an occasional mishap - it is
+      # the single most likely cause of future database corruption across the
+      # *arrs, Jellyfin and LLDAP. It buzzes.
       - alert: FreyUnsafeShutdown
-        expr: increase(frey_nvme_unsafe_shutdowns_total[2h]) > 0
+        expr: >-
+          increase(frey_nvme_unsafe_shutdowns_total[{{ t.power.unsafe_shutdown_window }}]) > 0
         for: 0m
         labels:
-          severity: warning
+          severity: critical
         annotations:
           summary: "The Pi lost power without shutting down"
           description: >-
             The NVMe recorded an unsafe shutdown, so the Pi was cut off rather
-            than halted. Each one risks filesystem and database damage. If
-            this keeps happening, the fix is a supply that outlasts the
-            ignition, not anything in software.
+            than halted. Every one risks filesystem and database damage, and
+            SQLite is what suffers - the *arr databases, Jellyfin's metadata
+            and LLDAP's directory.
+            Check the supply, the cable and the battery before anything else.
+            No software change prevents this; the fix is a supply that
+            outlasts the ignition.
+
+      - alert: FreyUnsafeShutdownsAccumulating
+        # A standing reminder rather than an event, and deliberately slow -
+        # warnings repeat weekly - so it nags without becoming noise.
+        expr: frey_nvme_unsafe_shutdowns_total > 5
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'NVMe has recorded {{ go }} $value {{ og }} unclean power losses in total'
+          description: >-
+            Cumulative, not new. A healthy installation sits at one or two. A
+            number that keeps climbing means the Pi is routinely cut off
+            rather than shut down, and every count is a chance of silent
+            database damage.
+            Compare it with power_cycles in `nvme smart-log /dev/nvme0`: if
+            the two are close, almost every power-off is unclean.
 
   # ============================================================================
   # THE HOST GENERALLY

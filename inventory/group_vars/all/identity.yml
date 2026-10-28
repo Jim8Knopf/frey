@@ -288,6 +288,21 @@ identity_services:
     groups: [frey_admins]
     hosts: [alertmanager]
 
+  # --- Stack management ------------------------------------------------------
+  dockge:
+    # THE MOST DANGEROUS SERVICE ON THIS LIST, and the one whose protection is
+    # least negotiable. Dockge holds the Docker socket, which is root on the
+    # host under another name: anything that can reach it can start a
+    # privileged container and own the Pi. Dockge has its own login, but it is
+    # a first-run setup wizard - an unprotected instance would let whoever
+    # reaches it first create the admin account.
+    #
+    # forward_auth rather than its own login alone, so Authelia answers before
+    # Dockge ever sees the request.
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [dockge]
+
 
 # ==============================================================================
 # DERIVED - nothing to edit below here

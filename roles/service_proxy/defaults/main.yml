@@ -158,6 +158,34 @@ service_proxy:
     # The entrypoint is container-internal and published nowhere. Prometheus
     # reaches it over the shared proxy network; nothing outside can.
     # ------------------------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # SERVICE NAMES, RESOLVABLE FROM INSIDE THE DOCKER NETWORK
+    #
+    # Traefik answers to every service hostname as a Docker network alias, so a
+    # container asking for https://auth.hub.frey reaches the proxy - exactly as
+    # a FreyHub client does through dnsmasq. Without this, those names do not
+    # resolve inside a container at all: the Pi's resolver points at whatever
+    # DNS the campground handed out, and dnsmasq only answers on the AP radio.
+    #
+    # THIS IS LOAD-BEARING FOR SINGLE SIGN-ON. An app doing OIDC has to call
+    # the token endpoint itself, server to server. Talking to authelia:9091
+    # directly looks like it should work and does not: Authelia derives its
+    # effective issuer from the incoming request and rejects a plain-HTTP
+    # back channel with "invalid X-Forwarded-Proto header value 'http'", which
+    # the app reports only as "failed to get token from provider". Going
+    # through Traefik means TLS is terminated properly and the right
+    # X-Forwarded-* headers are set, so the exchange succeeds.
+    #
+    # Derived from identity_hostnames, so a service added to the auth matrix
+    # becomes reachable this way with no extra edit.
+    # ------------------------------------------------------------------------
+    network_aliases: >-
+      {{
+        (identity_hostnames | default([]))
+        | product(['.' ~ frey.service_domain])
+        | map('join') | list
+      }}
+
     metrics:
       enabled: "{{ 'monitoring' in (frey.modules.enabled | default([])) }}"
       port: 8082

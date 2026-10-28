@@ -86,6 +86,33 @@ curl_in() {
   ssh_pi "sudo docker exec ${container} wget -q -O - --timeout=10 '${url}'"
 }
 
+# ------------------------------------------------------------------------------
+# PARSE ON THE PI, NOT HERE.
+#
+# The Prometheus targets and rules endpoints return tens of kilobytes, and
+# moving that much over a MULTIPLEXED ssh connection is unreliable: measured
+# repeatedly on this Pi, a 37 KB response arrived complete sometimes and
+# truncated to ~3.7 KB other times. ControlPersist leaves a master process
+# holding a duplicate of the pipe, so whether the shell reads everything
+# before the foreground client exits is a race.
+#
+# It failed in the worst possible direction, too - a truncated response parses
+# as "no alerting rules" and "no Watchdog rule", so a perfectly healthy stack
+# reported that a dead Prometheus would go unnoticed.
+#
+# So the JSON never leaves the Pi. The analysis script is base64-encoded (which
+# sidesteps every quoting problem), run there, and only its handful of output
+# lines cross the wire.
+# ------------------------------------------------------------------------------
+remote_py() {
+  local source="$1" container="$2" url="$3"
+  local b64 remote="/tmp/frey-mon-check-$$.py"
+  b64="$(printf '%s' "${source}" | base64 -w0)"
+  ssh_pi "printf '%s' '${b64}' | base64 -d > '${remote}' \
+          && sudo docker exec ${container} wget -q -O - --timeout=15 '${url}' \
+             | python3 '${remote}'; rc=\$?; rm -f '${remote}'; exit \$rc"
+}
+
 echo
 echo "Frey monitoring check  (${PI_USER}@${PI_ADDR})"
 echo
@@ -146,100 +173,84 @@ echo "Scrape targets"
 #      already in place when the master forks.
 #
 # So: capture into a variable, then write that variable out for python.
-TARGETS_JSON="$(mktemp "${TMPDIR:-/tmp}/frey-mon-targets-XXXXXX.json")"
-RULES_JSON="$(mktemp "${TMPDIR:-/tmp}/frey-mon-rules-XXXXXX.json")"
-cleanup_tmp() { rm -f "${TARGETS_JSON}" "${RULES_JSON}"; return 0; }
-trap 'cleanup_ssh; cleanup_tmp' EXIT
-
-targets_json="$(curl_in prometheus 'http://127.0.0.1:9090/api/v1/targets?state=any')"
-printf '%s' "${targets_json}" > "${TARGETS_JSON}"
-if [[ ! -s "${TARGETS_JSON}" ]]; then
-  fail "prometheus api" "no response"
-else
-  if python3 - "${TARGETS_JSON}" <<'PYTHON'
+TARGETS_PY='
 import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-except Exception as exc:
-    print("  \033[31mFAIL\033[0m  targets api%34s%s" % ("", exc))
-    sys.exit(1)
+data = json.load(sys.stdin)
 active = data.get("data", {}).get("activeTargets", [])
-bad = [t for t in active if t.get("health") != "up"]
-for t in sorted(active, key=lambda t: t["labels"].get("job", "")):
-    job = t["labels"].get("job", "?")
-    inst = t["labels"].get("instance", "?")
+bad = 0
+for t in sorted(active, key=lambda x: (x["labels"].get("job",""), x["labels"].get("service",""))):
+    job = t["labels"].get("job","?")
+    name = t["labels"].get("service") or t["labels"].get("instance","?")
     if t.get("health") == "up":
-        print("  \033[32mok\033[0m    %-44s %s" % (job, inst))
+        print("OK|%s|%s" % (job, name))
     else:
-        print("  \033[31mFAIL\033[0m  %-44s %s  %s"
-              % (job, inst, (t.get("lastError") or "")[:70]))
-sys.exit(1 if bad else 0)
-PYTHON
-  then
-    :
-  else
-    fails=$((fails + 1))
-  fi
+        bad += 1
+        print("BAD|%s|%s %s" % (job, name, (t.get("lastError") or "")[:60]))
+print("SUMMARY|%d|%d" % (len(active), bad))
+'
+
+out="$(remote_py "${TARGETS_PY}" prometheus 'http://127.0.0.1:9090/api/v1/targets?state=any')"
+if [[ -z "${out}" ]]; then
+  fail "prometheus targets api" "no response"
+else
+  while IFS='|' read -r kind a b; do
+    case "${kind}" in
+      OK)  pass "${a}" "${b}" ;;
+      BAD) fail "${a}" "${b}" ;;
+      SUMMARY) printf '        %s targets, %s down\n' "${a}" "${b}" ;;
+    esac
+  done <<< "${out}"
 fi
 
 # -----------------------------------------------------------------------------
 echo
 echo "Alert rules"
 # -----------------------------------------------------------------------------
-rules_json="$(curl_in prometheus 'http://127.0.0.1:9090/api/v1/rules')"
-printf '%s' "${rules_json}" > "${RULES_JSON}"
-if [[ ! -s "${RULES_JSON}" ]]; then
-  fail "rules api" "no response"
-else
-  summary="$(python3 - "${RULES_JSON}" <<'PYTHON'
+RULES_PY='
 import json, sys
-data = json.load(open(sys.argv[1]))
+data = json.load(sys.stdin)
 groups = data.get("data", {}).get("groups", [])
 rules = [r for g in groups for r in g.get("rules", [])]
 alerting = [r for r in rules if r.get("type") == "alerting"]
 broken = [r for r in alerting if r.get("health") not in ("ok", "unknown")]
-firing = [r for r in alerting if r.get("state") == "firing"
-          and r.get("labels", {}).get("severity") != "none"]
 watchdog = [r for r in alerting if r.get("name") == "Watchdog"]
-print("%d|%d|%d|%d|%d" % (len(groups), len(alerting), len(broken), len(firing), len(watchdog)))
+firing = [(r["name"], a) for r in alerting for a in r.get("alerts", [])
+          if a.get("state") == "firing" and a["labels"].get("severity") != "none"]
+print("COUNT|%d|%d" % (len(alerting), len(groups)))
+print("BROKEN|%d" % len(broken))
 for r in broken:
-    print("BROKEN %s: %s" % (r.get("name"), (r.get("lastError") or "")[:80]))
-for r in firing:
-    for a in r.get("alerts", []):
-        print("FIRING %s %s: %s" % (a.get("labels", {}).get("severity", "?"),
-                                    r.get("name"),
-                                    a.get("annotations", {}).get("summary", "")[:70]))
-PYTHON
-)"
-  counts="$(head -n1 <<<"${summary}")"
-  IFS='|' read -r n_groups n_alerting n_broken n_firing n_watchdog <<<"${counts}"
+    print("BROKENONE|%s|%s" % (r.get("name"), (r.get("lastError") or "")[:70]))
+print("WATCHDOG|%d" % len(watchdog))
+for n, a in firing:
+    print("FIRING|%s|%s|%s" % (a["labels"].get("severity","?"), n,
+                               a.get("annotations",{}).get("summary","")[:60]))
+'
 
-  if (( n_alerting > 0 )); then
-    pass "rules loaded" "${n_alerting} alerts in ${n_groups} groups"
-  else
-    fail "rules loaded" "no alerting rules - check promtool output"
-  fi
-
-  if (( n_broken > 0 )); then
-    fail "rule evaluation" "${n_broken} rule(s) erroring"
-  else
-    pass "rule evaluation" "no errors"
-  fi
-
-  # The dead man's switch must exist, or the relay can never notice that the
-  # monitoring chain has gone quiet.
-  if (( n_watchdog > 0 )); then
-    pass "dead man's switch" "Watchdog rule present"
-  else
-    fail "dead man's switch" "no Watchdog rule - a dead Prometheus would be silent"
-  fi
-
-  if (( n_firing > 0 )); then
+out="$(remote_py "${RULES_PY}" prometheus 'http://127.0.0.1:9090/api/v1/rules')"
+if [[ -z "${out}" ]]; then
+  fail "rules api" "no response"
+else
+  firing_lines=""
+  while IFS='|' read -r kind a b c; do
+    case "${kind}" in
+      COUNT)
+        if (( a > 0 )); then pass "rules loaded" "${a} alerts in ${b} groups"
+        else fail "rules loaded" "no alerting rules - check promtool output"; fi ;;
+      BROKEN)
+        if (( a == 0 )); then pass "rule evaluation" "no errors"
+        else fail "rule evaluation" "${a} rule(s) erroring"; fi ;;
+      BROKENONE) printf '        ! %s: %s\n' "${a}" "${b}" ;;
+      WATCHDOG)
+        if (( a > 0 )); then pass "dead man's switch" "Watchdog rule present"
+        else fail "dead man's switch" "no Watchdog rule - a dead Prometheus would be silent"; fi ;;
+      FIRING) firing_lines+="  ${a} ${b}: ${c}"$'\n' ;;
+    esac
+  done <<< "${out}"
+  if [[ -n "${firing_lines}" ]]; then
     echo
     echo "Firing now"
-    grep '^FIRING' <<<"${summary}" | sed 's/^FIRING /  /'
+    printf '%s' "${firing_lines}"
   fi
-  grep '^BROKEN' <<<"${summary}" | sed 's/^BROKEN /  /' || true
 fi
 
 # -----------------------------------------------------------------------------
@@ -290,9 +301,34 @@ else
   queue="$(relay_metric frey_alert_relay_queue_depth)"
   sent="$(relay_metric frey_alert_relay_sent_total)"
   failed="$(relay_metric frey_alert_relay_failed_total)"
+  dropped="$(relay_metric frey_alert_relay_dropped_total)"
   last_wd="$(relay_metric frey_alert_relay_last_watchdog_timestamp_seconds)"
 
-  pass "alert relay" "sent ${sent:-0}, failed ${failed:-0}"
+  # ------------------------------------------------------------------------
+  # JUDGE DELIVERY BY RECENCY, NOT BY THE LIFETIME COUNTERS.
+  #
+  # These counters persist across restarts, so one bad afternoon leaves
+  # `failed` sitting at a large number forever. Printing "sent 9, failed 1899"
+  # and then "All checks passed" is alarming and useless in equal measure -
+  # the question is whether delivery works NOW.
+  #
+  # So: compare the last failure against the last success. A failure more
+  # recent than the last success means delivery is broken right now.
+  # ------------------------------------------------------------------------
+  last_ok="$(relay_metric frey_alert_relay_last_success_timestamp_seconds)"
+  last_fail="$(relay_metric frey_alert_relay_last_failure_timestamp_seconds)"
+  last_ok=${last_ok%.*}; last_fail=${last_fail%.*}
+
+  if [[ -n "${last_fail}" ]] && (( ${last_fail:-0} > ${last_ok:-0} )); then
+    fail "ntfy delivery" \
+      "failing now - last failure $(( (now - last_fail) / 60 ))m ago, after the last success"
+  elif [[ -n "${last_ok}" ]] && (( ${last_ok:-0} > 0 )); then
+    pass "ntfy delivery" "working - last delivered $(( (now - last_ok) / 60 ))m ago"
+  else
+    warn "ntfy delivery" "nothing delivered yet (run --test to prove it)"
+  fi
+  printf '        lifetime: sent %s, failed %s, dropped %s\n' \
+    "${sent:-0}" "${failed:-0}" "${dropped:-0}"
 
   if [[ -n "${last_wd}" ]] && (( ${last_wd%.*} > 0 )); then
     wd_age=$(( now - ${last_wd%.*} ))
