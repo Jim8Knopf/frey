@@ -43,6 +43,40 @@ frey:
   # a role's defaults are only in scope while that role itself is running.
   pki_public_dir: "{{ frey.base_dir }}/pki-public"
 
+  # ---------------------------------------------------------------------------
+  # TRUSTED DEVICES - THE WAY BACK IN
+  #
+  # The van has no Ethernet port and no console. SSH over FreyHub is the ONLY
+  # way to reach the Pi, so a security mechanism that blocks it does not
+  # degrade the system, it bricks it until someone drives home.
+  #
+  # That has already happened once. OpenSSH 9.8+ ships PerSourcePenalties on
+  # by default: a source address that opens many short-lived connections -
+  # exactly what a burst of `ansible-playbook` runs looks like - is penalised
+  # up to 600s, during which sshd completes the TCP handshake and then closes
+  # without sending a banner. Every further attempt, a bare port probe
+  # included, renews the penalty. There is no log line naming a cause.
+  #
+  # Devices listed here are therefore exempted from every rate limit, penalty
+  # and ban, at every layer that could impose one (see roles/security_baseline
+  # and docs/SSH_ACCESS.md). This is a deliberate, documented hole, and it is
+  # load-bearing: it is cheaper to trust the admin laptop than to lose the Pi.
+  #
+  # Each entry is pinned to a fixed DHCP address by `mac`, so the whitelist
+  # keeps pointing at the same machine across reconnects and reboots, and
+  # `<name>.frey` resolves to it. Addresses MUST sit outside the DHCP pool
+  # (network_gateway.downstream.dhcp_range_start/end) so nothing else is ever
+  # handed the same one.
+  #
+  # To trust another machine: get its MAC (`ip link show <iface>`), add it
+  # here with a free address below .50, and re-run with --tags network,security.
+  # ---------------------------------------------------------------------------
+  trusted_devices:
+    - name: thinkpad
+      mac: "b4:b5:b6:a7:57:c9"
+      address: 10.20.0.10
+      comment: "Admin laptop - the machine Ansible is driven from"
+
   dns:
     # Resolves frey and any *.frey name to the Pi. New Traefik-backed services
     # only need proxy labels; DNS does not need per-service edits.
@@ -351,6 +385,33 @@ security_baseline:
       - 53
       - 67
     allow_gateway_routing: true
+  # SSH rate limits, and the whitelist that exempts the admin laptop from
+  # them. The device list itself is frey.trusted_devices above; these are the
+  # layers that honour it. Rationale: docs/SSH_ACCESS.md
+  #
+  # Spelled out in full rather than relying on the role's defaults to fill
+  # the gaps. Nested keys only merge with roles/security_baseline/defaults
+  # because of `hash_behaviour = merge` in ansible.cfg, and that setting is
+  # deprecated in ansible-core. If it ever stops applying, this block would
+  # shadow the defaults wholesale - and a half-rendered sshd drop-in is the
+  # one failure that cannot be fixed remotely.
+  ssh:
+    manage_config: true
+    config_file: /etc/ssh/sshd_config.d/10-frey-ssh-access.conf
+    legacy_config_files:
+      - /etc/ssh/sshd_config.d/10-frey-resilience.conf
+    login_grace_time: 30
+    max_startups: "30:60:200"
+    per_source_max_startups: 60
+    per_source_net_block_size: "32:128"
+    trusted_max_auth_tries: 20
+  trusted:
+    enabled: true
+    networks:
+      - "{{ network_gateway.downstream.network_cidr }}"
+    include_loopback: true
+    # Trusted machines that are not pinned devices go here.
+    addresses: []
   fail2ban:
     enabled: true
   sysctl:

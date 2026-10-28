@@ -1,0 +1,82 @@
+# FreyHub SSH access policy. Managed by Ansible role: security_baseline
+#
+# DO NOT EDIT ON THE HOST - rewritten on every deploy.
+#
+# This file exists because the Pi has no Ethernet port and no console. SSH
+# over FreyHub is the only way in, so anything that can block it can brick
+# the van. Two separate mechanisms have done exactly that:
+#
+#   1. MaxStartups saturation (observed 2026-10-27). sshd keeps port 22 open,
+#      completes the TCP handshake, then closes before sending a banner.
+#      nmap calls it "tcpwrapped"; every account is locked out at once
+#      because the close happens before a username is ever sent. fail2ban
+#      cannot help - throttling logs no auth failure, so the jail sees no
+#      offender. Cause: stock MaxStartups 10:30:100 with LoginGraceTime 120,
+#      so 100 abandoned pre-auth connections hold the door shut for two
+#      minutes, and with PerSourceMaxStartups unset ONE host can fill all of
+#      them.
+#
+#   2. PerSourcePenalties (OpenSSH 9.8+, on by default; this host runs
+#      10.0p2). Identical symptom - handshake, then silent close, no banner -
+#      but scoped to the source address, which is why ping, DNS and every web
+#      service keep working and only the admin laptop is affected. A burst of
+#      ansible runs accumulates penalties up to max:600, and every further
+#      attempt, including a bare TCP port probe, RENEWS the penalty. A
+#      ten-minute lockout turns into an hour of confusion.
+#
+# The settings below cap (1) and whitelist this van's own devices out of (2).
+
+# --- Pre-auth slot limits (global) -----------------------------------------
+
+# Recycle abandoned pre-auth slots four times faster than stock. Still ample
+# for a human typing a password: the prompt appears immediately.
+LoginGraceTime {{ security_baseline.ssh.login_grace_time }}
+
+# Headroom before throttling starts at all.
+MaxStartups {{ security_baseline.ssh.max_startups }}
+
+# Per-source pre-auth cap, so a scanner on whatever public Wi-Fi the van
+# parked next to exhausts its own allowance and nobody else's.
+#
+# NOTE: PerSourceMaxStartups is NOT a Match-block keyword - it is evaluated
+# by the listener before any Match can apply - so trusted devices CANNOT be
+# exempted from it. The value is instead set high enough that no real admin
+# use reaches it (ansible.cfg runs forks = 2, and pubkey auth vacates a slot
+# in milliseconds), while staying below MaxStartups' ceiling so that one host
+# still cannot saturate the daemon on its own.
+PerSourceMaxStartups {{ security_baseline.ssh.per_source_max_startups }}
+PerSourceNetBlockSize {{ security_baseline.ssh.per_source_net_block_size }}
+{% if security_baseline.trusted.enabled | bool and security_baseline_trusted_sources | length > 0 %}
+
+# --- The whitelist ---------------------------------------------------------
+
+# Exempt from PerSourcePenalties entirely: these addresses are never
+# throttled, never penalised and never silently blackholed, no matter how
+# many connections they open or how fast.
+#
+# This is a deliberate hole, and on this host it costs nothing: UFW opens
+# port 22 on {{ security_baseline.firewall.downstream_interface }} only and the uplink is default-deny, so the only
+# addresses that can reach sshd at all are the ones listed here. The penalty
+# mechanism has no attacker to stop here - only an owner to lock out.
+#
+# Masks must have no bits set in the host portion or sshd refuses to start
+# (10.20.0.0/24 is valid, 10.20.0.1/24 is not).
+{% for device in frey.trusted_devices | default([]) if device.address is defined %}
+# pinned: {{ device.address }} -> {{ device.name }}{% if device.comment is defined %} ({{ device.comment }}){% endif %}
+
+{% endfor %}
+PerSourcePenaltyExemptList {{ security_baseline_trusted_sources | join(',') }}
+
+# Trusted sources also get a generous authentication-attempt budget, so an
+# ssh-agent offering half a dozen keys cannot trip MaxAuthTries - which,
+# without the exemption above, would itself earn an authfail penalty.
+#
+# `Match all` below is load-bearing: a Match block applies to the end of the
+# file, and this file is Included from the first line of sshd_config, so
+# without it every directive in the rest of sshd_config would silently
+# become conditional on the client's address.
+Match Address {{ security_baseline_trusted_sources | join(',') }}
+    MaxAuthTries {{ security_baseline.ssh.trusted_max_auth_tries }}
+
+Match all
+{% endif %}

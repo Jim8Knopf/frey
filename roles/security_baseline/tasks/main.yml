@@ -8,6 +8,11 @@
   tags:
     - security
 
+- name: Resolve the trusted-source whitelist
+  ansible.builtin.include_tasks: trusted_sources.yml
+  tags:
+    - security
+
 - name: Install security packages
   ansible.builtin.apt:
     name: "{{ security_baseline.packages }}"
@@ -26,6 +31,79 @@
   loop: "{{ security_baseline.sysctl | dict2items }}"
   tags:
     - security
+
+# ---------------------------------------------------------------------------
+# SSH ACCESS POLICY
+#
+# This is the one task in the repo that can make the Pi unreachable, so it
+# never trusts its own output: the rendered config is validated with
+# `sshd -t` against the FULL configuration, and on any error the previous
+# file is put back and the play fails WITHOUT notifying the reload handler -
+# so the running daemon keeps the config it already had and the live session
+# survives.
+# ---------------------------------------------------------------------------
+- name: Configure SSH access policy and the trusted-device whitelist
+  when: security_baseline.ssh.manage_config | bool
+  tags:
+    - security
+    - ssh
+  block:
+    - name: Remove superseded SSH drop-ins
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ security_baseline.ssh.legacy_config_files | default([]) }}"
+      notify: Reload sshd
+
+    - name: Deploy SSH access policy
+      ansible.builtin.template:
+        src: sshd-frey-access.conf.j2
+        dest: "{{ security_baseline.ssh.config_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      register: security_baseline_sshd_config
+      notify: Reload sshd
+
+    - name: Verify the full sshd configuration still parses
+      ansible.builtin.command:
+        cmd: /usr/sbin/sshd -t
+      changed_when: false
+
+  rescue:
+    - name: Restore the previous SSH access policy
+      ansible.builtin.copy:
+        src: "{{ security_baseline_sshd_config.backup_file }}"
+        dest: "{{ security_baseline.ssh.config_file }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: security_baseline_sshd_config.backup_file is defined
+
+    # No backup means there was nothing there before, so the rejected file is
+    # the only thing to undo. Guarded on `changed` so a Jinja error - which
+    # leaves the destination untouched - cannot delete a working config.
+    - name: Remove the rejected SSH access policy
+      ansible.builtin.file:
+        path: "{{ security_baseline.ssh.config_file }}"
+        state: absent
+      when:
+        - security_baseline_sshd_config is defined
+        - security_baseline_sshd_config.changed | default(false) | bool
+        - security_baseline_sshd_config.backup_file is not defined
+
+    - name: Fail on a rejected SSH configuration
+      ansible.builtin.fail:
+        msg: >-
+          sshd rejected {{ security_baseline.ssh.config_file }}. The previous
+          configuration has been restored and sshd was NOT reloaded, so the
+          running daemon and this SSH session are unaffected. Fix
+          roles/security_baseline/templates/sshd-frey-access.conf.j2 and
+          re-run. Most likely cause: an entry in the trusted list carries a
+          mask with host bits set (10.20.0.1/24 is invalid, 10.20.0.0/24 is
+          not).
 
 - name: Configure fail2ban SSH jail
   ansible.builtin.template:
@@ -125,6 +203,22 @@
   when:
     - security_baseline.firewall.enabled | bool
     - security_baseline.firewall.allow_gateway_routing | bool
+  tags:
+    - security
+
+# Interface-independent, unlike the downstream and control-path rules above:
+# a trusted device stays reachable to SSH no matter which radio it arrives
+# on, so moving the AP between wlan0 and wlan1 cannot strand the admin
+# laptop. Default-deny still applies to every address not on this list.
+- name: Allow trusted devices to SSH on any interface
+  ansible.builtin.command:
+    cmd: "ufw allow proto tcp from {{ item }} to any port {{ ansible_port | default(22) }} comment 'Frey trusted SSH'"
+  loop: "{{ security_baseline_trusted_remote_sources }}"
+  register: security_baseline_ufw_trusted_ssh
+  changed_when: "'Rule added' in security_baseline_ufw_trusted_ssh.stdout"
+  when:
+    - security_baseline.firewall.enabled | bool
+    - security_baseline.trusted.enabled | bool
   tags:
     - security
 

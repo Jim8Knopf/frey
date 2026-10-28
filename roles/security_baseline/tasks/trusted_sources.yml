@@ -1,0 +1,39 @@
+---
+# Resolves the trusted-device whitelist into the two lists every layer below
+# consumes: the sshd exempt list, the fail2ban ignoreip, and the UFW rules.
+#
+# Kept in its own file so it can be included on its own
+# (`include_role: {name: security_baseline, tasks_from: trusted_sources}`)
+# to render or inspect the whitelist without applying the baseline - which
+# is how the templates are validated offline, before a deploy gets anywhere
+# near port 22.
+- name: Resolve the trusted-source whitelist
+  ansible.builtin.set_fact:
+    # Everything that must never be rate-limited, penalised or banned.
+    # Loopback uses 127.0.0.0/8, NOT 127.0.0.1/8: sshd rejects a mask with
+    # bits set in the host portion and refuses to start, which would lock the
+    # van out of itself with the very file meant to prevent that.
+    security_baseline_trusted_sources: >-
+      {{
+        (
+          (['127.0.0.0/8', '::1']
+            if security_baseline.trusted.include_loopback | default(true) | bool
+            else [])
+          + (security_baseline.trusted.networks | default([]))
+          + (frey.trusted_devices | default([])
+             | selectattr('address', 'defined') | map(attribute='address') | list)
+          + (security_baseline.trusted.addresses | default([]))
+        ) | reject('equalto', '') | unique | list
+      }}
+    # Same list without loopback, for firewall rules - UFW already allows lo.
+    security_baseline_trusted_remote_sources: >-
+      {{
+        (
+          (security_baseline.trusted.networks | default([]))
+          + (frey.trusted_devices | default([])
+             | selectattr('address', 'defined') | map(attribute='address') | list)
+          + (security_baseline.trusted.addresses | default([]))
+        ) | reject('equalto', '') | unique | list
+      }}
+  tags:
+    - security

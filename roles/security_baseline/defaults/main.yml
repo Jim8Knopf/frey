@@ -19,6 +19,66 @@ security_baseline:
       - 67
     allow_gateway_routing: true
 
+  # -------------------------------------------------------------------------
+  # SSH ACCESS - RATE LIMITS, AND WHO IS EXEMPT FROM THEM
+  #
+  # Rendered into one managed drop-in, validated with `sshd -t` and rolled
+  # back automatically if it does not parse. Full rationale: docs/SSH_ACCESS.md
+  # -------------------------------------------------------------------------
+  ssh:
+    manage_config: true
+    # Drop-in path. /etc/ssh/sshd_config Includes sshd_config.d/*.conf on its
+    # FIRST line, and for most keywords the first value obtained wins, so a
+    # low-numbered name here beats anything in the main file.
+    config_file: /etc/ssh/sshd_config.d/10-frey-ssh-access.conf
+    # Superseded by config_file; removed if present. Was deployed by hand
+    # during the 2026-10-27 lockout and sets the same keywords, which would
+    # otherwise silently win or lose depending on filename order.
+    legacy_config_files:
+      - /etc/ssh/sshd_config.d/10-frey-resilience.conf
+
+    # An unauthenticated connection holds a pre-auth slot for this long.
+    # 30s is still ample for a human at a password prompt; the stock 120s
+    # means 100 abandoned connections blackhole port 22 for two minutes.
+    login_grace_time: 30
+    # start:rate:full - throttling begins at 30 concurrent pre-auth
+    # connections, everything is refused at 200.
+    max_startups: "30:60:200"
+    # Per-source pre-auth cap. This one CANNOT be set per-address: it is not
+    # a Match-block keyword, so trusted devices cannot be exempted from it
+    # and the value has to be generous enough that none of them ever notices.
+    # 60 of the 200 total means one host still cannot saturate the daemon on
+    # its own, which is the property the cap exists for.
+    per_source_max_startups: 60
+    per_source_net_block_size: "32:128"
+    # Interactive ssh with an agent holding several keys can burn attempts
+    # fast. Raised only for trusted sources, via Match.
+    trusted_max_auth_tries: 20
+
+  # -------------------------------------------------------------------------
+  # THE WHITELIST
+  #
+  # Everything resolved here is exempt from PerSourcePenalties, from
+  # fail2ban, and is allowed to port 22 through UFW on any interface.
+  #
+  # The device list itself is frey.trusted_devices - it is shared with
+  # network_gateway, which pins each entry to its fixed DHCP address.
+  # -------------------------------------------------------------------------
+  trusted:
+    enabled: true
+    # FreyHub as a whole, not just the pinned devices. SSH is only reachable
+    # from this network in the first place - UFW opens port 22 on the
+    # downstream interface only, and the uplink is default-deny - so on this
+    # host the penalty mechanism has no attacker to stop and can do nothing
+    # except lock the owner out of their own van. Narrow this to the pinned
+    # addresses only if port 22 is ever exposed upstream.
+    networks:
+      - "{{ network_gateway.downstream.network_cidr }}"
+    # Loopback, so anything on the Pi itself is never penalised either.
+    include_loopback: true
+    # Extra addresses that are not pinned devices (a phone, a guest laptop).
+    addresses: []
+
   fail2ban:
     enabled: true
 
