@@ -27,6 +27,38 @@ client mode on one radio is not supported.
 
 No uplink SSID is required. Having no network to join is a normal state.
 
+## Opportunistic Open Wi-Fi
+
+`networks` can only cover SSIDs known in advance, because NetworkManager never
+auto-connects to a profile that does not exist. `frey-uplink-autojoin.timer`
+scans the uplink radio while it is down and joins the strongest genuinely open
+network, which is what makes an undeclared campground or cafe work.
+
+Declared networks always win (`autoconnect-priority: 1` for autojoined ones),
+the AP radio is never touched, and a captive portal counts as success. Profiles
+are named `frey-open-*` so the `frey-uplink-*` prune cannot delete them.
+
+Disable with `network_gateway.upstream.autojoin_open.enabled: false`; see
+`docs/GATEWAY.md` for the full rationale and the security trade-off.
+
+## USB Uplink Resilience
+
+The uplink adapter is on USB and is the most droppable part of the machine;
+when it goes, nothing can scan, because the AP radio is in master mode.
+
+Prevention: `rtw88_usb switch_usb_mode=N` (removes a re-enumeration on every
+boot, and 2.4 GHz interference with FreyHub), `rtw88_core disable_lps_deep=Y`,
+and a udev rule pinning runtime PM off. Module options apply on reboot.
+
+Recovery: `frey-uplink-usb-watchdog.timer` escalates interface bounce →
+`usbreset` → driver rebind → module reload, with a confirmation count, a
+cooldown and an hourly cap. A merely *disconnected* radio is never reset —
+that is the normal no-network-in-range state.
+
+Cannot affect FreyHub: the AP is brcmfmac on SDIO, the uplink is USB.
+
+`raise_usb_current_limit` is off by default — see `docs/GATEWAY.md`.
+
 ## Tags
 
 - `uplink` — uplink profiles only. Never touches the AP radio.

@@ -1,0 +1,12 @@
+[Unit]
+Description=Frey uplink USB watchdog - keeps the Wi-Fi adapter on the bus
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/frey-uplink-usb-watchdog
+# Long enough for a module reload plus the settle wait, short enough that a
+# wedged modprobe cannot block the timer forever.
+TimeoutStartSec=120
+Nice=5

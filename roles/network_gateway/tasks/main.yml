@@ -319,6 +319,259 @@
     - network_gateway.upstream.networks | default([]) | length > 0
   tags: [network, gateway, uplink]
 
+# ---------------------------------------------------------------------
+# Opportunistic open Wi-Fi autojoin.
+#
+# `networks` above can only cover SSIDs known in advance, because
+# NetworkManager never auto-connects to a network it has no profile for.
+# This closes the gap for the open SSID at whatever the van is parked
+# next to today. It only ever drives the upstream radio.
+# ---------------------------------------------------------------------
+- name: Create the autojoin state directory
+  ansible.builtin.file:
+    path: "{{ network_gateway.upstream.autojoin_open.state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Install the open Wi-Fi autojoin script
+  ansible.builtin.template:
+    src: frey-uplink-autojoin.sh.j2
+    dest: /usr/local/sbin/frey-uplink-autojoin
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Install the open Wi-Fi autojoin units
+  ansible.builtin.template:
+    src: "frey-uplink-autojoin.{{ item }}.j2"
+    dest: "/etc/systemd/system/frey-uplink-autojoin.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  register: ngw_autojoin_units
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Enable the open Wi-Fi autojoin timer
+  ansible.builtin.systemd:
+    name: frey-uplink-autojoin.timer
+    enabled: true
+    state: "{{ 'restarted' if ngw_autojoin_units.changed else 'started' }}"
+    daemon_reload: true
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.autojoin_open.enabled | bool
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
+# Turning the feature off must also stop it, not just stop managing it.
+- name: Disable the open Wi-Fi autojoin timer when the feature is off
+  ansible.builtin.systemd:
+    name: frey-uplink-autojoin.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  failed_when: false
+  when:
+    - not (network_gateway.upstream.autojoin_open.enabled | bool)
+      or not (network_gateway.upstream.enabled | bool)
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
+# ---------------------------------------------------------------------
+# Keeping the USB uplink radio on the bus.
+#
+# Safe by construction: the AP radio is brcmfmac on SDIO, the uplink is
+# USB. Nothing here can reach FreyHub.
+# ---------------------------------------------------------------------
+- name: Configure rtw88 module options for the uplink adapter
+  ansible.builtin.template:
+    src: frey-rtw88.conf.j2
+    dest: /etc/modprobe.d/frey-rtw88.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: ngw_rtw88_options
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.module_options.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Report that the rtw88 options need a reboot to apply
+  ansible.builtin.debug:
+    msg: >-
+      /etc/modprobe.d/frey-rtw88.conf changed. The adapter keeps its current
+      power-save and USB-mode behaviour until the module is reloaded, which
+      happens on the next reboot (or
+      'modprobe -r {{ network_gateway.upstream.usb_resilience.watchdog.kernel_module }}
+      && modprobe {{ network_gateway.upstream.usb_resilience.watchdog.kernel_module }}',
+      which briefly drops the uplink).
+  when:
+    - ngw_rtw88_options.changed | default(false)
+  tags: [network, gateway, uplink]
+
+- name: Pin runtime power management off for the uplink adapter
+  ansible.builtin.template:
+    src: frey-uplink-usb.rules.j2
+    dest: /etc/udev/rules.d/80-frey-uplink-usb.rules
+    owner: root
+    group: root
+    mode: "0644"
+  register: ngw_usb_udev
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.disable_autosuspend | bool
+  tags: [network, gateway, uplink]
+
+- name: Reload udev rules
+  ansible.builtin.command:
+    cmd: udevadm control --reload-rules
+  changed_when: true
+  when:
+    - ngw_usb_udev.changed | default(false)
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
+# Applied without re-triggering 'add', so the running adapter picks the
+# setting up now instead of only after the next re-enumeration.
+- name: Apply the power setting to the adapter already on the bus
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      for d in /sys/bus/usb/devices/*/; do
+        [ -f "$d/idVendor" ] || continue;
+        [ "$(cat $d/idVendor)" = "{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[0] }}" ] || continue;
+        [ "$(cat $d/idProduct)" = "{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[1] }}" ] || continue;
+        echo on > "$d/power/control" 2>/dev/null || true;
+        echo 1 > "$d/power/persist" 2>/dev/null || true;
+      done
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.disable_autosuspend | bool
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
+# OFF BY DEFAULT. See the comment on raise_usb_current_limit in defaults:
+# a 500mA adapter on a 600mA budget wants this, but only a supply that can
+# really deliver 1.6A should be told it can.
+- name: Raise the Pi 5 USB current budget
+  ansible.builtin.lineinfile:
+    path: /boot/firmware/config.txt
+    line: usb_max_current_enable=1
+    regexp: '^\s*#?\s*usb_max_current_enable='
+    state: present
+    insertafter: EOF
+    owner: root
+    group: root
+    mode: "0755"
+  register: ngw_usb_current
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.raise_usb_current_limit | bool
+  tags: [network, gateway, uplink]
+
+- name: Report that the USB current budget needs a reboot
+  ansible.builtin.debug:
+    msg: >-
+      config.txt now sets usb_max_current_enable=1, raising the total USB
+      budget from 600mA to 1.6A. This only takes effect on reboot, and it
+      assumes the supply can actually deliver it.
+  when:
+    - ngw_usb_current.changed | default(false)
+  tags: [network, gateway, uplink]
+
+- name: Create the USB watchdog state directory
+  ansible.builtin.file:
+    path: "{{ network_gateway.upstream.usb_resilience.watchdog.state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.watchdog.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Install the uplink USB watchdog script
+  ansible.builtin.template:
+    src: frey-uplink-usb-watchdog.sh.j2
+    dest: /usr/local/sbin/frey-uplink-usb-watchdog
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.watchdog.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Install the uplink USB watchdog units
+  ansible.builtin.template:
+    src: "frey-uplink-usb-watchdog.{{ item }}.j2"
+    dest: "/etc/systemd/system/frey-uplink-usb-watchdog.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  register: ngw_usb_watchdog_units
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.watchdog.enabled | bool
+  tags: [network, gateway, uplink]
+
+- name: Enable the uplink USB watchdog timer
+  ansible.builtin.systemd:
+    name: frey-uplink-usb-watchdog.timer
+    enabled: true
+    state: "{{ 'restarted' if ngw_usb_watchdog_units.changed else 'started' }}"
+    daemon_reload: true
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.usb_resilience.enabled | bool
+    - network_gateway.upstream.usb_resilience.watchdog.enabled | bool
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
+- name: Disable the uplink USB watchdog timer when the feature is off
+  ansible.builtin.systemd:
+    name: frey-uplink-usb-watchdog.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  failed_when: false
+  when:
+    - not (network_gateway.upstream.enabled | bool)
+      or not (network_gateway.upstream.usb_resilience.enabled | bool)
+      or not (network_gateway.upstream.usb_resilience.watchdog.enabled | bool)
+    - not ansible_check_mode
+  tags: [network, gateway, uplink]
+
 - name: Configure the FreyHub access point profile
   ansible.builtin.template:
     src: downstream-ap.nmconnection.j2

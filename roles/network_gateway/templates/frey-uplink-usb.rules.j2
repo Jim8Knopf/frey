@@ -1,0 +1,17 @@
+# Keep the Frey uplink Wi-Fi adapter awake.
+# Managed by Ansible role: network_gateway
+#
+# Raspberry Pi OS ships /usr/lib/udev/rules.d/60-autosuspend.rules, which lets
+# USB runtime power management decide when to suspend devices. An adapter that
+# autosuspends is an adapter that can fail to wake, and this one is the only
+# radio on the machine able to scan - the AP radio is in master mode and
+# cannot. Pin runtime PM off so the setting survives every re-enumeration
+# rather than being whatever the generic rule last decided.
+#
+# Matched on vendor:product, not on a bus path: the path changes whenever the
+# adapter re-enumerates, which is exactly when this needs to reapply.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[0] }}", ATTR{idProduct}=="{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[1] }}", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[0] }}", ATTR{idProduct}=="{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[1] }}", TEST=="power/autosuspend_delay_ms", ATTR{power/autosuspend_delay_ms}="-1"
+# persist=1 lets the device keep its state across a USB reset, so the
+# watchdog's level-2 reset is less disruptive than a full re-probe.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[0] }}", ATTR{idProduct}=="{{ network_gateway.upstream.usb_resilience.watchdog.usb_id.split(':')[1] }}", TEST=="power/persist", ATTR{power/persist}="1"

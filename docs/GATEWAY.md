@@ -72,6 +72,156 @@ vault_uplink_networks:
 Profiles are declarative: removing a network from this list deletes its
 profile from the Pi on the next run.
 
+## Joining Open Networks Nobody Declared
+
+The list above can only ever cover SSIDs you knew about in advance, because
+**NetworkManager never auto-connects to a network it has no profile for.** That
+is the whole problem for a van: the campground, cafe or tourist car park you
+parked next to today is an SSID you have never seen, so the uplink stays down —
+and joining it by hand needs the uplink that is down.
+
+`frey-uplink-autojoin.timer` closes that gap. Every couple of minutes, **only
+while the uplink is down**, it scans the uplink radio, picks the strongest
+genuinely open network and joins it.
+
+```bash
+systemctl status frey-uplink-autojoin.timer
+journalctl -t frey-uplink-autojoin          # every decision it has made
+```
+
+What it will not do, by design:
+
+- **Touch the FreyHub radio.** It asserts the two interfaces differ and exits
+  if they do not. FreyHub is never a casualty of a hunt for internet.
+- **Override a declared network.** Its profiles are written with
+  `autoconnect-priority: 1`, below anything in `networks`, and it does nothing
+  at all while the uplink is already connected or mid-association.
+- **Demand working internet.** A captive portal answers DHCP and then
+  intercepts everything until you sign in from a phone on FreyHub — that counts
+  as joined. A check for real internet here would reject exactly the networks
+  this exists to join.
+- **Join `WEP` or `OWE`.** Only a completely empty security field is open.
+  `WEP` is broken-but-encrypted and `OWE` needs a key exchange an open profile
+  does not describe.
+- **Thrash.** A network that refuses us is skipped for
+  `failure_backoff_seconds` (30 min), so one strong but broken AP cannot keep
+  winning on signal and pin the uplink down.
+
+Its profiles are named `frey-open-*`, deliberately **not** the
+`frey-uplink-*` prefix — the prune step above deletes any `frey-uplink-*`
+profile missing from `networks`, which would wipe these on every run.
+
+Tune or disable in `inventory/group_vars/all/main.yml`:
+
+```yaml
+network_gateway:
+  upstream:
+    autojoin_open:
+      enabled: true
+      ssid_denylist:
+        - "Pay Me WiFi"      # associates happily, never routes
+```
+
+Full set of knobs in `roles/network_gateway/defaults/main.yml`.
+
+**The trade you are making:** auto-joining unknown open networks means the
+van's traffic can leave through an AP you have not vetted, and an "evil twin"
+is trivial to stand up. For an opportunistic media-box uplink that is usually
+the right call, and it is why `ssid_denylist` exists. If it matters to you, put
+a VPN on the uplink and treat the open network as transport only.
+
+## Keeping the USB Radio on the Bus
+
+The uplink is a USB adapter and it is the most droppable part of this machine.
+When it falls off the bus **nothing can scan at all** — the AP radio is in
+master mode and cannot scan — so the van loses every route to the internet and
+the autojoin timer above has no radio to work with. The only recovery used to
+be a power cycle, which needs somebody standing next to it.
+
+**Why none of this can hurt FreyHub:** the AP is the built-in Broadcom radio on
+SDIO, the uplink is USB. Different buses, different drivers.
+
+```
+wlan0 -> /sys/devices/platform/axi/1001100000.mmc/mmc_host/mmc1/...   (brcmfmac)
+wlan1 -> /sys/devices/platform/axi/.../xhci-hcd.0/usb1/1-1/1-1:1.0    (rtw88_8821cu)
+```
+
+Every action below is scoped to one USB vendor:product or to the uplink netdev
+by name, and the script refuses to run at all if the two interfaces are equal.
+
+### Prevention
+
+Two rtw88 module options, in `/etc/modprobe.d/frey-rtw88.conf`:
+
+- `rtw88_usb switch_usb_mode=N` — the driver otherwise re-enumerates the
+  adapter into USB 3 mode on **every boot**, which is that
+  `usb 1-1: USB disconnect, device number 2` line in `dmesg`. The driver's own
+  help text notes USB 3 mode also interferes with 2.4 GHz, and FreyHub is a
+  2.4 GHz AP. The adapter negotiates 480 Mbps either way.
+- `rtw88_core disable_lps_deep=Y` — deep power save is the usual reason an
+  rtw88 USB adapter stops answering while still appearing on the bus.
+
+Plus a udev rule pinning runtime PM off for the adapter, matched on
+vendor:product rather than bus path, so it reapplies on every re-enumeration
+instead of being whatever Raspberry Pi OS's `60-autosuspend.rules` decided.
+
+Both module options need the driver reloaded, so **they apply on the next
+reboot**.
+
+### The USB Current Budget
+
+A Pi 5 caps **total** USB draw at 600 mA until told the supply can take more.
+This adapter alone declares `bMaxPower 500mA`, which leaves about 100 mA of
+headroom for transmit spikes — and a browning-out adapter drops off the bus.
+
+`usb_max_current_enable=1` raises the cap to 1.6 A and is the real fix, so it
+is a knob and **it is off by default**:
+
+```yaml
+network_gateway:
+  upstream:
+    usb_resilience:
+      raise_usb_current_limit: true   # only with a supply that can deliver it
+```
+
+It is off because it is only safe with a supply that genuinely delivers 1.6 A
+(the official 27 W unit). On a marginal supply it lets the Pi pull itself into
+a brownout, and this machine has already recorded 12 unclean shutdowns — the
+exact failure that corrupts the \*arr and Jellyfin SQLite databases. Needs a
+reboot. Check `vcgencmd get_throttled` (want `0x0`) after enabling it.
+
+### Recovery
+
+`frey-uplink-usb-watchdog.timer` checks every 60 s and escalates only as far as
+it has to:
+
+| Level | Action |
+| --- | --- |
+| 1 | Bounce the interface (`ip link down`/`up`) |
+| 2 | `usbreset <vendor:product>` — port-level reset of just this adapter |
+| 3 | Unbind and rebind the driver, re-running probe |
+| 4 | `modprobe -r` / `modprobe` the driver |
+
+```bash
+journalctl -t frey-uplink-usb-watchdog     # every decision and recovery
+```
+
+What it deliberately does not do:
+
+- **Act on a disconnected radio.** NetworkManager state 30 ("disconnected") is
+  the *normal* state when no known network is in range. Treating it as a fault
+  would reset the radio every minute while parked somewhere remote. Only a
+  missing USB device, a missing netdev, or state 20 ("unavailable" — on the bus
+  but not answering) counts as broken.
+- **React to a blip.** It needs `failures_before_action` consecutive bad checks
+  (default 2) before touching anything.
+- **Reset in a loop.** `cooldown_seconds` between attempts and
+  `max_actions_per_hour` overall, so a genuinely dead or unplugged adapter is
+  left alone instead of being reset forever.
+
+The ladder resets to level 1 as soon as the uplink is healthy again, so the
+next real fault starts from the cheapest action.
+
 ## The Deadman Rollback
 
 This Pi has **no Ethernet port and no console**. The only ways in are the two
