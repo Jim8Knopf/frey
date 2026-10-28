@@ -13,6 +13,12 @@
 # Every handler tolerates the container not existing. A first deploy writes
 # every config before anything is running, which would otherwise fail the run
 # on a container that is about to be created a few tasks later.
+#
+# A note for anyone checking by hand whether a reload took effect: Prometheus
+# takes several seconds to finish one with this many rules, so
+# prometheus_config_last_reload_success_timestamp_seconds can still show the
+# old value a few seconds after the signal. Wait ten before concluding the
+# reload failed.
 # ==============================================================================
 
 - name: Reload systemd
@@ -41,15 +47,23 @@
   changed_when: true
   failed_when: false
 
+# RESTARTED, not signalled, unlike the two above.
+#
+# blackbox is the one component where a signal was observed not to take
+# effect: after adding a new service, SIGHUP left the exporter still
+# answering "400 Bad Request - unknown module" for it, and a restart was what
+# actually picked the module up. Its /-/reload endpoint answers 200 but was
+# not demonstrably better.
+#
+# A restart costs exactly one missed probe on a 30-second interval, and the
+# probes are the thing that notices a new service at all - so a reload that
+# silently does nothing here means a newly added service appears permanently
+# down. Deterministic beats elegant.
 - name: Reload blackbox exporter
-  ansible.builtin.command:
-    argv:
-      - docker
-      - kill
-      - -s
-      - HUP
-      - "{{ monitoring.services.blackbox.container_name }}"
-  changed_when: true
+  community.docker.docker_container:
+    name: "{{ monitoring.services.blackbox.container_name }}"
+    state: started
+    restart: true
   failed_when: false
 
 # Loki, Alloy, Grafana and the relay have no reload signal, so these do have

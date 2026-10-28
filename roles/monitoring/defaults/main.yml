@@ -207,7 +207,7 @@ monitoring:
       client_id: grafana
 
       # ----------------------------------------------------------------------
-      # These are built from identity_hosts, which lives in
+      # Built from identity_hosts, which lives in
       # inventory/group_vars/all/identity.yml, and NOT from the identity
       # role's own `identity` dict.
       #
@@ -223,12 +223,34 @@ monitoring:
       # ----------------------------------------------------------------------
       auth_host: "{{ identity_hosts.auth | default('auth') }}.{{ frey.service_domain }}"
 
-      # The container name and port Authelia listens on, for the server-side
-      # half of the exchange. Duplicated from roles/identity/defaults/main.yml
-      # for the scope reason above - if you ever change Authelia's port there,
-      # change it here too. It is an upstream default and has not moved.
-      authelia_container: authelia
-      authelia_port: 9091
+      # ----------------------------------------------------------------------
+      # EVERY ENDPOINT IS THE HTTPS NAME, INCLUDING THE BACK CHANNEL.
+      #
+      # An earlier version of this pointed token_url and api_url straight at
+      # http://authelia:9091 to sidestep DNS and certificate trust, on the
+      # reasoning that OIDC validates tokens against the issuer string and so
+      # the back channel's URL does not matter.
+      #
+      # That reasoning is wrong for Authelia, and it cost a debugging session.
+      # Authelia derives its EFFECTIVE ISSUER from the incoming request, and
+      # refuses a plain-HTTP one:
+      #
+      #   "Error occurred determining the effective issuer for this request"
+      #   error="invalid X-Forwarded-Proto header value 'http'"
+      #
+      # Grafana surfaces that only as "Failed to get token from provider".
+      #
+      # So the back channel goes through Traefik like everything else, which
+      # terminates TLS and sets the X-Forwarded-* headers Authelia needs. Two
+      # things make that possible from inside a container, and both are
+      # deliberate rather than incidental:
+      #
+      #   - Traefik carries every service hostname as a Docker network alias
+      #     (service_proxy.traefik.network_aliases), so the name resolves.
+      #   - Grafana is handed the Frey root certificate below, because its
+      #     image runs as a non-root uid that cannot update a trust store.
+      # ----------------------------------------------------------------------
+      ca_file: /frey-ca.crt
 
       scopes: "openid profile email groups"
       # frey_admins get Grafana admin, everyone else read-only. Grafana

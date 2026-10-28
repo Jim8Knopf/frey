@@ -96,6 +96,19 @@
     - "{{ monitoring.config_dir }}/grafana/provisioning"
     - "{{ monitoring.config_dir }}/grafana/provisioning/datasources"
     - "{{ monitoring.config_dir }}/grafana/provisioning/dashboards"
+    # Created empty, on purpose. Grafana looks for all five provisioning
+    # subdirectories at start-up and logs a level=error line for each one it
+    # cannot open:
+    #
+    #   "Failed to read plugin provisioning files from directory"
+    #   "can't read alerting provisioning files from directory"
+    #
+    # Nothing is wrong when they are absent, but two ERROR lines in the log of
+    # a healthy service is exactly the noise that trains you to ignore its
+    # log - and this module exists to make logs worth reading.
+    - "{{ monitoring.config_dir }}/grafana/provisioning/plugins"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/alerting"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/notifiers"
     - "{{ monitoring.config_dir }}/grafana/dashboards"
     # The interface other things write metrics into - including, later, the
     # van's sensors. World-readable on purpose: node-exporter mounts it.

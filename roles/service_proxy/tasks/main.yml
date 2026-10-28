@@ -165,6 +165,10 @@
     pull: true
     networks:
       - name: "{{ service_proxy.traefik.network }}"
+        # Every service hostname resolves to the proxy from inside the Docker
+        # network. See network_aliases in this role's defaults - it is what
+        # makes server-to-server OIDC work.
+        aliases: "{{ service_proxy.traefik.network_aliases | default([]) }}"
     networks_cli_compatible: true
     published_ports:
       - "{{ service_proxy.bind_address }}:{{ service_proxy.traefik.http_port }}:80"

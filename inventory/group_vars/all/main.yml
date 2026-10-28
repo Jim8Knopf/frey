@@ -82,6 +82,10 @@ frey:
       # runs - a service added to the auth matrix starts being monitored with
       # no second edit anywhere.
       - monitoring
+      # A window onto the compose stacks. Deliberately last and entirely
+      # optional - nothing depends on it, and the monitoring module is what
+      # tells you the stack is healthy. Dockge just makes it easier to SEE.
+      - dockge
 
     available:
       network_gateway:
@@ -129,6 +133,26 @@ frey:
         tags:
           - monitoring
           - metrics
+      dockge:
+        role: dockge
+        tags:
+          - dockge
+          - services
+
+# ==============================================================================
+# DOCKGE - the compose-stack viewer
+#
+# Pinned like every other image: an unattended pull on a campground Wi-Fi can
+# hand you a broken container with no internet left to fix it.
+#
+# IMPORTANT: Dockge can edit compose files, and the Frey stacks are generated
+# by Ansible - every one of them says so at the top. Anything changed in the UI
+# lasts until the next deploy and no longer. The role mounts those files
+# READ-ONLY for that reason (dockge.stacks_writable in
+# roles/dockge/defaults/main.yml). Use it to look, read logs and restart a
+# container; make lasting changes in the role.
+# ==============================================================================
+dockge_version: 1.5.0
 
 # ==============================================================================
 # MEDIA - SHARED CONFIGURATION

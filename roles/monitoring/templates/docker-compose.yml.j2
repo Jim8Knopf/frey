@@ -50,12 +50,20 @@
      roles/media_acquisition/ reached the same conclusion for the same reason;
      see the Host-header note in frey-media-gate.sh.
 
-  3. Grafana's OIDC back-channel is plain HTTP to authelia:9091.
+  3. Grafana's OIDC back-channel goes through Traefik over HTTPS, not
+     straight to authelia:9091.
 
-     Same DNS problem, plus the Grafana image runs as a non-root uid that
-     cannot add the Frey CA to its trust store. The browser still goes to
-     https://auth.hub.frey; only the server-to-server token call is internal,
-     and it never leaves the host. See roles/monitoring/defaults/main.yml.
+     Talking to the container directly is the obvious shortcut and it does
+     not work. Authelia derives its effective issuer from the incoming
+     request and refuses a plain-HTTP one - "invalid X-Forwarded-Proto header
+     value 'http'" - which Grafana reports only as "Failed to get token from
+     provider". So the back channel takes the same path as a browser.
+
+     Two things make that work from inside a container: Traefik carries every
+     service hostname as a Docker network alias so the name resolves, and
+     Grafana is handed the Frey root certificate because its image runs as a
+     non-root uid that cannot update a trust store.
+     See roles/monitoring/defaults/main.yml.
 #}
 {% set m = monitoring %}
 {% set svc = m.services %}
@@ -595,11 +603,16 @@ services:
       - GF_AUTH_GENERIC_OAUTH_CLIENT_ID={{ m.grafana.oidc.client_id }}
       - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET={{ monitoring_grafana_oidc_secret }}
       - GF_AUTH_GENERIC_OAUTH_SCOPES={{ m.grafana.oidc.scopes }}
-      # Browser-facing. HTTPS, by name, because your phone goes here.
+      # All three are the HTTPS name, back channel included - Authelia
+      # rejects a plain-HTTP token request. See the long note in
+      # roles/monitoring/defaults/main.yml.
       - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://{{ m.grafana.oidc.auth_host }}/api/oidc/authorization
-      # Server-facing. Plain HTTP straight to the container - see note (3).
-      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=http://{{ m.grafana.oidc.authelia_container }}:{{ m.grafana.oidc.authelia_port }}/api/oidc/token
-      - GF_AUTH_GENERIC_OAUTH_API_URL=http://{{ m.grafana.oidc.authelia_container }}:{{ m.grafana.oidc.authelia_port }}/api/oidc/userinfo
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://{{ m.grafana.oidc.auth_host }}/api/oidc/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://{{ m.grafana.oidc.auth_host }}/api/oidc/userinfo
+      # Verify Traefik's certificate against the Frey root. The image runs as
+      # a non-root uid and cannot add it to the system trust store, so it is
+      # handed to the OAuth client directly.
+      - GF_AUTH_GENERIC_OAUTH_TLS_CLIENT_CA={{ m.grafana.oidc.ca_file }}
       - GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH=preferred_username
       - GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH=name
       - GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_PATH=email
@@ -618,6 +631,8 @@ services:
       - "{{ m.appdata_dir }}/grafana:/var/lib/grafana"
       - "{{ m.config_dir }}/grafana/provisioning:/etc/grafana/provisioning:ro"
       - "{{ m.config_dir }}/grafana/dashboards:/var/lib/grafana/dashboards:ro"
+      # Needed to verify Traefik's certificate on the OIDC back channel.
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:{{ m.grafana.oidc.ca_file }}:ro"
     networks:
       - {{ m.network.name }}
       - {{ frey.proxy_network }}

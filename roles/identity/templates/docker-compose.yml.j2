@@ -49,6 +49,37 @@ services:
       - LLDAP_LDAP_USER_DN={{ i.lldap_admin_user }}
       - LLDAP_LDAP_USER_EMAIL={{ i.lldap_admin_user }}@{{ frey.local_domain }}
       - LLDAP_LDAP_USER_PASS={{ identity_secrets.lldap_admin_password }}
+      # ------------------------------------------------------------------------
+      # RECONCILE THE ADMIN PASSWORD ON EVERY START, rather than only when the
+      # database is first created.
+      #
+      # Without this the role can wedge permanently, and it did: LLDAP only
+      # sets the admin password when it creates the account, and its stored
+      # password registration is bound to LLDAP_KEY_SEED (see the note below).
+      # If the seed ever differs from the one the password was registered
+      # under - which is exactly what happens if it changed before being
+      # persisted - the stored registration can never be verified again:
+      #
+      #   Login attempt for "admin"
+      #   error: Authentication protocol error ... "This error results from an
+      #          error during password verification"
+      #
+      # Every subsequent deploy then fails at "Apply the directory bootstrap",
+      # which aborts the playbook before any later module runs, and the task is
+      # no_log so Ansible shows only a censored failure. Nothing short of
+      # resetting the password recovers it.
+      #
+      # `always` is correct here rather than heavy-handed: this role GENERATES
+      # and persists that password, so it owns it, and reconciling it each
+      # start is what makes the role self-healing. It is the built-in service
+      # account, not a person - people are managed through identity_users,
+      # whose passwords Ansible deliberately stops touching after creation.
+      #
+      # (`true` would also reset it, but performs a one-time reset and then
+      # exits WITHOUT starting the server - which in a compose service is a
+      # restart loop, not a fix.)
+      # ------------------------------------------------------------------------
+      - LLDAP_FORCE_LDAP_USER_PASS_RESET=always
       # Signs the web UI's own session tokens.
       - LLDAP_JWT_SECRET={{ identity_secrets.lldap_jwt_secret }}
       # Derives the key that encrypts stored password hashes. Changing this

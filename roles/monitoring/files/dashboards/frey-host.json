@@ -196,9 +196,93 @@
     },
 
     {
+      "type": "timeseries",
+      "title": "5V supply rail",
+      "description": "The measured EXT5V rail. Watch this rather than the under-voltage flag: the flag only trips once the supply is already out of spec, by which time writes have happened at that voltage. Nominal 5.1V; the Pi flags under-voltage near 4.8V.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "frey_pmic_rail_volts{rail=\"EXT5V\"}", "legendFormat": "EXT5V" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "decimals": 3,
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 4.6,
+            "axisSoftMax": 5.3,
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 4.8 },
+              { "color": "yellow", "value": 4.95 },
+              { "color": "green", "value": 5.0 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Unclean power losses",
+      "description": "The NVMe's own count of times the Pi was cut off rather than halted. Each one risks SQLite corruption across the *arrs, Jellyfin and LLDAP. Compare with power cycles: if they are close, almost every power-off is unclean.",
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "frey-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "max(frey_nvme_unsafe_shutdowns_total)", "instant": true, "legendFormat": "unclean" },
+        { "refId": "B", "expr": "max(frey_nvme_power_cycles_total)", "instant": true, "legendFormat": "power cycles" },
+        { "refId": "C", "expr": "max(frey_nvme_power_on_hours)", "instant": true, "legendFormat": "hours on" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 6 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "power cycles" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "hours on" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } } ]
+          }
+        ]
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
       "type": "row",
       "title": "Storage",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
       "collapsed": false,
       "panels": []
     },

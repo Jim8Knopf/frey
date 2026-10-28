@@ -387,6 +387,31 @@ monitoring_thresholds:
     undervoltage_for: 1m
     throttling_for: 5m
 
+    # -------------------------------------------------------------------------
+    # THE 5V RAIL, WATCHED DIRECTLY
+    #
+    # The Pi's own under-voltage flag is a late signal: by the time it trips,
+    # the supply has already sagged out of spec and writes have already
+    # happened at that voltage. The PMIC reports the actual EXT5V rail, so a
+    # sag can be caught on the way down instead.
+    #
+    # Nominal is 5.1V; this Pi idles at 5.16V. The SoC flags under-voltage
+    # around 4.8V, so a warning at 4.95 gives real lead time and a critical at
+    # 4.80 coincides with the flag.
+    #
+    # Measured over a short window rather than instantaneously: the rail dips
+    # briefly whenever the NVMe or the USB radio draws a burst, and alerting
+    # on that would be noise.
+    # -------------------------------------------------------------------------
+    rail_5v_warning: 4.95
+    rail_5v_critical: 4.80
+    rail_5v_for: 2m
+
+    # How far back to look for unclean shutdowns. The NVMe counter only ever
+    # increases, so this is what turns it into "it happened again" rather than
+    # "it has ever happened".
+    unsafe_shutdown_window: 2h
+
   # --- NVMe health -----------------------------------------------------------
   #
   # percentage_used is the drive's own wear estimate: 100 means it has used
