@@ -68,6 +68,8 @@ rpi_nvme:
   cmdline:
     manage: true
     path: /boot/firmware/cmdline.txt
+    # FAT32-safe name: no colons. Written once, never overwritten.
+    backup_path: /boot/firmware/cmdline.txt.frey-orig
     # Appended verbatim. Any existing token sharing a key is replaced, so
     # re-running cannot duplicate or conflict.
     params:

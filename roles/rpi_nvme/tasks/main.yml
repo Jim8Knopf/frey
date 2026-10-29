@@ -97,15 +97,37 @@
     - system
     - nvme
 
+- name: Keep a pristine copy of the original kernel cmdline
+  # `force: false` means this is written once and never again, so it always
+  # holds the line the Pi last booted successfully with - which is the one you
+  # want when recovering by putting the card in a reader.
+  #
+  # Done by hand rather than with the template's `backup: true`, because
+  # /boot/firmware is FAT32 and Ansible's backup filenames contain colons
+  # (cmdline.txt.107101.2026-10-29@22:43:09~), which vfat rejects outright:
+  #   [Errno 22] Invalid argument
+  # That failure aborted the task before it wrote anything, so it failed safe -
+  # but it also meant the fix could never land.
+  ansible.builtin.copy:
+    src: "{{ rpi_nvme.cmdline.path }}"
+    dest: "{{ rpi_nvme.cmdline.backup_path }}"
+    remote_src: true
+    force: false
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
 - name: Set the NVMe power-state parameters on the kernel cmdline
   ansible.builtin.template:
     src: cmdline.txt.j2
     dest: "{{ rpi_nvme.cmdline.path }}"
-    owner: root
-    group: root
-    mode: "0755"
-    backup: true
-    # A line without root= is an unbootable Pi. Refuse rather than install it.
+    # No owner/group/mode: vfat has no concept of either, and asking for them
+    # is another way for this task to fail on the one file that must not be
+    # left half-written.
+    #
+    # A line without root= is an unbootable Pi, and this host has no console
+    # and no SD card to fall back to. Refuse rather than install it.
     validate: "grep -qE '(^| )root=' %s"
   register: rpi_nvme_cmdline_written
   when: rpi_nvme.cmdline.manage | bool
@@ -121,8 +143,9 @@
       convenient - `sudo reboot` - then confirm with:
       cat /sys/module/nvme_core/parameters/default_ps_max_latency_us  (expect 0)
       and: sudo nvme get-feature /dev/nvme0 -f 0x0c -H  (expect APSTE Disabled).
-      A backup of the previous line is beside it:
-      {{ rpi_nvme_cmdline_written.backup_file | default('(no backup - unchanged)') }}
+      The line the Pi last booted successfully with is kept at
+      {{ rpi_nvme.cmdline.backup_path }} - restore it from a card reader if
+      this host ever fails to come back up.
   when:
     - rpi_nvme.cmdline.manage | bool
     - rpi_nvme_cmdline_written.changed | default(false)
