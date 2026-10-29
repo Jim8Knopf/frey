@@ -26,24 +26,47 @@
     daemon_reload: true
 
 - name: Reload Prometheus
-  ansible.builtin.command:
-    argv:
-      - docker
-      - kill
-      - -s
-      - HUP
-      - "{{ monitoring.services.prometheus.container_name }}"
+  # SIGHUP is delivered to the container's main process ON THE HOST, and
+  # deliberately NOT with `docker kill -s HUP`.
+  #
+  # dockerd's killWithSignal() sets HasBeenManuallyStopped on the container
+  # for ANY signal, not only a terminating one. The reload itself works and
+  # the container carries straight on running, so this looks entirely
+  # harmless - but the container is now flagged as "stopped by the user", and
+  # `restart: unless-stopped` honours that flag the next time the daemon
+  # starts. The result is a container that runs fine for as long as the Pi
+  # stays up and is then silently NOT restarted at the next boot, while every
+  # other container comes back.
+  #
+  # That is not hypothetical. A rules change HUPed Prometheus, the Pi rebooted
+  # nine hours later, and it came up with Prometheus alone missing - so no
+  # metrics and no alerting, and nothing could raise an alert about it because
+  # Prometheus is the thing that raises alerts. Alertmanager survived the same
+  # reboot only because its own config had not changed in that run, so its
+  # handler never fired.
+  #
+  # `kill -HUP <pid>` goes nowhere near the Docker API, so the flag is never
+  # set. The PID from `docker inspect` is a host-namespace PID, so signalling
+  # it from here reaches PID 1 inside the container.
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      pid="$(docker inspect -f '{{ "{{" }}.State.Pid{{ "}}" }}' {{ monitoring.services.prometheus.container_name | quote }} 2>/dev/null || true)"
+      [ -n "${pid:-}" ] && [ "$pid" -gt 0 ] 2>/dev/null || exit 0
+      kill -HUP "$pid"
   changed_when: true
   failed_when: false
 
 - name: Reload Alertmanager
-  ansible.builtin.command:
-    argv:
-      - docker
-      - kill
-      - -s
-      - HUP
-      - "{{ monitoring.services.alertmanager.container_name }}"
+  # Host-side SIGHUP, for the same reason as the Prometheus handler above:
+  # `docker kill -s HUP` would flag this container as manually stopped and
+  # stop `restart: unless-stopped` from bringing it back after a reboot.
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      pid="$(docker inspect -f '{{ "{{" }}.State.Pid{{ "}}" }}' {{ monitoring.services.alertmanager.container_name | quote }} 2>/dev/null || true)"
+      [ -n "${pid:-}" ] && [ "$pid" -gt 0 ] 2>/dev/null || exit 0
+      kill -HUP "$pid"
   changed_when: true
   failed_when: false
 
