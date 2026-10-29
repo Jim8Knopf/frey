@@ -76,6 +76,12 @@ is not evidence the thing works, which is the whole point of those scripts.
 - **`new` is the working main branch**, not `main`. `origin/main` is the previous
   stack. Base branches on `new` and open PRs with `--base new`. A fresh worktree
   defaults to `origin/main`, so `git reset --hard new` right after creating one.
+- **Name branches `<type>/<slug>`** with a Conventional Commits type, matching the
+  commit convention: `feat/identity-sso`, `fix/journald-volatile`,
+  `docs/claude-md`. The `worktree-*` and `claude/*` branches in the history are
+  tooling artifacts, not the convention. EnterWorktree always names its branch
+  `worktree-<name>` and that cannot be configured, so rename it immediately —
+  `git branch -m <type>/<slug>` — before the first push.
 - **In a worktree, `.vault_pass` is absent** (it is gitignored, so it is not
   cloned in). Ansible runs and the vault pre-commit hook both fail there. Copy it
   in `chmod 600`, or run ansible from the main checkout. Either way, never
