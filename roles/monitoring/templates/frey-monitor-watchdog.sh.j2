@@ -60,9 +60,24 @@ MODE="${1:-notify}"
 mkdir -p "${STATE_DIR}"
 
 problems=()
+healed=()
 
 # -----------------------------------------------------------------------------
-# 1. Are the containers running?
+# 1. Are the containers running? If not, START THEM.
+#
+# Reporting a stopped Prometheus is not much use on its own: the report travels
+# over an uplink the van often does not have, so the message waits while the
+# monitoring stays down. Starting it needs no uplink at all.
+#
+# This is deliberately unconditional rather than clever. Everything in REQUIRED
+# is declared `restart: unless-stopped`, so if one is not running then either
+# something stopped it or Docker declined to bring it back - and in both cases
+# the right answer is the same. That second case is not hypothetical: a reload
+# issued with `docker kill -s HUP` marks a container manually stopped, and
+# `unless-stopped` then skips it at the next boot. Prometheus sat dead for 12
+# hours that way while every other container came back.
+#
+# `docker start` also clears that flag, so the fix sticks across reboots.
 # -----------------------------------------------------------------------------
 if command -v docker >/dev/null 2>&1; then
   running=$(docker ps --format '{% raw %}{{.Names}}{% endraw %}' 2>/dev/null)
@@ -70,8 +85,31 @@ if command -v docker >/dev/null 2>&1; then
     problems+=("docker is not answering - the whole stack is unreachable")
   else
     for container in "${REQUIRED[@]}"; do
-      grep -qx "${container}" <<< "${running}" \
-        || problems+=("container '${container}' is not running")
+      grep -qx "${container}" <<< "${running}" && continue
+
+{% if monitoring_alerting.watchdog.restart_stopped | default(true) | bool %}
+      if [[ "${MODE}" == "status" ]]; then
+        # `status` never changes anything, so it only reports.
+        problems+=("container '${container}' is not running")
+        continue
+      fi
+
+      echo "container '${container}' is not running - starting it"
+      if docker start "${container}" >/dev/null 2>&1; then
+        # Give it a moment to stay up rather than crash straight back out.
+        sleep 5
+        if docker ps --format '{% raw %}{{.Names}}{% endraw %}' 2>/dev/null \
+             | grep -qx "${container}"; then
+          healed+=("container '${container}' was stopped and has been restarted")
+        else
+          problems+=("container '${container}' was stopped, restarted, and died again")
+        fi
+      else
+        problems+=("container '${container}' is not running and would not start")
+      fi
+{% else %}
+      problems+=("container '${container}' is not running")
+{% endif %}
     done
   fi
 else
@@ -136,8 +174,55 @@ fi
 # Report
 # -----------------------------------------------------------------------------
 {# `${#` opens a Jinja comment, so the array-length form is escaped here. #}
+if (( {% raw %}${#healed[@]}{% endraw %} > 0 )); then
+  printf 'HEALED: %s\n' "${healed[@]}"
+fi
+
 if (( {% raw %}${#problems[@]}{% endraw %} == 0 )); then
-  echo "monitoring is healthy"
+  if (( {% raw %}${#healed[@]}{% endraw %} == 0 )); then
+    echo "monitoring is healthy"
+    exit 0
+  fi
+
+  # Nothing is broken any more, but something was. Worth telling you - at
+  # ordinary priority, not the 5-with-a-skull reserved for "you are flying
+  # blind" - because a container that needs restarting keeps needing it, and
+  # the fact that it was down at all is the signal.
+  if [[ "${MODE}" != "status" ]]; then
+    heal_stamp="${STATE_DIR}/last-heal-notified"
+    notify_heal=yes
+    if [[ -r "${heal_stamp}" ]]; then
+      last=$(cat "${heal_stamp}" 2>/dev/null || echo 0)
+      if (( $(date +%s) - ${last:-0} < REPEAT_SECONDS )); then
+        notify_heal=no
+        echo "(heal already notified within the last {{ monitoring_alerting.watchdog.repeat_hours }}h)"
+      fi
+    fi
+
+    if [[ "${notify_heal}" == "yes" ]]; then
+      heal_body=$(printf 'Frey monitoring on %s restarted itself:\n\n' "${NODE}";
+                  printf '  - %s\n' "${healed[@]}";
+                  printf '\nMonitoring is working again now. Worth looking at WHY it\n';
+                  printf 'stopped - on the Pi:\n';
+                  printf '  docker ps -a --filter label=frey.module=monitoring\n';
+                  printf '  sudo journalctl -u frey-monitor-watchdog -n 50\n')
+      auth=()
+      [[ -n "${NTFY_TOKEN}" ]] && auth=(-H "Authorization: Bearer ${NTFY_TOKEN}")
+      if curl -fsS --max-time "${NTFY_TIMEOUT}" \
+          -H "X-Title: Frey monitoring restarted itself" \
+          -H "X-Priority: 3" \
+          -H "X-Tags: arrows_counterclockwise" \
+          "${auth[@]}" \
+          -d "${heal_body}" \
+          "${NTFY_URL}" >/dev/null; then
+        date +%s > "${heal_stamp}"
+        echo "notified (heal)"
+      else
+        # No uplink. Deliberately no stamp, so it sends when there is one.
+        echo "could not notify of heal (no uplink?); will retry"
+      fi
+    fi
+  fi
   exit 0
 fi
 

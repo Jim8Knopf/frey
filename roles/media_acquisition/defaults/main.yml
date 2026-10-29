@@ -175,7 +175,13 @@ media_acquisition:
       container_name: prowlarr
       hostname: prowlarr
       port: 9696
-      mem_limit: 512m
+      # Raised when the memory cgroup was enabled: these limits had never
+      # been enforced, so none had been checked against real usage. Policy is
+      # a ceiling of at least 2x measured idle RSS, so enforcement is a
+      # backstop against a runaway container rather than a tripwire - an OOM
+      # kill mid-write on a SQLite-backed service is the corruption risk this
+      # van is already trying to avoid. Measured 270 MiB.
+      mem_limit: 768m
       env_prefix: PROWLARR
       api_version: v1
 

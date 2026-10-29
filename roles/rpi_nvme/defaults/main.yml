@@ -75,6 +75,30 @@ rpi_nvme:
     params:
       - nvme_core.default_ps_max_latency_us=0
       - pcie_aspm.policy=performance
+      # -----------------------------------------------------------------
+      # THE MEMORY CGROUP, WHICH THIS PI HAS BEEN RUNNING WITHOUT.
+      #
+      # Raspberry Pi firmware puts `cgroup_disable=memory` on the cmdline on
+      # Pi 5 by default (it is in /proc/cmdline but not in cmdline.txt, which
+      # is why it is easy to miss). The consequence is that every `mem_limit`
+      # in this repo - 25 of them - was silently doing nothing, `docker stats`
+      # reported 0B of memory for every container, and the
+      # FreyContainerMemoryHigh alert could not have fired whatever happened.
+      # A runaway container could take the whole van down unopposed.
+      #
+      # Enabling it makes all 25 limits binding AT ONCE, so they were measured
+      # against real usage first. Grafana was 189 MiB over its limit and alloy
+      # had 120 MiB of headroom; both were raised in
+      # roles/monitoring/defaults/main.yml before this was switched on.
+      # Everything else had room. Without that pass, this line would have
+      # OOM-killed Grafana on the next boot.
+      #
+      # Jellyfin is the one to keep an eye on: 441 MiB measured against a 2g
+      # limit is comfortable, but the Pi 5 has no hardware encoder, so a
+      # software transcode is the one workload that could still surprise us.
+      # -----------------------------------------------------------------
+      - cgroup_enable=memory
+      - cgroup_memory=1
 
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every
