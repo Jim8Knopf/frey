@@ -386,6 +386,30 @@ Prometheus is reloaded rather than restarted, so there is no gap in the data and
 — more importantly — no gap in the alerting at the moment you have just changed
 the alerting.
 
+The reload is `kill -HUP <host pid>` and **must not** become
+`docker kill -s HUP`. dockerd sets `HasBeenManuallyStopped` on a container for
+*any* signal sent through its API, not just a terminating one. The reload still
+works and the container keeps running, so nothing looks wrong — but the
+container is now flagged as stopped by the operator, and `unless-stopped`
+honours that flag at the next daemon start. Prometheus then runs until the Pi
+reboots and silently does not come back, alone among the containers.
+
+That failure already happened once: a rules change HUPed Prometheus, the Pi
+rebooted nine hours later, and FreyHub came up with no metrics and no alerting.
+Nothing raised an alert, because **Prometheus is the thing that raises alerts** —
+and that blind spot is structural. Alertmanager was unaffected only because its
+own config had not changed in that run, so its handler never fired.
+
+If you ever find Prometheus stopped with the rest of the stack healthy, check
+the flag before blaming the TSDB:
+
+```bash
+docker inspect prometheus --format '{{.State.ExitCode}}'   # 255, logs empty
+sudo python3 -c "import json;print(json.load(open('/opt/frey/docker/containers/'+\
+'$(docker inspect prometheus -f {{.Id}})/config.v2.json'))['HasBeenManuallyStopped'])"
+docker start prometheus     # clears the flag as well as starting it
+```
+
 ### Updating images
 
 `scripts/monitoring-check.sh --updates`, edit `monitoring_versions`, then deploy
