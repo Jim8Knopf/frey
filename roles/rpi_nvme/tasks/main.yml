@@ -64,6 +64,72 @@
     - system
     - nvme
 
+# ==============================================================================
+# NVMe POWER-STATE STABILITY
+#
+# Why this exists at all is in roles/rpi_nvme/defaults/main.yml, next to the
+# parameters. Short version: APST parks this drive in a 5mW state it does not
+# reliably wake from, it leaves the PCIe bus, and the host wedges in a way the
+# hardware watchdog cannot catch.
+#
+# This writes the boot cmdline, so it is the single most dangerous task in the
+# repo after the gateway: get it wrong and the Pi does not come up, with no
+# console to find out why. Hence the read-modify-write through a template, the
+# backup, and the validate that refuses to install a line that lost root=.
+# ==============================================================================
+- name: Read the current kernel cmdline
+  ansible.builtin.slurp:
+    src: "{{ rpi_nvme.cmdline.path }}"
+  register: rpi_nvme_cmdline_raw
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
+- name: Keep the existing cmdline tokens to merge against
+  ansible.builtin.set_fact:
+    # cmdline.txt is a single line. Anything after the first is not read by
+    # the bootloader, so only the first is carried forward.
+    rpi_nvme_cmdline_tokens: >-
+      {{ (rpi_nvme_cmdline_raw.content | b64decode).splitlines() | first | default('', true) | trim }}
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
+- name: Set the NVMe power-state parameters on the kernel cmdline
+  ansible.builtin.template:
+    src: cmdline.txt.j2
+    dest: "{{ rpi_nvme.cmdline.path }}"
+    owner: root
+    group: root
+    mode: "0755"
+    backup: true
+    # A line without root= is an unbootable Pi. Refuse rather than install it.
+    validate: "grep -qE '(^| )root=' %s"
+  register: rpi_nvme_cmdline_written
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
+- name: Point out that the cmdline change needs a reboot
+  ansible.builtin.debug:
+    msg: >-
+      The kernel cmdline changed and these parameters only apply at boot, so
+      the NVMe is still running with its old power-state policy. Reboot when
+      convenient - `sudo reboot` - then confirm with:
+      cat /sys/module/nvme_core/parameters/default_ps_max_latency_us  (expect 0)
+      and: sudo nvme get-feature /dev/nvme0 -f 0x0c -H  (expect APSTE Disabled).
+      A backup of the previous line is beside it:
+      {{ rpi_nvme_cmdline_written.backup_file | default('(no backup - unchanged)') }}
+  when:
+    - rpi_nvme.cmdline.manage | bool
+    - rpi_nvme_cmdline_written.changed | default(false)
+  tags:
+    - system
+    - nvme
+
 - name: Ensure journald override directory exists
   ansible.builtin.file:
     path: /etc/systemd/journald.conf.d

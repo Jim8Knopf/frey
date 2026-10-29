@@ -244,6 +244,22 @@ corruption across the *arrs, Jellyfin and LLDAP. `FreyUnsafeShutdown` and
 `Frey5vRailLow` are both critical. When something is behaving strangely, check
 that count before blaming software.
 
+Most of them had one cause, now fixed in `rpi_nvme`: APST parked the DRAM-less
+drive in a 5 mW state it could not reliably wake from, it left the PCIe bus
+(`controller is down; CSTS=0xffffffff`), and the host **wedged rather than
+crashed** — systemd keeps petting the hardware watchdog from RAM, so nothing
+rebooted and only the button recovered it. The full account is in
+`roles/rpi_nvme/README.md`. Two traps worth carrying forward:
+
+- **A wedged Pi that answers ping but refuses SSH is not a lockout.** `sshd`
+  cannot read `authorized_keys` off a dead disk, so it fails authentication with
+  `Permission denied (publickey)` — which reads exactly like the
+  `PerSourcePenalties` problem in `docs/SSH_ACCESS.md` and sends you to the
+  wrong page. Check whether the journal has stopped before concluding anything.
+- **An empty journal after a freeze is evidence, not a gap.** The journal lives
+  on the disk that disappeared, so the kernel's complaint never reached it.
+  Loki has it, because it was shipped off-host before the wedge.
+
 ## Secrets
 
 `inventory/group_vars/all/secrets.yml` is AES256 vault ciphertext and **is

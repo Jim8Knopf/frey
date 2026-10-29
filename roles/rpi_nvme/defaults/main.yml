@@ -13,6 +13,66 @@ rpi_nvme:
   sysctl:
     vm.swappiness: "10"
     vm.vfs_cache_pressure: "50"
+    # ---------------------------------------------------------------
+    # TURN AN NVMe WEDGE INTO A REBOOT.
+    #
+    # When the NVMe controller drops off the PCIe bus, every task that
+    # touches the filesystem blocks forever - but systemd runs from RAM and
+    # carries on petting the hardware watchdog, so the watchdog never fires.
+    # The Pi sits there, reachable by ping, answering nothing, until someone
+    # physically cuts the power. Observed: a 28-minute wedge that ended with
+    # a button press, and 13 unsafe shutdowns in 19 power cycles.
+    #
+    # hung_task_panic turns a task blocked for longer than the timeout into a
+    # panic, and kernel.panic reboots a few seconds later. The van recovers on
+    # its own in about two and a half minutes instead of waiting for a human.
+    #
+    # 120s is deliberately generous: a healthy NVMe never blocks a task for
+    # two minutes, so this only fires on a genuine fault.
+    # ---------------------------------------------------------------
+    kernel.hung_task_timeout_secs: "120"
+    kernel.hung_task_panic: "1"
+    kernel.panic: "10"
+
+  # ---------------------------------------------------------------
+  # KERNEL PARAMETERS THAT ONLY WORK FROM THE BOOT CMDLINE.
+  #
+  # The root cause of this Pi's recurring freezes. The fitted drive is a
+  # KLEVV CRAS C910 4TB - a DRAM-less Realtek RTS5772DL - and it advertises
+  # two non-operational power states:
+  #
+  #   ps3  0.1500W  enter 5000us   exit 10000us
+  #   ps4  0.0050W  enter 17000us  exit 60000us
+  #
+  # The kernel's default default_ps_max_latency_us is 100000, which is above
+  # ps4's 77ms round trip, so APST is allowed to park the drive in ps4 - a
+  # 5-milliwatt state with a 60ms wake-up. This controller intermittently
+  # fails to come back from it, and the drive vanishes from the bus:
+  #
+  #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff, PCI_STATUS=0x10
+  #
+  # Six of those inside 25 minutes were recovered by the kernel's own reset.
+  # When the reset also fails, the host wedges as described above. Nothing
+  # appears in the journal afterwards, because the journal lives on the disk
+  # that just disappeared - which is why this hid for so long and looked
+  # like a software fault every time.
+  #
+  # 0 forbids every non-operational state. 5500 would allow ps3 but not ps4
+  # and keeps most of the idle saving; prefer 0 until the van has gone a few
+  # weeks without a dropout, because stability here is worth more than the
+  # fraction of a watt.
+  #
+  # ASPM is set away from powersave for the same reason: L1 link power
+  # management is the other half of the same class of fault.
+  # ---------------------------------------------------------------
+  cmdline:
+    manage: true
+    path: /boot/firmware/cmdline.txt
+    # Appended verbatim. Any existing token sharing a key is replaced, so
+    # re-running cannot duplicate or conflict.
+    params:
+      - nvme_core.default_ps_max_latency_us=0
+      - pcie_aspm.policy=performance
 
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every

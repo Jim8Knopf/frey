@@ -1,0 +1,17 @@
+{#-
+  /boot/firmware/cmdline.txt - the kernel command line. ONE line, space
+  separated. Managed by Ansible role: rpi_nvme. Do not edit on the Pi.
+
+  Every token already on the line is preserved in its original order, except
+  tokens whose key is one we manage - those are dropped and re-added from
+  rpi_nvme.cmdline.params. That is what makes this idempotent: running it
+  twice cannot duplicate a parameter or leave two conflicting values.
+
+  A malformed line here does not degrade the Pi, it stops it booting, and
+  this host has no console. The task that renders this validates that root=
+  survived before replacing the file, and keeps a backup.
+-#}
+{%- set managed_keys = rpi_nvme.cmdline.params | map('regex_replace', '=.*$', '') | list -%}
+{%- set managed_re = '^(' ~ (managed_keys | map('regex_escape') | join('|')) ~ ')=' -%}
+{%- set kept = rpi_nvme_cmdline_tokens.split() | reject('match', managed_re) | list -%}
+{{ (kept + rpi_nvme.cmdline.params) | join(' ') }}
