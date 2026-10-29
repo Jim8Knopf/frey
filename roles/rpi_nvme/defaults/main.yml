@@ -96,6 +96,18 @@ rpi_nvme:
       # Jellyfin is the one to keep an eye on: 441 MiB measured against a 2g
       # limit is comfortable, but the Pi 5 has no hardware encoder, so a
       # software transcode is the one workload that could still surprise us.
+      #
+      # TWO STEPS, NOT ONE. Docker does not merely leave a limit unenforced
+      # when the controller is missing - it drops it when the container is
+      # CREATED, logging
+      #   "Your kernel does not support memory limit capabilities or the
+      #    cgroup is not mounted. Limitation discarded."
+      # and storing HostConfig.Memory=0. A reboot restarts containers from
+      # that stored config, so the limits still will not apply. After the
+      # reboot, re-run the deploy: compose sees desired != actual and
+      # recreates them, and only then is the limit real. Verify with
+      #   docker inspect grafana --format '{{.HostConfig.Memory}}'
+      # which must be non-zero.
       # -----------------------------------------------------------------
       - cgroup_enable=memory
       - cgroup_memory=1
