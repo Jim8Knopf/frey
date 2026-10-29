@@ -344,12 +344,6 @@ rpi_nvme:
   # Enforced so a later rebuild refuses to deploy service data onto an SD card
   # instead of quietly filling it.
   require_nvme_root: true
-  # Spelled out rather than inherited. `hash_behaviour = merge` was REMOVED in
-  # ansible-core 2.19 and this host now runs 2.21, so this block shadows
-  # roles/rpi_nvme/defaults wholesale - exactly the failure the note on the ssh
-  # block predicted. Without this line the role's own "is root on NVMe" assert
-  # fails on an undefined variable. Keep every key this role reads present here.
-  root_device_pattern: "^/dev/nvme"
 
   packages:
     - nvme-cli
@@ -358,26 +352,6 @@ rpi_nvme:
   sysctl:
     vm.swappiness: "10"
     vm.vfs_cache_pressure: "50"
-    # Turn an NVMe that has stopped answering into a reboot instead of a wedge.
-    # When the controller drops off the PCIe bus every task touching the disk
-    # blocks forever, while systemd carries on petting the hardware watchdog
-    # from RAM - so the watchdog never fires and only the button recovers it.
-    # Rationale in full: roles/rpi_nvme/README.md.
-    kernel.hung_task_timeout_secs: "120"
-    kernel.hung_task_panic: "1"
-    kernel.panic: "10"
-
-  # Kernel parameters that only take effect from the boot cmdline. These are
-  # what stop the drive sleeping itself off the bus in the first place; the
-  # sysctls above are the backstop for when it happens anyway.
-  cmdline:
-    manage: true
-    path: /boot/firmware/cmdline.txt
-    # FAT32-safe name: no colons. Written once, never overwritten.
-    backup_path: /boot/firmware/cmdline.txt.frey-orig
-    params:
-      - nvme_core.default_ps_max_latency_us=0
-      - pcie_aspm.policy=performance
 
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every
