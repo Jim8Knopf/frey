@@ -13,10 +13,149 @@
 # it, so the browser engine is not in the path for trackers that do not need
 # it.
 #
-# Indexers themselves are deliberately NOT created here: they need your own
-# tracker credentials. Add them at prowlarr.{{ frey.local_domain }} and they
-# propagate automatically.
+# Private indexers remain user-managed. Knaben is an optional public source
+# used by AudioBookRequest; its restricted sync profile avoids enabling RSS or
+# automated searches in unrelated applications.
 # ==============================================================================
+
+- name: "prowlarr: read application sync profiles"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/appprofile"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_audiobook_profiles
+  changed_when: false
+  when: media_audiobook_public_indexer | default(false) | bool
+
+- name: "prowlarr: add an interactive-only sync profile for audiobook sources"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/appprofile"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body:
+      name: Audiobook requests
+      enableRss: false
+      enableAutomaticSearch: false
+      enableInteractiveSearch: true
+      minimumSeeders: 1
+    status_code: [200, 201]
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_audiobook_profile_added
+  changed_when: prowlarr_audiobook_profile_added.status | default(0) in [200, 201]
+  when:
+    - media_audiobook_public_indexer | default(false) | bool
+    - "'Audiobook requests' not in (prowlarr_audiobook_profiles.json | map(attribute='name') | list)"
+
+- name: "prowlarr: inspect configured audiobook indexers"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_audiobook_indexers
+  changed_when: false
+  no_log: true
+  when: media_audiobook_public_indexer | default(false) | bool
+
+- name: "prowlarr: read available indexer definitions"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer/schema"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_audiobook_schema
+  changed_when: false
+  no_log: true
+  when:
+    - media_audiobook_public_indexer | default(false) | bool
+    - "'Knaben' not in (prowlarr_audiobook_indexers.json | map(attribute='name') | list)"
+
+- name: "prowlarr: add the public Knaben audiobook search source"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body: "{{ knaben_definition | combine({'appProfileId': audiobook_profile_id | int}) }}"
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    knaben_definition: "{{ prowlarr_audiobook_schema.json | selectattr('name', 'equalto', 'Knaben') | first }}"
+    audiobook_profile_id: >-
+      {{ (prowlarr_audiobook_profiles.json | selectattr('name', 'equalto', 'Audiobook requests') | map(attribute='id') | first)
+         | default(prowlarr_audiobook_profile_added.json.id | default(0)) }}
+  register: prowlarr_knaben_added
+  changed_when: prowlarr_knaben_added.status | default(0) in [200, 201]
+  no_log: true
+  when:
+    - media_audiobook_public_indexer | default(false) | bool
+    - "'Knaben' not in (prowlarr_audiobook_indexers.json | map(attribute='name') | list)"
+
+- name: "prowlarr: read existing download clients"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/downloadclient"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_downloadclients
+  changed_when: false
+  no_log: true
+  when: media_acquisition.services.qbittorrent.enabled | bool
+
+- name: "prowlarr: register qBittorrent when no torrent client exists"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/downloadclient"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body:
+      enable: true
+      name: qBittorrent
+      protocol: torrent
+      priority: 1
+      implementation: QBittorrent
+      implementationName: qBittorrent
+      configContract: QBittorrentSettings
+      tags: []
+      fields:
+        - {name: host, value: "{{ media_acquisition.vpn.qbittorrent_host }}"}
+        - {name: port, value: "{{ media_acquisition.services.qbittorrent.port }}"}
+        - {name: useSsl, value: false}
+        - {name: urlBase, value: ""}
+        - {name: username, value: "{{ media_acquisition.services.qbittorrent.web_username }}"}
+        - {name: password, value: "{{ media_secrets.qbittorrent_password }}"}
+        - {name: category, value: audiobookrequest}
+        - {name: priority, value: 0}
+        - {name: initialState, value: 0}
+        - {name: sequentialOrder, value: false}
+        - {name: firstAndLast, value: false}
+        - {name: contentLayout, value: 0}
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  when:
+    - media_acquisition.services.qbittorrent.enabled | bool
+    - prowlarr_downloadclients.json is defined
+    - prowlarr_downloadclients.json | selectattr('protocol', 'equalto', 'torrent') | list | length == 0
+  register: prowlarr_downloadclient_added
+  changed_when: prowlarr_downloadclient_added.status | default(0) in [200, 201]
+  no_log: true
 
 - name: "prowlarr: read existing tags"
   ansible.builtin.uri:

@@ -38,6 +38,15 @@
 # those effectively never change. The comment on each line is the upstream
 # project the tag belongs to.
 # ==============================================================================
+# Add Knaben as a public audiobook search source in Prowlarr. Its sync profile
+# permits interactive searches only in other *arr apps, not RSS or auto grabs.
+media_audiobook_public_indexer: true
+
+# Permit 15 concurrent downloads and reserve three more active-torrent slots
+# for the existing upload limit. qBittorrent's global limit applies to both.
+media_qbittorrent_max_active_downloads: 15
+media_qbittorrent_max_active_torrents: 18
+
 media_versions:
 
   # --- Library (works with no internet) --------------------------------------
@@ -61,7 +70,7 @@ media_versions:
 
   # --- Acquisition (needs an uplink) -----------------------------------------
   # linuxserver images use `version-<upstream version>` tags.
-  prowlarr: version-2.6.5.5623
+  prowlarr: version-2.7.0.5723
   sonarr: version-4.0.20.3014
   radarr: version-6.4.4.10685
   lidarr: version-3.1.6.5079

@@ -101,6 +101,9 @@
       dht: true
       pex: true
       lsd: true
+      queueing_enabled: true
+      max_active_downloads: "{{ media_qbittorrent_max_active_downloads | int }}"
+      max_active_torrents: "{{ media_qbittorrent_max_active_torrents | int }}"
       # No proxy: this deployment runs without a VPN by choice.
       proxy_type: 0
       proxy_torrents_only: false
@@ -141,6 +144,11 @@
       or not (qbt_prefs.content | from_json).auto_tmm_enabled | default(false)
       or (qbt_prefs.content | from_json).web_ui_username | default('')
          != media_acquisition.services.qbittorrent.web_username
+      or not (qbt_prefs.content | from_json).queueing_enabled | default(false)
+      or (qbt_prefs.content | from_json).max_active_downloads | default(0) | int
+         != media_qbittorrent_max_active_downloads | int
+      or (qbt_prefs.content | from_json).max_active_torrents | default(0) | int
+         != media_qbittorrent_max_active_torrents | int
   when: qbt_cookie is defined
   no_log: true
 

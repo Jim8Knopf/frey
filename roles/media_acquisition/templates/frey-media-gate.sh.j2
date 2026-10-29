@@ -32,6 +32,7 @@ QBT_HOST="qbittorrent.{{ frey.local_domain }}"
 STATE_DIR=/run/frey-media-gate
 OFFLINE_STAMP="${STATE_DIR}/offline-since"
 COOKIE_JAR="${STATE_DIR}/qbt-cookies"
+INDEXER_RETRY_SECONDS=1800
 
 # Credentials live in a root-only environment file, never in this script.
 # shellcheck disable=SC1091
@@ -43,6 +44,20 @@ ARR_CONTAINERS=(
   "{{ cfg.container_name }}"
 {% endif %}
 {% endfor %}
+)
+
+# Check Prowlarr first, then each consumer. Per-service state in /run forces
+# a test on boot and after an outage, and allows failed tests to be retried.
+INDEXER_TEST_SERVICES=(
+{% if media_acquisition.services.prowlarr.enabled | bool %}
+  "prowlarr {{ media_acquisition.services.prowlarr.port }} {{ media_acquisition.services.prowlarr.api_version }}"
+{% endif %}
+{% if media_acquisition.services.sonarr.enabled | bool %}
+  "sonarr {{ media_acquisition.services.sonarr.port }} {{ media_acquisition.services.sonarr.api_version }}"
+{% endif %}
+{% if media_acquisition.services.radarr.enabled | bool %}
+  "radarr {{ media_acquisition.services.radarr.port }} {{ media_acquisition.services.radarr.api_version }}"
+{% endif %}
 )
 
 log() { logger -t frey-media-gate -- "$*"; [ -t 1 ] && echo "$*"; }
@@ -139,6 +154,68 @@ qbt_set_alt_mode() {
   fi
 }
 
+# Query from inside the container so API keys never enter host command lines or
+# logs. HTTP success alone is insufficient: testall can return isValid=false.
+servarr_request() {
+  local service="$1" port="$2" api_version="$3" method="$4" endpoint="$5"
+  local request_timeout=10
+  [ "${method}" != POST ] || request_timeout=75
+  docker exec -e "API_PORT=${port}" -e "API_VERSION=${api_version}" \
+    -e "API_METHOD=${method}" -e "API_ENDPOINT=${endpoint}" -e "API_TIMEOUT=${request_timeout}" \
+    "${service}" sh -c '
+      key=$(sed -n "s#.*<ApiKey>\\(.*\\)</ApiKey>.*#\\1#p" /config/config.xml)
+      [ -n "${key}" ] && curl -fsS --max-time "${API_TIMEOUT}" -X "${API_METHOD}" \
+        -H "X-Api-Key: ${key}" \
+        "http://127.0.0.1:${API_PORT}/api/${API_VERSION}/${API_ENDPOINT}"
+    ' 2>/dev/null
+}
+
+refresh_indexer_health() {
+  local entry service port api_version health now last status
+  for entry in "${INDEXER_TEST_SERVICES[@]}"; do
+    read -r service port api_version <<< "${entry}"
+    health=$(servarr_request "${service}" "${port}" "${api_version}" GET health) || {
+      log "${service} health unavailable; will retry"
+      continue
+    }
+    status=$(printf '%s' "${health}" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if not isinstance(data, list): raise ValueError()
+    print("failed" if any(str(x.get("source", "")).startswith("Indexer") for x in data) else "healthy")
+except (ValueError, TypeError, AttributeError):
+    sys.exit(1)
+') || { log "${service} health response invalid; will retry"; continue; }
+
+    if [ "${status}" = healthy ] && [ -e "${STATE_DIR}/${service}-validated" ]; then
+      continue
+    fi
+    now=$(date +%s)
+    last=0
+    [ ! -r "${STATE_DIR}/${service}-last-test" ] || read -r last < "${STATE_DIR}/${service}-last-test"
+    [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+    [ $((now - last)) -ge "${INDEXER_RETRY_SECONDS}" ] || continue
+    printf '%s\n' "${now}" > "${STATE_DIR}/${service}-last-test"
+    if servarr_request "${service}" "${port}" "${api_version}" POST indexer/testall | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if not isinstance(data, list) or not all(isinstance(x, dict) and x.get("isValid") is True for x in data):
+        sys.exit(1)
+except (ValueError, TypeError):
+    sys.exit(1)
+'; then
+      : > "${STATE_DIR}/${service}-validated"
+      log "${service} indexers revalidated"
+    else
+      rm -f "${STATE_DIR}/${service}-validated"
+      log "${service} indexer revalidation failed; will retry in ${INDEXER_RETRY_SECONDS}s"
+    fi
+  done
+  return 0
+}
+
 # -----------------------------------------------------------------------------
 # Container control, for mode: stop
 # -----------------------------------------------------------------------------
@@ -164,27 +241,34 @@ offline_long_enough() {
 
 go_online() {
   rm -f "${OFFLINE_STAMP}"
-  qbt_login || { log "uplink usable, but qBittorrent login failed - leaving downloads alone"; return 0; }
-
-  if uplink_is_metered; then
-    qbt_set_alt_limits
-    qbt_set_alt_mode on
-    log "uplink usable but metered: throttled to ${METERED_DOWN_KIB}/${METERED_UP_KIB} KiB/s"
+  if qbt_login; then
+    if uplink_is_metered; then
+      qbt_set_alt_limits
+      qbt_set_alt_mode on
+      log "uplink usable but metered: throttled to ${METERED_DOWN_KIB}/${METERED_UP_KIB} KiB/s"
+    else
+      qbt_set_alt_mode off
+      log "uplink usable and unmetered: full speed"
+    fi
+    qbt_resume_all && log "downloads resumed"
   else
-    qbt_set_alt_mode off
-    log "uplink usable and unmetered: full speed"
+    log "uplink usable, but qBittorrent login failed - leaving downloads alone"
   fi
-
-  qbt_resume_all && log "downloads resumed"
   if [ "${MODE}" = "stop" ]; then
     arr_containers_action start
     log "*arr containers started"
   fi
+  refresh_indexer_health
 }
 
 go_offline() {
   local state="$1"
   [ -r "${OFFLINE_STAMP}" ] || date +%s > "${OFFLINE_STAMP}"
+  local entry service port api_version
+  for entry in "${INDEXER_TEST_SERVICES[@]}"; do
+    read -r service port api_version <<< "${entry}"
+    rm -f "${STATE_DIR}/${service}-validated" "${STATE_DIR}/${service}-last-test"
+  done
 
   if qbt_login; then
     qbt_pause_all && log "uplink ${state}: downloads paused"
@@ -225,6 +309,15 @@ show_status() {
     echo "offline since: $(date -d "@$(cat "${OFFLINE_STAMP}")" 2>/dev/null)"
   fi
 }
+
+case "${1:-apply}" in
+  apply|pause|resume)
+    # Dispatcher events and the timer can overlap. Never let an older online
+    # run resume downloads after a newer offline event.
+    exec 9>"${STATE_DIR}/lock"
+    flock -x 9
+    ;;
+esac
 
 case "${1:-apply}" in
   apply) apply_gating ;;

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for completed audiobook requests
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=frey-audiobook-import.service
+
+[Install]
+WantedBy=timers.target

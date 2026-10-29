@@ -11,7 +11,7 @@ ExecStart=/usr/local/bin/frey-media-gate apply
 # A failure here must never block boot: the gate is an optimisation, and
 # FreyHub plus playback have to come up regardless.
 SuccessExitStatus=0 1
-TimeoutStartSec=120
+TimeoutStartSec=360
 
 [Install]
 WantedBy=multi-user.target

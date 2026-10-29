@@ -97,11 +97,13 @@
         # password, so `--tags media_gating` on its own fails with
         # "'media_secrets' is undefined" without this.
         - media_gating
+        - audiobook_import
   tags:
     - media
     - media_acquisition
     - media_config
     - media_gating
+    - audiobook_import
 
 # ------------------------------------------------------------------------------
 # SEED CONFIGURATION
@@ -318,6 +320,7 @@
   # here. The images are pinned, so a pull is a no-op once it has succeeded.
   community.docker.docker_image_pull:
     name: "{{ item }}"
+    pull: not_present
   loop: >-
     {{
       (media_acquisition.services | dict2items
@@ -442,6 +445,7 @@
     - media
     - media_acquisition
     - media_gating
+    - audiobook_import
 
 - name: Install media gating credentials
   ansible.builtin.template:
@@ -455,6 +459,48 @@
     - media
     - media_acquisition
     - media_gating
+    - audiobook_import
+
+- name: Install completed audiobook importer
+  ansible.builtin.template:
+    src: frey-audiobook-import.py.j2
+    dest: /usr/local/bin/frey-audiobook-import
+    owner: root
+    group: root
+    mode: "0755"
+    validate: "python3 -m py_compile %s"
+  tags:
+    - media
+    - media_acquisition
+    - audiobook_import
+
+- name: Install audiobook import units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-audiobook-import.service
+    - frey-audiobook-import.timer
+  register: audiobook_import_units
+  tags:
+    - media
+    - media_acquisition
+    - audiobook_import
+
+- name: Enable audiobook import timer
+  ansible.builtin.systemd:
+    name: frey-audiobook-import.timer
+    daemon_reload: "{{ audiobook_import_units.changed }}"
+    enabled: "{{ media_enable.audiobookrequest | bool and media_enable.audiobookshelf | bool and media_acquisition.services.qbittorrent.enabled | bool }}"
+    state: "{{ 'started' if (media_enable.audiobookrequest | bool and media_enable.audiobookshelf | bool and media_acquisition.services.qbittorrent.enabled | bool) else 'stopped' }}"
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+    - audiobook_import
 
 - name: Install the NetworkManager dispatcher hook for media gating
   ansible.builtin.template:

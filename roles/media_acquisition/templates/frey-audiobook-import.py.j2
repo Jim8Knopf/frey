@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Link completed AudioBookRequest torrents into the Audiobookshelf library."""
+import http.cookiejar
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import sys
+import urllib.parse
+import urllib.request
+
+DATA = Path({{ media.data_dir | to_json }})
+SOURCE_ROOT = DATA / "torrents"
+LIBRARY = DATA / "media" / "audiobooks" / "Requests"
+API = "http://{{ frey.service_address }}"
+HEADERS = {"Host": "qbittorrent.{{ frey.local_domain }}"}
+UID, GID = {{ media.user.uid }}, {{ media.user.gid }}
+CATEGORY = "audiobookrequest"
+EXTENSIONS = {".mp3", ".m4b", ".m4a", ".flac", ".ogg", ".opus", ".wav", ".aac", ".jpg", ".jpeg", ".png", ".webp", ".cue", ".opf"}
+AUDIO = {".mp3", ".m4b", ".m4a", ".flac", ".ogg", ".opus", ".wav", ".aac"}
+
+
+def request(client, endpoint, data=None):
+    req = urllib.request.Request(API + endpoint, data=data, headers=HEADERS)
+    with client.open(req, timeout=20) as response:
+        return response.read()
+
+
+def safe_file(base, relative):
+    """Reject traversal, symlinks and paths outside the torrent tree."""
+    rel = Path(relative)
+    if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
+        raise ValueError("unsafe torrent file path")
+    path = base / rel
+    if not path.resolve(strict=True).is_relative_to(SOURCE_ROOT.resolve(strict=True)):
+        raise ValueError("file is outside torrent storage")
+    current = path
+    while current != SOURCE_ROOT:
+        if current.is_symlink():
+            raise ValueError("torrent file path contains a symlink")
+        current = current.parent
+    if not path.is_file():
+        raise ValueError("torrent file is not a regular file")
+    return path
+
+
+def mkdir(path):
+    if not path.is_relative_to(LIBRARY):
+        raise ValueError("unsafe library directory")
+    current = DATA
+    for part in path.relative_to(DATA).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("library directory contains a symlink")
+        if not current.exists():
+            current.mkdir(mode=0o775)
+            os.chown(current, UID, GID)
+            os.chmod(current, 0o2775)
+        elif not current.is_dir():
+            raise ValueError("library path is not a directory")
+
+
+def import_torrent(torrent, files):
+    digest = torrent.get("hash", "")
+    if not re.fullmatch(r"[a-fA-F0-9]{40,64}", digest):
+        raise ValueError("invalid torrent hash")
+    save_path = torrent.get("save_path", "")
+    if not save_path.startswith("/data/torrents/"):
+        raise ValueError("unexpected torrent save path")
+    relative_save_path = Path(save_path.removeprefix("/data/"))
+    if ".." in relative_save_path.parts:
+        raise ValueError("unsafe torrent save path")
+    base = DATA / relative_save_path
+    if base.is_symlink() or not base.resolve(strict=True).is_relative_to(SOURCE_ROOT.resolve(strict=True)):
+        raise ValueError("unsafe torrent save path")
+    selected = [f for f in files if f.get("priority", 1) > 0 and Path(f["name"]).suffix.lower() in EXTENSIONS]
+    if not any(Path(f["name"]).suffix.lower() in AUDIO for f in selected):
+        raise ValueError("no selected audio files")
+    if any(f.get("progress", 0) < 1 for f in selected):
+        raise ValueError("selected files are not complete")
+    sources = [(safe_file(base, f["name"]), Path(f["name"])) for f in selected]
+    title = re.sub(r"[\\/\x00-\x1f]", "_", torrent.get("name", "Audiobook"))[:120].strip(" .") or "Audiobook"
+    destination = LIBRARY / (title + " [" + digest[:8] + "]")
+    mkdir(LIBRARY)
+    mkdir(destination)
+    for source, relative in sources:
+        target = destination / relative
+        mkdir(target.parent)
+        try:
+            os.link(source, target, follow_symlinks=False)
+        except FileExistsError:
+            if target.is_symlink() or not os.path.samefile(source, target):
+                raise ValueError("library destination already exists with different content")
+    logging.info("Imported completed torrent: %s", title)
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    login = urllib.parse.urlencode({"username": os.environ["QBT_USERNAME"], "password": os.environ["QBT_PASSWORD"]}).encode()
+    result = request(client, "/api/v2/auth/login", login)
+    if result not in (b"Ok.", b""):
+        raise ValueError("qBittorrent login rejected")
+    torrents = json.loads(request(client, "/api/v2/torrents/info?category=" + CATEGORY))
+    failed = False
+    for torrent in torrents:
+        if torrent.get("progress", 0) < 1 or torrent.get("amount_left", 1) != 0:
+            continue
+        try:
+            files = json.loads(request(client, "/api/v2/torrents/files?" + urllib.parse.urlencode({"hash": torrent["hash"]})))
+            import_torrent(torrent, files)
+        except (ValueError, OSError, KeyError) as exc:
+            logging.error("Could not import %s: %s", torrent.get("name", "torrent"), exc)
+            failed = True
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError) as exc:
+        logging.error("Audiobook import failed: %s", exc)
+        sys.exit(1)

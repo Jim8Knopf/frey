@@ -196,12 +196,21 @@ from the repo instead, set `vault_media_api_keys` in
 | From | To | What |
 | --- | --- | --- |
 | Prowlarr | Sonarr, Radarr, Lidarr, Chaptarr | Registered as applications at `fullSync` — indexers propagate |
+| AudioBookRequest | Prowlarr → qBittorrent → Audiobookshelf | Direct requests use the `audiobookrequest` category. A five-minute timer hardlinks completed audio into the Audiobookshelf `Requests` folder; the torrent remains available for seeding. |
 | Prowlarr | Byparr | Cloudflare solver, applied to `cloudflare`-tagged indexers |
 | Sonarr, Radarr, Lidarr, Chaptarr | qBittorrent | Download client with the right category |
 | Sonarr, Radarr, Lidarr, Chaptarr | — | Root folders under `/data/media` |
 | Bazarr | Sonarr, Radarr | Templated `config.yaml` |
 | Recyclarr | Sonarr, Radarr | TRaSH quality profiles and custom formats, nightly |
 | Unpackerr | Sonarr, Radarr, Lidarr | Archive extraction |
+
+For audiobook requests, select `de` or an English region in the search form.
+Automatic source ranking does not guarantee the spoken language: inspect the
+source before choosing a download when an exact edition matters. The importer
+only accepts completed, selected audio files and common cover/metadata files;
+it does not unpack archives. Check `journalctl -u frey-audiobook-import.service`
+if a completed request does not appear. An indexer can only find titles and
+languages currently available from its sources.
 
 ## First-Run Steps That Are Not Automated
 
@@ -212,7 +221,9 @@ Five things. The deploy prints the values you need for each.
    Not automated because Jellyfin 12.3's `/Startup/User` endpoint does not
    create the administrator, and completing the wizard without one leaves a
    server nobody can log into. See `roles/media_library/README.md`.
-2. **Prowlarr indexers.** They need your own tracker credentials. Add them at
+2. **Additional Prowlarr indexers.** Knaben is added as a public search source
+   when `media_audiobook_public_indexer` is true; private sources may need your
+   own tracker credentials. Add those at
    `http://prowlarr.frey` and they propagate to every *arr automatically.
 3. **Seerr setup** at `http://seerr.frey`. Point it at
    `http://jellyfin:8096`, then add Sonarr (`http://sonarr:8989`) and Radarr
@@ -248,6 +259,12 @@ A NetworkManager dispatcher hook fires on interface events; a 10-minute timer
 catches transitions that produce no event, such as signing into a portal from
 a phone on FreyHub, which flips the Pi's verdict without any interface
 changing state.
+
+When the uplink returns, the gate tests Prowlarr, Sonarr and Radarr indexers
+to clear stale failures. It also checks their health while online and retries
+failed tests at most every 30 minutes. Unavailable indexers or credentials
+still need attention if they do not recover; check the gate's journal with
+`journalctl -t frey-media-gate`.
 
 Modes (`media_acquisition.uplink_gating.mode`):
 

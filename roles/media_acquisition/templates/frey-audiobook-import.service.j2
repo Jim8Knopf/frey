@@ -1,0 +1,9 @@
+[Unit]
+Description=Import completed audiobook requests into Audiobookshelf
+After=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/frey/media-gate.env
+ExecStart=/usr/local/bin/frey-audiobook-import
+TimeoutStartSec=120
