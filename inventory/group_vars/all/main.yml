@@ -44,6 +44,39 @@ frey:
   pki_public_dir: "{{ frey.base_dir }}/pki-public"
 
   # ---------------------------------------------------------------------------
+  # WHERE SYSCTLS GO, AND WHY IT IS NOT /etc/sysctl.conf
+  #
+  # Here because four tasks in three roles - rpi_nvme, security_baseline and
+  # network_gateway - must write to the same file.
+  #
+  # ansible.posix.sysctl defaults to sysctl_file=/etc/sysctl.conf, and on
+  # Debian 13 **systemd-sysctl does not read that file at all**. Debian used to
+  # ship /etc/sysctl.d/99-sysctl.conf as a symlink to it; trixie dropped the
+  # symlink, and systemd has no built-in fallback to it. Confirm on the host:
+  #
+  #   systemd-analyze cat-config sysctl.d | grep /etc/sysctl.conf   # no match
+  #
+  # The failure is invisible from the repo side and survives every check we
+  # have. `reload: true` runs `sysctl -p`, which applies the values *live*, so
+  # the deploy genuinely works, the module reports `ok`, a second run reports
+  # `0 changed`, and the running kernel agrees - until the next reboot silently
+  # reverts every one of them to its default. Measured on 2026-10-31 after a
+  # reboot: vm.swappiness 60 (set to 10), vm.vfs_cache_pressure 100 (set to
+  # 50), net.ipv4.conf.all.rp_filter 0 (set to 2), and - the one that cost
+  # something - kernel.hung_task_panic 0 and kernel.panic 0, so the NVMe wedge
+  # self-reboot was inert at precisely the moment it was needed, because a
+  # wedge happens long after the deploy that armed it.
+  #
+  # 99- sorts after Debian's own 98-rpi.conf, so these win.
+  #
+  # The keys previously written to /etc/sysctl.conf are left where they are.
+  # Nothing reads that file, so they are inert rather than conflicting, and
+  # editing it would mean three roles reaching into a file none of them owns.
+  # If you are reading it on the Pi and wondering why its values are not the
+  # live ones: that is why. The live source is the file named here.
+  sysctl_file: /etc/sysctl.d/99-frey.conf
+
+  # ---------------------------------------------------------------------------
   # TRUSTED DEVICES - THE WAY BACK IN
   #
   # The van has no Ethernet port and no console. SSH over FreyHub is the ONLY

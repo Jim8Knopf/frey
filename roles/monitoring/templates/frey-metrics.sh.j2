@@ -348,6 +348,31 @@ collect_nvme() {
       [[ -n "${apst}" ]] && echo "frey_nvme_apst_max_latency_us ${apst}"
     fi
 
+    # -------------------------------------------------------------------
+    # IS THE WEDGE SELF-REBOOT ACTUALLY ARMED?
+    #
+    # Same class of bug as the APST metric above, and it has now bitten
+    # twice. kernel.hung_task_panic + kernel.panic are what turn an NVMe
+    # wedge into an automatic reboot instead of a drive home to press the
+    # button, and they were written to /etc/sysctl.conf - a file Debian 13's
+    # systemd-sysctl does not read. `sysctl -p` applied them live, so the
+    # deploy worked, a second run said 0 changed, and the values reverted at
+    # the next boot. They read 0 on 2026-10-31, which is to say the recovery
+    # guarantee was absent at exactly the moment it was supposed to fire.
+    #
+    # A guarantee nobody measures is a guess, so export it.
+    # -------------------------------------------------------------------
+    echo "# HELP frey_kernel_hung_task_panic 1 when a task blocked past the timeout panics the kernel."
+    echo "# TYPE frey_kernel_hung_task_panic gauge"
+    echo "# HELP frey_kernel_panic_reboot_secs Seconds after a panic before rebooting; 0 never reboots."
+    echo "# TYPE frey_kernel_panic_reboot_secs gauge"
+
+    local htp panic_secs
+    htp=$(num "$(cat /proc/sys/kernel/hung_task_panic 2>/dev/null)")
+    [[ -n "${htp}" ]] && echo "frey_kernel_hung_task_panic ${htp}"
+    panic_secs=$(num "$(cat /proc/sys/kernel/panic 2>/dev/null)")
+    [[ -n "${panic_secs}" ]] && echo "frey_kernel_panic_reboot_secs ${panic_secs}"
+
     collector_meta nvme "${ok}" "${started}"
   } | emit nvme
 }

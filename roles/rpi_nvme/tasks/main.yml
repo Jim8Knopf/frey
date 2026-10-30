@@ -59,6 +59,12 @@
     value: "{{ item.value }}"
     state: present
     reload: true
+    # NOT the module's /etc/sysctl.conf default, which Debian 13's
+    # systemd-sysctl never reads - see frey.sysctl_file in
+    # inventory/group_vars/all/main.yml. Writing there applies the values live
+    # and loses them at the next boot, which for hung_task_panic means the
+    # wedge self-reboot is armed only until the first reboot.
+    sysctl_file: "{{ frey.sysctl_file }}"
   loop: "{{ rpi_nvme.sysctl | dict2items }}"
   tags:
     - system
