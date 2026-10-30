@@ -302,6 +302,29 @@ monitoring_alerting:
     # Do not repeat the same "monitoring is broken" message more often
     # than this.
     repeat_hours: 6
+    # ------------------------------------------------------------------------
+    # CONTAINERS OUTSIDE MONITORING THAT MUST ALSO COME BACK.
+    #
+    # The watchdog started life guarding its own stack, which left the one
+    # container every service depends on unguarded. On 2026-10-31 Traefik lost
+    # a boot race for port 80 - `Address already in use`, exit 255 - and
+    # Docker never retried it: RestartCount stayed 0 despite
+    # `restart: unless-stopped`. Nothing held the ports by the time anyone
+    # looked, so a plain `docker start` would have fixed it half an hour
+    # earlier. Instead every service in the van was unreachable by name until
+    # a human noticed, because a dead proxy answers nothing - including the
+    # dashboards you would use to find out why.
+    #
+    # This is the same argument that put restart_stopped here in the first
+    # place: if a container declared `unless-stopped` is not running, then
+    # either something stopped it or Docker declined to bring it back, and
+    # starting it is the right answer either way.
+    #
+    # Named, not derived, so that adding a service to the van does not
+    # silently enrol it in a restart policy nobody asked for.
+    # ------------------------------------------------------------------------
+    extra_required:
+      - "{{ service_proxy.traefik.container_name }}"
 
 
 # ==============================================================================

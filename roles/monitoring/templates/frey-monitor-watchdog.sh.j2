@@ -48,13 +48,29 @@ NODE="{{ frey.node_name }}"
 # The containers whose absence means monitoring is not working. Grafana is
 # deliberately NOT here: it is only a viewer, and its being down costs you
 # dashboards, not alerts.
-REQUIRED=(
+#
+# Plus monitoring_alerting.watchdog.extra_required, which carries the
+# containers outside this module that must also come back - the proxy above
+# all, since a dead Traefik makes every service in the van unreachable by
+# name, the dashboards included. See the comment on that list for the boot
+# race that made this necessary.
+MONITORING_REQUIRED=(
 {% for name, cfg in monitoring.services.items() %}
 {% if cfg.enabled and name in ['prometheus', 'alertmanager', 'alert_relay'] %}
   "{{ cfg.container_name }}"
 {% endif %}
 {% endfor %}
 )
+
+EXTRA_REQUIRED=(
+{% for container in monitoring_alerting.watchdog.extra_required | default([]) %}
+  "{{ container }}"
+{% endfor %}
+)
+
+# Kept as two lists purely so the notification can tell the truth about which
+# one broke - the restart loop treats them identically.
+REQUIRED=("${MONITORING_REQUIRED[@]}" "${EXTRA_REQUIRED[@]}")
 
 MODE="${1:-notify}"
 mkdir -p "${STATE_DIR}"
@@ -241,21 +257,60 @@ if [[ -r "${STAMP}" ]]; then
   fi
 fi
 
-body=$(printf 'Frey monitoring on %s is not working:\n\n' "${NODE}";
-        printf '  - %s\n' "${problems[@]}";
-        printf '\nUntil this is fixed, no alert from this Pi can reach you -\n';
-        printf 'so treat anything quiet as unverified.\n\n';
-        printf 'On the Pi:\n';
-        printf '  docker ps -a --filter label=frey.module=monitoring\n';
-        printf '  docker logs --tail 50 prometheus\n';
-        printf '  docker logs --tail 50 alert-relay\n')
+# Is the alert path itself broken, or is every problem about one of the extra
+# containers this watchdog also guards? The message below claims that no alert
+# can reach you, which is true when monitoring is down and false when, say,
+# only the proxy is - and a false claim like that sends you to the wrong page.
+# Assume the worse case and only downgrade when every problem is accounted for
+# by an extra container, so a new check added above cannot quietly soften it.
+monitoring_impaired=1
+{# `${#` opens a Jinja comment, as noted above, so this is escaped too. #}
+if (( {% raw %}${#EXTRA_REQUIRED[@]}{% endraw %} > 0 )); then
+  monitoring_impaired=0
+  for problem in "${problems[@]}"; do
+    attributed=0
+    for container in "${EXTRA_REQUIRED[@]}"; do
+      if [[ "${problem}" == *"'${container}'"* ]]; then
+        attributed=1
+        break
+      fi
+    done
+    if (( ! attributed )); then
+      monitoring_impaired=1
+      break
+    fi
+  done
+fi
+
+if (( monitoring_impaired )); then
+  title="CRITICAL: Frey monitoring is down"
+  body=$(printf 'Frey monitoring on %s is not working:\n\n' "${NODE}";
+          printf '  - %s\n' "${problems[@]}";
+          printf '\nUntil this is fixed, no alert from this Pi can reach you -\n';
+          printf 'so treat anything quiet as unverified.\n\n';
+          printf 'On the Pi:\n';
+          printf '  docker ps -a --filter label=frey.module=monitoring\n';
+          printf '  docker logs --tail 50 prometheus\n';
+          printf '  docker logs --tail 50 alert-relay\n')
+else
+  title="CRITICAL: Frey proxy is down"
+  body=$(printf 'On %s, a container the whole van depends on is down:\n\n' "${NODE}";
+          printf '  - %s\n' "${problems[@]}";
+          printf '\nMonitoring itself is fine, so alerts still reach you. What is\n';
+          printf 'broken is name-based access: every *.hub.frey address, the\n';
+          printf 'dashboards included, answers nothing until this is back.\n\n';
+          printf 'On the Pi:\n';
+          printf '  docker ps -a --filter name=%s\n' "${EXTRA_REQUIRED[0]}";
+          printf '  docker inspect -f "{% raw %}{{.State.Error}}{% endraw %}" %s\n' "${EXTRA_REQUIRED[0]}";
+          printf '  docker logs --tail 50 %s\n' "${EXTRA_REQUIRED[0]}")
+fi
 
 # Sent with curl rather than through the relay, for the obvious reason.
 auth=()
 [[ -n "${NTFY_TOKEN}" ]] && auth=(-H "Authorization: Bearer ${NTFY_TOKEN}")
 
 if curl -fsS --max-time "${NTFY_TIMEOUT}" \
-    -H "X-Title: CRITICAL: Frey monitoring is down" \
+    -H "X-Title: ${title}" \
     -H "X-Priority: 5" \
     -H "X-Tags: skull" \
     "${auth[@]}" \

@@ -112,6 +112,36 @@ rpi_nvme:
       - cgroup_enable=memory
       - cgroup_memory=1
 
+  # ---------------------------------------------------------------
+  # PCIe LINK SPEED - ESCALATION STEP 1, NOW IN FORCE.
+  #
+  # Turning APST off was supposed to end the dropouts. It did not: on
+  # 2026-10-31, twelve minutes after a boot with
+  # nvme_core.default_ps_max_latency_us=0 and pcie_aspm.policy=performance
+  # both confirmed live in /sys, the drive left the bus again -
+  #
+  #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff
+  #
+  # - so power management was a cause and not the only one. The documented
+  # next lever is link speed. The Pi 5's connector is electrically marginal
+  # for Gen 2 and this drive is a DRAM-less Realtek RTS5772DL; Gen 1 halves
+  # the signalling rate, which is the standard remedy for a link that trains
+  # but does not stay up. It is also the only one of the three remaining
+  # steps that can be done from here - the other two are reseating the FFC
+  # ribbon and replacing the drive.
+  #
+  # THE COST IS REAL: Gen 1 x1 is about 250 MB/s against 500. That is far
+  # more than Jellyfin needs - a 1080p stream is single-digit MB/s - and it
+  # is slower for large library copies and the *arrs' bulk imports. A wedge
+  # that needs a human in a van costs more than either.
+  #
+  # config.txt, so it needs a reboot. Set false and re-run to go back to
+  # Gen 2 once the ribbon has been reseated or the drive replaced.
+  # ---------------------------------------------------------------
+  pcie:
+    limit_to_gen1: true
+    config_path: /boot/firmware/config.txt
+
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every
     # log line on reboot. On NVMe there is no card to spare, and the logs from
