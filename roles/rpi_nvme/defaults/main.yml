@@ -13,6 +13,104 @@ rpi_nvme:
   sysctl:
     vm.swappiness: "10"
     vm.vfs_cache_pressure: "50"
+    # ---------------------------------------------------------------
+    # TURN AN NVMe WEDGE INTO A REBOOT.
+    #
+    # When the NVMe controller drops off the PCIe bus, every task that
+    # touches the filesystem blocks forever - but systemd runs from RAM and
+    # carries on petting the hardware watchdog, so the watchdog never fires.
+    # The Pi sits there, reachable by ping, answering nothing, until someone
+    # physically cuts the power. Observed: a 28-minute wedge that ended with
+    # a button press, and 13 unsafe shutdowns in 19 power cycles.
+    #
+    # hung_task_panic turns a task blocked for longer than the timeout into a
+    # panic, and kernel.panic reboots a few seconds later. The van recovers on
+    # its own in about two and a half minutes instead of waiting for a human.
+    #
+    # 120s is deliberately generous: a healthy NVMe never blocks a task for
+    # two minutes, so this only fires on a genuine fault.
+    # ---------------------------------------------------------------
+    kernel.hung_task_timeout_secs: "120"
+    kernel.hung_task_panic: "1"
+    kernel.panic: "10"
+
+  # ---------------------------------------------------------------
+  # KERNEL PARAMETERS THAT ONLY WORK FROM THE BOOT CMDLINE.
+  #
+  # The root cause of this Pi's recurring freezes. The fitted drive is a
+  # KLEVV CRAS C910 4TB - a DRAM-less Realtek RTS5772DL - and it advertises
+  # two non-operational power states:
+  #
+  #   ps3  0.1500W  enter 5000us   exit 10000us
+  #   ps4  0.0050W  enter 17000us  exit 60000us
+  #
+  # The kernel's default default_ps_max_latency_us is 100000, which is above
+  # ps4's 77ms round trip, so APST is allowed to park the drive in ps4 - a
+  # 5-milliwatt state with a 60ms wake-up. This controller intermittently
+  # fails to come back from it, and the drive vanishes from the bus:
+  #
+  #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff, PCI_STATUS=0x10
+  #
+  # Six of those inside 25 minutes were recovered by the kernel's own reset.
+  # When the reset also fails, the host wedges as described above. Nothing
+  # appears in the journal afterwards, because the journal lives on the disk
+  # that just disappeared - which is why this hid for so long and looked
+  # like a software fault every time.
+  #
+  # 0 forbids every non-operational state. 5500 would allow ps3 but not ps4
+  # and keeps most of the idle saving; prefer 0 until the van has gone a few
+  # weeks without a dropout, because stability here is worth more than the
+  # fraction of a watt.
+  #
+  # ASPM is set away from powersave for the same reason: L1 link power
+  # management is the other half of the same class of fault.
+  # ---------------------------------------------------------------
+  cmdline:
+    manage: true
+    path: /boot/firmware/cmdline.txt
+    # FAT32-safe name: no colons. Written once, never overwritten.
+    backup_path: /boot/firmware/cmdline.txt.frey-orig
+    # Appended verbatim. Any existing token sharing a key is replaced, so
+    # re-running cannot duplicate or conflict.
+    params:
+      - nvme_core.default_ps_max_latency_us=0
+      - pcie_aspm.policy=performance
+      # -----------------------------------------------------------------
+      # THE MEMORY CGROUP, WHICH THIS PI HAS BEEN RUNNING WITHOUT.
+      #
+      # Raspberry Pi firmware puts `cgroup_disable=memory` on the cmdline on
+      # Pi 5 by default (it is in /proc/cmdline but not in cmdline.txt, which
+      # is why it is easy to miss). The consequence is that every `mem_limit`
+      # in this repo - 25 of them - was silently doing nothing, `docker stats`
+      # reported 0B of memory for every container, and the
+      # FreyContainerMemoryHigh alert could not have fired whatever happened.
+      # A runaway container could take the whole van down unopposed.
+      #
+      # Enabling it makes all 25 limits binding AT ONCE, so they were measured
+      # against real usage first. Grafana was 189 MiB over its limit and alloy
+      # had 120 MiB of headroom; both were raised in
+      # roles/monitoring/defaults/main.yml before this was switched on.
+      # Everything else had room. Without that pass, this line would have
+      # OOM-killed Grafana on the next boot.
+      #
+      # Jellyfin is the one to keep an eye on: 441 MiB measured against a 2g
+      # limit is comfortable, but the Pi 5 has no hardware encoder, so a
+      # software transcode is the one workload that could still surprise us.
+      #
+      # TWO STEPS, NOT ONE. Docker does not merely leave a limit unenforced
+      # when the controller is missing - it drops it when the container is
+      # CREATED, logging
+      #   "Your kernel does not support memory limit capabilities or the
+      #    cgroup is not mounted. Limitation discarded."
+      # and storing HostConfig.Memory=0. A reboot restarts containers from
+      # that stored config, so the limits still will not apply. After the
+      # reboot, re-run the deploy: compose sees desired != actual and
+      # recreates them, and only then is the limit real. Verify with
+      #   docker inspect grafana --format '{{.HostConfig.Memory}}'
+      # which must be non-zero.
+      # -----------------------------------------------------------------
+      - cgroup_enable=memory
+      - cgroup_memory=1
 
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every

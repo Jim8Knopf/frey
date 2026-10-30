@@ -48,7 +48,10 @@ dockge:
   # The hostname it answers on: dockge.hub.frey
   host: dockge
 
-  mem_limit: 512m
+  # Raised with the rest when the memory cgroup was enabled; ceiling is at
+  # least 2x measured idle RSS (308 MiB here), so the limit bounds a runaway
+  # container instead of killing a healthy one.
+  mem_limit: 768m
 
   # --------------------------------------------------------------------------
   # WHERE IT LOOKS FOR STACKS

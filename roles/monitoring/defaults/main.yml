@@ -156,14 +156,32 @@ monitoring:
       image: "grafana/alloy:{{ monitoring_versions.alloy }}"
       container_name: alloy
       port: 12345
-      mem_limit: 384m
+      # Measured at 264 MiB on this Pi, which left only 120 MiB of headroom.
+      # These limits were never enforced (the memory cgroup was disabled), so
+      # they had never been checked against reality. See the note on grafana.
+      # 768m is comfortably over 2x the measured 264 MiB.
+      mem_limit: 768m
 
     grafana:
       enabled: "{{ monitoring_enable.grafana | bool }}"
       image: "grafana/grafana:{{ monitoring_versions.grafana }}"
       container_name: grafana
       port: 3000
-      mem_limit: 512m
+      # ---------------------------------------------------------------------
+      # Measured at 701 MiB on this Pi - 189 MiB ABOVE the old 512m limit.
+      #
+      # That went unnoticed because `cgroup_disable=memory` is on the Pi 5
+      # kernel cmdline by default, so no mem_limit in this repo was ever
+      # enforced and `docker stats` reported 0B for every container. Enabling
+      # the controller without fixing this would have OOM-killed Grafana on
+      # the next boot, turning a dashboard into a restart loop.
+      #
+      # 1g is roughly observed usage plus 45%. Grafana is the hungriest thing
+      # in the stack and also the most expendable - it is only a viewer - so
+      # it gets room rather than a tight leash. 1536m is 2x the measured
+      # 701 MiB, matching the policy applied to the rest of the stack.
+      # ---------------------------------------------------------------------
+      mem_limit: 1536m
 
   # --------------------------------------------------------------------------
   # GRAFANA

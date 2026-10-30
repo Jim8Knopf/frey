@@ -146,7 +146,13 @@ media_library:
       container_name: maintainerr
       hostname: maintainerr
       port: 6246
-      mem_limit: 512m
+      # Raised when the memory cgroup was enabled: these limits had never
+      # been enforced, so none had been checked against real usage. Policy is
+      # a ceiling of at least 2x measured idle RSS, so enforcement is a
+      # backstop against a runaway container rather than a tripwire - an OOM
+      # kill mid-write on a SQLite-backed service is the corruption risk this
+      # van is already trying to avoid. Measured 280 MiB.
+      mem_limit: 768m
 
     jellystat:
       # Playback statistics. Costs a PostgreSQL container, which is the main
