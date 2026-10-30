@@ -303,6 +303,52 @@ groups:
   - name: frey_nvme
     rules:
 
+      # The alert this van actually needed. Every other rule in this group
+      # reads the drive's own health, and this drive's health is immaculate -
+      # 0% wear, 0 media errors, no critical warning - while it repeatedly
+      # falls off the PCIe bus and takes the host down with it. SMART cannot
+      # see a link-layer dropout, so without this the failure is invisible to
+      # monitoring and gets blamed on whatever was busy at the time.
+      #
+      # Critical at a single occurrence, deliberately. One recovered reset is
+      # a multi-second I/O stall across the whole host - mid-film buffering,
+      # an *arr timing out, a database write hanging - and the next one may
+      # not be recovered at all. There is no benign version of this.
+      - alert: FreyNvmeControllerReset
+        expr: increase(frey_nvme_controller_resets_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} dropped off the PCIe bus'
+          description: >-
+            The controller left the bus and the kernel reset it. Disk I/O
+            stalled for seconds while that happened, which is what buffering
+            and random service timeouts look like from the outside - do not go
+            looking for a CPU hog. Confirm with `journalctl -k -b | grep -i
+            'controller is down'`. If FreyNvmeApstEnabled is also firing the
+            cure has not booted yet; otherwise set `pciex1_gen=1`, then
+            reseat the NVMe ribbon - it is a van, and that cable moves.
+
+      # Deployment drift that no `0 changed` run can catch. The cmdline file
+      # can be correct on disk for weeks while the running kernel still has
+      # APST enabled, because the parameter only applies at boot - so the repo
+      # says fixed, Ansible says fixed, and the drive goes on sleeping itself
+      # off the bus. Read the kernel's live value instead and say so.
+      - alert: FreyNvmeApstEnabled
+        expr: frey_nvme_apst_max_latency_us != 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'NVMe APST is enabled - the dropout fix is not live'
+          description: >-
+            The running kernel allows APST up to {{ go }} $value {{ og }}us,
+            so this controller can still be parked in a power state it does
+            not reliably wake from. `nvme_core.default_ps_max_latency_us=0` is
+            in rpi_nvme's cmdline but a cmdline change needs a reboot to take
+            effect. Reboot at a convenient moment; until then expect dropouts.
+
       - alert: FreyNvmeCriticalWarning
         expr: frey_nvme_critical_warning != 0
         for: 5m

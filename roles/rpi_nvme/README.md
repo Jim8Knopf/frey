@@ -71,6 +71,21 @@ sudo journalctl -k --no-pager | grep -i 'controller is down'
 The journal only survives a dropout if the controller reset succeeded, so the
 absence of that line proves nothing. Loki keeps what journald lost.
 
+You should not have to run either command to find out, though. SMART is blind
+to this failure — wear, spare blocks and media errors all read perfectly clean
+while the drive is falling off the bus every few minutes — so the `monitoring`
+module counts the dropouts directly and alerts on them:
+
+| Metric | Alert | Says |
+| --- | --- | --- |
+| `frey_nvme_controller_resets_total` | `FreyNvmeControllerReset` (critical) | the drive left the bus and the kernel reset it. Each one stalls host I/O for seconds, which from a sofa looks like Jellyfin buffering and invites you to blame a busy container instead |
+| `frey_nvme_apst_max_latency_us` | `FreyNvmeApstEnabled` (warning) | the cmdline fix above is on disk but has not booted yet, so mitigation 1 is not actually in force |
+
+That second one exists because a cmdline parameter only applies at boot: this
+role can report `0 changed` on a Pi whose running kernel still has APST
+enabled, which looks identical to a fixed one from the repo side. The metric
+reads what the kernel is actually running, so the gap cannot hide.
+
 ## Migration (`tasks/migrate.yml`, separate playbook)
 
 Moving root from the SD card to NVMe is a destructive, one-shot operation and

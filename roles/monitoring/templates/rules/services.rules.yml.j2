@@ -182,6 +182,39 @@ groups:
             killing it, which will present as a restart loop. Either it has a
             leak or its cap is too low.
 
+      # One container pegging one core is invisible to every other CPU signal
+      # here. FreyLoadHigh watches load15 per core against a threshold of 2.0,
+      # and on four cores a single saturated container contributes about 0.25
+      # - so it can spin flat out indefinitely and nothing says a word. That
+      # is not hypothetical: it was noticed by a human watching a film stutter
+      # and guessing, which is the opposite of monitoring.
+      #
+      # The point is attribution rather than capacity. The Pi can usually
+      # spare a core; what it cannot spare is not knowing which container took
+      # it, because the honest answer is often that the container is stuck
+      # retrying I/O on a drive that keeps vanishing - see
+      # FreyNvmeControllerReset - and the CPU is a symptom, not the cause.
+      - alert: FreyContainerCpuSaturated
+        expr: >-
+          sum by (name) (
+            rate(container_cpu_usage_seconds_total{
+              name!="",
+              name!~"{{ t.containers.cpu_exempt | join('|') }}"
+            }[5m])
+          )
+          > {{ t.containers.cpu_cores_warning }}
+        for: {{ t.containers.cpu_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Container {{ go }} $labels.name {{ og }} is using {{ go }} printf "%.1f" $value {{ og }} cores'
+          description: >-
+            Sustained for {{ t.containers.cpu_for }}. Jellyfin is excluded
+            because a software transcode is meant to saturate its cap, so this
+            is something that is not supposed to be busy. From an *arr in
+            particular, suspect a stuck background task or disk I/O that keeps
+            failing and being retried rather than real work.
+
   # ============================================================================
   # TRAEFIK
   #
