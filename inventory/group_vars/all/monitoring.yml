@@ -295,6 +295,10 @@ monitoring_alerting:
     stale_after_minutes: 10
     # How often the host-side checker runs.
     host_check_interval: 5min
+    # Start a required container that is not running, rather than only
+    # reporting it. The report needs an uplink the van often does not have;
+    # starting the container does not. Set false to go back to reporting only.
+    restart_stopped: true
     # Do not repeat the same "monitoring is broken" message more often
     # than this.
     repeat_hours: 6
