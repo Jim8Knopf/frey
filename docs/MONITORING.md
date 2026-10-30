@@ -412,7 +412,8 @@ docker start prometheus     # clears the flag as well as starting it
 
 ### Updating images
 
-`scripts/monitoring-check.sh --updates`, edit `monitoring_versions`, then deploy
+`scripts/monitoring-check.sh --updates`, edit `monitoring_versions` in
+`inventory/group_vars/all/images.yml`, then deploy
 with `-e monitoring_update=true`.
 
 cAdvisor is the one to be careful with: it is not on Docker Hub, and `v0.53.0`

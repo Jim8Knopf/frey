@@ -35,7 +35,7 @@
       media_acquisition configuration is invalid. The internal Docker network
       ({{ media.network.subnet }}) must not overlap FreyHub's
       {{ network_gateway.downstream.network_cidr }}, and
-      inventory/group_vars/all/media.yml must define media_versions,
+      inventory/group_vars/all/images.yml must define media_versions; media.yml must define
       media_enable and media_vpn.
   tags:
     - media

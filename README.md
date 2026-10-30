@@ -19,7 +19,8 @@ Legacy service stacks are archived under `archive/legacy-stack/`.
 playbooks/site.yml                       # Thin module orchestrator
 inventory/hosts.yml                      # Target Pi inventory
 inventory/group_vars/all/main.yml        # Active module registry and config
-inventory/group_vars/all/media.yml       # Media image versions, toggles, VPN switch
+inventory/group_vars/all/images.yml      # Image tags for all services
+inventory/group_vars/all/media.yml       # Media toggles and VPN switch
 inventory/group_vars/all/identity.yml    # Who can log in, and what each service checks
 inventory/group_vars/all/secrets.yml     # Vault: AP passphrase, known networks
 scripts/media-check-updates.sh           # What media images have newer versions
@@ -178,9 +179,8 @@ ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
   --tags media --vault-password-file .vault_pass
 ```
 
-Everything you change day to day lives in one file,
-`inventory/group_vars/all/media.yml`: image versions, which services run, and
-the VPN toggle. To see what is out of date before editing it:
+Service switches and VPN settings are in `inventory/group_vars/all/media.yml`.
+Image tags are in `inventory/group_vars/all/images.yml`. To check media updates:
 
 ```bash
 scripts/media-check-updates.sh
@@ -283,3 +283,13 @@ behind single sign-on and restricted to `frey_admins`. See
 4. Add the module name to `frey.modules.enabled`.
 
 See [docs/ADDING_MODULES.md](docs/ADDING_MODULES.md).
+
+## Container image versions
+
+Edit all image tags in `inventory/group_vars/all/images.yml`. See
+[docs/IMAGES.md](docs/IMAGES.md) for update checks and deployment commands.
+
+Repository checks run on GitHub pushes and pull requests via
+[checks.yml](.github/workflows/checks.yml). They cover playbook syntax,
+active YAML/JSON, shell scripts, focused Python tests, and the vault hook;
+they do not deploy or require the Pi's vault password.

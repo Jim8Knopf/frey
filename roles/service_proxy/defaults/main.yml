@@ -25,7 +25,7 @@ service_proxy:
     users: []
 
   traefik:
-    image: traefik:v3
+    image: "traefik:{{ traefik_version }}"
     container_name: frey-traefik
     network: frey_proxy
     dynamic_config_dir: /opt/frey/proxy/traefik/dynamic

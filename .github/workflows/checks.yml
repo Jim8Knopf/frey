@@ -1,0 +1,43 @@
+name: Repository checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Ansible and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          python -m pip install 'ansible-core>=2.19,<2.22' PyYAML Jinja2
+          ansible-galaxy collection install -r requirements.yml
+      - name: Validate playbook syntax
+        run: |
+          printf '%s\n' ci-placeholder > "$RUNNER_TEMP/vault-password"
+          export ANSIBLE_VAULT_PASSWORD_FILE="$RUNNER_TEMP/vault-password"
+          ansible-playbook playbooks/site.yml --syntax-check
+          ansible-playbook playbooks/nvme_migrate.yml --syntax-check
+      - name: Validate YAML, JSON, and shell scripts
+        run: |
+          python3 scripts/check-repository-files.py
+          for file in scripts/*.sh git-hooks/pre-commit git-hooks/post-commit git-hooks/test-pre-commit.sh; do
+            bash -n "$file"
+          done
+          shellcheck --severity=warning scripts/*.sh git-hooks/pre-commit git-hooks/post-commit git-hooks/test-pre-commit.sh
+      - name: Run focused tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          python3 -m unittest discover -s roles/network_gateway/tests -p 'test_*.py'
+          python3 -m unittest discover -s roles/media_acquisition/tests -p 'test_*.py'
+          git-hooks/test-pre-commit.sh

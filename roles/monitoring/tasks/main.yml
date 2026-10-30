@@ -41,8 +41,8 @@
       monitoring configuration is invalid. The internal Docker network
       ({{ monitoring.network.subnet }}) must not overlap FreyHub's
       {{ network_gateway.downstream.network_cidr }}, the media network or the
-      identity network, and inventory/group_vars/all/monitoring.yml must
-      define monitoring_versions, monitoring_enable, monitoring_thresholds and
+      identity network. images.yml must define monitoring_versions, and
+      inventory/group_vars/all/monitoring.yml must define monitoring_enable, monitoring_thresholds and
       monitoring_alerting. Alerting also requires metrics to be enabled.
   tags: [monitoring, metrics, monitoring_config]
 
@@ -182,6 +182,7 @@
 - name: Pre-pull monitoring images one at a time
   community.docker.docker_image_pull:
     name: "{{ item }}"
+    pull: not_present
   loop: >-
     {{
       monitoring.services | dict2items

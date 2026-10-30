@@ -7,9 +7,7 @@ Documentation=file://{{ frey.base_dir | default('/opt/frey') }}/docs/GATEWAY.md
 # network it should be joining.
 OnBootSec={{ network_gateway.upstream.autojoin_open.boot_delay_seconds }}
 OnUnitInactiveSec={{ network_gateway.upstream.autojoin_open.interval_seconds }}
-# The script exits immediately when the uplink is already up, so a short
-# interval costs almost nothing and is what makes "drive up and it connects"
-# feel automatic.
+# Periodically check connection health and look for nearby open networks.
 AccuracySec=10s
 Unit=frey-uplink-autojoin.service
 

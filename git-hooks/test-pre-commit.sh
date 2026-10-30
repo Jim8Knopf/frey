@@ -21,6 +21,7 @@ before=""
 [ -f "$REAL_SECRETS" ] && before="$(sha256sum "$REAL_SECRETS" | cut -d' ' -f1)"
 
 T="$(mktemp -d)"
+export ANSIBLE_LOCAL_TEMP="${T}/ansible-tmp"
 trap 'rm -rf "$T"' EXIT
 cd "$T" || exit 1
 

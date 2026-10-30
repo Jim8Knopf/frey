@@ -1,10 +1,10 @@
 ---
 # ==============================================================================
 #
-#   FREY MONITORING - THE ONLY FILE YOU NORMALLY EDIT
+#   FREY MONITORING - SERVICE SETTINGS
 #
-#   What is watched, when it shouts, and how loudly. Image versions and on/off
-#   switches live here too, same as media.yml and identity.yml.
+#   What is watched, when it shouts, and how loudly. On/off switches live
+#   here; image versions live in inventory/group_vars/all/images.yml.
 #
 #   Everything structural - the Prometheus scrape config, the alert rules, the
 #   Grafana dashboards, the notification relay - stays in roles/monitoring/.
@@ -65,34 +65,7 @@
 # ==============================================================================
 
 
-# ==============================================================================
-# IMAGE VERSIONS
-#
-# Pinned, for the same reason media.yml and identity.yml pin: an unattended
-# pull on a campground Wi-Fi can hand you a broken stack with no internet left
-# to fix it. Monitoring earns the pin twice over - it is the thing you need
-# working when everything else is not.
-#
-# Verified multi-arch (linux/arm64) as of 2026-10-27. cAdvisor is the one to
-# watch: v0.53.0 and v0.54.0 were never published at all, so a "bump to the
-# next number" is not safe here - check the tag exists before changing it.
-#
-# To see what is out of date:  scripts/monitoring-check.sh --updates
-# ==============================================================================
-monitoring_versions:
-  prometheus: v3.15.1
-  alertmanager: v0.34.1
-  node_exporter: v1.12.1
-  blackbox_exporter: v0.29.1
-  cadvisor: v0.55.1
-  grafana: 13.2.4
-  loki: 3.7.9
-  alloy: v1.21.2
-  # Base image for the notification relay in roles/monitoring/files/.
-  # The relay is Python standard library only - no pip, no requirements file,
-  # nothing to resolve at build time, so this never needs to be online.
-  relay_base: 3.14.10-alpine3.24
-
+# Image versions live in inventory/group_vars/all/images.yml.
 
 # ==============================================================================
 # WHICH PIECES RUN

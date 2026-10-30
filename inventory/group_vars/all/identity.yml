@@ -1,10 +1,10 @@
 ---
 # ==============================================================================
 #
-#   FREY IDENTITY - THE ONLY FILE YOU NORMALLY EDIT
+#   FREY IDENTITY - SERVICE SETTINGS
 #
 #   Who can log in, which groups they are in, and how each service checks.
-#   Image versions and on/off switches live here too, same as media.yml.
+#   On/off switches live here; image versions are in inventory/group_vars/all/images.yml.
 #
 #   Everything structural - the Authelia config file, the OIDC client details,
 #   the Traefik middleware, the LLDAP bootstrap - stays in roles/identity/.
@@ -39,23 +39,7 @@
 # ==============================================================================
 
 
-# ==============================================================================
-# IMAGE VERSIONS
-#
-# Pinned, for the same reason media.yml pins: an unattended pull on a
-# campground Wi-Fi can hand you a broken stack with no internet left to fix it.
-#
-# Authelia especially earns the pin. Its configuration schema moves between
-# minor releases - `url` became `address`, `issuer_private_key` became a `jwks`
-# list, the top-level `jwt_secret` moved under `identity_validation` - so a
-# config written for one version is simply rejected by another. The role runs
-# `authelia validate-config` before restarting anything, which turns that into
-# a failed deploy rather than a login page that is down.
-# ==============================================================================
-identity_versions:
-  authelia: 4.39.28
-  lldap: 2026-09-22-alpine
-
+# Image versions live in inventory/group_vars/all/images.yml.
 
 # ==============================================================================
 # WHICH SERVICES RUN

@@ -392,7 +392,7 @@ fi
 if (( DO_UPDATES )); then
   echo
   echo "Image versions"
-  python3 - "${REPO_ROOT}/inventory/group_vars/all/monitoring.yml" <<'PYTHON'
+  python3 - "${REPO_ROOT}/inventory/group_vars/all/images.yml" <<'PYTHON'
 import json, re, sys, urllib.error, urllib.request
 
 try:
@@ -463,7 +463,7 @@ for name, current in sorted(pinned.items()):
         print("  \033[33mnew\033[0m   %-24s %-22s -> %s" % (name, current, newest))
 
 print()
-print("  Edit monitoring_versions in inventory/group_vars/all/monitoring.yml,")
+print("  Edit monitoring_versions in inventory/group_vars/all/images.yml,")
 print("  then: ansible-playbook ... --tags monitoring -e monitoring_update=true")
 PYTHON
 fi

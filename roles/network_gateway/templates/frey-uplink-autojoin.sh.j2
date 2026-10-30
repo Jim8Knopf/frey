@@ -15,12 +15,11 @@
 # ---------------------------
 #   1. It only ever touches the UPSTREAM radio. FreyHub is the critical
 #      always-on service and is never reconfigured here, at any cost.
-#   2. A declared (vault) network always wins. Opportunistic profiles get a
-#      lower autoconnect-priority, and this script does nothing at all while
-#      the uplink is already up.
+#   2. Declared networks are managed by NetworkManager. Open profiles are
+#      selected here only when the uplink is disconnected.
 #   3. Associating with a CAPTIVE PORTAL is success, not failure. You sign in
-#      afterwards from a phone on FreyHub, and because every client leaves
-#      wearing the Pi's uplink address, that authorises the whole van. A check
+#      afterwards from a phone on FreyHub, and all clients share
+#      the Pi's uplink address; some portals allow that. A check
 #      demanding real internet here would reject exactly the networks this
 #      script exists to join.
 set -uo pipefail
@@ -32,6 +31,7 @@ OPEN_PREFIX="{{ network_gateway.upstream.autojoin_open.profile_prefix }}"
 MIN_SIGNAL="{{ network_gateway.upstream.autojoin_open.min_signal }}"
 MAX_PROFILES="{{ network_gateway.upstream.autojoin_open.max_profiles }}"
 FAIL_TTL="{{ network_gateway.upstream.autojoin_open.failure_backoff_seconds }}"
+UNUSABLE_GRACE="{{ network_gateway.upstream.autojoin_open.unusable_grace_seconds }}"
 SCAN_SETTLE="{{ network_gateway.upstream.autojoin_open.scan_settle_seconds }}"
 PRIORITY="{{ network_gateway.upstream.autojoin_open.autoconnect_priority }}"
 STATE_DIR="{{ network_gateway.upstream.autojoin_open.state_dir }}"
@@ -51,9 +51,46 @@ log() { logger -t frey-uplink-autojoin -- "$1"; echo "$1"; }
 # colons it contains, and the escapes can then be undone safely.
 unescape() { printf '%s' "${1//\\:/:}"; }
 
-slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-48; }
+slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-32; }
+ssid_key() { printf '%s' "$1" | sha256sum | cut -c1-16; }
 
-mkdir -p "${STATE_DIR}/failed" 2>/dev/null || true
+mkdir -p "${STATE_DIR}/failed" "${STATE_DIR}/paused" || exit 1
+
+# Saved profiles temporarily have autoconnect disabled to prevent NM from
+# immediately selecting the same broken connection. Persist UUID + timestamp
+# before modifying NM so a later timer run can restore it, even after a reboot.
+restore_saved_profiles() {
+  local force="${1:-no}" marker uuid since now auto status=0
+  now="$(date +%s)"
+  for marker in "${STATE_DIR}"/paused/*; do
+    [ -f "${marker}" ] || continue
+    uuid="${marker##*/}"
+    [[ "${uuid}" =~ ^[0-9a-fA-F-]{36}$ ]] || { log "invalid saved-profile backoff state ${uuid}"; status=1; continue; }
+    read -r since < "${marker}" || { status=1; continue; }
+    [[ "${since}" =~ ^[0-9]+$ ]] || { log "invalid backoff timestamp for ${uuid}"; status=1; continue; }
+    auto="$(nmcli -g connection.autoconnect connection show uuid "${uuid}" 2>/dev/null)" || { status=1; continue; }
+    if [ "${force}" = yes ] || [ "${since}" -gt "${now}" ] || [ $((now - since)) -ge "${FAIL_TTL}" ]; then
+      if [ "${auto}" = yes ] || nmcli connection modify uuid "${uuid}" connection.autoconnect yes >/dev/null 2>&1; then
+        rm -f "${marker}"
+        log "restored autoconnect for saved profile ${uuid}"
+        [ "${force}" = yes ] && echo RESTORED
+      else
+        log "could not restore autoconnect for ${uuid}"
+        status=1
+      fi
+    elif [ "${auto}" = yes ]; then
+      # A profile reload can reset the setting while the backoff is active.
+      nmcli connection modify uuid "${uuid}" connection.autoconnect no >/dev/null 2>&1 || log "could not maintain backoff for ${uuid}"
+    fi
+  done
+  return "${status}"
+}
+
+if [ "${1:-}" = --restore ]; then
+  restore_saved_profiles yes
+  exit $?
+fi
+restore_saved_profiles
 
 # ---------------------------------------------------------------------
 # Never touch the radio carrying FreyHub.
@@ -68,21 +105,67 @@ if ! ip link show "${UPLINK}" >/dev/null 2>&1; then
   exit 0
 fi
 
-# ---------------------------------------------------------------------
-# Do nothing while the uplink is already up. This is the common case, and it
-# keeps a working connection - declared or captive portal - from being torn
-# down by a scan that happens to see something stronger.
-# ---------------------------------------------------------------------
-# nmcli reports this as e.g. "100 (connected)", so take the leading number.
-# NM device states: 20 unavailable, 30 disconnected, 40 prepare, 50 config,
-# 60 need-auth, 70 ip-config, 80 ip-check, 90 secondaries, 100 activated,
-# 110 deactivating, 120 failed.
+# Manage all remembered opportunistic profiles, including older names. NM must
+# not reconnect them behind the selector's denylist and failure backoff.
+while IFS= read -r profile; do
+  [[ "${profile}" == "${OPEN_PREFIX}-"* ]] || continue
+  auto="$(nmcli -g connection.autoconnect connection show "${profile}" 2>/dev/null || true)"
+  if [ "${auto}" = yes ]; then
+    nmcli connection modify "${profile}" connection.autoconnect no >/dev/null 2>&1 || true
+  fi
+done < <(nmcli -g NAME connection show 2>/dev/null)
+
+# A portal is deliberately left alone: the user may still be signing in.
+# Only recover managed connections with a sustained, explicit failed
+# connectivity verdict. Temporarily pause saved profiles before disconnecting.
 dev_state="$(nmcli -g GENERAL.STATE device show "${UPLINK}" 2>/dev/null || true)"
 state_num="${dev_state%%[^0-9]*}"
+health_file="${STATE_DIR}/unusable"
 if [ -n "${state_num}" ] && [ "${state_num}" -ge 40 ] && [ "${state_num}" -le 100 ]; then
-  # Either already connected, or mid-association. Both mean hands off.
+  if [ "${state_num}" = 100 ]; then
+    profile="$(nmcli -g GENERAL.CONNECTION device show "${UPLINK}" 2>/dev/null || true)"
+    connectivity="unknown"
+    if [ "${UNUSABLE_GRACE}" -gt 0 ] && [[ "${profile}" == "${OPEN_PREFIX}-"* || "${profile}" == "${DECLARED_PREFIX}-"* ]]; then
+      connectivity="$(nmcli networking connectivity check 2>/dev/null || true)"
+    fi
+    if [[ "${profile}" == "${OPEN_PREFIX}-"* || "${profile}" == "${DECLARED_PREFIX}-"* ]] && { [ "${connectivity}" = limited ] || [ "${connectivity}" = none ]; }; then
+      ssid="$(nmcli -g 802-11-wireless.ssid connection show "${profile}" 2>/dev/null || true)"
+      key="$(ssid_key "${ssid}")"
+      now="$(date +%s)"
+      read -r old_key since < "${health_file}" 2>/dev/null || { old_key=""; since="${now}"; }
+      if [ "${old_key}" != "${key}" ] || ! [[ "${since}" =~ ^[0-9]+$ ]] || [ "${since}" -gt "${now}" ]; then
+        printf '%s %s\n' "${key}" "${now}" > "${health_file}"
+      elif [ -n "${ssid}" ] && [ $((now - since)) -ge "${UNUSABLE_GRACE}" ]; then
+        if [[ "${profile}" == "${DECLARED_PREFIX}-"* ]]; then
+          uuid="$(nmcli -g connection.uuid connection show "${profile}" 2>/dev/null || true)"
+          auto="$(nmcli -g connection.autoconnect connection show "${profile}" 2>/dev/null || true)"
+          if [[ ! "${uuid}" =~ ^[0-9a-fA-F-]{36}$ ]] || [ "${auto}" != yes ]; then
+            log "cannot safely pause saved profile '${profile}'; leaving it connected"
+            exit 0
+          fi
+          # If disabling autoconnect fails, leave the connection untouched.
+          if ! printf '%s\n' "${now}" > "${STATE_DIR}/paused/${uuid}"; then
+            log "cannot record backoff for saved profile '${profile}'"
+            exit 1
+          fi
+          if ! nmcli connection modify uuid "${uuid}" connection.autoconnect no >/dev/null 2>&1; then
+            rm -f "${STATE_DIR}/paused/${uuid}"
+            log "cannot pause saved profile '${profile}'; leaving it connected"
+            exit 0
+          fi
+        fi
+        log "network '${ssid}' has been ${connectivity} for ${UNUSABLE_GRACE}s; trying another"
+        touch "${STATE_DIR}/failed/${key}"
+        nmcli connection down "${profile}" >/dev/null 2>&1 || log "could not disconnect '${profile}'"
+        rm -f "${health_file}"
+      fi
+    else
+      rm -f "${health_file}"
+    fi
+  fi
   exit 0
 fi
+rm -f "${health_file}"
 
 # ---------------------------------------------------------------------
 # Scan. A scan is the only way to discover an SSID nobody declared.
@@ -129,7 +212,7 @@ is_denied() {
 # broken-but-strong AP cannot pin the uplink down by always winning on signal.
 is_backed_off() {
   local marker now age
-  marker="${STATE_DIR}/failed/$(slug "$1")"
+  marker="${STATE_DIR}/failed/$(ssid_key "$1")"
   [ -f "${marker}" ] || return 1
   now="$(date +%s)"
   age=$(( now - $(stat -c %Y "${marker}" 2>/dev/null || echo 0) ))
@@ -171,7 +254,7 @@ fi
 # ---------------------------------------------------------------------
 # Join it.
 # ---------------------------------------------------------------------
-name="${OPEN_PREFIX}-$(slug "${best_ssid}")"
+name="${OPEN_PREFIX}-$(slug "${best_ssid}")-$(ssid_key "${best_ssid}")"
 log "joining open network '${best_ssid}' (signal ${best_signal}) as ${name}"
 
 if ! nmcli -g NAME connection show 2>/dev/null | grep -Fxq "${name}"; then
@@ -179,9 +262,9 @@ if ! nmcli -g NAME connection show 2>/dev/null | grep -Fxq "${name}"; then
         con-name "${name}" \
         ifname "${UPLINK}" \
         ssid "${best_ssid}" \
-        autoconnect yes >/dev/null 2>&1; then
+        autoconnect no >/dev/null 2>&1; then
     log "could not create a profile for '${best_ssid}'"
-    touch "${STATE_DIR}/failed/$(slug "${best_ssid}")"
+    touch "${STATE_DIR}/failed/$(ssid_key "${best_ssid}")"
     exit 0
   fi
 fi
@@ -190,7 +273,7 @@ fi
 # open profile. route-metric matches the declared uplinks so the routing table
 # still prefers FreyHub, and may-fail keeps a dead uplink out of boot's way.
 nmcli connection modify "${name}" \
-  connection.autoconnect yes \
+  connection.autoconnect no \
   connection.autoconnect-priority "${PRIORITY}" \
   connection.autoconnect-retries 0 \
   connection.interface-name "${UPLINK}" \
@@ -206,10 +289,10 @@ if nmcli connection up "${name}" ifname "${UPLINK}" >/dev/null 2>&1; then
   # portal answers DHCP and then intercepts everything until you sign in from
   # a phone, and that counts as joined.
   log "joined '${best_ssid}' on ${UPLINK} (address ${addr:-none yet})"
-  rm -f "${STATE_DIR}/failed/$(slug "${best_ssid}")"
+  rm -f "${STATE_DIR}/failed/$(ssid_key "${best_ssid}")"
 else
   log "failed to join '${best_ssid}'; backing off for ${FAIL_TTL}s"
-  touch "${STATE_DIR}/failed/$(slug "${best_ssid}")"
+  touch "${STATE_DIR}/failed/$(ssid_key "${best_ssid}")"
   nmcli connection delete "${name}" >/dev/null 2>&1 || true
   exit 0
 fi

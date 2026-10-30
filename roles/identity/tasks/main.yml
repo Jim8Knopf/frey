@@ -27,8 +27,8 @@
       - identity.base_dn | length > 0
       - not identity.network.subnet.startswith('10.20.0.')
     fail_msg: >-
-      identity configuration is invalid. inventory/group_vars/all/identity.yml
-      must define identity_versions, identity_enable, identity_services and at
+      identity configuration is invalid. images.yml must define identity_versions;
+      inventory/group_vars/all/identity.yml must define identity_enable, identity_services and at
       least one user; frey.service_domain ({{ frey.service_domain }}) must
       contain a period, because Authelia rejects a cookie domain without one;
       and the internal Docker network ({{ identity.network.subnet }}) must not

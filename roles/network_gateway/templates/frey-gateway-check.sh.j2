@@ -1,0 +1,30 @@
+#!/bin/bash
+# Read-only summary of the FreyHub gateway. Managed by Ansible.
+set -u
+up={{ network_gateway.upstream.interface | quote }}
+down={{ network_gateway.downstream.interface | quote }}
+cidr={{ network_gateway.downstream.network_cidr | quote }}
+printf 'FreyHub interface (%s):\n' "$down"
+nmcli -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS device show "$down" 2>/dev/null || echo '  unavailable'
+printf '\nUplink interface (%s):\n' "$up"
+nmcli -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS device show "$up" 2>/dev/null || echo '  unavailable'
+printf '\nNetworkManager connectivity: '
+nmcli networking connectivity 2>/dev/null || echo 'unknown'
+printf '\nDefault IPv4 routes:\n'
+ip -4 route show default || true
+printf '\nIPv4 forwarding: '
+cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+printf '\nServices:\n'
+for service in NetworkManager dnsmasq frey-gateway-nat frey-uplink-autojoin.timer frey-uplink-usb-watchdog.timer; do
+  printf '  %s: ' "$service"
+  systemctl is-active "$service" 2>/dev/null || true
+done
+printf '\nNAT masquerade: '
+if [ "$(id -u)" -ne 0 ]; then
+  echo 'run with sudo to inspect firewall rules'
+elif iptables -t nat -C POSTROUTING -s "$cidr" -o "$up" -j MASQUERADE 2>/dev/null; then
+  echo present
+else
+  echo missing
+fi
+printf '\nA portal may require sign-in from a FreyHub client.\n'

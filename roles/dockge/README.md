@@ -62,7 +62,7 @@ nothing but the convenience.
 
 ## Variables
 
-- `dockge_version` — in `inventory/group_vars/all/main.yml`, pinned
+- `dockge_version` — in `inventory/group_vars/all/images.yml`, pinned
 - `dockge.stacks_writable` — read-only by default; see above
 - `dockge.host` — the hostname, `dockge` by default
 

@@ -144,7 +144,7 @@ scripts/monitoring-check.sh --updates    # ...and compare pinned versions
 
 ```bash
 scripts/monitoring-check.sh --updates
-# edit monitoring_versions in inventory/group_vars/all/monitoring.yml
+# edit monitoring_versions in inventory/group_vars/all/images.yml
 ansible-playbook ... --tags monitoring -e monitoring_update=true
 ```
 
