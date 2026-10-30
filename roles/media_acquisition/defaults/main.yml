@@ -168,7 +168,92 @@ media_acquisition:
   # ---------------------------------------------------------------------------
   # SERVICES
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # THE STACK'S OWN RESOLVER
+  #
+  # Why this container exists, because it is not obvious and it cost a day:
+  #
+  # The van's uplink has NO working IPv6 - no address on the uplink interface,
+  # no default IPv6 route, and the containers get no global IPv6 address
+  # either. Campground resolvers nonetheless answer AAAA for every
+  # Cloudflare-fronted tracker, because the record genuinely exists.
+  #
+  # Docker's embedded resolver forwards to whatever the campground handed the
+  # Pi over DHCP, so those AAAA records reach the *arrs. .NET's HttpClient
+  # then connects to an IPv6 address that cannot be reached and gives up with
+  #
+  #     System.Net.Http.HttpRequestException: Resource temporarily
+  #     unavailable (www.limetorrents.fun:443)
+  #
+  # which Prowlarr reports as "Unable to connect to indexer ... typically
+  # caused by DNS/SSL issues". curl against the same URL succeeds, because
+  # curl falls back to IPv4 and .NET does not - which is exactly what makes
+  # this look intermittent and unreproducible by hand.
+  #
+  # Prowlarr then applies escalating backoff, the indexer is marked failed for
+  # hours, and Sonarr and Radarr report "All search-capable indexers are
+  # temporarily unavailable".
+  #
+  # dnsmasq with filter-AAAA removes the record the stack cannot use. A
+  # resolver we own also means a campground's own broken or filtering DNS
+  # stops being able to disable indexers - the failure mode that made this
+  # recur at every new parking spot.
+  #
+  # Deliberately NOT the Pi's own dnsmasq on 10.20.0.1: the firewall is
+  # default-deny INBOUND and nothing in this stack reaches the host by
+  # address. This stays container-to-container, like everything else.
+  # ---------------------------------------------------------------------------
+  dns:
+    # Fixed address so `dns:` on the other containers can name it. Docker
+    # hands out dynamic addresses from the bottom of frey_media
+    # ({{ media.network.subnet }}), so a high host address cannot collide.
+    address: 172.28.255.53
+    # Asked in order. All three are plain DNS on 53; the point is not privacy
+    # but not depending on the campground's resolver.
+    upstreams:
+      - 9.9.9.9
+      - 1.1.1.1
+      - 8.8.8.8
+    # Strip AAAA. This is the whole reason the container exists.
+    filter_aaaa: true
+    cache_size: 2000
+
+  # ---------------------------------------------------------------------------
+  # INDEXERS
+  #
+  # The list itself is in inventory/group_vars/all/media.yml, because it is
+  # something a human edits. This is the sync profile the audiobook sources
+  # are put on.
+  #
+  # RSS off, searches on. RSS is a standing poll for everything new, which is
+  # how a general tracker ends up feeding unrelated releases into Sonarr's
+  # queue; an audiobook source only needs to answer when something asks it.
+  #
+  # enableAutomaticSearch is deliberately TRUE. It used to be false, which
+  # meant Chaptarr and AudiobookRequest could not search these sources at all
+  # unless someone clicked through the UI by hand - the automated half of the
+  # audiobook pipeline silently did nothing.
+  # ---------------------------------------------------------------------------
+  indexers:
+    audiobook_profile:
+      name: Audiobook requests
+      enable_rss: false
+      enable_automatic_search: true
+      enable_interactive_search: true
+      minimum_seeders: 1
+
   services:
+    resolver:
+      # Follows byparr's switch only in spirit: this one is not optional while
+      # anything in the stack needs to reach an indexer, so it tracks whether
+      # the acquisition stack itself is doing anything.
+      enabled: "{{ media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool }}"
+      image: dockurr/dnsmasq:{{ media_versions.dnsmasq }}
+      container_name: frey-media-dns
+      hostname: frey-media-dns
+      port: 53
+      mem_limit: 64m
+
     prowlarr:
       enabled: "{{ media_enable.prowlarr | bool }}"
       image: lscr.io/linuxserver/prowlarr:{{ media_versions.prowlarr }}
@@ -357,8 +442,20 @@ media_acquisition:
       port: 8191
       mem_limit: 1g
       cpus: "1.5"
-      # Prowlarr applies the proxy only to indexers carrying this tag.
+      # Prowlarr applies the proxy only to indexers carrying this tag. Which
+      # indexers wear it is declared in media_indexers (media.yml) and applied
+      # by tasks/configure/indexers.yml - the tag existing is not enough, and
+      # for a long time nothing actually wore it.
       proxy_tag: cloudflare
+      # How long Prowlarr waits for a solve, in seconds.
+      #
+      # 180, not 60. A real browser solve of a Cloudflare interstitial on a
+      # Pi 5 was measured at 52-66s for 1337x - over the old 60s limit often
+      # enough that the indexer failed its test with "Http request timed out"
+      # while Byparr was in fact succeeding, every time, a few seconds late.
+      # The cost of a generous timeout is a slow search; the cost of a tight
+      # one is an indexer that gets disabled.
+      request_timeout: 180
       # Liveness probe path. Deliberately not /health: in Byparr 3.x that
       # endpoint runs an actual browser solve and outlasts any reasonable
       # timeout, which left the container permanently marked unhealthy.

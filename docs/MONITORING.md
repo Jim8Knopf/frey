@@ -306,6 +306,27 @@ Anything that drops a file there is a monitored metric: scraped, stored for a
 year, graphable in Grafana and alertable on exactly the same terms as CPU
 temperature. No broker, no exporter, no container.
 
+### Indexer health, and the shape of the gap it closed
+
+The `indexers` collector reads each *arr's `/health` and reports
+`frey_indexer_health_issues`, `frey_indexer_all_unavailable` and
+`frey_indexer_query_success`.
+
+It exists because a broken indexer was invisible to everything else here.
+Every container runs, every healthcheck passes, every probe is green, every
+certificate is valid — Prowlarr simply backs the indexer off for hours and
+nothing is ever found again. It was always discovered by hand, days later, by
+noticing that nothing had downloaded.
+
+Both alerts are `warning`, not `critical`: parked off-grid there is nothing to
+do about it, and it must not buzz at 3am.
+`FreyIndexerHealthUnknown` covers the collector itself, because without it a
+collector that cannot read an app looks identical to "no problems".
+
+The counting happens *inside* each container, so only two integers cross the
+`docker exec` pipe — a health response is easily large enough to be truncated
+in transit, and truncated JSON looks exactly like a broken service.
+
 ### A cabin thermometer wired to the Pi
 
 A DS18B20 on the 1-Wire bus is about six lines. Add a function to

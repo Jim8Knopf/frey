@@ -104,6 +104,15 @@ curl_in() {
 # sidesteps every quoting problem), run there, and only its handful of output
 # lines cross the wire.
 # ------------------------------------------------------------------------------
+# KNOWN FLAKE: `docker exec ... | python3` truncates at about 4 KB,
+# intermittently - measured as 3918 bytes of unterminated JSON on one run in
+# five, against 43 KB on the others. When it bites, this returns nothing and
+# the check reports "rules api: no response", which reads as a broken
+# Prometheus rather than a broken pipe. Re-run before believing it.
+#
+# Redirecting the body to a file on the Pi first is the obvious fix and was
+# tried: it made the remote command exit 139 (SIGSEGV) every time, so the
+# direct pipe stays until that is understood. Do not "fix" this blind.
 remote_py() {
   local source="$1" container="$2" url="$3"
   local b64 remote="/tmp/frey-mon-check-$$.py"

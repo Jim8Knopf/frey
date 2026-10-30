@@ -570,3 +570,25 @@ monitoring_host_collectors:
   - nvme        # SMART wear, temperature, media errors, bytes written
   - gateway     # uplink state, AP clients, DHCP leases, DNS, NAT
   - docker      # container running state and restart counts
+  - indexers    # *arr indexer health - see monitoring_indexer_apps below
+
+# ------------------------------------------------------------------------------
+# INDEXER HEALTH
+#
+# The one failure this stack had no signal for. A broken indexer leaves every
+# container running and healthy, Prowlarr backs the indexer off for hours, and
+# the only visible symptom is that nothing is ever found - so it was always
+# noticed by hand, days later, and always from the application side.
+#
+# Container names and ports are repeated here rather than read from
+# media_acquisition: a role's defaults are only in scope while that role runs,
+# and this collector belongs to monitoring. Keep them in step with
+# roles/media_acquisition/defaults/main.yml.
+#
+# The API key is NOT here. The collector reads it from each container's own
+# config.xml, inside the container, so no key reaches a host command line.
+# ------------------------------------------------------------------------------
+monitoring_indexer_apps:
+  - {name: prowlarr, port: 9696, api_version: v1}
+  - {name: sonarr, port: 8989, api_version: v3}
+  - {name: radarr, port: 7878, api_version: v3}
