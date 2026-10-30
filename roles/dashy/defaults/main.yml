@@ -1,0 +1,17 @@
+---
+dashy:
+  stack_dir: "{{ frey.base_dir }}/stacks/dashy"
+  config_dir: "{{ frey.base_dir }}/appdata/dashy"
+  image: "lissy93/dashy:{{ dashy_version }}"
+  host: dashy
+  port: 8080
+  mem_limit: 512m
+  sections:
+    - name: Media library
+      services: [jellyfin, audiobookshelf, seerr, audiobookrequest, maintainerr, jellystat]
+    - name: Media downloads
+      services: [sonarr, radarr, lidarr, chaptarr, prowlarr, bazarr, cleanuparr, qbittorrent]
+    - name: Monitoring
+      services: [grafana, prometheus, alertmanager]
+    - name: Management
+      services: [dockge, wifi]

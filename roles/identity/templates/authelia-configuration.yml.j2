@@ -261,6 +261,13 @@ identity_providers:
     enforce_pkce: 'public_clients_only'
     enable_client_debug_messages: false
 
+{% if 'dashy' in (oidc_services | map(attribute='key') | list) %}
+    cors:
+      endpoints: [authorization, token, userinfo, revocation, introspection]
+      allowed_origins:
+        - 'https://dashy.{{ frey.service_domain }}'
+{% endif %}
+
     lifespans:
       access_token: '1h'
       authorize_code: '1m'

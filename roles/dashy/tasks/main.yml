@@ -1,0 +1,53 @@
+---
+- name: Validate Dashy configuration
+  ansible.builtin.assert:
+    that:
+      - identity_services.dashy.auth == 'oidc'
+      - dashy_version | length > 0
+
+- name: Ensure Dashy directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ dashy.stack_dir }}"
+    - "{{ dashy.config_dir }}"
+
+- name: Pull the pinned Dashy image
+  community.docker.docker_image_pull:
+    name: "{{ dashy.image }}"
+  register: dashy_pull
+  retries: 8
+  delay: 30
+  until: dashy_pull is succeeded
+  when: not ansible_check_mode
+
+- name: Configure Dashy
+  ansible.builtin.template:
+    src: conf.yml.j2
+    dest: "{{ dashy.config_dir }}/conf.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: dashy_config
+
+- name: Deploy the Dashy compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ dashy.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "docker compose -f %s config --quiet"
+
+- name: Start Dashy
+  community.docker.docker_compose_v2:
+    project_src: "{{ dashy.stack_dir }}"
+    state: present
+    recreate: "{{ 'always' if dashy_config.changed else 'auto' }}"
+    pull: never
+    timeout: 180
+  when: not ansible_check_mode

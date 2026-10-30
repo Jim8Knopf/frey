@@ -1,0 +1,6 @@
+---
+wifi_portal:
+  port: 9876
+  directory: "{{ frey.base_dir }}/wifi-portal"
+  token_file: "{{ frey.base_dir }}/wifi-portal/token"
+  origin: "https://wifi.{{ frey.service_domain }}"

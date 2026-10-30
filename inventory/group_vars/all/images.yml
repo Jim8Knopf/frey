@@ -6,6 +6,7 @@
 
 # Core services
 traefik_version: "v3.7.16"
+dashy_version: "4.7.0"
 dockge_version: "1.5.0"
 
 identity_versions:

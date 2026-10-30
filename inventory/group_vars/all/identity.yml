@@ -140,6 +140,16 @@ identity_groups:
 # ==============================================================================
 identity_services:
 
+  wifi:
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [wifi]
+
+  dashy:
+    auth: oidc
+    groups: [frey_admins, media]
+    hosts: [dashy]
+
   # --- Library ---------------------------------------------------------------
   jellyfin:
     # OIDC through the jellyfin-sso community plugin. Jellyfin's local accounts

@@ -142,6 +142,18 @@ identity:
   # ----------------------------------------------------------------------------
   oidc_catalog:
 
+    dashy:
+      client_name: Dashy
+      public: true
+      token_endpoint_auth_method: none
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes: [openid, profile, email, groups, offline_access]
+      redirect_uris:
+        - "https://dashy.{{ frey.service_domain }}"
+        - "https://dashy.{{ frey.service_domain }}/"
+      claims_policy: frey_groups
+
     audiobookshelf:
       client_name: Audiobookshelf
       public: false

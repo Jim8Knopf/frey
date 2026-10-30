@@ -1,0 +1,18 @@
+http:
+  routers:
+    wifi:
+      rule: "Host(`wifi.{{ frey.service_domain }}`)"
+      entryPoints: [websecure]
+      tls: {}
+      middlewares: [secure-headers, authelia, wifi-token]
+      service: wifi
+  middlewares:
+    wifi-token:
+      headers:
+        customRequestHeaders:
+          X-Frey-Wifi-Token: '{{ wifi_portal_token }}'
+  services:
+    wifi:
+      loadBalancer:
+        servers:
+          - url: 'http://{{ wifi_portal_gateway }}:{{ wifi_portal.port }}'

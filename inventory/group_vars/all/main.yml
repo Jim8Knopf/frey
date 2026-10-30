@@ -120,6 +120,8 @@ frey:
       # optional - nothing depends on it, and the monitoring module is what
       # tells you the stack is healthy. Dockge just makes it easier to SEE.
       - dockge
+      - wifi_portal
+      - dashy
 
     available:
       network_gateway:
@@ -172,6 +174,14 @@ frey:
         tags:
           - dockge
           - services
+      dashy:
+        role: dashy
+        tags:
+          - dashy
+      wifi_portal:
+        role: wifi_portal
+        tags:
+          - wifi_portal
 
 # ==============================================================================
 # DOCKGE - the compose-stack viewer

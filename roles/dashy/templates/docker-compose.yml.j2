@@ -1,0 +1,46 @@
+services:
+  dashy:
+    image: {{ dashy.image }}
+    container_name: dashy
+    restart: unless-stopped
+    environment:
+      TZ: {{ frey.timezone }}
+      NODE_EXTRA_CA_CERTS: /frey-ca.crt
+    volumes:
+      - "{{ dashy.config_dir }}:/app/user-data:ro"
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+    networks:
+      - {{ frey.proxy_network }}
+    mem_limit: {{ dashy.mem_limit }}
+    healthcheck:
+      test: ["CMD", "node", "/app/services/healthcheck.js"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.dashy.loadbalancer.server.port={{ dashy.port }}"
+      - "traefik.http.routers.dashy.rule=Host(`{{ dashy.host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.dashy.entrypoints=websecure"
+      - "traefik.http.routers.dashy.tls=true"
+      - "traefik.http.routers.dashy.middlewares=secure-headers@file"
+      - "traefik.http.routers.dashy-legacy.rule=Host(`{{ dashy.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.dashy-legacy.entrypoints=websecure"
+      - "traefik.http.routers.dashy-legacy.tls=true"
+      - "traefik.http.routers.dashy-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.dashy-legacy.service=dashy"
+      - "traefik.http.routers.dashy-http.rule=Host(`{{ dashy.host }}.{{ frey.service_domain }}`) || Host(`{{ dashy.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.dashy-http.entrypoints=web"
+      - "traefik.http.routers.dashy-http.service=dashy"
+      - "traefik.http.routers.dashy-http.middlewares=to-canonical@file"
+      - "frey.module=dashy"
+networks:
+  {{ frey.proxy_network }}:
+    external: true

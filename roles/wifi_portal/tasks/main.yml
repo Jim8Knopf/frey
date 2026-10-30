@@ -1,0 +1,89 @@
+---
+- name: Require separate access point and uplink interfaces
+  ansible.builtin.assert:
+    that:
+      - network_gateway.upstream.interface != network_gateway.downstream.interface
+      - identity_services.wifi.auth == 'forward_auth'
+      - identity_services.wifi.groups == ['frey_admins']
+
+- name: Inspect the proxy network
+  community.docker.docker_network_info:
+    name: "{{ frey.proxy_network }}"
+  register: wifi_portal_network
+
+- name: Select the proxy network gateway
+  ansible.builtin.set_fact:
+    wifi_portal_gateway: "{{ wifi_portal_network.network.IPAM.Config[0].Gateway }}"
+
+- name: Create the Wi-Fi portal directory
+  ansible.builtin.file:
+    path: "{{ wifi_portal.directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Create a private proxy token
+  ansible.builtin.shell: "umask 077; openssl rand -hex 32 > {{ wifi_portal.token_file | quote }}"
+  args:
+    creates: "{{ wifi_portal.token_file }}"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Read the proxy token
+  ansible.builtin.slurp:
+    src: "{{ wifi_portal.token_file }}"
+  register: wifi_portal_token_contents
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Set the proxy token
+  ansible.builtin.set_fact:
+    wifi_portal_token: "{{ (wifi_portal_token_contents.content | b64decode | trim) if not ansible_check_mode else 'check-mode-placeholder' }}"
+  no_log: true
+
+- name: Install the restricted Wi-Fi portal code
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ wifi_portal.directory }}/{{ item }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop: [uplink.py, server.py]
+  register: wifi_portal_code
+
+- name: Install Wi-Fi portal configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: /etc/frey-wifi-portal.json
+    owner: root
+    group: root
+    mode: '0600'
+  register: wifi_portal_config
+  no_log: true
+
+- name: Install Wi-Fi portal service
+  ansible.builtin.template:
+    src: wifi-portal.service.j2
+    dest: /etc/systemd/system/frey-wifi-portal.service
+    owner: root
+    group: root
+    mode: '0644'
+  register: wifi_portal_unit
+
+- name: Start the Wi-Fi portal
+  ansible.builtin.systemd_service:
+    name: frey-wifi-portal.service
+    enabled: true
+    daemon_reload: "{{ wifi_portal_unit.changed }}"
+    state: "{{ 'restarted' if wifi_portal_code.changed or wifi_portal_config.changed or wifi_portal_unit.changed else 'started' }}"
+  when: not ansible_check_mode
+
+- name: Publish the protected Wi-Fi route
+  ansible.builtin.template:
+    src: traefik-wifi.yml.j2
+    dest: "{{ service_proxy.traefik.dynamic_config_dir }}/wifi-portal.yml"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true

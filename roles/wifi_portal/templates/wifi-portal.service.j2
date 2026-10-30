@@ -1,0 +1,16 @@
+[Unit]
+Description=Frey saved Wi-Fi uplink selector
+After=docker.service NetworkManager.service
+Requires=docker.service NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {{ wifi_portal.directory }}/server.py
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
