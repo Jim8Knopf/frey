@@ -299,9 +299,18 @@ else
           printf '\nMonitoring itself is fine, so alerts still reach you. What is\n';
           printf 'broken is name-based access: every *.hub.frey address, the\n';
           printf 'dashboards included, answers nothing until this is back.\n\n';
-          printf 'On the Pi:\n';
-          printf '  docker ps -a --filter name=%s\n' "${EXTRA_REQUIRED[0]}";
+          printf 'This watchdog already tried `docker start`. If that is what\n';
+          printf 'failed, the likely cause after an unclean boot is a stale\n';
+          printf 'port reservation inside dockerd: the error says "Address\n';
+          printf 'already in use" while nothing actually holds 80/443, and\n';
+          printf 'start cannot clear it. REMOVING the container is what\n';
+          printf 'releases it - nothing is lost, the config and state live in\n';
+          printf 'Ansible-managed mounts:\n\n';
+          printf '  docker rm %s\n' "${EXTRA_REQUIRED[0]}";
+          printf '  ansible-playbook playbooks/site.yml --tags proxy\n\n';
+          printf 'Diagnose first if you want to be sure:\n';
           printf '  docker inspect -f "{% raw %}{{.State.Error}}{% endraw %}" %s\n' "${EXTRA_REQUIRED[0]}";
+          printf '  ss -tlnp | grep -E ":80|:443"\n';
           printf '  docker logs --tail 50 %s\n' "${EXTRA_REQUIRED[0]}")
 fi
 
