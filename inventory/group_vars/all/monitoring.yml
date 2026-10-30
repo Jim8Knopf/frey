@@ -97,6 +97,13 @@ monitoring_enable:
   # answers, NAT rules, container state. This is also where future van sensors
   # plug in - see THE SENSOR SEAM at the bottom of this file.
   host_collectors: true
+  # Repairs Docker's own container log files after an unclean shutdown, which
+  # leaves runs of NUL bytes in them and permanently stops Alloy from shipping
+  # the affected container's logs - silently, while `docker logs` still works.
+  # Turn it off only if you would rather inspect the damage by hand: it is the
+  # one host script that WRITES to something Docker owns, so it is listed
+  # separately from host_collectors on purpose.
+  log_repair: true
 
 
 # ==============================================================================
@@ -455,6 +462,10 @@ monitoring_thresholds:
     # Alertmanager could not deliver this many notifications in an hour.
     notification_failures: 3
     logs_stalled_for: 30m
+    # frey-log-repair runs every 15 minutes (monitoring.log_repair.interval in
+    # the role defaults). Three missed runs rather than one, so a boot or a
+    # long NVMe stall does not cry wolf.
+    log_repair_stale_seconds: 2700
 
 
 # ==============================================================================
@@ -522,6 +533,17 @@ monitoring_logs:
     # Traefik logs every single request at INFO if access logs are on; the
     # same information is already in its Prometheus metrics, counted.
     - '"ClientAddr":'
+    # cAdvisor probes for cloud-provider metadata at startup and on every
+    # housekeeping pass, by reading /sys/class/dmi/id/product_name. A Pi has no
+    # DMI table, so the read fails, for ever, about 280 times a day.
+    #
+    # It is dropped rather than tolerated because of what it does to the level
+    # label: cAdvisor logs it at INFO, but the line contains the word "Error",
+    # so the level regex above tags it level=error. That is the one thing a
+    # noise line must not do - 280 phantom errors a day in {level="error"} is
+    # how a panel stops being read. Nothing on this Pi is in GCE, and nothing
+    # ever will be, so there is no version of this line worth keeping.
+    - 'Error while reading product_name'
 
 
 # ==============================================================================

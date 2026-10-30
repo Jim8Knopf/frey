@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-log-repair - put log shipping back together after the power was cut
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+# =============================================================================
+#
+# THE PROBLEM THIS SOLVES
+#
+# An unclean shutdown does not only risk the *arr databases. It also tears a
+# hole in Docker's own container log files, and that hole stops log shipping
+# for the affected container permanently and silently.
+#
+# The mechanism: ext4 had already committed the json log's new SIZE to the
+# journal when the power went, but the data blocks behind it never reached the
+# platter. On the next mount those blocks read back as zeroes, so the file now
+# contains a run of NUL bytes where a batch of log lines used to be.
+#
+# Docker cannot parse that. Every line in a json-file log is supposed to be one
+# JSON object; a line of NULs is not, and the daemon gives up on the whole
+# stream:
+#
+#   error from daemon in stream: Error grabbing logs:
+#   invalid character '\x00' looking for beginning of value
+#
+# Alloy's loki.source.docker reads that stream. It hits the hole, errors,
+# retries from the same place, and hits it again - for ever. Observed on this
+# Pi on 2026-10-30: three containers (jellyfin, byparr, unpackerr) stuck this
+# way, 32,581 Alloy error lines in 24 hours, and - the part that matters - not
+# one line of those three containers' logs reaching Loki since the hole was
+# made. Grafana showed no gap and no error. It simply showed nothing, which
+# looks identical to a quiet service.
+#
+# `docker logs` keeps working the whole time, because it is usually asked for
+# the tail and reads past the hole. That is what makes this so easy to miss.
+#
+# WHY IT IS AUTOMATED RATHER THAN WRITTEN DOWN
+#
+# The NVMe on this van has recorded 13 unsafe shutdowns. This will happen
+# again, it breaks observability exactly when observability is wanted, and the
+# failure is invisible from the outside. A repair that only exists in a
+# runbook would not have been run.
+#
+# WHAT IT DOES
+#
+#   1. Scans every running container's json log for NUL bytes.
+#   2. Rewrites the damaged files without the corrupt lines, keeping the inode
+#      so the daemon's open handle stays valid.
+#   3. Restarts Alloy, but only if something was actually repaired, so its
+#      stuck tailers start over.
+#   4. Writes the counts to the textfile directory, so a repair is visible in
+#      Grafana and alertable like anything else.
+#
+# RUN IT BY HAND
+#
+#   frey-log-repair           # scan, repair, restart Alloy if needed
+#   frey-log-repair scan      # report only, change nothing
+#
+# =============================================================================
+
+set -uo pipefail
+
+TEXTFILE_DIR="{{ monitoring.textfile_dir }}"
+STATE_DIR="{{ monitoring.log_repair.state_dir }}"
+ALLOY_CONTAINER="{{ monitoring.services.alloy.container_name }}"
+TOTAL_FILE="${STATE_DIR}/repaired-total"
+
+MODE="${1:-repair}"
+case "${MODE}" in
+  repair|scan) ;;
+  *) echo "usage: ${0##*/} [repair|scan]" >&2; exit 2 ;;
+esac
+
+mkdir -p "${STATE_DIR}" "${TEXTFILE_DIR}"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker is not installed; nothing to repair" >&2
+  exit 0
+fi
+
+# Tell "no containers are damaged" apart from "nobody answered when I asked".
+# Without this the loop below would simply iterate over nothing and the script
+# would cheerfully report that every log is intact - the same class of lie this
+# whole script exists to stop.
+if ! containers="$(docker ps --format '{% raw %}{{.Names}}{% endraw %}' 2>/dev/null)"; then
+  echo "docker is not answering; cannot check container logs" >&2
+  exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# The scan and the rewrite are done in Python because this is byte-level work.
+# grep and sed are line-oriented tools that treat NUL as a terminator or choke
+# on "binary file matches", which is precisely the data we need to handle.
+#
+# THE REWRITE PRESERVES THE INODE. The daemon is holding this file open and
+# will keep appending to it, so the file may not be replaced - truncate and
+# rewrite in place instead. That is safe specifically because Docker's
+# json-file logger opens with O_APPEND: the kernel moves the offset to the end
+# of the file on every write, so shrinking the file underneath it cannot leave
+# the daemon writing into a gap. (Replacing the file via mv would leave the
+# daemon writing to an unlinked inode and the log would appear to stop.)
+#
+# There is a small race: a line appended between the read and the write is
+# lost. It is bounded by the few milliseconds the rewrite takes, and the
+# alternative is a container whose logs never ship again.
+# -----------------------------------------------------------------------------
+scan_and_repair() {
+  local logpath="$1" container="$2" mode="$3"
+
+  python3 - "${logpath}" "${container}" "${mode}" <<'PY'
+import os, sys
+
+path, container, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+
+try:
+    with open(path, "rb") as fh:
+        data = fh.read()
+except OSError as exc:
+    print("ERROR|%s|%s" % (container, exc))
+    sys.exit(0)
+
+if b"\x00" not in data:
+    print("CLEAN|%s" % container)
+    sys.exit(0)
+
+# Keep every line that is not part of the hole. A damaged line is identified by
+# containing a NUL at all - a well-formed Docker log line never does, because
+# the daemon JSON-escapes control characters on the way in.
+lines = data.splitlines(keepends=True)
+kept = [ln for ln in lines if b"\x00" not in ln]
+dropped = len(lines) - len(kept)
+freed = len(data) - sum(len(ln) for ln in kept)
+
+if mode != "repair":
+    print("CORRUPT|%s|%d|%d" % (container, dropped, freed))
+    sys.exit(0)
+
+try:
+    # r+b, not wb: opening for write would truncate before we have written
+    # anything, and a crash in that window would lose the whole log.
+    with open(path, "r+b") as fh:
+        fh.seek(0)
+        fh.writelines(kept)
+        fh.truncate()
+        fh.flush()
+        os.fsync(fh.fileno())
+except OSError as exc:
+    print("ERROR|%s|%s" % (container, exc))
+    sys.exit(0)
+
+print("REPAIRED|%s|%d|%d" % (container, dropped, freed))
+PY
+}
+
+# -----------------------------------------------------------------------------
+# Walk the running containers
+# -----------------------------------------------------------------------------
+corrupt=0
+repaired=0
+dropped_lines=0
+failed=0
+names=()
+
+while read -r container; do
+  [[ -n "${container}" ]] || continue
+
+  logpath="$(docker inspect -f '{% raw %}{{.LogPath}}{% endraw %}' "${container}" 2>/dev/null)"
+  # Only json-file logging has a LogPath to repair. Any other driver reports an
+  # empty string, and there is nothing here to do.
+  [[ -n "${logpath}" && -f "${logpath}" ]] || continue
+
+  result="$(scan_and_repair "${logpath}" "${container}" "${MODE}")"
+
+  IFS='|' read -r kind name count bytes <<< "${result}"
+  case "${kind}" in
+    CLEAN)
+      ;;
+    CORRUPT)
+      corrupt=$(( corrupt + 1 ))
+      dropped_lines=$(( dropped_lines + count ))
+      names+=("${name}")
+      echo "corrupt: ${name} - ${count} damaged line(s), ${bytes} bytes"
+      ;;
+    REPAIRED)
+      corrupt=$(( corrupt + 1 ))
+      repaired=$(( repaired + 1 ))
+      dropped_lines=$(( dropped_lines + count ))
+      names+=("${name}")
+      echo "repaired: ${name} - removed ${count} damaged line(s), ${bytes} bytes"
+      ;;
+    ERROR)
+      failed=$(( failed + 1 ))
+      echo "could not repair ${name}: ${count}" >&2
+      ;;
+    *)
+      # The scan printed nothing we recognise, which means python3 itself
+      # fell over - its traceback is on stderr, in this unit's journal.
+      # Counted as a failure rather than ignored: an unreadable result is not
+      # evidence that the log is fine, and silently treating it as fine is
+      # the exact failure mode this script was written to end.
+      failed=$(( failed + 1 ))
+      echo "unexpected result scanning ${container}: ${result:-<no output>}" >&2
+      ;;
+  esac
+done <<< "${containers}"
+
+# -----------------------------------------------------------------------------
+# Restart Alloy if anything was repaired
+#
+# Repairing the file is not enough on its own: Alloy's tailer for that
+# container is already in a retry loop against the offset it could not get
+# past, and it does not re-evaluate the stream from scratch on its own.
+#
+# `docker restart`, deliberately NOT `docker kill -s HUP`. Signalling a
+# container through the API flags it as manually stopped, after which
+# restart: unless-stopped no longer brings it back and it silently vanishes at
+# the next reboot. That trap is documented in the Prometheus reload path; this
+# is the same trap.
+# -----------------------------------------------------------------------------
+if (( repaired > 0 )) && [[ "${MODE}" == "repair" ]]; then
+  if docker restart "${ALLOY_CONTAINER}" >/dev/null 2>&1; then
+    echo "restarted ${ALLOY_CONTAINER} so its stuck tailers start over"
+  else
+    echo "could not restart ${ALLOY_CONTAINER}; log shipping may still be stuck" >&2
+    failed=$(( failed + 1 ))
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# Metrics
+#
+# The cumulative counter is kept on disk because this script is a oneshot: it
+# has no memory of its own, and a counter that resets to zero on every run is
+# useless to Prometheus.
+#
+# tmp-then-rename is not optional - node-exporter will read a half-written file
+# and fail the whole scrape. Same rule as frey-metrics.
+# -----------------------------------------------------------------------------
+total=0
+[[ -r "${TOTAL_FILE}" ]] && total="$(cat "${TOTAL_FILE}" 2>/dev/null || echo 0)"
+[[ "${total}" =~ ^[0-9]+$ ]] || total=0
+
+if (( repaired > 0 )); then
+  total=$(( total + repaired ))
+  echo "${total}" > "${TOTAL_FILE}"
+fi
+
+out="${TEXTFILE_DIR}/frey-logrepair.prom"
+{
+  echo "# HELP frey_docker_log_corrupt_files Container json logs containing NUL bytes, found on the last run."
+  echo "# TYPE frey_docker_log_corrupt_files gauge"
+  echo "frey_docker_log_corrupt_files ${corrupt}"
+  echo "# HELP frey_docker_log_repair_failures Damaged logs the last run could not repair."
+  echo "# TYPE frey_docker_log_repair_failures gauge"
+  echo "frey_docker_log_repair_failures ${failed}"
+  echo "# HELP frey_docker_log_damaged_lines Damaged log lines seen on the last run."
+  echo "# TYPE frey_docker_log_damaged_lines gauge"
+  echo "frey_docker_log_damaged_lines ${dropped_lines}"
+  echo "# HELP frey_docker_log_repaired_total Container logs repaired since this Pi was built."
+  echo "# TYPE frey_docker_log_repaired_total counter"
+  echo "frey_docker_log_repaired_total ${total}"
+  echo "# HELP frey_docker_log_repair_last_run_timestamp_seconds When frey-log-repair last completed."
+  echo "# TYPE frey_docker_log_repair_last_run_timestamp_seconds gauge"
+  echo "frey_docker_log_repair_last_run_timestamp_seconds $(date +%s)"
+} > "${out}.tmp" && mv "${out}.tmp" "${out}"
+
+if (( corrupt == 0 )); then
+  echo "all container logs are intact"
+else
+  printf 'affected: %s\n' "${names[*]}"
+fi
+
+exit 0

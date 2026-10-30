@@ -554,6 +554,45 @@
     - monitoring_alerting.watchdog.enabled | bool
   tags: [monitoring, metrics, monitoring_collectors]
 
+- name: Create the log repair state directory
+  # Outside /run, because the cumulative repair count has to survive the
+  # reboot that caused the damage it is counting.
+  ansible.builtin.file:
+    path: "{{ monitoring.log_repair.state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when: monitoring_enable.log_repair | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Deploy the container log repair script
+  # Puts log shipping back together after an unclean shutdown tears NUL-byte
+  # holes in Docker's json logs. See the script header for the mechanism.
+  ansible.builtin.template:
+    src: frey-log-repair.sh.j2
+    dest: "{{ monitoring.bin_dir }}/frey-log-repair"
+    owner: root
+    group: root
+    mode: "0750"
+    validate: "bash -n %s"
+  when: monitoring_enable.log_repair | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Deploy the container log repair units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - "{{ monitoring.log_repair.service_name }}.service"
+    - "{{ monitoring.log_repair.service_name }}.timer"
+  notify: Reload systemd
+  when: monitoring_enable.log_repair | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
 - name: Apply systemd changes before enabling timers
   ansible.builtin.meta: flush_handlers
   tags: [monitoring, metrics, monitoring_collectors]
@@ -578,6 +617,32 @@
   when:
     - monitoring_enable.alerting | bool
     - monitoring_alerting.watchdog.enabled | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Enable the container log repair timer
+  ansible.builtin.systemd:
+    name: "{{ monitoring.log_repair.service_name }}.timer"
+    enabled: true
+    state: started
+  when:
+    - monitoring_enable.log_repair | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Repair any container logs damaged by an earlier unclean shutdown
+  # Run once here rather than waiting for the timer, because a log damaged
+  # before this deploy is a container whose logs are not reaching Loki right
+  # now. changed_when on the script's own report: it only restarts Alloy when
+  # it actually repaired something, so a clean Pi stays 0 changed on re-runs.
+  ansible.builtin.command:
+    argv:
+      - "{{ monitoring.bin_dir }}/frey-log-repair"
+      - repair
+  register: monitoring_log_repair_run
+  changed_when: "'repaired: ' in monitoring_log_repair_run.stdout"
+  when:
+    - monitoring_enable.log_repair | bool
     - not ansible_check_mode
   tags: [monitoring, metrics, monitoring_collectors]
 

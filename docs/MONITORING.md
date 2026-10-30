@@ -110,6 +110,37 @@ reset or a USB adapter browning out appears there and nowhere else.
 Debug and trace lines are dropped before storage. On an NVMe that also holds the
 *arr databases and the media library, log volume is a real cost.
 
+#### A container can stop shipping logs without anything saying so
+
+An unclean shutdown leaves runs of NUL bytes in Docker's own json log files —
+ext4 committed the file's new size, the blocks behind it never reached the
+drive. The daemon cannot parse a line of NULs, so it refuses to stream that
+container's log at all, and Alloy retries against the hole for ever.
+
+The container then ships **nothing** to Loki, indefinitely, and every signal
+you would expect to catch it stays quiet:
+
+- `docker logs` still works — it is normally asked for the tail, and reads
+  straight past the hole.
+- `FreyLogIngestionStopped` does not fire, because it watches total ingestion
+  and the other twenty-odd containers keep that well above zero.
+- The container is healthy, its metrics are fine, its service answers.
+
+In Grafana it looks exactly like a service that has gone quiet. On 2026-10-30
+`jellyfin`, `byparr` and `unpackerr` had been like that for a day.
+
+`frey-log-repair`, a systemd timer on the host, now scans for the damage and
+rewrites the affected files without the corrupt lines, keeping the inode so the
+daemon's open handle stays valid. It runs 45 seconds after boot — the run that
+matters, since the damage is already there before Alloy wedges itself against
+it — and every 15 minutes after that. A repair raises
+`FreyContainerLogsRepaired`, which is worth reading for its cause rather than
+its effect: it means the Pi lost power uncleanly, the same event that risks
+SQLite corruption across the *arrs, Jellyfin and LLDAP.
+
+`frey-log-repair scan` reports without changing anything. Details in
+`roles/monitoring/README.md`.
+
 ---
 
 ## How it reaches you

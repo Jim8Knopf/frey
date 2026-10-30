@@ -30,6 +30,47 @@ theme: '{{ identity.authelia.theme }}'
 server:
   address: 'tcp://0.0.0.0:{{ identity.authelia.port }}'
 
+  # ----------------------------------------------------------------------------
+  # TIMEOUTS - SET TO OUTLIVE TRAEFIK'S IDLE BACKEND CONNECTIONS
+  #
+  # Authelia's defaults are read 6s, write 6s, idle 30s. Traefik keeps an idle
+  # connection in its backend pool for 90s (its own default). So Traefik would
+  # dial Authelia, serve the request, keep the connection pooled and unused,
+  # and Authelia would hit its 6-second read timeout waiting for a request that
+  # was never coming - closing the connection and logging an error:
+  #
+  #   level=error msg="Request timeout occurred while handling request from
+  #   client." error="read tcp ...: i/o timeout" method=GET path=/
+  #   status_code=408
+  #
+  # Nothing is broken when that happens. No user request fails, because the
+  # connection carried none. But it is logged at ERROR, about 230 times a day,
+  # and it fills {level="error"} in Grafana with a fault that does not exist -
+  # which is expensive in the only way that matters: it trains you to ignore
+  # the panel that is supposed to tell you something is wrong.
+  #
+  # The invariant is simply that the side with the pool must give up first.
+  # Traefik closes at 90s; these are set above that so Authelia never does.
+  # The matching end is pinned in roles/service_proxy/tasks/main.yml - if you
+  # raise Traefik's idleConnTimeout, raise idle here to stay above it.
+  #
+  # HOW WELL THIS IS VERIFIED: the historical rate was about two 408s every ten
+  # minutes, steady across a day. With these timeouts live there were none in
+  # nine minutes, which is consistent with a fix but is not nine minutes of
+  # proof - roughly two were expected in that window. If 408s are still in
+  # Authelia's log a day after this lands, the reasoning above is wrong, and
+  # the next thing to check is who is opening connections to authelia:9091 and
+  # abandoning them: a longer read timeout only delays each log line, it cannot
+  # reduce the number of abandoned connections.
+  # ----------------------------------------------------------------------------
+  timeouts:
+    # Generous rather than tight: this listener is only reachable from the
+    # proxy on an internal Docker network, never from FreyHub clients, so the
+    # slow-request exposure a long read timeout normally buys does not apply.
+    read: '120s'
+    write: '120s'
+    idle: '120s'
+
 log:
   level: '{{ identity.authelia.log_level }}'
   format: 'text'

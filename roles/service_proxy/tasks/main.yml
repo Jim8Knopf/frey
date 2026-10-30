@@ -116,6 +116,20 @@
 # that decides whether a large upload survives - see service_proxy.traefik.timeouts
 # in this role's defaults. Changing them restarts Traefik; that is unavoidable,
 # since Traefik re-reads the dynamic directory but never its own command line.
+#
+# serversTransport.forwardingTimeouts.idleConnTimeout is the one setting here
+# about the BACKEND side: how long Traefik keeps a connection to a service
+# pooled while making no requests on it. It is pinned to Traefik's own default
+# rather than left unset, because the value has to be agreed with the services
+# behind it - whichever side gives up first closes the connection, and when
+# that is the service rather than Traefik, the service logs an error about a
+# connection that carried no request at all. Authelia did exactly that about
+# 230 times a day with its 6-second default read timeout against this 90s
+# pool. See the timeouts block in
+# roles/identity/templates/authelia-configuration.yml.j2, set to outlive this.
+#
+# NOTE: these are Jinja list entries, not YAML - a `#` inside the expression
+# below is a syntax error, not a comment. Explanations belong up here.
 # ------------------------------------------------------------------------------
 - name: Build the Traefik command line
   ansible.builtin.set_fact:
@@ -144,6 +158,8 @@
             ~ service_proxy.traefik.timeouts.write,
           '--entrypoints.websecure.transport.respondingTimeouts.idleTimeout='
             ~ service_proxy.traefik.timeouts.idle,
+          '--serversTransport.forwardingTimeouts.idleConnTimeout='
+            ~ service_proxy.traefik.timeouts.backend_idle,
         ]
         + (
             [
