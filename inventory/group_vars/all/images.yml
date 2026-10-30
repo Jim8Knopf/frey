@@ -1,0 +1,67 @@
+---
+# Container image tags for every active Frey service.
+# Edit the tag here, then deploy the affected role (see docs/IMAGES.md).
+# Quote new tags, especially tags that resemble numbers.
+# Confirm ARM64 support and review migration notes before upgrading.
+
+# Core services
+traefik_version: "v3.7.16"
+dockge_version: "1.5.0"
+
+identity_versions:
+  authelia: "4.39.28"
+  lldap: "2026-09-22-alpine"
+
+media_versions:
+
+  # --- Library (works with no internet) --------------------------------------
+  # Jellyfin 12.x. Upgrading from 10.x is a ONE-WAY database migration and
+  # plugins must be uninstalled first - see roles/media_library/README.md.
+  jellyfin: "12.3ubu2604-ls56"
+  audiobookshelf: "2.37.2"
+  # Seerr: the maintained continuation of Overseerr and Jellyseerr, both of
+  # which are discontinued.
+  seerr: "v3.5.1"
+  audiobookrequest: "1.11.0"
+  # Held at 2.19.0 deliberately: the project's latest GitHub release is
+  # v3.31.0 but no matching container image is published, so the newer tag
+  # cannot be pulled. scripts/media-check-updates.sh will keep reporting this
+  # until upstream publishes one.
+  maintainerr: "2.19.0"
+  jellystat: "1.1.12"
+  # PostgreSQL major upgrades are NOT automatic - a new major refuses to start
+  # on an old cluster's data. Treat a change here as a migration, not a bump.
+  jellystat_db: "18.1"
+
+  # --- Acquisition (needs an uplink) -----------------------------------------
+  # linuxserver images use `version-<upstream version>` tags.
+  prowlarr: "version-2.7.0.5723"
+  sonarr: "version-4.0.20.3014"
+  radarr: "version-6.4.4.10685"
+  lidarr: "version-3.1.6.5079"
+  bazarr: "version-v1.6.2"
+  qbittorrent: "version-5.3.0_v2.1.2"
+  # Chaptarr: successor to Readarr, which was retired in June 2025.
+  chaptarr: "0.9.965"
+  # Byparr: replaces FlareSolverr, archived upstream and no longer able to
+  # clear current Cloudflare challenges.
+  byparr: "3.0.4"
+  recyclarr: "8.8.0"
+  cleanuparr: "2.10.12"
+  unpackerr: "1.0.0"
+  # Gluetun, used only when media_vpn.enabled is true.
+  gluetun: "v3.41.3"
+
+monitoring_versions:
+  prometheus: "v3.15.1"
+  alertmanager: "v0.34.1"
+  node_exporter: "v1.12.1"
+  blackbox_exporter: "v0.29.1"
+  cadvisor: "v0.55.1"
+  grafana: "13.2.4"
+  loki: "3.7.9"
+  alloy: "v1.21.2"
+  # Base image for the notification relay in roles/monitoring/files/.
+  # The relay is Python standard library only - no pip, no requirements file,
+  # nothing to resolve at build time, so this never needs to be online.
+  relay_base: "3.14.10-alpine3.24"

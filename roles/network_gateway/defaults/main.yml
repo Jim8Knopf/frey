@@ -34,8 +34,8 @@ network_gateway:
     # and car park, and joining one by hand needs the uplink that is
     # down. This scans for open networks and joins the strongest.
     #
-    # Declared networks always win: these profiles get a lower
-    # autoconnect-priority and are only created while the uplink is down.
+    # Declared networks are handled by NetworkManager; open profiles are
+    # selected by the autojoin script only while the uplink is down.
     # -------------------------------------------------------------
     autojoin_open:
       enabled: true
@@ -43,9 +43,13 @@ network_gateway:
       # `connection_prefix`-* profile that is not in `networks`, which
       # would wipe these on every run if they shared the prefix.
       profile_prefix: frey-open
-      # Must stay below the lowest priority in `networks` so a known
-      # network is always preferred when both are in range.
-      autoconnect_priority: 1
+      # These profiles have autoconnect disabled; the priority is retained
+      # for clarity and is below the default for declared networks.
+      autoconnect_priority: -10
+      # Abandon managed networks after this long in a known failed state.
+      # Set to 0 to keep connected even when connectivity checks fail.
+      # Captive portals and unknown connectivity are never abandoned.
+      unusable_grace_seconds: 900
       interval_seconds: 120
       boot_delay_seconds: 45
       # Time for the radio to finish reporting results after a rescan.

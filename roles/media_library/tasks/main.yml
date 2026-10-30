@@ -24,7 +24,7 @@
       media_library configuration is invalid. The internal Docker network
       ({{ media.network.subnet }}) must not overlap FreyHub's
       {{ network_gateway.downstream.network_cidr }}, and
-      inventory/group_vars/all/media.yml must define media_versions and
+      inventory/group_vars/all/images.yml must define media_versions, and media.yml must define
       media_enable.
   tags:
     - media
@@ -161,6 +161,7 @@
   # far more likely to finish on a van's connection.
   community.docker.docker_image_pull:
     name: "{{ item }}"
+    pull: not_present
   loop: >-
     {{
       media_library.services | dict2items

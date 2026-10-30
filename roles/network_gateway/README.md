@@ -34,9 +34,12 @@ auto-connects to a profile that does not exist. `frey-uplink-autojoin.timer`
 scans the uplink radio while it is down and joins the strongest genuinely open
 network, which is what makes an undeclared campground or cafe work.
 
-Declared networks always win (`autoconnect-priority: 1` for autojoined ones),
-the AP radio is never touched, and a captive portal counts as success. Profiles
-are named `frey-open-*` so the `frey-uplink-*` prune cannot delete them.
+NetworkManager handles declared networks; the autojoin script controls open
+profiles, including their denylist and backoff. It never touches the AP radio.
+Captive portals are left connected for sign-in. By default a persistently
+unusable connection is backed off after 15 minutes; Frey's inventory disables
+this disconnection so slow or filtered networks remain connected. Profiles for
+open networks are named `frey-open-*`.
 
 Disable with `network_gateway.upstream.autojoin_open.enabled: false`; see
 `docs/GATEWAY.md` for the full rationale and the security trade-off.

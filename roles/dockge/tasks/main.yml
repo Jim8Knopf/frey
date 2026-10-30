@@ -15,7 +15,7 @@
       - dockge_version is defined
       - dockge_version | length > 0
     fail_msg: >-
-      dockge configuration is invalid. inventory/group_vars/all/main.yml must
+      dockge configuration is invalid. inventory/group_vars/all/images.yml must
       define dockge_version.
   tags: [dockge, services]
 

@@ -20,7 +20,7 @@ the van is parked somewhere with no uplink.
 ## Required Variables
 
 Day-to-day knobs live in **`inventory/group_vars/all/media.yml`**:
-`media_versions` (image tags), `media_enable` (which services run) and
+`media_enable` (which services run) and
 `media_vpn` (the tunnel). You should not need to edit this role to run the
 stack.
 
@@ -225,8 +225,7 @@ the AP passphrase is today's boundary. `External` is also exactly the right
 setting for the planned auth module: put Traefik forward-auth in front and
 nothing here changes.
 
-**Images are pinned to concrete versions**, all of them in
-`inventory/group_vars/all/media.yml`. An unattended pull on a campground Wi-Fi
+**Image tags** are configured in `inventory/group_vars/all/images.yml`. An unattended pull on a campground Wi-Fi
 must not be able to hand you a broken stack with no internet left to fix it
 with. `scripts/media-check-updates.sh` reports what has moved upstream. Bump
 deliberately:

@@ -327,6 +327,29 @@ monitoring:
     state_dir: /run/frey-monitor-watchdog
 
   # --------------------------------------------------------------------------
+  # CONTAINER LOG REPAIR
+  #
+  # An unclean shutdown leaves runs of NUL bytes in Docker's own json log
+  # files, where ext4 had committed the file's new size but not the blocks
+  # behind it. The daemon then refuses to stream that container's log at all,
+  # and Alloy retries against the hole for ever - so the container's logs stop
+  # reaching Loki, silently, while `docker logs` still works. See the header of
+  # templates/frey-log-repair.sh.j2.
+  #
+  # This van's NVMe has recorded 13 unsafe shutdowns, so this is a recurring
+  # condition rather than a one-off to fix by hand.
+  # --------------------------------------------------------------------------
+  log_repair:
+    service_name: frey-log-repair
+    # /var/lib rather than /run: the cumulative repair count has to survive the
+    # reboot, because the reboot is the event that causes the damage.
+    state_dir: /var/lib/frey-log-repair
+    # Quarter-hourly. The run that matters is the one just after boot, which
+    # the timer does separately; this interval only bounds how long shipping
+    # can stay broken if a log is damaged while running.
+    interval: 15min
+
+  # --------------------------------------------------------------------------
   # SECRETS
   #
   # Generated on the Pi on first run, persisted, reused forever after - the

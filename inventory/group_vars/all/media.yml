@@ -1,9 +1,9 @@
 ---
 # ==============================================================================
 #
-#   FREY MEDIA - THE ONLY FILE YOU NORMALLY EDIT
+#   FREY MEDIA - SERVICE SETTINGS
 #
-#   Image versions, on/off switches and the VPN toggle, all in one place so
+#   On/off switches and the VPN toggle, all in one place so
 #   you never have to go hunting through the roles for them.
 #
 #   Everything structural - volumes, networks, Traefik labels, API wiring -
@@ -15,7 +15,7 @@
 #
 #   1. See what is out of date:
 #          scripts/media-check-updates.sh
-#   2. Edit media_versions below.
+#   2. Edit media_versions in inventory/group_vars/all/images.yml.
 #   3. Apply, while you still have a connection:
 #          ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
 #            --tags media --vault-password-file .vault_pass
@@ -31,13 +31,8 @@
 # ==============================================================================
 
 
-# ==============================================================================
-# IMAGE VERSIONS
-#
-# Only the tag goes here; the registry and repository live in the role, since
-# those effectively never change. The comment on each line is the upstream
-# project the tag belongs to.
-# ==============================================================================
+# Image versions live in inventory/group_vars/all/images.yml.
+
 # Add Knaben as a public audiobook search source in Prowlarr. Its sync profile
 # permits interactive searches only in other *arr apps, not RSS or auto grabs.
 media_audiobook_public_indexer: true
@@ -47,45 +42,6 @@ media_audiobook_public_indexer: true
 media_qbittorrent_max_active_downloads: 15
 media_qbittorrent_max_active_torrents: 18
 
-media_versions:
-
-  # --- Library (works with no internet) --------------------------------------
-  # Jellyfin 12.x. Upgrading from 10.x is a ONE-WAY database migration and
-  # plugins must be uninstalled first - see roles/media_library/README.md.
-  jellyfin: 12.3ubu2604-ls56
-  audiobookshelf: 2.37.2
-  # Seerr: the maintained continuation of Overseerr and Jellyseerr, both of
-  # which are discontinued.
-  seerr: v3.5.1
-  audiobookrequest: "1"
-  # Held at 2.19.0 deliberately: the project's latest GitHub release is
-  # v3.31.0 but no matching container image is published, so the newer tag
-  # cannot be pulled. scripts/media-check-updates.sh will keep reporting this
-  # until upstream publishes one.
-  maintainerr: 2.19.0
-  jellystat: 1.1.12
-  # PostgreSQL major upgrades are NOT automatic - a new major refuses to start
-  # on an old cluster's data. Treat a change here as a migration, not a bump.
-  jellystat_db: 18.1
-
-  # --- Acquisition (needs an uplink) -----------------------------------------
-  # linuxserver images use `version-<upstream version>` tags.
-  prowlarr: version-2.7.0.5723
-  sonarr: version-4.0.20.3014
-  radarr: version-6.4.4.10685
-  lidarr: version-3.1.6.5079
-  bazarr: version-v1.6.2
-  qbittorrent: version-5.3.0_v2.1.2
-  # Chaptarr: successor to Readarr, which was retired in June 2025.
-  chaptarr: 0.9.965
-  # Byparr: replaces FlareSolverr, archived upstream and no longer able to
-  # clear current Cloudflare challenges.
-  byparr: 3.0.4
-  recyclarr: 8.8.0
-  cleanuparr: 2.10.12
-  unpackerr: 1.0.0
-  # Gluetun, used only when media_vpn.enabled is true.
-  gluetun: v3.41.3
 
 
 # ==============================================================================

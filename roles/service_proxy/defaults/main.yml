@@ -25,7 +25,7 @@ service_proxy:
     users: []
 
   traefik:
-    image: traefik:v3
+    image: "traefik:{{ traefik_version }}"
     container_name: frey-traefik
     network: frey_proxy
     dynamic_config_dir: /opt/frey/proxy/traefik/dynamic
@@ -73,6 +73,14 @@ service_proxy:
       write: 600s
       # An established connection with no request in flight.
       idle: 3600s
+      # The same idea on the BACKEND side: how long Traefik holds a pooled
+      # connection to a service it is not currently using. Traefik's own
+      # default, written down because the number has to be agreed with the
+      # services behind it: whichever side gives up first closes the
+      # connection, and if that is the service rather than Traefik, the
+      # service logs an error about a connection that carried no request.
+      # Every backend must tolerate being idle for longer than this.
+      backend_idle: 90s
 
     # ------------------------------------------------------------------------
     # ACCESS LOG

@@ -37,14 +37,60 @@ Everything in this role is structure.
 | `alloy` | Ships container logs and the system journal into Loki |
 | `grafana` | The dashboards |
 
-Plus two systemd timers on the host: `frey-metrics` (the collectors) and
-`frey-monitor-watchdog` (the layer that still speaks when Docker is down).
+Plus three systemd timers on the host: `frey-metrics` (the collectors),
+`frey-monitor-watchdog` (the layer that still speaks when Docker is down) and
+`frey-log-repair` (below).
+
+## The one that repairs rather than reports
+
+`frey-log-repair` is the only thing in this role that writes to something
+Docker owns, so it is worth knowing why it exists.
+
+An unclean shutdown tears a hole in Docker's own container log files: ext4 had
+committed the file's new size but the data blocks behind it never reached the
+NVMe, so after the next mount a run of log lines reads back as NUL bytes. A
+json-file log line is supposed to be one JSON object, a line of NULs is not,
+and the daemon then refuses to stream **that container's log at all**:
+
+```
+error from daemon in stream: Error grabbing logs:
+invalid character '\x00' looking for beginning of value
+```
+
+Alloy hits the hole, retries from the same offset, and hits it again for ever.
+The container ships nothing to Loki from that moment on, and nothing says so —
+`docker logs` keeps working, because it is normally asked for the tail and
+reads straight past the hole.
+
+That is not theoretical. On 2026-10-30 `jellyfin`, `byparr` and `unpackerr` had
+been shipping nothing for a day; Alloy had written 32,581 error lines about it;
+`FreyLogIngestionStopped` never fired because the other twenty-odd containers
+kept ingestion well above zero; and Grafana showed three services that merely
+looked quiet. This van's NVMe has recorded 13 unsafe shutdowns, so it recurs.
+
+The timer scans every running container's json log for NUL bytes, rewrites the
+damaged files without the corrupt lines — **in place, keeping the inode**,
+because the daemon is holding the file open and appending to it — and restarts
+Alloy only if something was actually repaired. It reports into the textfile
+directory like any collector, so a repair is graphable and alertable
+(`FreyContainerLogsRepaired`, `FreyContainerLogsDamaged`).
+
+```bash
+frey-log-repair scan     # report only, change nothing
+frey-log-repair          # scan, repair, restart Alloy if needed
+```
+
+`roles/monitoring/tests/test_log_repair.py` covers it: damaged lines removed,
+intact lines preserved in order, idempotent, and the inode held across a repair
+while an `O_APPEND` writer keeps appending.
 
 ## Variables it reads from outside the role
 
 - `frey.*` — `service_domain`, `proxy_network`, `base_dir`, `pki_public_dir`
 - `network_gateway.downstream.*` / `upstream.*` — radios, AP connection name
 - `service_proxy.traefik.*` — container name, metrics port
+- `service_proxy.docker.data_root` — where the container log files live, which
+  is what `frey-log-repair` repairs
 - `identity_services`, `identity_hosts`, `identity_protect` — what to probe,
   and which routers get the forward-auth middleware
 - `monitoring_*` — from `inventory/group_vars/all/monitoring.yml`
@@ -144,7 +190,7 @@ scripts/monitoring-check.sh --updates    # ...and compare pinned versions
 
 ```bash
 scripts/monitoring-check.sh --updates
-# edit monitoring_versions in inventory/group_vars/all/monitoring.yml
+# edit monitoring_versions in inventory/group_vars/all/images.yml
 ansible-playbook ... --tags monitoring -e monitoring_update=true
 ```
 

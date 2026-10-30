@@ -266,11 +266,19 @@ groups:
             working. `docker logs --tail 50 alloy`.
 
       - alert: FreyLokiRejectingWrites
-        # Loki's own rejections only - rate limits, lines too old, bad labels.
-        # The lines deliberately thrown away as noise are dropped by Alloy
-        # before they ever reach Loki, so they are counted in Alloy's metrics
-        # and never appear here.
-        expr: increase(loki_discarded_samples_total[1h]) > 1000
+        # Loki's own rejections only - rate limits, bad labels. The lines
+        # deliberately thrown away as noise are dropped by Alloy before they
+        # ever reach Loki, so they are counted in Alloy's metrics and never
+        # appear here.
+        #
+        # too_far_behind is excluded and handled by the next rule. Every Alloy
+        # restart re-reads each container log from the start and replays
+        # entries Loki has already stored or considers too old - 15,230 of them
+        # on 2026-10-30, from one restart. With a 1h window that is an hour of
+        # firing after any ordinary deploy, which made this alert mean "someone
+        # ran Ansible" rather than anything about Loki.
+        expr: >-
+          increase(loki_discarded_samples_total{reason!="too_far_behind"}[1h]) > 1000
         for: 10m
         labels:
           severity: warning
@@ -282,4 +290,99 @@ groups:
             before it costs NVMe life. `reason=greater_than_max_sample_age`
             instead means the Pi's clock jumped, which happens after a cold
             boot with no uplink and no RTC battery.
+
+      - alert: FreyLokiRejectingOldEntries
+        # Separated from the rule above so that the harmless cause and the
+        # real one can be told apart by how long they last, which is the only
+        # thing that distinguishes them:
+        #
+        #   an Alloy restart   one burst, over in seconds, then nothing
+        #   a clock problem    continuous, because every line is now "old"
+        #
+        # A 15-minute window that has to stay above the threshold for 45
+        # minutes cannot be satisfied by a burst - the increase falls back to
+        # zero long before the `for` elapses - but a Pi whose clock jumped
+        # backwards keeps it true indefinitely. That is the case worth waking
+        # up for, because nothing is being stored while it lasts.
+        expr: >-
+          increase(loki_discarded_samples_total{reason="too_far_behind"}[15m]) > 1000
+        for: 45m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki has been rejecting log lines as too old for 45 minutes"
+          description: >-
+            Loki is refusing lines for being older than it will accept, and has
+            been for long enough that this is not the usual burst after an
+            Alloy restart. The likely cause is the Pi's clock: it has no RTC
+            battery, so a cold boot with no uplink starts it in the past and
+            every log line looks ancient until NTP catches up. Check `timedatectl`
+            first. Nothing is being stored into Loki while this lasts.
+{% endif %}
+{% if monitoring_enable.log_repair | bool %}
+
+  # ============================================================================
+  # DAMAGED CONTAINER LOGS
+  #
+  # The gap these close: FreyLogIngestionStopped only fires when ingestion
+  # stops ENTIRELY. An unclean shutdown stops it for the handful of containers
+  # whose json logs were damaged, while the other twenty-odd keep shipping
+  # normally - so the ingestion rate stays well above zero and nothing fires.
+  #
+  # That is not hypothetical. On 2026-10-30 jellyfin, byparr and unpackerr had
+  # been shipping nothing for a day; every alert in this file was quiet and
+  # Grafana showed three services that merely looked idle.
+  # ============================================================================
+  - name: frey_log_repair
+    rules:
+
+      - alert: FreyContainerLogsDamaged
+        # The repair normally clears this within one timer interval, so a
+        # value that persists means the repair itself could not fix it -
+        # a permissions problem, or a file Docker is holding differently.
+        expr: frey_docker_log_corrupt_files > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ go }} $value {{ og }} container log(s) still damaged after repair"
+          description: >-
+            An unclean shutdown left NUL bytes in Docker's own json log files,
+            and frey-log-repair has not managed to clear them. Until it does,
+            those containers ship nothing to Loki while `docker logs` keeps
+            working, so they look idle rather than broken.
+            `frey-log-repair scan` names them; `journalctl -u frey-log-repair`
+            says why the repair failed.
+
+      - alert: FreyContainerLogsRepaired
+        # Deliberately an alert and not just a metric. A repair means the Pi
+        # lost power uncleanly, which is the live hardware concern on this van
+        # - the same event that risks SQLite corruption across the *arrs,
+        # Jellyfin and LLDAP. Worth knowing even though the logs themselves
+        # are now fixed.
+        expr: increase(frey_docker_log_repaired_total[6h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container logs were repaired after an unclean shutdown"
+          description: >-
+            frey-log-repair found and removed NUL-byte damage in at least one
+            container's json log. Log shipping is working again. The reason to
+            read this is the cause, not the effect: check the unsafe shutdown
+            count and the 5V rail before assuming it was a one-off.
+
+      - alert: FreyLogRepairNotRunning
+        # The repair is itself a thing that can die quietly, and its whole
+        # value is being there after a bad reboot.
+        expr: >-
+          time() - frey_docker_log_repair_last_run_timestamp_seconds
+            > {{ t.monitoring.log_repair_stale_seconds }}
+        labels:
+          severity: warning
+        annotations:
+          summary: "frey-log-repair has not run recently"
+          description: >-
+            The timer that repairs damaged container logs has stopped running,
+            so the next unclean shutdown will silently stop some containers
+            from shipping logs. `systemctl status frey-log-repair.timer`.
 {% endif %}

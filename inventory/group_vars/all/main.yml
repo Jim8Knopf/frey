@@ -186,7 +186,8 @@ frey:
 # roles/dockge/defaults/main.yml). Use it to look, read logs and restart a
 # container; make lasting changes in the role.
 # ==============================================================================
-dockge_version: 1.5.0
+
+# Image tags are centralized in inventory/group_vars/all/images.yml.
 
 # ==============================================================================
 # MEDIA - SHARED CONFIGURATION
@@ -287,10 +288,15 @@ network_gateway:
     # Join open networks nobody declared - the campground/cafe case.
     # `networks` below can only cover SSIDs known in advance, because
     # NetworkManager never auto-connects to a profile that does not exist.
-    # Declared networks still win; this only fires while the uplink is down.
+    # NetworkManager handles declared networks; open selection runs when down.
     # Full knobs in roles/network_gateway/defaults/main.yml.
     autojoin_open:
       enabled: true
+      # Try even very weak open networks and retry failed associations soon.
+      min_signal: 0
+      failure_backoff_seconds: 120
+      # Slow or filtered internet can fail connectivity checks: stay joined.
+      unusable_grace_seconds: 0
       ssid_denylist: []
     route_metric: 100
     country: NZ
@@ -370,7 +376,7 @@ service_proxy:
     users:
       - "{{ ansible_user | default('ansible') }}"
   traefik:
-    image: traefik:v3
+    image: "traefik:{{ traefik_version }}"
     container_name: frey-traefik
     network: "{{ frey.proxy_network }}"
     dynamic_config_dir: "{{ frey.base_dir }}/proxy/traefik/dynamic"

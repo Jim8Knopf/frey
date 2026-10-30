@@ -19,14 +19,15 @@ worth two more containers that have to come back cleanly after a power cut.
 
 ## Required Variables
 
-All in `inventory/group_vars/all/identity.yml`:
+In `inventory/group_vars/all/identity.yml`:
 
-- `identity_versions` — pinned image tags
 - `identity_enable` — which of the two run
 - `identity_hosts` — `auth` and `directory` short names
 - `identity_users`, `identity_groups` — who exists
 - `identity_services` — the auth matrix
 - `identity_protect`, `identity_hostnames` — derived; do not hand-edit
+
+Image tags are in `inventory/group_vars/all/images.yml` as `identity_versions`.
 
 Also needs, from `inventory/group_vars/all/main.yml`:
 

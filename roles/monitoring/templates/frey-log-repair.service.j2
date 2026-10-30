@@ -1,0 +1,36 @@
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+[Unit]
+Description=Frey container log repair
+Documentation=file://{{ monitoring.bin_dir }}/frey-log-repair
+# Pointless without the daemon: every path it touches is a container log file
+# owned by Docker, and it asks Docker which ones those are. Wants, not
+# Requires, so a Pi whose Docker is broken does not also collect a failed
+# unit - the script says so itself and exits.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart={{ monitoring.bin_dir }}/frey-log-repair repair
+# Root, because the container log files and the Docker socket are root-only.
+User=root
+# Must not outlive its own timer interval, or runs pile up on top of each
+# other, each rewriting a file the previous one is still rewriting.
+TimeoutStartSec=120
+Nice=10
+IOSchedulingClass=idle
+
+# Modest hardening, deliberately the same set as frey-metrics and no stricter.
+# ProtectSystem=strict was tried and left out: it remounts the whole hierarchy
+# read-only, /run included, and everything this script does goes through the
+# Docker socket there. Hardening that risks silently disabling the repair is a
+# bad trade for a unit that runs for two seconds every quarter of an hour.
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ service_proxy.docker.data_root }}/containers
+ReadWritePaths={{ monitoring.textfile_dir }}
+ReadWritePaths={{ monitoring.log_repair.state_dir }}
+
+[Install]
+WantedBy=multi-user.target

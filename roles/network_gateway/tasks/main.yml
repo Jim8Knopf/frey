@@ -319,6 +319,15 @@
     - network_gateway.upstream.networks | default([]) | length > 0
   tags: [network, gateway, uplink]
 
+- name: Install the read-only gateway diagnostic
+  ansible.builtin.template:
+    src: frey-gateway-check.sh.j2
+    dest: /usr/local/sbin/frey-gateway-check
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [network, gateway, uplink, wifi_recovery]
+
 # ---------------------------------------------------------------------
 # Opportunistic open Wi-Fi autojoin.
 #
@@ -337,7 +346,7 @@
   when:
     - network_gateway.upstream.enabled | bool
     - network_gateway.upstream.autojoin_open.enabled | bool
-  tags: [network, gateway, uplink]
+  tags: [network, gateway, uplink, wifi_recovery]
 
 - name: Install the open Wi-Fi autojoin script
   ansible.builtin.template:
@@ -349,7 +358,7 @@
   when:
     - network_gateway.upstream.enabled | bool
     - network_gateway.upstream.autojoin_open.enabled | bool
-  tags: [network, gateway, uplink]
+  tags: [network, gateway, uplink, wifi_recovery]
 
 - name: Install the open Wi-Fi autojoin units
   ansible.builtin.template:
@@ -365,7 +374,7 @@
   when:
     - network_gateway.upstream.enabled | bool
     - network_gateway.upstream.autojoin_open.enabled | bool
-  tags: [network, gateway, uplink]
+  tags: [network, gateway, uplink, wifi_recovery]
 
 - name: Enable the open Wi-Fi autojoin timer
   ansible.builtin.systemd:
@@ -377,7 +386,7 @@
     - network_gateway.upstream.enabled | bool
     - network_gateway.upstream.autojoin_open.enabled | bool
     - not ansible_check_mode
-  tags: [network, gateway, uplink]
+  tags: [network, gateway, uplink, wifi_recovery]
 
 # Turning the feature off must also stop it, not just stop managing it.
 - name: Disable the open Wi-Fi autojoin timer when the feature is off
@@ -391,7 +400,41 @@
     - not (network_gateway.upstream.autojoin_open.enabled | bool)
       or not (network_gateway.upstream.enabled | bool)
     - not ansible_check_mode
-  tags: [network, gateway, uplink]
+  tags: [network, gateway, uplink, wifi_recovery]
+
+- name: Stop any running Wi-Fi recovery before restoring profiles
+  ansible.builtin.systemd:
+    name: frey-uplink-autojoin.service
+    state: stopped
+  failed_when: false
+  when:
+    - not (network_gateway.upstream.autojoin_open.enabled | bool)
+      or not (network_gateway.upstream.enabled | bool)
+    - not ansible_check_mode
+  tags: [network, gateway, uplink, wifi_recovery]
+
+# Restore saved profiles after stopping recovery so a pending backoff does
+# not leave a known network permanently unable to auto-connect.
+- name: Check for the autojoin script when disabling recovery
+  ansible.builtin.stat:
+    path: /usr/local/sbin/frey-uplink-autojoin
+  register: ngw_autojoin_script
+  when:
+    - not (network_gateway.upstream.autojoin_open.enabled | bool)
+      or not (network_gateway.upstream.enabled | bool)
+  tags: [network, gateway, uplink, wifi_recovery]
+
+- name: Restore paused saved Wi-Fi profiles when disabling recovery
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/frey-uplink-autojoin --restore
+  register: ngw_restore_profiles
+  changed_when: "'RESTORED' in ngw_restore_profiles.stdout"
+  when:
+    - not (network_gateway.upstream.autojoin_open.enabled | bool)
+      or not (network_gateway.upstream.enabled | bool)
+    - ngw_autojoin_script.stat.exists | default(false)
+    - not ansible_check_mode
+  tags: [network, gateway, uplink, wifi_recovery]
 
 # ---------------------------------------------------------------------
 # Keeping the USB uplink radio on the bus.

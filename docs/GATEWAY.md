@@ -56,7 +56,7 @@ Networks live in the vault so a rebuild reproduces them. NetworkManager joins
 whichever is in range; none in range is a normal state.
 
 ```bash
-ansible-vault edit inventory/inventory/group_vars/all/secrets.yml --vault-password-file .vault_pass
+ansible-vault edit inventory/group_vars/all/secrets.yml --vault-password-file .vault_pass
 ```
 
 ```yaml
@@ -89,23 +89,34 @@ systemctl status frey-uplink-autojoin.timer
 journalctl -t frey-uplink-autojoin          # every decision it has made
 ```
 
-What it will not do, by design:
+The service only changes the uplink radio. NetworkManager handles declared
+profiles; the selector chooses open networks when the uplink is disconnected.
+It does not interrupt an existing connection just because a preferred network
+appears. Remembered open profiles have NetworkManager autoconnect disabled, so
+the selector can enforce its signal threshold, denylist and backoff every time.
+Different SSIDs get distinct hashed profile names.
 
-- **Touch the FreyHub radio.** It asserts the two interfaces differ and exits
-  if they do not. FreyHub is never a casualty of a hunt for internet.
-- **Override a declared network.** Its profiles are written with
-  `autoconnect-priority: 1`, below anything in `networks`, and it does nothing
-  at all while the uplink is already connected or mid-association.
-- **Demand working internet.** A captive portal answers DHCP and then
-  intercepts everything until you sign in from a phone on FreyHub — that counts
-  as joined. A check for real internet here would reject exactly the networks
-  this exists to join.
-- **Join `WEP` or `OWE`.** Only a completely empty security field is open.
-  `WEP` is broken-but-encrypted and `OWE` needs a key exchange an open profile
-  does not describe.
-- **Thrash.** A network that refuses us is skipped for
-  `failure_backoff_seconds` (30 min), so one strong but broken AP cannot keep
-  winning on signal and pin the uplink down.
+The service leaves connected networks alone even when internet checks fail,
+so slow, filtered and captive networks have time to work. Frey's settings also
+allow weak open networks and retry failed associations after two minutes. The
+strongest eligible network is still tried first. This can leave Frey connected
+to a hotspot that has no working internet; denylist it if needed. WEP and OWE
+networks are not selected.
+
+The role default is to disconnect managed networks after 15 minutes of
+`limited` or `none` connectivity and back them off for 30 minutes. Set
+`unusable_grace_seconds: 0` to disable that behavior, as Frey's inventory does.
+Previously paused saved profiles are restored after their backoff or when the
+feature is disabled.
+
+A shared uplink address may allow all FreyHub clients to use a portal after one
+client signs in, but each hotspot's rules differ.
+
+For a read-only summary of interfaces, connectivity, routes, services and NAT:
+
+```bash
+sudo frey-gateway-check
+```
 
 Its profiles are named `frey-open-*`, deliberately **not** the
 `frey-uplink-*` prefix — the prune step above deletes any `frey-uplink-*`

@@ -18,11 +18,12 @@ in the same run.
 
 ## The File You Edit
 
-`inventory/group_vars/all/media.yml` holds everything you change day to day:
+`inventory/group_vars/all/media.yml` holds service settings. Image tags for all
+services are in `inventory/group_vars/all/images.yml`:
 
 | Block | What it controls |
 | --- | --- |
-| `media_versions` | every image tag, in one list |
+| `media_versions` in `images.yml` | media image tags |
 | `media_enable` | which services run |
 | `media_vpn` | the VPN toggle and its credentials |
 
@@ -33,7 +34,7 @@ roles. You should not need to open them to run the stack.
 
 ```bash
 scripts/media-check-updates.sh      # what has moved upstream
-# edit inventory/group_vars/all/media.yml
+# edit inventory/group_vars/all/images.yml
 ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
   --tags media --vault-password-file .vault_pass
 ```

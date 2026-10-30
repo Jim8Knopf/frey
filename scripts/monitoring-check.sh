@@ -104,13 +104,34 @@ curl_in() {
 # sidesteps every quoting problem), run there, and only its handful of output
 # lines cross the wire.
 # ------------------------------------------------------------------------------
+#
+# MOVING THE PYTHON TO THE PI WAS ONLY HALF THE FIX. The same truncation
+# happens again one hop further in, entirely on the Pi, because `docker exec`
+# whose stdout is a pipe is subject to the same race: the daemon closes the
+# stream before the reader has drained it, and the body stops at the first
+# ~4 KB buffer. Measured here on 2026-10-30, same command, same second:
+#
+#   /api/v1/rules      39,825 bytes one run, 3,918 the next
+#   /api/v1/targets    22,789 bytes one run, 3,918 the next
+#
+# So it is not the SSH layer that has to be taken out of the path, it is every
+# pipe carrying the body. json.load() on a half-response raises, the function
+# returns nothing, and this script then reports "rules api: no response" about
+# a Prometheus that is answering perfectly - which is exactly what sent anyone
+# looking at Prometheus instead of at this script.
+#
+# Staging the body in a file and feeding python3 from the file removes the last
+# pipe: with `> file`, the same responses came back whole on every run. Keep it
+# that way - any future `docker exec ... | something` here reintroduces the bug.
+# ------------------------------------------------------------------------------
 remote_py() {
   local source="$1" container="$2" url="$3"
-  local b64 remote="/tmp/frey-mon-check-$$.py"
+  local b64 remote="/tmp/frey-mon-check-$$.py" body="/tmp/frey-mon-check-$$.json"
   b64="$(printf '%s' "${source}" | base64 -w0)"
   ssh_pi "printf '%s' '${b64}' | base64 -d > '${remote}' \
-          && sudo docker exec ${container} wget -q -O - --timeout=15 '${url}' \
-             | python3 '${remote}'; rc=\$?; rm -f '${remote}'; exit \$rc"
+          && sudo docker exec ${container} wget -q -O - --timeout=15 '${url}' > '${body}' \
+          && python3 '${remote}' < '${body}'; \
+          rc=\$?; rm -f '${remote}' '${body}'; exit \$rc"
 }
 
 echo
@@ -392,7 +413,7 @@ fi
 if (( DO_UPDATES )); then
   echo
   echo "Image versions"
-  python3 - "${REPO_ROOT}/inventory/group_vars/all/monitoring.yml" <<'PYTHON'
+  python3 - "${REPO_ROOT}/inventory/group_vars/all/images.yml" <<'PYTHON'
 import json, re, sys, urllib.error, urllib.request
 
 try:
@@ -463,7 +484,7 @@ for name, current in sorted(pinned.items()):
         print("  \033[33mnew\033[0m   %-24s %-22s -> %s" % (name, current, newest))
 
 print()
-print("  Edit monitoring_versions in inventory/group_vars/all/monitoring.yml,")
+print("  Edit monitoring_versions in inventory/group_vars/all/images.yml,")
 print("  then: ansible-playbook ... --tags monitoring -e monitoring_update=true")
 PYTHON
 fi

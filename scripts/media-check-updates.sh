@@ -3,7 +3,7 @@
 # media-check-updates.sh - compare pinned media image versions against upstream
 # =============================================================================
 #
-# Reads media_versions from inventory/group_vars/all/media.yml and reports what
+# Reads media_versions from inventory/group_vars/all/images.yml and reports what
 # has moved upstream, so updating is "read this list, edit that one file"
 # instead of hunting through roles and registries.
 #
@@ -11,7 +11,7 @@
 #
 #   ./scripts/media-check-updates.sh
 #
-# Then edit inventory/group_vars/all/media.yml and apply:
+# Then edit inventory/group_vars/all/images.yml and apply:
 #
 #   ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
 #     --tags media --vault-password-file .vault_pass
@@ -21,7 +21,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VARS_FILE="${REPO_ROOT}/inventory/group_vars/all/media.yml"
+VARS_FILE="${REPO_ROOT}/inventory/group_vars/all/images.yml"
 
 if [ ! -r "${VARS_FILE}" ]; then
   echo "cannot read ${VARS_FILE}" >&2
@@ -173,9 +173,11 @@ print()
 print(f"{'service'.ljust(width)}  {'pinned'.ljust(26)}  upstream")
 print("-" * (width + 56))
 outdated = 0
+unknown = 0
 for name, pinned, latest, same in rows:
     if latest is None:
         mark, shown = "  ?", "could not check"
+        unknown += 1
     elif same:
         mark, shown = "   ", "up to date"
     else:
@@ -191,11 +193,15 @@ if outdated:
     print("releases differently from their published images, so check the tag")
     print("exists before applying:  docker manifest inspect <image>:<tag>")
     print()
-    print("Edit:  inventory/group_vars/all/media.yml")
+    print("Edit:  inventory/group_vars/all/images.yml")
     print("Apply: ansible-playbook -i inventory/hosts.yml playbooks/site.yml \\")
     print("         --tags media --vault-password-file .vault_pass")
+elif not unknown:
+    print("All checked images are on their latest known versions.")
 else:
-    print("Everything is on its latest known version.")
+    print("No updates found among checked images; some checks failed.")
+if unknown:
+    print(f"{unknown} image(s) could not be checked.")
 for note in notes:
     print("note: " + note)
 print()
