@@ -71,7 +71,7 @@
   With identity not deployed, identity_protect is empty, nothing is protected,
   and every service keeps answering plain HTTP as it does today.
 #}
-{% macro proxy_labels(route, name, port, aliases=[]) %}
+{% macro proxy_labels(route, name, port, aliases=[], network=frey.proxy_network) %}
 {% set canonical = [] %}
 {% set legacy = [] %}
 {% set every = [] %}
@@ -82,10 +82,10 @@
 {% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
 {% endfor %}
 {% set protected = route in (identity_protect | default([])) %}
-{% set middlewares = ['secure-headers@file'] + (['authelia@file'] if protected else []) %}
+{% set middlewares = ['secure-headers@file'] + (['drop-remote-user@file'] if name == 'navidrome' else []) + (['authelia@file'] if protected else []) %}
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.docker.network={{ network }}"
       - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
       - "traefik.http.routers.{{ name }}.rule={{ canonical | join(' || ') }}"
       - "traefik.http.routers.{{ name }}.entrypoints=websecure"
@@ -111,6 +111,8 @@ networks:
   {{ frey.proxy_network }}:
     external: true
   {{ media.network.name }}:
+    external: true
+  {{ frey.navidrome_network.name }}:
     external: true
 
 services:
@@ -168,6 +170,31 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
+
+{% endif %}
+{% if svc.navidrome.enabled | bool %}
+  navidrome:
+    image: {{ svc.navidrome.image }}
+    container_name: {{ svc.navidrome.container_name }}
+    hostname: {{ svc.navidrome.hostname }}
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+      - ND_EXTAUTH_TRUSTEDSOURCES={{ frey.navidrome_network.traefik_ip }}/32
+      - ND_ENABLEUSEREDITING=false
+    volumes:
+      - "{{ appdata }}/navidrome:/data"
+      - "{{ media.data_dir }}/media/music:/music:ro"
+    networks:
+      - {{ frey.navidrome_network.name }}
+{{ proxy_labels('navidrome', 'navidrome', svc.navidrome.port, network=frey.navidrome_network.name) }}
+    mem_limit: {{ svc.navidrome.mem_limit }}
+    cpus: "{{ svc.navidrome.cpus }}"
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
 
 {% endif %}
 {% if svc.audiobookshelf.enabled | bool %}

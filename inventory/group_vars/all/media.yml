@@ -54,6 +54,7 @@ media_enable:
 
   # --- Library ---------------------------------------------------------------
   jellyfin: true
+  navidrome: true
   audiobookshelf: true
   seerr: true
   audiobookrequest: true

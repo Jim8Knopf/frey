@@ -125,6 +125,7 @@ def same_version(pinned, latest):
 # name in media_versions -> how to find its current upstream version
 LSIO = {"jellyfin", "prowlarr", "sonarr", "radarr", "lidarr", "bazarr", "qbittorrent"}
 GITHUB = {
+    "navidrome": "navidrome/navidrome",
     "audiobookshelf": "advplyr/audiobookshelf",
     "seerr": "seerr-team/seerr",
     "maintainerr": "jorenn92/Maintainerr",

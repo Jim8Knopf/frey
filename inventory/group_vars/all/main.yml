@@ -36,6 +36,11 @@ frey:
 
   service_address: "{{ network_gateway.downstream.address }}"
   proxy_network: frey_proxy
+  # Private link shared by Traefik and Navidrome for trusted identity headers.
+  navidrome_network:
+    name: frey_navidrome_proxy
+    subnet: 172.31.250.0/29
+    traefik_ip: 172.31.250.2
 
   # Where frey_pki publishes the root certificate and the script that installs
   # it into a container's trust store. Declared here rather than only in

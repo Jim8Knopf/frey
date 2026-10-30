@@ -20,6 +20,7 @@
       # switch silently resolves to nothing.
       - media_versions is defined
       - media_enable is defined
+      - not (media_enable.navidrome | bool) or ('identity' in frey.modules.enabled and identity_enable.authelia | bool and (identity_services.navidrome.auth == 'forward_auth'))
     fail_msg: >-
       media_library configuration is invalid. The internal Docker network
       ({{ media.network.subnet }}) must not overlap FreyHub's
@@ -101,6 +102,7 @@
     - "{{ media.appdata_dir }}"
     - "{{ media.appdata_dir }}/jellyfin"
     - "{{ media_library.services.jellyfin.transcode_dir }}"
+    - "{{ media.appdata_dir }}/navidrome"
     - "{{ media.appdata_dir }}/audiobookshelf"
     - "{{ media.appdata_dir }}/audiobookshelf/config"
     - "{{ media.appdata_dir }}/audiobookshelf/metadata"

@@ -89,6 +89,15 @@ media_library:
           type: music
           path: /data/media/music
 
+    navidrome:
+      enabled: "{{ media_enable.navidrome | bool }}"
+      image: navidrome/navidrome:{{ media_versions.navidrome }}
+      container_name: navidrome
+      hostname: navidrome
+      port: 4533
+      mem_limit: 512m
+      cpus: "1.0"
+
     audiobookshelf:
       enabled: "{{ media_enable.audiobookshelf | bool }}"
       image: ghcr.io/advplyr/audiobookshelf:{{ media_versions.audiobookshelf }}

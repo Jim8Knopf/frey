@@ -19,6 +19,7 @@ media_versions:
   # Jellyfin 12.x. Upgrading from 10.x is a ONE-WAY database migration and
   # plugins must be uninstalled first - see roles/media_library/README.md.
   jellyfin: "12.3ubu2604-ls56"
+  navidrome: "0.64.2"
   audiobookshelf: "2.37.2"
   # Seerr: the maintained continuation of Overseerr and Jellyseerr, both of
   # which are discontinued.
