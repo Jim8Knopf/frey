@@ -293,7 +293,60 @@ collect_nvme() {
         value=$(num "$(field "${pair%%:*}")")
         [[ -n "${value}" ]] && echo "${pair##*:}{device=\"${name}\"} ${value}"
       done
+
+      # Read from the journal rather than dmesg: the ring buffer wraps and
+      # six dropouts in 25 minutes is a volume that can push the earliest
+      # ones out of it, which would quietly walk the counter backwards.
+      local resets
+      resets=$(journalctl -k -b --no-pager 2>/dev/null \
+        | grep -c "nvme ${name}: controller is down") || resets=0
+      echo "frey_nvme_controller_resets_total{device=\"${name}\"} ${resets}"
     done
+
+    # -------------------------------------------------------------------
+    # CONTROLLER DROPOUTS, WHICH SMART CANNOT SEE.
+    #
+    # This drive's failure mode is not wear, spare blocks or media errors.
+    # Every one of those reads perfectly clean while it is happening,
+    # which is exactly why it went misdiagnosed for days. What actually
+    # happens is that the drive leaves the PCIe bus:
+    #
+    #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff, ...
+    #
+    # The kernel usually resets it and carries on. That recovery is not
+    # free: it stalls every read on the host for seconds at a time, which
+    # surfaces as Jellyfin buffering mid-playback and invites you to blame
+    # whatever happens to be busy on the CPU at the time. When the reset
+    # also fails, the host wedges instead of rebooting and needs a human
+    # with a finger on the button.
+    #
+    # So the recovered dropouts are the only early warning that exists for
+    # the unrecoverable one, and nothing else in this stack reports them.
+    # The counter resets at boot, which is what increase() expects.
+    # -------------------------------------------------------------------
+    echo "# HELP frey_nvme_controller_resets_total Times the controller dropped off the PCIe bus this boot."
+    echo "# TYPE frey_nvme_controller_resets_total counter"
+
+    # -------------------------------------------------------------------
+    # Whether the fix for the above is actually live.
+    #
+    # APST parks this controller in a 5 mW state it does not reliably wake
+    # from, and the cure is nvme_core.default_ps_max_latency_us=0 on the
+    # kernel cmdline - which only takes effect after a reboot. A cmdline
+    # that was written but never booted looks identical to a fixed Pi from
+    # the repo side, so export what the kernel is actually running and let
+    # an alert say so. 0 means APST is disabled and the drive cannot sleep
+    # itself off the bus.
+    # -------------------------------------------------------------------
+    echo "# HELP frey_nvme_apst_max_latency_us Kernel APST latency ceiling in use; 0 means APST is disabled."
+    echo "# TYPE frey_nvme_apst_max_latency_us gauge"
+
+    local apst_param apst
+    apst_param=/sys/module/nvme_core/parameters/default_ps_max_latency_us
+    if [[ -r "${apst_param}" ]]; then
+      apst=$(num "$(cat "${apst_param}" 2>/dev/null)")
+      [[ -n "${apst}" ]] && echo "frey_nvme_apst_max_latency_us ${apst}"
+    fi
 
     collector_meta nvme "${ok}" "${started}"
   } | emit nvme

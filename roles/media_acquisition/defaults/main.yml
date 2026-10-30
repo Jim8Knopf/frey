@@ -182,6 +182,15 @@ media_acquisition:
       # kill mid-write on a SQLite-backed service is the corruption risk this
       # van is already trying to avoid. Measured 270 MiB.
       mem_limit: 768m
+      # One core each, for the same backstop reason as the memory ceiling and
+      # applied to all six *arrs. Until now only qBittorrent and Byparr had a
+      # CPU cap, so any *arr stuck in a loop could take a whole core of four
+      # and compete directly with a Jellyfin software transcode - the Pi 5 has
+      # no hardware encoder, so that transcode has nothing else to fall back
+      # on and the result is a film that buffers. These services index and
+      # rename in the background; nothing they do is latency-critical, so
+      # being capped costs them time and nobody else anything.
+      cpus: "1.0"
       env_prefix: PROWLARR
       api_version: v1
 
@@ -192,6 +201,7 @@ media_acquisition:
       hostname: sonarr
       port: 8989
       mem_limit: 768m
+      cpus: "1.0"
       # Servarr env prefix, used to inject the API key before first start.
       env_prefix: SONARR
       # Prowlarr's name for this application type.
@@ -217,6 +227,7 @@ media_acquisition:
       hostname: radarr
       port: 7878
       mem_limit: 768m
+      cpus: "1.0"
       env_prefix: RADARR
       prowlarr_impl: Radarr
       category: radarr
@@ -237,6 +248,7 @@ media_acquisition:
       hostname: lidarr
       port: 8686
       mem_limit: 768m
+      cpus: "1.0"
       env_prefix: LIDARR
       prowlarr_impl: Lidarr
       category: lidarr
@@ -267,6 +279,7 @@ media_acquisition:
       hostname: chaptarr
       port: 8789
       mem_limit: 768m
+      cpus: "1.0"
       env_prefix: CHAPTARR
       # No healthcheck: this image ships no curl, so the check could never
       # pass - and a permanently-failing healthcheck makes Traefik drop the
@@ -311,6 +324,7 @@ media_acquisition:
       hostname: bazarr
       port: 6767
       mem_limit: 768m
+      cpus: "1.0"
 
     qbittorrent:
       enabled: "{{ media_enable.qbittorrent | bool }}"

@@ -434,6 +434,17 @@ monitoring_thresholds:
     # Fraction of its own memory limit.
     memory_high_ratio: 0.9
     memory_for: 15m
+    # Cores one container may use before it is worth naming. Above 1.0 so a
+    # single busy core is not an alert by itself - the Pi has four and can
+    # spare one - and 20m rules out the burst an *arr makes on an RSS refresh
+    # or an import, leaving only the ones that are stuck.
+    cpu_cores_warning: 1.5
+    cpu_for: 20m
+    # Jellyfin is exempt because saturating its cap is its correct behaviour:
+    # the Pi 5 has no hardware encoder, so a software transcode is supposed to
+    # use every core it is allowed. An alert that fires on normal operation
+    # teaches you to ignore the alert, which costs more than it reports.
+    cpu_exempt: ['jellyfin']
 
   # --- Gateway and network ---------------------------------------------------
   #
