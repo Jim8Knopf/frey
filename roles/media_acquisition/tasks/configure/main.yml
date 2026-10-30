@@ -109,6 +109,20 @@
     - media_acquisition
     - media_config
 
+- name: Apply the spoken language policy
+  ansible.builtin.include_tasks:
+    file: languages.yml
+    # apply: is required - see the note on the include above.
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
 - name: Configure Prowlarr
   ansible.builtin.include_tasks:
     file: prowlarr.yml
@@ -155,7 +169,7 @@
 
 - name: Confirm wiring succeeded
   ansible.builtin.debug:
-    msg: "Media wiring complete: indexers, download client and root folders are connected."
+    msg: "Media wiring complete: indexers, download client, root folders and language scoring are in place."
   when: media_wiring_failures | length == 0
   tags:
     - media

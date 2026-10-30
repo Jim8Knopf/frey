@@ -238,10 +238,31 @@ media:
   # 002 so group members can write each other's files (umask, not a mode).
   umask: "002"
 
+  # ---------------------------------------------------------------------------
+  # SPOKEN LANGUAGE POLICY
+  #
+  # English is the primary language. German is an acceptable secondary. A
+  # release in neither is still grabbed when nothing better exists, and is
+  # replaced automatically once an English one turns up - which is the only
+  # sane behaviour on an intermittent uplink, where "wait for a better
+  # release" can mean waiting weeks.
+  #
+  # Read by three modules, which is why it lives here and not in a role:
+  # media_acquisition scores releases by language, media_library sets
+  # Jellyfin's metadata language, and Bazarr's subtitle profile is built from
+  # the same pair.
+  #
+  # `primary` / `secondary` are ISO-639-1 codes, for Jellyfin and Bazarr.
+  # `*_arr_name` is the SAME language spelled the way Sonarr and Radarr spell
+  # it, because a custom format matches on the app's own language name. The
+  # ids behind those names (English 1, German 4) are deliberately not written
+  # down anywhere: configure/languages.yml resolves them by name at run time.
+  # ---------------------------------------------------------------------------
   languages:
-    # Primary drives Jellyfin metadata, *arr language profiles and Bazarr.
     primary: en
+    primary_arr_name: English
     secondary: de
+    secondary_arr_name: German
     metadata_country: NZ
 
   # ---------------------------------------------------------------------------

@@ -202,7 +202,8 @@ from the repo instead, set `vault_media_api_keys` in
 | Sonarr, Radarr, Lidarr, Chaptarr | qBittorrent | Download client with the right category |
 | Sonarr, Radarr, Lidarr, Chaptarr | — | Root folders under `/data/media` |
 | Bazarr | Sonarr, Radarr | Templated `config.yaml` |
-| Recyclarr | Sonarr, Radarr | TRaSH quality profiles and custom formats, nightly |
+| Ansible | Sonarr, Radarr | Language custom formats and their scores, on every quality profile |
+| Recyclarr | Sonarr, Radarr | TRaSH quality profiles and custom formats, nightly — *when it can reach the guides* |
 | Unpackerr | Sonarr, Radarr, Lidarr | Archive extraction |
 
 For audiobook requests, select `de` or an English region in the search form.
@@ -233,14 +234,71 @@ Five things. The deploy prints the values you need for each.
    a malformed seed stops the container from starting outright.
 4. **Bazarr providers and language profiles** at `http://bazarr.frey`. These
    live in Bazarr's database, not its config file, so Ansible cannot seed
-   them. Attach a `de`/`en` profile.
-5. **German release scoring.** Language profiles are set, but boosting German
-   releases needs TRaSH custom formats referenced by `trash_id`. Those IDs are
-   not guessed at — see the instructions in
-   `roles/media_acquisition/templates/recyclarr.yml.j2`.
+   them. Attach an `en` then `de` profile — it is what makes the last-resort
+   grab in neither language watchable.
+5. **Jellyfin's audio track**, per user, under Settings > Playback: preferred
+   audio language English, and untick *Play default audio track regardless of
+   language*. Jellyfin keeps this per user rather than server-wide, so Ansible
+   cannot set it. Without it a dual-audio release plays whichever track it
+   tagged default — which is how an English grab ends up playing Italian.
 
 `media_library` also carries code to complete Jellyfin's wizard over the API,
 disabled by default for the reason above.
+
+## Spoken Language
+
+**English first, German if there is no English, and anything else only when
+there is neither** — with the anything-else copy replaced automatically once
+an English release appears. Parked off-grid, a watchable Italian copy now
+beats an English copy in three weeks.
+
+Which languages: `media.languages` in `inventory/group_vars/all/main.yml`.
+How strict: `media_language_require_one` in
+`inventory/group_vars/all/media.yml` — `false` (default) keeps the last-resort
+grab, `true` rejects it and leaves the episode missing until English or German
+exists.
+
+| release | score | outcome |
+| --- | --- | --- |
+| English | 500 | grabbed first |
+| German | 300 | grabbed when there is no English |
+| German **and** English | 800 | best case; both formats match |
+| neither | 0 | allowed, ranked last, upgraded away later |
+
+Applied by `roles/media_acquisition/tasks/configure/languages.yml` as one
+custom format per language, scored on **every** quality profile — because
+Seerr, the UI and the request bots each use whichever profile they were
+pointed at, and a policy on one profile out of six is a policy that silently
+does not apply.
+
+Three traps this avoids:
+
+- **A negative score plus a minimum of `0`** rejects the fallback instead of
+  ranking it last, and the symptom is a stack that downloads nothing and
+  reports no error. Nothing here scores below zero.
+- **Radarr's profile `language` field is a hard filter.** On its default
+  `Original` it rejects an English dub of a foreign film outright, before any
+  score is considered. The task sets it to `Any`. Sonarr 4 has no such field
+  at all — language profiles were removed, and scoring is the only mechanism
+  left.
+- **Recyclarr cannot own this.** It has to fetch the TRaSH Guides over the
+  uplink first, and a failed fetch makes it exit rather than apply the rest:
+
+  ```
+  [WRN] All references failed to fetch: Could not resolve host
+  [ERR] Exiting due to fatal error
+  ```
+
+  That is what its 04:00 run had been doing every night — which is why Sonarr
+  and Radarr had zero custom formats and no language preference whatsoever,
+  while `media.languages` sat in `group_vars` looking authoritative. Anything
+  that must hold with the uplink down belongs in the Ansible path.
+
+If Recyclarr ever does succeed and resets a profile's custom format scores,
+re-run `--tags media_config` to put them back.
+
+Audio *playback* is separate: see step 5 of the first-run steps above. The
+*arrs choose the file; Jellyfin chooses the track inside it.
 
 ## Download Gating
 

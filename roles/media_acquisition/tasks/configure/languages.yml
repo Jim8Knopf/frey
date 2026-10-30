@@ -1,0 +1,50 @@
+---
+# ==============================================================================
+# Spoken language policy for Sonarr and Radarr
+#
+# English is primary, German the acceptable secondary, anything else a last
+# resort that gets replaced later. See media.languages for which languages and
+# media_acquisition.languages for how hard the preference is pushed.
+#
+# WHY THIS IS HERE AND NOT IN RECYCLARR
+#
+# Recyclarr is the obvious home for release scoring, and it cannot be: it has
+# to fetch the TRaSH Guides over the uplink before it can do anything, and
+# this Pi lives in a van. Its 04:00 run has been failing on DNS for as long as
+# the logs go back, which is exactly why Sonarr and Radarr had no custom
+# formats and no language preference at all - the policy was written down in
+# group_vars and never reached either application.
+#
+# Everything below talks only to the two containers, so it works with the
+# uplink down, which is the normal case.
+#
+# WHY CUSTOM FORMATS AND NOT LANGUAGE PROFILES
+#
+# Sonarr 4 removed language profiles; language is a custom format score now.
+# Radarr kept a `language` field on the quality profile, but it is a hard
+# filter - on its default "Original" it rejects an English dub of a foreign
+# film outright, which collides with "English is primary". So Radarr's field
+# is moved to "Any" and both apps are driven by the same scores.
+# ==============================================================================
+
+- name: Apply the language policy to each Servarr application that scores releases
+  ansible.builtin.include_tasks:
+    file: arr_languages.yml
+    # See configure/main.yml: included tasks do not inherit the include's
+    # tags without apply:.
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  loop: >-
+    {{
+      media_acquisition.services | dict2items
+      | selectattr('value.enabled', 'truthy')
+      | selectattr('value.language_scoring', 'defined')
+      | selectattr('value.language_scoring', 'truthy')
+      | list
+    }}
+  loop_control:
+    loop_var: arr
+    label: "{{ arr.key }}"

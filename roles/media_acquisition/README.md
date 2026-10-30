@@ -153,6 +153,50 @@ ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
 Prowlarr is registered *with* each *arr as an "application" at `fullSync`, so
 indexers added in Prowlarr propagate everywhere. Add an indexer once.
 
+## Spoken Language
+
+English first, German if there is no English, anything else only when there is
+neither — and the anything-else copy is replaced automatically once an English
+release turns up.
+
+Which languages is `media.languages` in `group_vars/all/main.yml`. How strict
+is one flag, `media_language_require_one` in `group_vars/all/media.yml`:
+`false` (default) keeps the last-resort grab, `true` rejects it and leaves the
+episode missing until English or German exists.
+
+`tasks/configure/languages.yml` applies it by creating one custom format per
+language ("Language: English", "Language: German") and scoring them on **every**
+quality profile:
+
+| release | score | outcome |
+| --- | --- | --- |
+| English | 500 | grabbed first |
+| German | 300 | grabbed when there is no English |
+| German **and** English | 800 | best case; both formats match |
+| neither | 0 | allowed, ranked last, upgraded away later |
+
+Three things about that are deliberate:
+
+- **No negative scores.** The profile minimum is `0`, so a negative score for
+  the unwanted languages is exactly how you build a profile that downloads
+  nothing and reports no error. Ranking last is enough.
+- **Custom formats, not language profiles.** Sonarr 4 removed language
+  profiles outright. Radarr still has a `language` field on the quality
+  profile, but it is a hard *filter* — on its default `Original` it rejects an
+  English dub of a foreign film — so the task moves it to `Any` and lets the
+  scores rank. One mechanism for both apps.
+- **Not Recyclarr.** Recyclarr has to fetch the TRaSH Guides over the uplink
+  before it does anything, and when that fails it exits rather than carrying
+  on. Its nightly run had been failing on DNS continuously, which is why both
+  apps had *zero* custom formats and no language preference at all. Anything
+  the van needs to be true with the uplink down cannot live there.
+
+`cutoffFormatScore` is set to the English score, so Sonarr stops upgrading
+once it has an English release instead of churning forever.
+
+Jellyfin's *audio track* is the other half, and is not settable from here —
+see Known Gaps.
+
 ## Download Gating
 
 `/usr/local/bin/frey-media-gate` matches downloading to the uplink's real
@@ -238,12 +282,13 @@ ansible-playbook ... --tags media_update -e media_update=true
 
 ## Known Gaps
 
-- **German release scoring** is not configured. The language *profiles* are
-  set, but boosting German releases needs TRaSH custom formats referenced by
-  `trash_id`, and those IDs are not guessed at in
-  `templates/recyclarr.yml.j2`. Instructions are in that file.
 - **Bazarr subtitle providers and language profiles** live in its database,
-  not its config file, so they are a one-time UI step.
+  not its config file, so they are a one-time UI step. They matter most for
+  the last-resort grab that is in neither preferred language.
+- **Jellyfin's audio track** is a per-user playback setting, not a server one,
+  so it cannot be set from here. A dual-audio file plays whichever track the
+  release tagged default until "Play default audio track regardless of
+  language" is unticked. The deploy's closing message spells it out.
 - **Indexers** need your own tracker credentials and are added in Prowlarr.
 - **Lidarr** depends on an upstream metadata server that has been unreliable
   through 2026; adding artists and imports break periodically. Not a

@@ -203,6 +203,11 @@ media_acquisition:
       # path. Lidarr and Chaptarr do not - see their entries below.
       root_folders:
         - path: /data/media/tv
+      # Score releases by spoken language - see configure/languages.yml and
+      # media.languages. Only Sonarr and Radarr carry this: Lidarr's releases
+      # have no spoken language worth scoring, and Chaptarr's audiobooks are
+      # chosen by narrator and edition instead.
+      language_scoring: true
 
     radarr:
       enabled: "{{ media_enable.radarr | bool }}"
@@ -220,6 +225,7 @@ media_acquisition:
       torrent_dir: /data/torrents/movies
       root_folders:
         - path: /data/media/movies
+      language_scoring: true
 
     lidarr:
       # Honest warning: Lidarr's metadata server has been unreliable through
@@ -399,9 +405,10 @@ media_acquisition:
   # cannot hardware-encode. Prefer H.264 + AAC at 1080p so clients direct-play
   # and the CPU never transcodes.
   #
-  # German is the primary language, English the accepted fallback. TRaSH's
-  # German custom-format coverage is thinner than its English coverage, so
-  # expect to hand-tune a few scores after the first grabs.
+  # Language is NOT handled here. Recyclarr has to fetch the TRaSH Guides over
+  # the uplink, which on this Pi is a coin toss, so the language policy is
+  # applied straight through the *arr APIs instead - see the `languages` block
+  # below and configure/languages.yml.
   # ---------------------------------------------------------------------------
   profiles:
     radarr:
@@ -415,4 +422,70 @@ media_acquisition:
       x265_hd: -10000      # browsers transcode HEVC
       av1: -10000
       hdr_without_sdr: -10000
-      german_dl: 500       # dual-audio German releases preferred
+
+  # ---------------------------------------------------------------------------
+  # SPOKEN LANGUAGE POLICY -> custom format scores
+  #
+  # WHICH language is set in media.languages (English primary, German
+  # secondary). This block is only HOW HARD that preference is pushed.
+  #
+  # Sonarr 4 has no language profiles at all - they were removed, and language
+  # is now purely a custom format score. Radarr still has a `language` field on
+  # the quality profile, but it is a hard FILTER: left on its default
+  # "Original" it rejects an English dub of a foreign film outright, so
+  # configure/languages.yml moves it to "Any" and lets these scores rank
+  # instead. One mechanism, both apps.
+  #
+  # The scores encode "English, or German, or whatever you can get":
+  #
+  #   English release              +500   grabbed first
+  #   German release               +300   grabbed when no English one exists
+  #   German AND English           +800   scores both; it is the best outcome
+  #   anything else                   0   still allowed, ranked last
+  #
+  # Nothing is negative, and `min_score` is 0, which is what keeps the last
+  # row grabbable. That is deliberate: a negative score plus a floor of 0 is
+  # how you accidentally build a profile that downloads nothing for a month
+  # and reports no error. Parked off-grid, an Italian copy now beats an
+  # English copy in three weeks - and `cutoff_score` means Sonarr replaces it
+  # on its own once the English one appears.
+  #
+  # To make English-or-German a hard requirement instead, flip
+  # media_language_require_one in group_vars/all/media.yml. Everything else in
+  # this block is a knob you should not normally need.
+  # ---------------------------------------------------------------------------
+  languages:
+    # Ordered, best first. One custom format per entry, named
+    # "Language: <language>", matching on the app's own language id.
+    preferred:
+      - language: "{{ media.languages.primary_arr_name }}"
+        score: 500
+      - language: "{{ media.languages.secondary_arr_name }}"
+        score: 300
+
+    # false: the profile's minimum score stays 0, so a release in neither
+    # language is still grabbable as a last resort.
+    # true:  the minimum rises to the lowest `preferred` score, which makes
+    # such a release unavailable rather than merely unpopular. Nothing is
+    # downloaded at all until an English or German release exists.
+    require_one: "{{ media_language_require_one | default(false) }}"
+
+    # Keep upgrading until a release scores this much, then stop. Equal to the
+    # primary score, so one English release ends the churn - without it the
+    # fallback grab stays on disk forever.
+    cutoff_score: 500
+
+    # Turn upgrades on for the profiles this touches. The whole point of
+    # accepting a fallback is that it gets replaced later, and a profile with
+    # upgrades disabled keeps the Italian copy forever. Set false if you would
+    # rather manage upgrades per profile by hand.
+    enable_upgrades: true
+
+    # Apply the scores to every quality profile in the app, not a named one.
+    #
+    # Seerr, the UI and the request bots each pick whatever profile they were
+    # pointed at, none of which this role creates, and a language policy that
+    # applies to one profile out of six is a language policy that silently
+    # does not apply. Six idempotent PUTs per app per run is the cheaper half
+    # of that trade.
+    all_profiles: true
