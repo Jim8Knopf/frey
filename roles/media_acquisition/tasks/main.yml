@@ -263,6 +263,23 @@
     - media
     - media_acquisition
 
+- name: Deploy the acquisition stack's resolver configuration
+  # Ansible owns this outright - it is the reason the container exists, and
+  # drift here silently reintroduces the AAAA failure it was added to stop.
+  # See the `dns:` note in defaults/main.yml.
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: "{{ media.appdata_dir }}/resolver/dnsmasq.conf"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "0644"
+  when: media_acquisition.services.resolver.enabled | bool
+  notify: Restart media resolver
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
 - name: Deploy Recyclarr configuration
   # Ansible owns this one outright: it is the config-as-code definition of the
   # quality profiles, so drift should be corrected, not preserved.

@@ -1,0 +1,52 @@
+{#
+  ============================================================================
+  Resolver for the media acquisition stack.
+  Managed by Ansible role: media_acquisition. Do not edit on the Pi.
+  ============================================================================
+
+  This file exists to delete AAAA records. See the long note on `dns:` in
+  roles/media_acquisition/defaults/main.yml for why that is not vandalism:
+  the van's uplink has no usable IPv6, and an AAAA record the stack cannot
+  reach is what silently disables every indexer.
+#}
+{% set d = media_acquisition.dns %}
+# Serve this container's own interface on frey_media. It publishes no host
+# port, so nothing outside the Docker network can reach it.
+listen-address=0.0.0.0
+bind-interfaces
+
+# Ignore the container's /etc/resolv.conf, which Docker points back at its own
+# embedded resolver - following it would be a loop.
+no-resolv
+no-hosts
+
+{% if d.filter_aaaa | default(true) | bool %}
+# ---------------------------------------------------------------------------
+# THE POINT OF THIS CONTAINER
+#
+# Answer every AAAA query with an empty, successful reply. The uplink has no
+# IPv6 route, so an AAAA record is not a better path - it is a dead one, and
+# .NET's HttpClient does not fall back to IPv4 the way curl does.
+# ---------------------------------------------------------------------------
+filter-AAAA
+{% endif %}
+
+{% for server in d.upstreams %}
+server={{ server }}
+{% endfor %}
+
+# Campground DNS is frequently slow as well as wrong; a cache keeps a working
+# answer around rather than re-asking and re-failing.
+cache-size={{ d.cache_size | default(2000) }}
+
+# Never forward a name with no domain part, or a reverse lookup for a private
+# address, to a public resolver.
+domain-needed
+bogus-priv
+
+# A failing upstream should move on quickly rather than hold a search open.
+dns-forward-max=150
+
+# To the container log, so `docker logs {{ media_acquisition.services.resolver.container_name }}` shows refusals
+# and Alloy picks them up with everything else.
+log-facility=-

@@ -1,0 +1,351 @@
+---
+# ==============================================================================
+# Prowlarr: the indexer list itself
+#
+# Adds every indexer in `media_indexers` that Prowlarr does not already have,
+# puts the audiobook sources on their own sync profile, and tags the ones that
+# need Byparr so the Cloudflare solver is actually in their path.
+#
+# WHY THIS IS A FLOOR AND NOT A MIRROR
+#
+# Only missing indexers are added. An existing one is never rewritten, and
+# nothing is ever deleted. Private trackers are added by hand with credentials
+# that have no business being in group_vars, and a reconciler that enforced
+# this list would delete them on the next deploy.
+#
+# The one exception is tags: an indexer marked `cloudflare: true` has the tag
+# added if it is missing, because that is the difference between Byparr being
+# configured and Byparr being used - and the stack shipped for months with a
+# Byparr container, a cloudflare tag, a proxy bound to that tag, and not one
+# indexer carrying it.
+# ==============================================================================
+
+- name: "indexers: read the application sync profiles"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/appprofile"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_profiles
+  changed_when: false
+  failed_when: false
+
+- name: "indexers: create the audiobook sync profile"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/appprofile"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body:
+      name: "{{ ab.name }}"
+      enableRss: "{{ ab.enable_rss }}"
+      enableAutomaticSearch: "{{ ab.enable_automatic_search }}"
+      enableInteractiveSearch: "{{ ab.enable_interactive_search }}"
+      minimumSeeders: "{{ ab.minimum_seeders }}"
+    status_code: [200, 201]
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    ab: "{{ media_acquisition.indexers.audiobook_profile }}"
+  register: prowlarr_profile_created
+  changed_when: prowlarr_profile_created.status | default(0) in [200, 201]
+  failed_when: false
+  when:
+    - prowlarr_profiles.json is defined
+    - media_acquisition.indexers.audiobook_profile.name not in (prowlarr_profiles.json | map(attribute='name') | list)
+
+- name: "indexers: enable automatic search on an existing audiobook profile"
+  # The profile shipped with automatic search off, which stopped Chaptarr and
+  # AudiobookRequest searching these sources at all. Correct it in place
+  # rather than asking anyone to find the checkbox.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/appprofile/{{ existing.id }}"
+    method: PUT
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body: "{{ existing | combine({'enableAutomaticSearch': true, 'enableInteractiveSearch': true}) }}"
+    status_code: [200, 202]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    existing: >-
+      {{
+        (prowlarr_profiles.json | default([]))
+        | selectattr('name', 'equalto', media_acquisition.indexers.audiobook_profile.name)
+        | first | default({})
+      }}
+  register: prowlarr_profile_fixed
+  changed_when: prowlarr_profile_fixed.status | default(0) in [200, 202]
+  failed_when: false
+  when:
+    - media_acquisition.indexers.audiobook_profile.enable_automatic_search | bool
+    - existing.id is defined
+    - not (existing.enableAutomaticSearch | default(true) | bool)
+
+- name: "indexers: re-read the application sync profiles"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/appprofile"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_profiles_after
+  changed_when: false
+  failed_when: false
+
+- name: "indexers: read the Cloudflare proxy tag"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/tag"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_indexer_tags
+  changed_when: false
+  failed_when: false
+
+- name: "indexers: read the indexers Prowlarr already has"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_existing_indexers
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: "indexers: work out which indexers this host should have"
+  ansible.builtin.set_fact:
+    # Entries marked `audiobooks: true` are gated by
+    # media_audiobook_public_indexer; everything else is unconditional. To
+    # drop an indexer from the list, comment it out in media.yml - nothing
+    # here removes one from Prowlarr.
+    media_indexers_target: >-
+      {{
+        (media_indexers | default([]) | rejectattr('audiobooks', 'defined') | list)
+        + (
+            (media_indexers | default([])
+             | selectattr('audiobooks', 'defined')
+             | selectattr('audiobooks', 'truthy') | list)
+            if (media_audiobook_public_indexer | default(false) | bool)
+            else []
+          )
+      }}
+    media_indexer_cf_tag_id: >-
+      {{
+        (prowlarr_indexer_tags.json | default([]))
+        | selectattr('label', 'equalto', media_acquisition.services.byparr.proxy_tag)
+        | map(attribute='id') | first | default(0)
+      }}
+    # Prowlarr ships one profile, id 1, named Standard. Name it rather than
+    # trusting the ordering of a list that now has a second profile in it.
+    media_indexer_default_profile_id: >-
+      {{
+        ((prowlarr_profiles_after.json | default([]))
+         | selectattr('name', 'equalto', 'Standard')
+         | map(attribute='id') | list
+         + (prowlarr_profiles_after.json | default([]) | map(attribute='id') | list)
+         + [1])
+        | first
+      }}
+
+- name: "indexers: read the available indexer definitions"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer/schema"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_indexer_schema
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - prowlarr_existing_indexers.json is defined
+    - media_indexers_target | rejectattr('name', 'in', prowlarr_existing_indexers.json | map(attribute='name') | list) | list | length > 0
+
+- name: "indexers: add the missing indexers"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer"
+    method: POST
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    # Start from the definition Prowlarr itself offers, so every field it
+    # needs - and every per-definition default - is already correct, then
+    # override only what this stack decides: the name, the sync profile and
+    # whether Byparr sits in front.
+    body: >-
+      {{
+        definition | combine({
+          'name': item.name,
+          'enable': true,
+          'appProfileId': profile_id | int,
+          'tags': ([media_indexer_cf_tag_id | int] if (item.cloudflare | default(false) | bool and (media_indexer_cf_tag_id | int) > 0) else []),
+          'fields': (
+            (definition.fields | default([]) | rejectattr('name', 'equalto', 'baseUrl') | list)
+            + [{'name': 'baseUrl', 'value': item.base_url}]
+          ) if (item.base_url is defined) else (definition.fields | default([]))
+        })
+      }}
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    definition: >-
+      {{
+        (prowlarr_indexer_schema.json | default([]))
+        | selectattr('definitionName', 'equalto', item.definition)
+        | first | default({})
+      }}
+    profile_id: >-
+      {{
+        (((prowlarr_profiles_after.json | default([]))
+          | selectattr('name', 'equalto', media_acquisition.indexers.audiobook_profile.name)
+          | map(attribute='id') | list
+          + [media_indexer_default_profile_id | int]) | first)
+        if (item.audiobooks | default(false) | bool)
+        else (media_indexer_default_profile_id | int)
+      }}
+  loop: >-
+    {{
+      media_indexers_target
+      | rejectattr('name', 'in', prowlarr_existing_indexers.json | default([]) | map(attribute='name') | list)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.name }}"
+  register: prowlarr_indexer_added
+  changed_when: prowlarr_indexer_added.status | default(0) in [200, 201]
+  failed_when: false
+  when:
+    - prowlarr_existing_indexers.json is defined
+    - definition.definitionName is defined
+
+- name: "indexers: record indexers that could not be added"
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (prowlarr_indexer_added.results | default([])
+           | rejectattr('skipped', 'defined')
+           | selectattr('status', 'defined')
+           | rejectattr('status', 'in', [200, 201])
+           | map(attribute='item.name')
+           | map('regex_replace', '^(.*)$', 'prowlarr: indexer \1 not added')
+           | list)
+      }}
+  when: prowlarr_indexer_added.results is defined
+
+- name: "indexers: re-read the indexer list"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer"
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: prowlarr_indexers_after
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+# ------------------------------------------------------------------------------
+# PINNED ADDRESSES
+#
+# The one property of an existing indexer that IS corrected, because a dead or
+# redirecting domain is the single most common way a public indexer fails -
+# permanently, and with nothing in the log to say so. Declaring base_url in
+# media.yml has to be enough to fix it; otherwise the fix is UI surgery that
+# the next rebuild loses.
+# ------------------------------------------------------------------------------
+- name: "indexers: pin the declared base URL on existing indexers"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer/{{ current.id }}"
+    method: PUT
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body: >-
+      {{
+        current | combine({
+          'fields': (current.fields | rejectattr('name', 'equalto', 'baseUrl') | list)
+                    + [{'name': 'baseUrl', 'value': item.base_url}]
+        })
+      }}
+    status_code: [200, 202]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    current: >-
+      {{
+        (prowlarr_indexers_after.json | default([]))
+        | selectattr('name', 'equalto', item.name)
+        | first | default({})
+      }}
+    current_base_url: >-
+      {{
+        (current.fields | default([]))
+        | selectattr('name', 'equalto', 'baseUrl')
+        | map(attribute='value') | first | default('')
+      }}
+  loop: "{{ media_indexers_target | selectattr('base_url', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: prowlarr_indexer_base_url
+  changed_when: prowlarr_indexer_base_url.status | default(0) in [200, 202]
+  failed_when: false
+  no_log: true
+  when:
+    - current.id is defined
+    - (current_base_url | default('') | string) != item.base_url
+
+# ------------------------------------------------------------------------------
+# PUT BYPARR IN THE PATH
+#
+# Prowlarr applies an indexer proxy only to indexers carrying the proxy's tag.
+# Without this step the tag exists, Byparr exists, the proxy is bound to the
+# tag - and every Cloudflare-protected indexer still fails, because nothing
+# ever wore the tag. 1337x answers 403 without it.
+# ------------------------------------------------------------------------------
+- name: "indexers: tag the Cloudflare-protected indexers for Byparr"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexer/{{ current.id }}"
+    method: PUT
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body: "{{ current | combine({'tags': (current.tags | default([])) + [media_indexer_cf_tag_id | int]}) }}"
+    status_code: [200, 202]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    current: >-
+      {{
+        (prowlarr_indexers_after.json | default([]))
+        | selectattr('name', 'equalto', item.name)
+        | first | default({})
+      }}
+  loop: "{{ media_indexers_target | selectattr('cloudflare', 'defined') | selectattr('cloudflare', 'truthy') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: prowlarr_indexer_tagged
+  changed_when: prowlarr_indexer_tagged.status | default(0) in [200, 202]
+  failed_when: false
+  no_log: true
+  when:
+    - media_acquisition.services.byparr.enabled | bool
+    - (media_indexer_cf_tag_id | int) > 0
+    - current.id is defined
+    - (media_indexer_cf_tag_id | int) not in (current.tags | default([]))

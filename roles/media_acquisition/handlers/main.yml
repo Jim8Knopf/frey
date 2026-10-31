@@ -10,6 +10,13 @@
     restart: true
   when: not ansible_check_mode
 
+- name: Restart media resolver
+  community.docker.docker_container:
+    name: "{{ media_acquisition.services.resolver.container_name }}"
+    state: started
+    restart: true
+  when: not ansible_check_mode
+
 - name: Restart recyclarr
   community.docker.docker_container:
     name: "{{ media_acquisition.services.recyclarr.container_name }}"

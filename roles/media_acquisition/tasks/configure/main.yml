@@ -127,6 +127,27 @@
     - media_acquisition
     - media_config
 
+- name: Configure the Prowlarr indexer list
+  # After prowlarr.yml, which creates the cloudflare tag and registers Byparr
+  # against it: this step is what makes an indexer wear that tag, and the tag
+  # has to exist first.
+  ansible.builtin.include_tasks:
+    file: indexers.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  when: media_acquisition.services.prowlarr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
 - name: Report wiring problems
   ansible.builtin.debug:
     msg: >-

@@ -33,9 +33,78 @@
 
 # Image versions live in inventory/group_vars/all/images.yml.
 
-# Add Knaben as a public audiobook search source in Prowlarr. Its sync profile
-# permits interactive searches only in other *arr apps, not RSS or auto grabs.
+# Add the audiobook-oriented public sources below to Prowlarr. Set false to
+# leave the indexer list to whatever you add by hand in the UI.
 media_audiobook_public_indexer: true
+
+# ------------------------------------------------------------------------------
+# INDEXERS
+#
+# Ansible adds every indexer listed here to Prowlarr if it is not already
+# there, and Prowlarr pushes them into Sonarr, Radarr, Lidarr and Chaptarr.
+# Add one here rather than in the UI and it survives a rebuild - a
+# hand-added indexer does not, which is how the list quietly drifted before.
+#
+# Existing indexers are never reconfigured or removed. This list is a floor,
+# not a mirror: anything extra you add in the UI is left alone, so the UI
+# stays usable for private trackers whose credentials do not belong in here.
+#
+#   definition  Prowlarr's own name for the source. The exact spelling matters;
+#               it is the `definitionName` from /api/v1/indexer/schema, and
+#               for Cardigann sources it is the filename under
+#               /opt/frey/appdata/prowlarr/Definitions/.
+#   cloudflare  Route this one through Byparr. Only set it where the tracker
+#               actually challenges - a browser solve is slow, and Byparr is
+#               the heaviest container in the stack.
+#   audiobooks  Part of the audiobook set gated by the flag above.
+#
+# A public indexer's domain dies regularly. When one does, Prowlarr keeps
+# using the dead address from its own definition, so the symptom is an
+# indexer that fails forever while every other one works - check
+# `docker logs prowlarr` for the hostname before assuming the stack is at
+# fault. docs/MEDIA.md has the procedure.
+# ------------------------------------------------------------------------------
+media_indexers:
+
+  # --- Film and television ----------------------------------------------------
+  - name: The Pirate Bay
+    definition: thepiratebay
+    # Also carries category 3030 (audiobooks), so Chaptarr sees it too.
+  # base_url pins the address, overriding the one in Prowlarr's own
+  # definition. YTS needs it: the definition's primary link `yts.gg` now
+  # 301-redirects to `web.yts.gg`, and the scraper parses the redirect
+  # landing page instead of a movie list - so it fails with nothing in the
+  # log but a search line, and gets backed off for hours.
+  #
+  # This is the knob to reach for whenever one indexer fails forever while the
+  # rest are fine. Prowlarr's definitions list the alternates:
+  #   grep -A6 '^links:' /opt/frey/appdata/prowlarr/Definitions/<name>.yml
+  - name: YTS
+    definition: yts
+    base_url: https://web.yts.gg/
+  - name: LimeTorrents
+    definition: limetorrents
+
+  # --- General, and the bulk of the audiobook catalogue -----------------------
+  # 1337x indexes audiobooks (3030) and ebooks (7020) as well as film and TV,
+  # and is the single biggest win for finding audiobooks. It sits behind
+  # Cloudflare and answers 403 without a solver, which is what Byparr is for.
+  - name: 1337x
+    definition: 1337x
+    cloudflare: true
+
+  # --- Audiobooks -------------------------------------------------------------
+  # Knaben is a meta-search across other public sources, so it finds things no
+  # single tracker lists.
+  - name: Knaben
+    definition: Knaben
+    audiobooks: true
+  # The Internet Archive is where LibriVox publishes, so this is the
+  # public-domain audiobook catalogue - tens of thousands of readings, legal,
+  # and the only source here that never breaks or gets challenged.
+  - name: Internet Archive
+    definition: internetarchive
+    audiobooks: true
 
 # Permit 15 concurrent downloads and reserve three more active-torrent slots
 # for the existing upload limit. qBittorrent's global limit applies to both.

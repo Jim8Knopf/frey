@@ -41,6 +41,28 @@
 {%- endmacro %}
 
 {#
+  Point a container at the stack's own resolver.
+
+  Setting `dns:` does NOT replace Docker's embedded resolver - resolv.conf
+  keeps 127.0.0.11 - it replaces what that resolver forwards to. So
+  container-name lookups (prowlarr -> sonarr, prowlarr -> byparr) keep
+  working exactly as before; only external names change path. Verified on the
+  Pi before this was written, because getting it wrong would have broken
+  every service-to-service call in the stack.
+
+  `depends_on` only orders startup here; it is not a health gate. dnsmasq is
+  up in well under a second, and anything that does race it retries.
+#}
+{% macro stack_dns() %}
+{% if svc.resolver.enabled | bool %}
+    dns:
+      - {{ m.dns.address }}
+    depends_on:
+      - resolver
+{% endif %}
+{%- endmacro %}
+
+{#
   Two routers per service: the canonical one on {{ frey.service_domain }}, and
   a legacy one on {{ frey.local_domain }} that redirects to it. See the note on
   frey.service_domain in inventory/group_vars/all/main.yml for why the domain
@@ -145,6 +167,7 @@
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
+{{ stack_dns() }}
 {{ proxy_labels(name, cfg.port) }}
     mem_limit: {{ cfg.mem_limit }}
 {% if cfg.cpus is defined %}
@@ -187,6 +210,60 @@ networks:
     external: true
 
 services:
+{% if svc.resolver.enabled | bool %}
+{#
+  The stack's own resolver, and the first service here on purpose: everything
+  below names it in `dns:`, and an indexer search is the first thing the
+  *arrs do on start.
+
+  It exists to strip AAAA records. The van's uplink has no usable IPv6 route,
+  campground DNS serves AAAA for Cloudflare-fronted trackers anyway, and
+  .NET's HttpClient - unlike curl - does not fall back to IPv4, so every
+  search dies with "Resource temporarily unavailable" and Prowlarr disables
+  the indexer for hours. See the `dns:` note in defaults/main.yml.
+
+  It gets a FIXED address because Docker's `dns:` takes addresses, not names.
+#}
+  resolver:
+    image: {{ svc.resolver.image }}
+    container_name: {{ svc.resolver.container_name }}
+    hostname: {{ svc.resolver.hostname }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ appdata }}/resolver/dnsmasq.conf:/etc/dnsmasq.conf:ro"
+    networks:
+      {{ media.network.name }}:
+        ipv4_address: {{ m.dns.address }}
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=media_acquisition"
+    mem_limit: {{ svc.resolver.mem_limit }}
+    pids_limit: 64
+    # dnsmasq binds port 53 inside its own namespace, which is unprivileged
+    # here, but it still wants CAP_NET_BIND_SERVICE on some kernels.
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+{#
+  Probe what actually matters: that a real name still resolves through this
+  container. A dnsmasq that is up but forwarding to a dead upstream is not
+  healthy for our purposes, and Docker marking it unhealthy is the signal.
+
+  busybox nslookup, which is what this Alpine image ships - no -type flag,
+  because older busybox builds do not take one.
+#}
+    healthcheck:
+      test: ["CMD-SHELL", "nslookup cloudflare.com 127.0.0.1 >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+{% endif %}
 {% if svc.prowlarr.enabled | bool %}
 {{ arr_service('prowlarr', svc.prowlarr) }}
 
@@ -351,6 +428,13 @@ services:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
 {#
+  Tracker announces are name lookups too, so qBittorrent gets the same
+  AAAA-free resolver as the *arrs. With the VPN on it cannot: it has no
+  network namespace of its own and takes Gluetun's DNS, which already
+  resolves inside the tunnel.
+#}
+{{ stack_dns() }}
+{#
   The torrent listen port is deliberately NOT published. Parked behind a
   venue's NAT there is no inbound path to forward anyway, so publishing it
   would open the uplink side for nothing. Outbound peer connections work
@@ -396,6 +480,7 @@ services:
       - LOG_LEVEL=info
     networks:
       - {{ media.network.name }}
+{{ stack_dns() }}
     labels:
       - "traefik.enable=false"
       - "frey.module=media_acquisition"
