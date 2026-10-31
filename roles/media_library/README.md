@@ -46,6 +46,10 @@ database and cache in `/opt/frey/appdata/navidrome`. Lidarr imports into that
 same library using the existing Prowlarr and qBittorrent configuration.
 Navidrome continues to play local music while acquisition is stopped or offline.
 
+Traefik and Navidrome use fixed, distinct addresses on their private proxy
+network. This keeps Docker startup order from assigning Traefik's trusted
+address to Navidrome after a reboot.
+
 ## The Pi 5 Cannot Transcode
 
 The Pi 5's hardware video encoder was **physically removed**; only an HEVC

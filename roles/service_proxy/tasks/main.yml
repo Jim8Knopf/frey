@@ -104,6 +104,39 @@
     - proxy
     - docker
 
+# Older deployments assigned Navidrome a dynamic address. After a reboot it
+# can occupy Traefik's reserved IP, preventing the proxy from joining. Move
+# that legacy endpoint first; the media-library Compose file makes it durable.
+- name: Inspect Navidrome proxy network address
+  community.docker.docker_container_info:
+    name: navidrome
+  register: service_proxy_navidrome_info
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Move a legacy Navidrome endpoint off Traefik's address
+  when:
+    - not ansible_check_mode
+    - service_proxy_navidrome_info.exists | default(false)
+    - (service_proxy_navidrome_info.container.NetworkSettings.Networks | default({})).get(frey.navidrome_network.name, {}).get('IPAddress', '') == frey.navidrome_network.traefik_ip
+  block:
+    - name: Disconnect the conflicting Navidrome endpoint
+      ansible.builtin.command:
+        argv: [docker, network, disconnect, "{{ frey.navidrome_network.name }}", navidrome]
+      changed_when: true
+
+    - name: Reconnect Navidrome with its reserved address
+      ansible.builtin.command:
+        argv: [docker, network, connect, --ip, "{{ frey.navidrome_network.navidrome_ip }}", "{{ frey.navidrome_network.name }}", navidrome]
+      changed_when: true
+  tags:
+    - services
+    - proxy
+    - docker
+
 - name: Configure Traefik dynamic middleware
   ansible.builtin.template:
     src: traefik-dynamic.yml.j2
@@ -304,6 +337,52 @@
       frey.module: service_proxy
     security_opts:
       - no-new-privileges:true
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker
+
+# Docker can leave an empty endpoint in container inspect after a failed boot
+# attachment. docker_container sees the network name and reports no change,
+# although Traefik cannot reach Navidrome. Restart only in that broken state.
+- name: Inspect Traefik private network endpoint
+  community.docker.docker_container_info:
+    name: "{{ service_proxy.traefik.container_name }}"
+  register: service_proxy_endpoint
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Restart Traefik when its private endpoint is missing
+  community.docker.docker_container:
+    name: "{{ service_proxy.traefik.container_name }}"
+    restart: true
+  when:
+    - not ansible_check_mode
+    - (service_proxy_endpoint.container.NetworkSettings.Networks | default({})).get(frey.navidrome_network.name, {}).get('IPAddress', '') != frey.navidrome_network.traefik_ip
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Verify Traefik private network endpoint
+  community.docker.docker_container_info:
+    name: "{{ service_proxy.traefik.container_name }}"
+  register: service_proxy_verified_endpoint
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Require Traefik to reach Navidrome's private network
+  ansible.builtin.assert:
+    that:
+      - (service_proxy_verified_endpoint.container.NetworkSettings.Networks | default({})).get(frey.navidrome_network.name, {}).get('IPAddress', '') == frey.navidrome_network.traefik_ip
+    fail_msg: "Traefik could not join the Navidrome proxy network at its trusted address."
   when: not ansible_check_mode
   tags:
     - services
