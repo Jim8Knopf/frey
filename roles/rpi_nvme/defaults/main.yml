@@ -103,11 +103,25 @@ rpi_nvme:
       #   "Your kernel does not support memory limit capabilities or the
       #    cgroup is not mounted. Limitation discarded."
       # and storing HostConfig.Memory=0. A reboot restarts containers from
-      # that stored config, so the limits still will not apply. After the
-      # reboot, re-run the deploy: compose sees desired != actual and
-      # recreates them, and only then is the limit real. Verify with
+      # that stored config, so the limits still will not apply.
+      #
+      # RE-RUNNING THE DEPLOY DOES NOT FIX IT. This comment used to claim it
+      # did - "compose sees desired != actual and recreates them" - and that
+      # is wrong. docker_compose_v2 with `state: present` recreates a
+      # container only when the desired config differs from what it last
+      # applied, and the compose file never changed: `mem_limit` was always
+      # in it. So compose correctly does nothing. Measured 2026-11-01 after a
+      # full deploy reporting changed=36: nineteen of thirty-four containers
+      # still had HostConfig.Memory=0, jellyfin, authelia, lldap, prometheus
+      # and loki among them.
+      #
+      # Forcing it needs `recreate: always`, which is the one thing a routine
+      # deploy must not do, so it lives in its own playbook:
+      #   ansible-playbook playbooks/rebind_container_limits.yml
+      # Run it once, after the reboot. Verify with
       #   docker inspect grafana --format '{{.HostConfig.Memory}}'
-      # which must be non-zero.
+      # which must be non-zero. frey-traefik legitimately reads 0 - its
+      # compose declares no mem_limit.
       # -----------------------------------------------------------------
       - cgroup_enable=memory
       - cgroup_memory=1
