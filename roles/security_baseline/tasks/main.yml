@@ -28,6 +28,11 @@
     value: "{{ item.value }}"
     state: present
     reload: true
+    # See frey.sysctl_file in inventory/group_vars/all/main.yml: the module's
+    # /etc/sysctl.conf default is not read at boot on Debian 13, so this
+    # hardening was reverting to kernel defaults on every reboot. rp_filter
+    # was measured at 0 rather than the 2 set here.
+    sysctl_file: "{{ frey.sysctl_file }}"
   loop: "{{ security_baseline.sysctl | dict2items }}"
   tags:
     - security

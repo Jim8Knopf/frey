@@ -173,6 +173,12 @@
     value: "1"
     state: present
     reload: true
+    # "Persistently" is the whole point of this task and it was not true: the
+    # module's /etc/sysctl.conf default is never read at boot on Debian 13.
+    # Forwarding survived anyway only because Docker sets it too, which is
+    # luck standing in for configuration. See frey.sysctl_file in
+    # inventory/group_vars/all/main.yml.
+    sysctl_file: "{{ frey.sysctl_file }}"
   tags: [network, gateway, hub]
 
 # Two radios briefly share one subnet during the migration. Loose reverse-path
@@ -184,6 +190,11 @@
     value: "{{ item.value }}"
     state: present
     reload: true
+    # See frey.sysctl_file in inventory/group_vars/all/main.yml. This one was
+    # the least harmful of the four: the dual-homed window it protects only
+    # exists during the migration deploy itself, and `reload: true` does apply
+    # the values live, so it was right exactly when it had to be.
+    sysctl_file: "{{ frey.sysctl_file }}"
   loop:
     - { key: net.ipv4.conf.all.rp_filter, value: "2" }
     - { key: net.ipv4.conf.all.arp_ignore, value: "1" }

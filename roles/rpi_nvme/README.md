@@ -54,6 +54,23 @@ That is why this looked like a software fault every single time, and why it cost
 2. `kernel.hung_task_panic=1` + `kernel.panic=10` convert a wedge that gets past
    mitigation 1 into an automatic reboot in about two and a half minutes. This is
    the part that matters in a van: recovery stops requiring a human.
+3. `tune2fs -e panic` on the root filesystem covers the fault mitigation 2
+   cannot see. **`hung_task_panic` only fires when a task BLOCKS**, and on
+   2026-11-01 the drive returned errors instead of hanging: nothing blocked,
+   nothing panicked, and the Pi sat reachable-by-ping and answering nothing
+   until the power was cut. The superblock was on the kernel's oldest default,
+   `Continue`, which never panics *and* lets ext4 write through a fault. With
+   `panic` the error reaches the panic path and `kernel.panic=10` reboots.
+   Set on the superblock rather than in `/etc/fstab` — the root line says
+   `defaults`, which carries no `errors=` option, so the superblock is what
+   the kernel actually uses, and it applies from the first mount. Like the
+   cmdline, **it only takes effect at the next boot**.
+
+Each of the three is measured rather than assumed, because all three can be
+correct on disk while the running kernel has none of them: `frey_nvme_apst_max_latency_us`,
+`frey_kernel_hung_task_panic` / `frey_kernel_panic_reboot_secs`, and
+`frey_root_fs_error_behaviour`, with `FreyNvmeApstEnabled`,
+`FreyWedgeRecoveryDisarmed` and `FreyRootFsErrorsNotFatal` to say so.
 
 If a dropout still happens with both in place, in order: drop the link to
 `dtparam=pciex1_gen=1` (signal integrity), **reseat the NVMe and its FFC ribbon**
