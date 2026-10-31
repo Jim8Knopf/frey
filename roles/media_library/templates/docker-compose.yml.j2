@@ -186,8 +186,10 @@ services:
     volumes:
       - "{{ appdata }}/navidrome:/data"
       - "{{ media.data_dir }}/media/music:/music:ro"
+    # Keep Docker from dynamically assigning Traefik's trusted address after reboot.
     networks:
-      - {{ frey.navidrome_network.name }}
+      {{ frey.navidrome_network.name }}:
+        ipv4_address: {{ frey.navidrome_network.navidrome_ip }}
 {{ proxy_labels('navidrome', 'navidrome', svc.navidrome.port, network=frey.navidrome_network.name) }}
     mem_limit: {{ svc.navidrome.mem_limit }}
     cpus: "{{ svc.navidrome.cpus }}"

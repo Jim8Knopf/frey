@@ -41,6 +41,7 @@ frey:
     name: frey_navidrome_proxy
     subnet: 172.31.250.0/29
     traefik_ip: 172.31.250.2
+    navidrome_ip: 172.31.250.3
 
   # Where frey_pki publishes the root certificate and the script that installs
   # it into a container's trust store. Declared here rather than only in
