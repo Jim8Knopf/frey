@@ -120,18 +120,44 @@ curl_in() {
 # a Prometheus that is answering perfectly - which is exactly what sent anyone
 # looking at Prometheus instead of at this script.
 #
-# Staging the body in a file and feeding python3 from the file removes the last
-# pipe: with `> file`, the same responses came back whole on every run. Keep it
-# that way - any future `docker exec ... | something` here reintroduces the bug.
+# STAGING THE BODY IN A FILE WAS STILL NOT ENOUGH. That was the previous fix
+# here, and the comment above used to end by claiming `> file` had settled it.
+# It had not. Measured again on 2026-11-01, three identical runs back to back
+# with the redirect already in place:
+#
+#   run 1   targets 24,371   rules 46,989
+#   run 2   targets 24,371   rules 46,989
+#   run 3   targets  3,918   rules  3,918      <- both, same 4 KB again
+#
+# So the race is not about what `docker exec`'s stdout happens to be pointed
+# at. It is inside the exec stream itself: the CLI attaches to the API, copies
+# the output, and can return before it has drained - a file on the far end of
+# that copy truncates exactly like a pipe did. Redirecting merely moved where
+# the short read landed.
+#
+# The fix is to stop streaming the body through `docker exec` at all. wget
+# writes it to a file INSIDE the container and `docker cp` lifts it out over a
+# tar stream, which is not subject to this. Four consecutive runs returned
+# 46,978 bytes of valid JSON with no short reads.
+#
+# Keep it that way: any `docker exec` here whose stdout carries a response body
+# reintroduces the bug, redirect or no redirect. The symptom to recognise is
+# this script reporting "rules api: no response" or "prometheus targets api:
+# no response" about a Prometheus that is answering perfectly - which is what
+# sent people looking at Prometheus instead of at this script, twice.
 # ------------------------------------------------------------------------------
 remote_py() {
   local source="$1" container="$2" url="$3"
   local b64 remote="/tmp/frey-mon-check-$$.py" body="/tmp/frey-mon-check-$$.json"
+  local inner="/tmp/frey-mon-check-body-$$.json"
   b64="$(printf '%s' "${source}" | base64 -w0)"
   ssh_pi "printf '%s' '${b64}' | base64 -d > '${remote}' \
-          && sudo docker exec ${container} wget -q -O - --timeout=15 '${url}' > '${body}' \
+          && sudo docker exec ${container} wget -q -O '${inner}' --timeout=15 '${url}' \
+          && sudo docker cp '${container}:${inner}' '${body}' >/dev/null \
           && python3 '${remote}' < '${body}'; \
-          rc=\$?; rm -f '${remote}' '${body}'; exit \$rc"
+          rc=\$?; \
+          sudo docker exec ${container} rm -f '${inner}' >/dev/null 2>&1; \
+          rm -f '${remote}' '${body}'; exit \$rc"
 }
 
 echo
