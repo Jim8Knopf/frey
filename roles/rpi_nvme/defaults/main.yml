@@ -156,6 +156,44 @@ rpi_nvme:
     limit_to_gen1: true
     config_path: /boot/firmware/config.txt
 
+  # ---------------------------------------------------------------
+  # WHAT ext4 DOES WHEN THE DISK ERRORS - THE LAST GAP IN THE
+  # "NEVER NEEDS A BUTTON PRESS" CHAIN.
+  #
+  # hung_task_panic above only catches a wedge where tasks BLOCK. On
+  # 2026-11-01 the NVMe errored without blocking: every filesystem call
+  # returned an error immediately instead of hanging, so the hung-task
+  # detector never fired, nothing panicked, and the Pi sat reachable-by-ping
+  # and answering nothing until the power was cut. sshd accepted TCP and
+  # reset before its banner; Traefik answered in 2ms and 404'd every host
+  # because dockerd had stopped answering its provider.
+  #
+  # The cause was the ext4 superblock, which was set to the kernel's oldest
+  # default:
+  #
+  #   tune2fs -l /dev/nvme0n1p2 | grep 'Errors behavior'   ->  Continue
+  #
+  # `Continue` is the worst of the three. ext4 notes the error and carries
+  # on, which risks writing through a fault - and, critically, it never
+  # panics, so kernel.panic can never reboot the van out of it.
+  #
+  # `panic` hands the error to the panic path, and kernel.panic=10 above
+  # reboots ten seconds later. That is the same bet already taken with
+  # hung_task_panic: in a van, a reboot - even an unclean one - beats a box
+  # that is dead until a human drives to it.
+  #
+  # Deliberately the SUPERBLOCK and not /etc/fstab. The root line in fstab
+  # says `defaults`, which carries no errors= option at all, so the
+  # superblock value is what the kernel actually uses - and it applies from
+  # the very first mount, before systemd-remount-fs would ever read fstab.
+  # Editing the root line in fstab to achieve the same thing risks a
+  # malformed entry on the one filesystem the Pi cannot boot without.
+  # ---------------------------------------------------------------
+  root_fs:
+    manage_error_behaviour: true
+    # continue | remount-ro | panic
+    error_behaviour: panic
+
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every
     # log line on reboot. On NVMe there is no card to spare, and the logs from

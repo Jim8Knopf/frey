@@ -342,6 +342,29 @@ groups:
             boot, then re-run `--tags nvme`. Confirm with
             `cat /proc/sys/kernel/hung_task_panic /proc/sys/kernel/panic`.
 
+      # The other half of FreyWedgeRecoveryDisarmed, and the half that was
+      # missing on 2026-11-01. hung_task_panic only fires when a task BLOCKS;
+      # that outage had the NVMe returning errors instead, so nothing hung,
+      # nothing panicked, and the van sat pingable and useless until the power
+      # was cut. The ext4 superblock was on `Continue`, which also means ext4
+      # keeps writing through a fault.
+      - alert: FreyRootFsErrorsNotFatal
+        expr: frey_root_fs_error_behaviour < 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'An NVMe I/O error will not reboot the van'
+          description: >-
+            The root filesystem is set to carry on (or merely remount
+            read-only) when the disk errors, so a fault that returns errors
+            rather than blocking will leave the Pi reachable by ping and
+            answering nothing - sshd resetting before its banner, Traefik
+            404ing every host - until someone cuts the power. `Continue` also
+            risks writing through the fault. Re-run `--tags nvme` and reboot;
+            the superblock only takes effect at mount. Confirm with
+            `sudo tune2fs -l $(findmnt -n -o SOURCE /) | grep 'Errors behavior'`.
+
       - alert: FreyNvmeControllerReset
         expr: increase(frey_nvme_controller_resets_total[15m]) > 0
         for: 0m

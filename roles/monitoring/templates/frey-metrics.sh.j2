@@ -373,6 +373,36 @@ collect_nvme() {
     panic_secs=$(num "$(cat /proc/sys/kernel/panic 2>/dev/null)")
     [[ -n "${panic_secs}" ]] && echo "frey_kernel_panic_reboot_secs ${panic_secs}"
 
+    # -------------------------------------------------------------------
+    # THE OTHER HALF OF THE SELF-REBOOT GUARANTEE.
+    #
+    # hung_task_panic above only catches a fault where tasks BLOCK. On
+    # 2026-11-01 the NVMe returned errors instead of blocking, so nothing
+    # hung, nothing panicked, and the van needed a power cycle. The reason
+    # was the ext4 superblock sitting on `Continue` - it had never been
+    # configured, by this repo or anyone else.
+    #
+    # Exported for the same reason as APST: it only takes effect at mount,
+    # so a deploy saying "changed" does not mean the running system is
+    # protected. 2 = panic (armed), 1 = remount-ro, 0 = continue.
+    # -------------------------------------------------------------------
+    echo "# HELP frey_root_fs_error_behaviour How ext4 reacts to an I/O error on root: 2 panic, 1 remount-ro, 0 continue."
+    echo "# TYPE frey_root_fs_error_behaviour gauge"
+
+    local root_src behaviour behaviour_code
+    root_src=$(findmnt -n -o SOURCE / 2>/dev/null)
+    if [[ -n "${root_src}" ]] && command -v tune2fs >/dev/null 2>&1; then
+      behaviour=$(tune2fs -l "${root_src}" 2>/dev/null \
+        | awk -F: '/Errors behavior/ {gsub(/^[ \t]+/, "", $2); print tolower($2); exit}')
+      case "${behaviour}" in
+        panic*) behaviour_code=2 ;;
+        remount*) behaviour_code=1 ;;
+        continue*) behaviour_code=0 ;;
+        *) behaviour_code="" ;;
+      esac
+      [[ -n "${behaviour_code}" ]] && echo "frey_root_fs_error_behaviour ${behaviour_code}"
+    fi
+
     collector_meta nvme "${ok}" "${started}"
   } | emit nvme
 }
