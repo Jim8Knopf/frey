@@ -217,9 +217,42 @@ that loads, reports itself configured, and silently authenticates nobody. That
 is strictly worse than an obvious manual step, and it is the same lesson
 `provision_jellyfin` already records in `roles/media_library/defaults/main.yml`.
 
-Authelia's side is fully configured and waiting. The deploy prints the four
-values. Dashboard → Plugins → Repositories → add the repository, install, restart,
-then fill in the provider.
+Authelia's side is fully configured and waiting. Dashboard → Plugins →
+Repositories → add the repository, install, restart, then add a provider.
+
+### Then edit the XML — the UI cannot set what matters
+
+Four settings decide whether this works, and the plugin UI exposes none of
+them. Each one fails in a way that does not point at itself. Edit:
+
+```
+/opt/frey/appdata/jellyfin/data/plugins/configurations/Jellyfin.Plugin.Sso.xml
+```
+
+| Field | Must be | Why it bites |
+| --- | --- | --- |
+| `<Id>` | `authelia` | **The callback path is built from `Id`, not `Name`.** The UI only sets `Name` and auto-generates a random `Id` (e.g. `xmk42t0g3umvq2c4vi`). Authelia then rejects the callback with `invalid_request` / "redirect_uri does not match". |
+| `<Scopes>` | `openid`, `profile`, `email`, `groups` as separate `<string>` items | `Scopes` **replaces** the defaults rather than adding to them. Leave it empty and the plugin sends `openid profile email`; set one value and that becomes the *only* scope sent — dropping even the mandatory `openid`. |
+| `<GroupsClaim>` | `groups` | This is the *name of the claim* carrying groups, not a list of permitted groups. |
+| `<GroupsFromUserInfo>` | `true` | Required. Frey's `jellyfin` client has `claims_policy: ""`, so groups are deliberately not in the ID token and must be fetched from the userinfo endpoint. |
+
+Restart Jellyfin afterwards. **Recreating the provider in the UI regenerates
+the `Id` and breaks SSO again** — if SSO stops working after you touched the
+plugin screen, check `Id` first.
+
+Library access and admin come from `<GroupMappings>`, which the plugin
+re-applies on *every* login, and it ships
+`<PreserveAdminPermissions>false</PreserveAdminPermissions>`. So permissions
+you edit by hand on Jellyfin's user screen are wiped the next time that person
+signs in. Change the mapping, never the user.
+
+**When it fails, read Authelia's log before touching any config** — it names
+the exact `redirect_uri` it rejected, which tells you immediately whether the
+fault is in Jellyfin or in Authelia:
+
+```bash
+docker logs authelia --tail 50
+```
 
 **Jellyfin's local accounts keep working throughout.** If the plugin misbehaves
 on 12.3, that is your way back in — do not delete the local administrator.
