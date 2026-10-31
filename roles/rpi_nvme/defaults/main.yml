@@ -103,14 +103,58 @@ rpi_nvme:
       #   "Your kernel does not support memory limit capabilities or the
       #    cgroup is not mounted. Limitation discarded."
       # and storing HostConfig.Memory=0. A reboot restarts containers from
-      # that stored config, so the limits still will not apply. After the
-      # reboot, re-run the deploy: compose sees desired != actual and
-      # recreates them, and only then is the limit real. Verify with
+      # that stored config, so the limits still will not apply.
+      #
+      # RE-RUNNING THE DEPLOY DOES NOT FIX IT. This comment used to claim it
+      # did - "compose sees desired != actual and recreates them" - and that
+      # is wrong. docker_compose_v2 with `state: present` recreates a
+      # container only when the desired config differs from what it last
+      # applied, and the compose file never changed: `mem_limit` was always
+      # in it. So compose correctly does nothing. Measured 2026-11-01 after a
+      # full deploy reporting changed=36: nineteen of thirty-four containers
+      # still had HostConfig.Memory=0, jellyfin, authelia, lldap, prometheus
+      # and loki among them.
+      #
+      # Forcing it needs `recreate: always`, which is the one thing a routine
+      # deploy must not do, so it lives in its own playbook:
+      #   ansible-playbook playbooks/rebind_container_limits.yml
+      # Run it once, after the reboot. Verify with
       #   docker inspect grafana --format '{{.HostConfig.Memory}}'
-      # which must be non-zero.
+      # which must be non-zero. frey-traefik legitimately reads 0 - its
+      # compose declares no mem_limit.
       # -----------------------------------------------------------------
       - cgroup_enable=memory
       - cgroup_memory=1
+
+  # ---------------------------------------------------------------
+  # PCIe LINK SPEED - ESCALATION STEP 1, NOW IN FORCE.
+  #
+  # Turning APST off was supposed to end the dropouts. It did not: on
+  # 2026-10-31, twelve minutes after a boot with
+  # nvme_core.default_ps_max_latency_us=0 and pcie_aspm.policy=performance
+  # both confirmed live in /sys, the drive left the bus again -
+  #
+  #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff
+  #
+  # - so power management was a cause and not the only one. The documented
+  # next lever is link speed. The Pi 5's connector is electrically marginal
+  # for Gen 2 and this drive is a DRAM-less Realtek RTS5772DL; Gen 1 halves
+  # the signalling rate, which is the standard remedy for a link that trains
+  # but does not stay up. It is also the only one of the three remaining
+  # steps that can be done from here - the other two are reseating the FFC
+  # ribbon and replacing the drive.
+  #
+  # THE COST IS REAL: Gen 1 x1 is about 250 MB/s against 500. That is far
+  # more than Jellyfin needs - a 1080p stream is single-digit MB/s - and it
+  # is slower for large library copies and the *arrs' bulk imports. A wedge
+  # that needs a human in a van costs more than either.
+  #
+  # config.txt, so it needs a reboot. Set false and re-run to go back to
+  # Gen 2 once the ribbon has been reseated or the drive replaced.
+  # ---------------------------------------------------------------
+  pcie:
+    limit_to_gen1: true
+    config_path: /boot/firmware/config.txt
 
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every

@@ -314,6 +314,34 @@ groups:
       # a multi-second I/O stall across the whole host - mid-film buffering,
       # an *arr timing out, a database write hanging - and the next one may
       # not be recovered at all. There is no benign version of this.
+      # The van's recovery guarantee, asserted rather than assumed. Without
+      # both of these an NVMe wedge does not end on its own: systemd keeps
+      # petting the hardware watchdog from RAM, so nothing reboots and the Pi
+      # waits for a human to cut the power. They are set by rpi_nvme, and they
+      # spent two days silently reverted at every boot because they had been
+      # written to a file Debian 13 does not read.
+      #
+      # Warning, not critical: it reports a missing safety net rather than an
+      # active fault, and the alert that matters during the fault itself is
+      # FreyNvmeControllerReset.
+      - alert: FreyWedgeRecoveryDisarmed
+        expr: >-
+          frey_kernel_hung_task_panic == 0
+          or frey_kernel_panic_reboot_secs == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The NVMe wedge self-reboot is not armed'
+          description: >-
+            kernel.hung_task_panic or kernel.panic is 0, so a task blocked
+            forever on a disappeared NVMe will hang the van until someone
+            power-cycles it by hand instead of rebooting in about two and a
+            half minutes. Check that frey.sysctl_file is landing in
+            /etc/sysctl.d/ and not /etc/sysctl.conf, which is not read at
+            boot, then re-run `--tags nvme`. Confirm with
+            `cat /proc/sys/kernel/hung_task_panic /proc/sys/kernel/panic`.
+
       - alert: FreyNvmeControllerReset
         expr: increase(frey_nvme_controller_resets_total[15m]) > 0
         for: 0m

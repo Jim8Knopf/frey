@@ -59,6 +59,12 @@
     value: "{{ item.value }}"
     state: present
     reload: true
+    # NOT the module's /etc/sysctl.conf default, which Debian 13's
+    # systemd-sysctl never reads - see frey.sysctl_file in
+    # inventory/group_vars/all/main.yml. Writing there applies the values live
+    # and loses them at the next boot, which for hung_task_panic means the
+    # wedge self-reboot is armed only until the first reboot.
+    sysctl_file: "{{ frey.sysctl_file }}"
   loop: "{{ rpi_nvme.sysctl | dict2items }}"
   tags:
     - system
@@ -149,6 +155,62 @@
   when:
     - rpi_nvme.cmdline.manage | bool
     - rpi_nvme_cmdline_written.changed | default(false)
+  tags:
+    - system
+    - nvme
+
+# ==============================================================================
+# PCIe LINK SPEED
+#
+# Escalation step 1 after APST alone proved insufficient. See the comment on
+# rpi_nvme.pcie in defaults/main.yml for the measurement that forced it.
+#
+# lineinfile rather than a template because config.txt carries firmware
+# settings this role has no business owning - the display, the audio, the
+# camera overlays. The regexp matches a commented-out form too, so toggling
+# this off and on cannot leave two contradictory lines behind.
+# ==============================================================================
+- name: Limit the PCIe link to Gen 1 for NVMe stability
+  ansible.builtin.lineinfile:
+    path: "{{ rpi_nvme.pcie.config_path }}"
+    line: dtparam=pciex1_gen=1
+    regexp: '^\s*#?\s*dtparam=pciex1_gen='
+    state: present
+    insertafter: EOF
+    owner: root
+    group: root
+    mode: "0755"
+  register: rpi_nvme_pcie_gen
+  when: rpi_nvme.pcie.limit_to_gen1 | bool
+  tags:
+    - system
+    - nvme
+
+# Removes the line entirely rather than setting gen=2, so the Pi falls back to
+# whatever the firmware defaults to on this board revision instead of this role
+# asserting a speed it has not measured.
+- name: Restore the default PCIe link speed
+  ansible.builtin.lineinfile:
+    path: "{{ rpi_nvme.pcie.config_path }}"
+    regexp: '^\s*#?\s*dtparam=pciex1_gen='
+    state: absent
+  register: rpi_nvme_pcie_gen_removed
+  when: not (rpi_nvme.pcie.limit_to_gen1 | bool)
+  tags:
+    - system
+    - nvme
+
+- name: Point out that the PCIe link speed needs a reboot
+  ansible.builtin.debug:
+    msg: >-
+      config.txt now pins the PCIe link to Gen 1, which only applies at boot -
+      so the NVMe is still running at its old link speed. Reboot when
+      convenient - `sudo reboot` - then confirm the link trained at 2.5GT/s
+      with: sudo lspci -vv -s $(lspci | grep -i non-volatile | cut -d" " -f1)
+      | grep -i "LnkSta:". Expect about 250 MB/s sequential rather than 500.
+      If dropouts continue after this, the remaining steps need hands on the
+      hardware: reseat the NVMe and its FFC ribbon, then suspect the drive.
+  when: rpi_nvme_pcie_gen.changed | default(false)
   tags:
     - system
     - nvme
