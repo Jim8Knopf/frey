@@ -213,6 +213,58 @@
     - proxy
     - docker
 
+# ==============================================================================
+# RECOVER A PROXY THAT LOST THE BOOT RACE
+#
+# Twice now, after an unclean boot, Traefik has come up against a port 80 that
+# dockerd still considers taken and exited 255 with `Address already in use` -
+# and then stayed down. Nothing actually holds the port: `ss -tlnp` shows no
+# listener, no docker-proxy process exists, and no other container declares a
+# binding. It is dockerd's own internal reservation, left behind by the
+# container that died during the boot.
+#
+# Three things that should have saved it did not:
+#
+#   - `restart_policy: unless-stopped` gives up. RestartCount reads 0.
+#   - `docker start` fails identically - the reservation is not cleared by
+#     starting, so the monitoring watchdog reports "would not start".
+#   - THIS TASK fails identically, because `state: started` only starts an
+#     existing container. Its config matches, so the module finds nothing to
+#     change and dutifully leaves the dead container exactly where it is.
+#
+# Removing the container is what releases the reservation. So remove it first,
+# but ONLY when it exists and is not running - a running proxy must never be
+# touched by a routine deploy, which is why this is not simply
+# `recreate: true`. Nothing is lost either way: every byte of Traefik's config
+# and state lives in the Ansible-managed mounts below.
+#
+# The cost of not doing this is the whole service layer. A dead proxy means
+# every *.hub.frey name answers nothing - the dashboards that would tell you
+# why among them.
+# ==============================================================================
+- name: Check whether the proxy container is present but stopped
+  community.docker.docker_container_info:
+    name: "{{ service_proxy.traefik.container_name }}"
+  register: service_proxy_traefik_state
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker
+
+- name: Remove a stopped proxy container so its port reservation is released
+  community.docker.docker_container:
+    name: "{{ service_proxy.traefik.container_name }}"
+    state: absent
+  when:
+    - not ansible_check_mode
+    - service_proxy_traefik_state.exists | default(false)
+    - not (service_proxy_traefik_state.container.State.Running | default(true))
+  tags:
+    - services
+    - proxy
+    - docker
+
 - name: Run Traefik reverse proxy
   community.docker.docker_container:
     name: "{{ service_proxy.traefik.container_name }}"
