@@ -92,6 +92,18 @@
     - proxy
     - docker
 
+- name: Create isolated Navidrome proxy network
+  community.docker.docker_network:
+    name: "{{ frey.navidrome_network.name }}"
+    ipam_config:
+      - subnet: "{{ frey.navidrome_network.subnet }}"
+    state: present
+  when: not ansible_check_mode
+  tags:
+    - services
+    - proxy
+    - docker
+
 - name: Configure Traefik dynamic middleware
   ansible.builtin.template:
     src: traefik-dynamic.yml.j2
@@ -278,6 +290,8 @@
         # network. See network_aliases in this role's defaults - it is what
         # makes server-to-server OIDC work.
         aliases: "{{ service_proxy.traefik.network_aliases | default([]) }}"
+      - name: "{{ frey.navidrome_network.name }}"
+        ipv4_address: "{{ frey.navidrome_network.traefik_ip }}"
     networks_cli_compatible: true
     published_ports:
       - "{{ service_proxy.bind_address }}:{{ service_proxy.traefik.http_port }}:80"

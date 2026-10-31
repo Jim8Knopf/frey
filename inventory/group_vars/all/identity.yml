@@ -164,6 +164,13 @@ identity_services:
     groups: [frey_admins, media]
     hosts: [jellyfin]
 
+  navidrome:
+    # The first SSO user becomes Navidrome admin. Restrict access to admins
+    # until the administrator has signed in and reviewed user access.
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [navidrome]
+
   audiobookshelf:
     auth: oidc
     groups: [frey_admins, media]
