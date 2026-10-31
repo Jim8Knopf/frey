@@ -642,6 +642,93 @@ collect_docker() {
 # dashboards keep cheerfully showing the last value they saw. Monitoring that
 # looks fine and is lying is the worst failure mode in the whole stack.
 # =============================================================================
+# =============================================================================
+# INDEXERS - whether the *arrs can actually reach an indexer
+#
+# This is the gap that let a dead indexer go unnoticed for days: every
+# container runs, every healthcheck passes, Prowlarr quietly backs the indexer
+# off for six hours at a time, and the only symptom is that nothing is ever
+# found. Nothing in the stack said a word.
+#
+# Servarr reports it in /health, with a source name beginning "Indexer":
+# IndexerStatusCheck, IndexerLongTermStatusCheck, IndexerRssCheck,
+# IndexerSearchCheck. The last two mean EVERY indexer is unusable, which is
+# the state worth a notification.
+#
+# The counting happens INSIDE each container, so what crosses the docker exec
+# pipe is two integers. A health response is easily large enough to be
+# truncated in transit, and truncated JSON looks exactly like a broken
+# service - a false alarm is worse than no alarm here.
+#
+# The API key never reaches a host command line: it is read from the
+# container's own config.xml by the shell running inside it.
+# =============================================================================
+INDEXER_APPS=(
+{% for app in monitoring_indexer_apps | default([]) %}
+  "{{ app.name }} {{ app.port }} {{ app.api_version }}"
+{% endfor %}
+)
+
+collect_indexers() {
+  local started ok app name port api_version out issues all_down
+  started=$(date +%s.%N)
+  ok=1
+
+  if ! have docker; then
+    { echo "# docker not installed"; collector_meta indexers 0 "${started}"; } | emit indexers
+    return
+  fi
+
+  {
+    echo "# HELP frey_indexer_health_issues Servarr health issues whose source is an indexer check."
+    echo "# TYPE frey_indexer_health_issues gauge"
+    echo "# HELP frey_indexer_all_unavailable Every search- or RSS-capable indexer is unusable."
+    echo "# TYPE frey_indexer_all_unavailable gauge"
+    echo "# HELP frey_indexer_query_success The collector could read this app's health at all."
+    echo "# TYPE frey_indexer_query_success gauge"
+
+    for app in "${INDEXER_APPS[@]}"; do
+      read -r name port api_version <<< "${app}"
+
+      # Not running is not this collector's problem to report. collect_docker
+      # already covers a container that should be up and is not, and
+      # media_acquisition stops the *arrs on purpose when the uplink is gone.
+      docker inspect -f '{% raw %}{{.State.Running}}{% endraw %}' "${name}" 2>/dev/null | grep -q true || continue
+
+      out=$(docker exec -e API_PORT="${port}" -e API_VERSION="${api_version}" "${name}" sh -c '
+          key=$(sed -n "s#.*<ApiKey>\(.*\)</ApiKey>.*#\1#p" /config/config.xml)
+          [ -n "${key}" ] || exit 1
+          curl -fsS --max-time 20 -H "X-Api-Key: ${key}" \
+            "http://127.0.0.1:${API_PORT}/api/${API_VERSION}/health" > /tmp/frey-health.json || exit 1
+          printf "%s %s\n" \
+            "$(grep -c "\"source\": *\"Indexer[A-Za-z]*\"" /tmp/frey-health.json)" \
+            "$(grep -c "\"source\": *\"Indexer\(Rss\|Search\)Check\"" /tmp/frey-health.json)"
+        ' 2>/dev/null)
+
+      issues=$(num "$(printf '%s' "${out}" | awk '{print $1}')")
+      all_down=$(num "$(printf '%s' "${out}" | awk '{print $2}')")
+
+      if [[ -z "${issues}" || -z "${all_down}" ]]; then
+        # Running but unreadable - a restarting app, or a missing API key.
+        # Report the failure rather than a reassuring zero.
+        echo "frey_indexer_query_success{app=\"${name}\"} 0"
+        ok=0
+        continue
+      fi
+
+      echo "frey_indexer_query_success{app=\"${name}\"} 1"
+      echo "frey_indexer_health_issues{app=\"${name}\"} ${issues}"
+      if [[ "${all_down}" -gt 0 ]]; then
+        echo "frey_indexer_all_unavailable{app=\"${name}\"} 1"
+      else
+        echo "frey_indexer_all_unavailable{app=\"${name}\"} 0"
+      fi
+    done
+
+    collector_meta indexers "${ok}" "${started}"
+  } | emit indexers
+}
+
 collector_meta() {
   local collector="$1" ok="$2" started="$3"
   local duration
@@ -696,6 +783,7 @@ main() {
       nvme) collect_nvme ;;
       gateway) collect_gateway ;;
       docker) collect_docker ;;
+      indexers) collect_indexers ;;
       *)
         echo "frey-metrics: unknown collector '${collector}'" >&2
         exit 64

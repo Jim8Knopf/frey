@@ -47,6 +47,11 @@ media_versions:
   # Byparr: replaces FlareSolverr, archived upstream and no longer able to
   # clear current Cloudflare challenges.
   byparr: "3.0.4"
+  # dnsmasq, used as the acquisition stack's own resolver. It exists to strip
+  # AAAA records: the van's uplink has no working IPv6, but campground
+  # resolvers hand out AAAA for Cloudflare-fronted trackers anyway, and the
+  # *arrs then fail every search. See roles/media_acquisition/README.md.
+  dnsmasq: "2.93"
   recyclarr: "8.8.0"
   cleanuparr: "2.10.12"
   unpackerr: "1.0.0"

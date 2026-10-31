@@ -153,6 +153,55 @@ ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
 Prowlarr is registered *with* each *arr as an "application" at `fullSync`, so
 indexers added in Prowlarr propagate everywhere. Add an indexer once.
 
+The public indexer list is declarative: `media_indexers` in
+`inventory/group_vars/all/media.yml`. `tasks/configure/indexers.yml` adds any
+that Prowlarr is missing, puts the audiobook sources on their own sync
+profile, and tags the ones marked `cloudflare: true` so Byparr is actually in
+their path. It is a **floor, not a mirror** — nothing is reconfigured or
+removed, so private trackers added by hand survive every deploy.
+
+## The Resolver, And Why Indexers Kept Breaking
+
+`frey-media-dns` is a dnsmasq container with one job: **delete AAAA records**.
+
+The van's uplink has no usable IPv6 — no address on the uplink interface, no
+default IPv6 route, no global IPv6 in any container. Campground resolvers
+answer AAAA for Cloudflare-fronted trackers anyway, because the record really
+does exist, and Docker's embedded resolver forwards whatever the campground
+handed the Pi over DHCP.
+
+.NET's `HttpClient` then connects to an address that cannot be reached:
+
+```
+System.Net.Http.HttpRequestException: Resource temporarily unavailable
+  (www.limetorrents.fun:443)
+```
+
+Prowlarr reports that as "Unable to connect to indexer … typically caused by
+DNS/SSL issues", backs the indexer off for hours, and Sonarr and Radarr say
+*All search-capable indexers are temporarily unavailable*.
+
+**What makes it so hard to diagnose:** `curl` against the identical URL
+succeeds, because curl falls back to IPv4 and .NET does not. Every manual
+check says the tracker is fine. Combined with Prowlarr's escalating backoff,
+the whole thing looks intermittent and unreproducible.
+
+So the stack resolves through its own dnsmasq with `filter-AAAA`, which also
+means a campground's broken or filtering DNS can no longer disable indexers —
+the reason this used to come back at every new parking spot.
+
+```bash
+# Is it up, and is it actually stripping AAAA?
+docker exec prowlarr getent ahostsv6 thepiratebay.org
+#   ::ffff:162.159.136.6  -> correct: an IPv4-mapped address, no real AAAA
+#   2606:4700:7::a29f:8906 -> the resolver is being bypassed
+```
+
+Setting `dns:` does **not** replace Docker's embedded resolver — `resolv.conf`
+keeps `127.0.0.11` and only its upstream changes — so container-name lookups
+(`prowlarr` → `sonarr`) are unaffected. Worth knowing before changing it:
+getting that wrong breaks every service-to-service call in the stack.
+
 ## Download Gating
 
 `/usr/local/bin/frey-media-gate` matches downloading to the uplink's real
@@ -244,7 +293,18 @@ ansible-playbook ... --tags media_update -e media_update=true
   `templates/recyclarr.yml.j2`. Instructions are in that file.
 - **Bazarr subtitle providers and language profiles** live in its database,
   not its config file, so they are a one-time UI step.
-- **Indexers** need your own tracker credentials and are added in Prowlarr.
+- **Private indexers** need your own tracker credentials, so they are added in
+  Prowlarr's UI. Public ones are declared in `media_indexers`.
+- **`media_library` still uses the campground's resolver.** Jellyfin and Seerr
+  fetch metadata over the same uplink and are also .NET, so they can hit the
+  same AAAA failure. Pointing them at `frey-media-dns` would make the library
+  depend on a container this role owns, and the library is deliberately able
+  to deploy and run with acquisition switched off entirely. Fixing it properly
+  means a resolver that belongs to neither module.
+- **Byparr's proxy test fails by design.** It implements no `sessions.*`
+  commands, which is what Prowlarr's test button calls, so it answers `502`
+  and Prowlarr logs `Proxy validation failed` on every health check while
+  solving works correctly. Judge it by `docker logs byparr`.
 - **Lidarr** depends on an upstream metadata server that has been unreliable
   through 2026; adding artists and imports break periodically. Not a
   configuration problem.

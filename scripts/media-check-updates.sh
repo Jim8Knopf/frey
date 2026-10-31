@@ -135,7 +135,11 @@ GITHUB = {
     "byparr": "ThePhaseless/Byparr",
     "gluetun": "qdm12/gluetun",
 }
-HUB = {"chaptarr": "chaptarr/chaptarr", "audiobookrequest": "markbeep/audiobookrequest"}
+HUB = {
+    "chaptarr": "chaptarr/chaptarr",
+    "audiobookrequest": "markbeep/audiobookrequest",
+    "dnsmasq": "dockurr/dnsmasq",
+}
 SKIP = {
     "jellystat_db": "PostgreSQL major upgrades need a migration, not a bump - check deliberately",
 }
