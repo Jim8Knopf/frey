@@ -31,7 +31,20 @@ no-hosts
 filter-AAAA
 {% endif %}
 
-{% for server in d.upstreams %}
+{#
+  Chosen at deploy time by the probe tasks in tasks/main.yml, not taken
+  straight from d.upstreams: on a network that forces port 53 to its own
+  resolver, every public upstream is unreachable and this file would configure
+  a resolver that cannot answer anything. See the note on dns.probe_upstreams
+  in defaults/main.yml for the measurement that prompted it.
+#}
+{% set chosen = media_dns_effective_upstreams | default(d.upstreams) %}
+{% if chosen != d.upstreams %}
+# NOTE: not the configured public upstreams. Those did not answer from this Pi
+# when this file was generated, so these are the uplink's own nameservers.
+# Re-run `--tags media_config` after changing network.
+{% endif %}
+{% for server in chosen %}
 server={{ server }}
 {% endfor %}
 

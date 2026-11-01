@@ -214,6 +214,52 @@ media_acquisition:
       - 9.9.9.9
       - 1.1.1.1
       - 8.8.8.8
+
+    # -------------------------------------------------------------------------
+    # PREFERRING PUBLIC DNS IS RIGHT. DEPENDING ON IT IS NOT.
+    #
+    # The list above assumes a network that lets a client talk to a resolver of
+    # its choosing. Plenty do not: forcing all port 53 to the local resolver is
+    # ordinary policy on library, hotel and campground Wi-Fi. When that happens
+    # every upstream here is unreachable and the resolver cannot answer
+    # anything - which takes out every indexer at once, even though the venue's
+    # own resolver would have served them perfectly well.
+    #
+    # Measured on the `APNK Library` uplink, 2026-11-01: 9.9.9.9, 1.1.1.1 and
+    # 8.8.8.8 all timed out from the Pi, while the DHCP-supplied 172.20.1.15
+    # answered normally. Prowlarr reported "Indexers unavailable due to
+    # failures: YTS, The Pirate Bay, LimeTorrents, Knaben, 1337x".
+    #
+    # WORSE, THE CONTAINER LOOKED FINE. Its healthcheck resolves a name, and a
+    # 2000-entry cache meant that name kept answering from cache long after
+    # every upstream had gone away. `docker ps` said healthy while no new
+    # lookup could succeed, so the one signal pointing at DNS said the
+    # opposite.
+    #
+    # So: probe the upstreams from the Pi at deploy time and configure only the
+    # ones that actually answer. If none do, fall back to the host's own
+    # DHCP-supplied nameservers, which by definition work on the network the
+    # van is parked on.
+    #
+    # Probing rather than listing both tiers together is deliberate. dnsmasq
+    # queries all its servers and takes the first reply, so a venue resolver
+    # that censors a domain could beat a public resolver that does not, and the
+    # NXDOMAIN would be cached. `strict-order` would fix the ordering but make
+    # every uncached lookup wait out three dead servers first. Choosing at
+    # deploy time avoids both.
+    #
+    # The cost is that this is only correct for the network it was deployed on.
+    # Re-run `--tags media_config` after changing uplink if indexers stop
+    # resolving. That is the same requirement the rest of this stack already
+    # has, and it is checked by the resolver's own healthcheck.
+    # -------------------------------------------------------------------------
+    probe_upstreams: true
+    # Name used to test whether an upstream really answers. Deliberately not an
+    # indexer domain: those are exactly what a filtering network blocks, so one
+    # would report a healthy resolver as dead.
+    probe_name: example.com
+    probe_timeout: 3
+    fall_back_to_host_resolvers: true
     # Strip AAAA. This is the whole reason the container exists.
     filter_aaaa: true
     cache_size: 2000

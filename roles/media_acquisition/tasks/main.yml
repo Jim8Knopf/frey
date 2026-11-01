@@ -263,6 +263,121 @@
     - media
     - media_acquisition
 
+# ==============================================================================
+# CHOOSE UPSTREAMS THAT ACTUALLY ANSWER ON THIS NETWORK
+#
+# See the long note on media_acquisition.dns in defaults/main.yml. The short
+# version: the configured public resolvers are the right preference and a bad
+# dependency, because forcing port 53 to the local resolver is ordinary public
+# Wi-Fi policy - and when it happens, every indexer fails while the resolver
+# container still reports healthy off its cache.
+# ==============================================================================
+- name: Probe the configured DNS upstreams from the Pi
+  # `dig +tries=1` so a dead server costs the timeout once rather than three
+  # times. Failure is expected and is the whole point, so it is never fatal.
+  ansible.builtin.command:
+    cmd: >-
+      dig +short +time={{ media_acquisition.dns.probe_timeout | default(3) }}
+      +tries=1 {{ media_acquisition.dns.probe_name | default('example.com') }}
+      @{{ item }}
+  loop: "{{ media_acquisition.dns.upstreams }}"
+  loop_control:
+    label: "{{ item }}"
+  register: media_dns_probe
+  changed_when: false
+  failed_when: false
+  when:
+    - media_acquisition.services.resolver.enabled | bool
+    - media_acquisition.dns.probe_upstreams | default(true) | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+# An upstream counts as working only if it returned at least one address.
+# rc==0 alone is not enough: dig exits 0 for an empty answer, which is what a
+# censoring resolver returns.
+- name: Keep the upstreams that answered
+  ansible.builtin.set_fact:
+    media_dns_reachable: >-
+      {{
+        media_dns_probe.results | default([])
+        | selectattr('rc', 'defined')
+        | selectattr('rc', 'equalto', 0)
+        | selectattr('stdout', 'truthy')
+        | map(attribute='item') | list
+      }}
+  when:
+    - media_acquisition.services.resolver.enabled | bool
+    - media_acquisition.dns.probe_upstreams | default(true) | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+# The host's own nameservers come from DHCP on the uplink, so they work on
+# whatever network the van is actually parked on. Loopback is excluded: a
+# container cannot reach the host's 127.0.0.1, and ufw's default-deny INPUT
+# would drop a bridge-to-host packet even if it could.
+- name: Read the host's resolvers as the fallback tier
+  ansible.builtin.set_fact:
+    media_dns_host_resolvers: >-
+      {{
+        ansible_facts.dns.nameservers | default([])
+        | reject('match', '^(127\.|::1)')
+        | list
+      }}
+  when:
+    - media_acquisition.services.resolver.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Decide the resolver's upstreams
+  ansible.builtin.set_fact:
+    media_dns_effective_upstreams: >-
+      {{
+        media_dns_reachable
+        if (media_dns_reachable | default([]) | length > 0)
+        else (
+          media_dns_host_resolvers
+          if (
+            media_acquisition.dns.fall_back_to_host_resolvers | default(true) | bool
+            and media_dns_host_resolvers | default([]) | length > 0
+          )
+          else media_acquisition.dns.upstreams
+        )
+      }}
+  when:
+    - media_acquisition.services.resolver.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+# Say so out loud. A silent fallback to the venue's resolver is a meaningful
+# change in behaviour - it is the resolver this stack was written to avoid -
+# and it also means any domain the venue filters is now filtered for the *arrs.
+- name: Report that the public resolvers are unreachable here
+  ansible.builtin.debug:
+    msg: >-
+      None of {{ media_acquisition.dns.upstreams | join(', ') }} answered from
+      this Pi, so the resolver will forward to the uplink's own nameservers
+      ({{ media_dns_effective_upstreams | join(', ') }}) instead. This network
+      forces port 53 to its own resolver. Indexers will work unless it also
+      filters their domains - if they still fail, that filtering is the cause
+      and the answer is media_vpn, not DNS. Re-run `--tags media_config` after
+      changing uplink.
+  when:
+    - media_acquisition.services.resolver.enabled | bool
+    - media_acquisition.dns.probe_upstreams | default(true) | bool
+    - media_dns_reachable | default([]) | length == 0
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
 - name: Deploy the acquisition stack's resolver configuration
   # Ansible owns this outright - it is the reason the container exists, and
   # drift here silently reintroduces the AAAA failure it was added to stop.
