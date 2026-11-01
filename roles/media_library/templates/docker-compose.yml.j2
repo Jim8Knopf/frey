@@ -186,6 +186,9 @@ services:
     volumes:
       - "{{ appdata }}/navidrome:/data"
       - "{{ media.data_dir }}/media/music:/music:ro"
+    # Pinned, not dynamic: the first free address on this /29 is the one
+    # reserved for Traefik, and whichever container attaches first takes it.
+    # See frey.navidrome_network in inventory/group_vars/all/main.yml.
     # Keep Docker from dynamically assigning Traefik's trusted address after reboot.
     networks:
       {{ frey.navidrome_network.name }}:

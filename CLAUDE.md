@@ -56,6 +56,7 @@ scripts/monitoring-check.sh --test     # prove a notification reaches the phone
 scripts/identity-check.sh              # assert SSO is actually enforcing
 scripts/media-check-updates.sh         # pinned image versions vs upstream (needs internet)
 scripts/test-portal-logic.py           # captive-portal accept logic, offline
+scripts/test-media-dns-upstream.py     # media resolver upstream selection, offline
 git-hooks/test-pre-commit.sh           # regression tests for the vault hook
 ```
 
@@ -212,6 +213,15 @@ Both mount one `/opt/frey/data` tree at the same path in every container, which
 is what makes an import a hardlink rather than a copy. The internal container
 network (`172.28.0.0/16`) must never overlap FreyHub's `10.20.0.0/24` — the
 archived role used `10.20.0.0/24` here, which would have blackholed the AP.
+
+**Every *arr failing at once is a DNS fault, not an application one.** The
+stack resolves through its own dnsmasq (`frey-media-dns`), which prefers public
+upstreams on purpose. Networks that block outbound port 53 — libraries,
+schools, hotels — leave it with nowhere to forward, and the giveaway is that
+the *host* still resolves perfectly, because NetworkManager gave it the
+network's own resolver. `frey-media-dns-upstream` falls back to that resolver
+while ours are unreachable; `frey-media-dns-upstream status` says which set is
+live. Don't go reading Prowlarr's logs until that says `preferred` or `uplink`.
 
 **The Pi 5 has no hardware video encoder.** Every transcode is software and
 competes with the gateway for CPU, so quality profiles chase direct play

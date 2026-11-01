@@ -208,8 +208,9 @@ media_acquisition:
     # hands out dynamic addresses from the bottom of frey_media
     # ({{ media.network.subnet }}), so a high host address cannot collide.
     address: 172.28.255.53
-    # Asked in order. All three are plain DNS on 53; the point is not privacy
-    # but not depending on the campground's resolver.
+    # Asked in order, and PREFERRED over the uplink's own resolver. All three
+    # are plain DNS on 53; the point is not privacy but not depending on the
+    # campground's resolver, which is frequently slow, filtering, or both.
     upstreams:
       - 9.9.9.9
       - 1.1.1.1

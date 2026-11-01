@@ -202,6 +202,47 @@ keeps `127.0.0.11` and only its upstream changes — so container-name lookups
 (`prowlarr` → `sonarr`) are unaffected. Worth knowing before changing it:
 getting that wrong breaks every service-to-service call in the stack.
 
+### When we cannot reach our own upstreams
+
+Preferring public resolvers assumes we can reach them. Libraries, schools,
+hotels and corporate guest networks routinely block outbound port 53 to
+anything but their own resolver. Then every upstream times out, dnsmasq has
+nowhere to forward, and **every lookup in the stack fails at once** — all the
+*arrs, not one indexer.
+
+It hides well: NetworkManager gives the *host* the network's resolver, so
+`curl` and `ping` on the Pi work while the containers resolve nothing. It
+reads as "Prowlarr is broken", then "Lidarr too", then "all of them".
+
+`/usr/local/bin/frey-media-dns-upstream` keeps the upstream list honest. It
+prefers `dns.upstreams` and falls back to the uplink's own DHCP resolvers only
+while none of ours answers, returning the moment they do. Each candidate is
+probed **from inside the resolver container** before being written — the
+container's egress is NAT'd and firewalled differently from the host's, so the
+host reaching an address is no evidence the container can. `filter-AAAA` keeps
+working on the fallback, because it applies to the answer, not the upstream.
+
+The list lives in `servers.conf`, not in `dnsmasq.conf`, because
+`servers-file` is the one dnsmasq input re-read on **SIGHUP** — so the
+upstreams change without restarting the resolver and dropping the stack's DNS
+mid-search. Two traps in that file:
+
+- It is bind-mounted as a single **file**, so the mount follows its inode. It
+  must be rewritten in place; an atomic `mv` leaves dnsmasq reading the old
+  inode forever and the update appears to work while changing nothing.
+- Ansible deploys it with `force: false`. Re-rendering it every deploy would
+  overwrite a live fallback with upstreams the current network blocks, taking
+  DNS from the whole stack until the timer next ran.
+
+```bash
+frey-media-dns-upstream status        # mode now, and what each candidate does
+sudo frey-media-dns-upstream apply    # re-select without waiting for the timer
+scripts/test-media-dns-upstream.py    # offline tests for the selection logic
+```
+
+`frey_media_dns_upstream_mode{mode="preferred|uplink|none"}` reports which set
+is live. Set `dns.fallback_to_uplink: false` to refuse the fallback entirely.
+
 ## Download Gating
 
 `/usr/local/bin/frey-media-gate` matches downloading to the uplink's real
