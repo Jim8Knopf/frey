@@ -339,6 +339,38 @@ and keep a fixed upstream list — at the cost of resolving nothing at all on
 these networks. The selection logic has offline tests:
 `scripts/test-media-dns-upstream.py`.
 
+#### On the fallback, the network's filtering applies
+
+This is the cost, and it is worth knowing before you go looking for a fault
+that is not there. A network that blocks public DNS is usually a network that
+filters, and once we are forwarding to its resolver we inherit that. Expect
+trackers to be blocked outright, by two different mechanisms, while
+`frey_media_dns_upstream_mode{mode="uplink"} 1`.
+
+Tell them apart in one pass — run it from inside a container, not the host:
+
+```bash
+docker exec prowlarr getent hosts yts.mx                 # nothing  -> DNS-filtered
+docker exec prowlarr curl -s -o /dev/null -w '%{http_code}\n' \
+  --connect-timeout 8 https://thepiratebay.org/           # 000      -> TLS killed
+docker exec prowlarr curl -s -o /dev/null -w '%{http_code}\n' \
+  http://thepiratebay.org/                                # 403      -> their filter
+docker exec prowlarr curl -s -o /dev/null -w '%{http_code}\n' \
+  https://api.github.com                                  # 200      -> the stack is fine
+```
+
+That pattern — ordinary sites answering 200 while trackers give NXDOMAIN, a
+`000` after a 0.1s TCP connect, and a 403 over plain HTTP — is the uplink's
+content filter, not a Frey fault. Nothing configurable on the Pi changes it:
+**downloads will not work on that network.** Observed on the APNK Library
+uplink on 2026-11-01.
+
+Everything else keeps working, which is the point of fixing the resolver
+anyway: metadata, artwork, Seerr, update checks and the *arrs' own APIs all
+resolve again. The indexers stay marked failed until a successful re-test —
+`frey-media-gate` retries every 30 minutes, so they clear themselves once the
+van is on a network that does not filter them.
+
 ### When an indexer fails anyway
 
 ```bash
