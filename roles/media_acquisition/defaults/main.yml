@@ -237,30 +237,54 @@ media_acquisition:
     # lookup could succeed, so the one signal pointing at DNS said the
     # opposite.
     #
-    # So: probe the upstreams from the Pi at deploy time and configure only the
-    # ones that actually answer. If none do, fall back to the host's own
-    # DHCP-supplied nameservers, which by definition work on the network the
-    # van is parked on.
+    # So: probe the upstreams and configure only the ones that actually answer,
+    # falling back to the host's own DHCP-supplied nameservers, which by
+    # definition work on the network the van is parked on.
     #
     # Probing rather than listing both tiers together is deliberate. dnsmasq
     # queries all its servers and takes the first reply, so a venue resolver
     # that censors a domain could beat a public resolver that does not, and the
     # NXDOMAIN would be cached. `strict-order` would fix the ordering but make
-    # every uncached lookup wait out three dead servers first. Choosing at
-    # deploy time avoids both.
+    # every uncached lookup wait out three dead servers first. Choosing one
+    # tier avoids both.
     #
-    # The cost is that this is only correct for the network it was deployed on.
-    # Re-run `--tags media_config` after changing uplink if indexers stop
-    # resolving. That is the same requirement the rest of this stack already
-    # has, and it is checked by the resolver's own healthcheck.
+    # THE CHOICE IS MADE AT RUNTIME, NOT AT DEPLOY TIME, and that distinction
+    # is the whole fix. Which upstreams are usable is a property of the network
+    # the van is parked next to, and it changes without a deploy - so baking
+    # the winners into dnsmasq.conf is correct only until the van moves. It did
+    # move: a deploy made on the `APNK Library` uplink pinned the resolver to
+    # that library's 172.20.1.15/.16, and when the van left, all six Prowlarr
+    # indexers went to a 24-hour backoff while `frey-media-dns-upstream status`
+    # still reported every public upstream answering - because it probes from
+    # the HOST, and the container had no `servers-file` to read.
+    #
+    # Instead, dnsmasq.conf carries no upstreams at all. It points
+    # `servers-file` at a file that frey-media-dns-upstream rewrites in place -
+    # on a ten-minute timer and on every NetworkManager event - and that
+    # dnsmasq re-reads on SIGHUP, without a restart that would drop DNS for the
+    # whole stack mid-search. Nothing below needs a deploy at a new parking
+    # spot. See the `media_dns` tag in tasks/main.yml.
     # -------------------------------------------------------------------------
-    probe_upstreams: true
     # Name used to test whether an upstream really answers. Deliberately not an
     # indexer domain: those are exactly what a filtering network blocks, so one
     # would report a healthy resolver as dead.
+    #
+    # These two names are read by the frey-media-dns-upstream script template.
+    # They were previously spelled `probe_timeout` and `fall_back_to_host_
+    # resolvers` here while every consumer read `probe_timeout_seconds` and
+    # `fallback_to_uplink`, so both settings were silently inert - the defaults
+    # happened to match, which is why it never showed.
     probe_name: example.com
-    probe_timeout: 3
-    fall_back_to_host_resolvers: true
+    probe_timeout_seconds: 3
+    # Forward to the uplink's own DHCP resolvers while none of `upstreams`
+    # answers. Turning this off removes the servers-file indirection entirely:
+    # the upstream list is then fixed at deploy time and the stack resolves
+    # nothing on a network that blocks outbound port 53.
+    fallback_to_uplink: true
+    # Where the above list is mounted inside the container. Mounted as a single
+    # FILE, so the script must rewrite it in place rather than replace it by
+    # rename, or dnsmasq keeps reading the old inode forever.
+    servers_file: /etc/dnsmasq.servers
     # Strip AAAA. This is the whole reason the container exists.
     filter_aaaa: true
     cache_size: 2000

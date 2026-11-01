@@ -1,4 +1,30 @@
 services:
+  certificate-setup:
+    image: {{ dashy.image }}
+    container_name: frey-certificate-setup
+    restart: unless-stopped
+    entrypoint: ["node", "/setup/setup-server.js"]
+    healthcheck:
+      disable: true
+    volumes:
+      - "{{ dashy.config_dir }}/setup:/setup:ro"
+      - "{{ frey.pki_public_dir }}:/public-ca:ro"
+    networks:
+      - {{ frey.proxy_network }}
+    mem_limit: 64m
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.certificate-setup.loadbalancer.server.port=8080"
+      - "traefik.http.routers.certificate-setup.rule=(Host(`{{ dashy.host }}.{{ frey.service_domain }}`) || Host(`{{ dashy.host }}.{{ frey.local_domain }}`)) && (Path(`/setup`) || PathPrefix(`/setup/`))"
+      - "traefik.http.routers.certificate-setup.entrypoints=web"
+      - "traefik.http.routers.certificate-setup.priority=1000"
+      - "traefik.http.routers.certificate-setup-secure.rule=Host(`{{ dashy.host }}.{{ frey.service_domain }}`) && (Path(`/setup`) || PathPrefix(`/setup/`))"
+      - "traefik.http.routers.certificate-setup-secure.entrypoints=websecure"
+      - "traefik.http.routers.certificate-setup-secure.tls=true"
+      - "traefik.http.routers.certificate-setup-secure.priority=1000"
+      - "traefik.http.routers.certificate-setup-secure.service=certificate-setup"
+      - "frey.module=dashy"
   dashy:
     image: {{ dashy.image }}
     container_name: dashy
