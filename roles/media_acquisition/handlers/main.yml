@@ -3,6 +3,10 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+- name: Reload systemd for media resolver upstreams
+  ansible.builtin.systemd:
+    daemon_reload: true
+
 - name: Restart qbittorrent
   community.docker.docker_container:
     name: "{{ media_acquisition.services.qbittorrent.container_name }}"

@@ -233,6 +233,13 @@ services:
       - TZ={{ tz }}
     volumes:
       - "{{ appdata }}/resolver/dnsmasq.conf:/etc/dnsmasq.conf:ro"
+{% if m.dns.fallback_to_uplink | default(true) | bool %}
+      # The upstream list, kept current by frey-media-dns-upstream and re-read
+      # by dnsmasq on SIGHUP. Mounted as a single FILE, so the mount follows
+      # its inode: that script has to rewrite it in place rather than replace
+      # it by rename, or dnsmasq would keep reading the old inode forever.
+      - "{{ appdata }}/resolver/servers.conf:{{ m.dns.servers_file | default('/etc/dnsmasq.servers') }}:ro"
+{% endif %}
     networks:
       {{ media.network.name }}:
         ipv4_address: {{ m.dns.address }}

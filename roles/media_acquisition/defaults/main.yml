@@ -208,12 +208,52 @@ media_acquisition:
     # hands out dynamic addresses from the bottom of frey_media
     # ({{ media.network.subnet }}), so a high host address cannot collide.
     address: 172.28.255.53
-    # Asked in order. All three are plain DNS on 53; the point is not privacy
-    # but not depending on the campground's resolver.
+    # Asked in order, and PREFERRED over the uplink's own resolver. All three
+    # are plain DNS on 53; the point is not privacy but not depending on the
+    # campground's resolver, which is frequently slow, filtering, or both.
     upstreams:
       - 9.9.9.9
       - 1.1.1.1
       - 8.8.8.8
+    # -------------------------------------------------------------------------
+    # WHEN THE NETWORK WILL NOT LET US REACH THOSE AT ALL
+    #
+    # Preferring public resolvers assumes we can reach them. Libraries,
+    # schools, hotels and corporate guest networks very often block outbound
+    # port 53 to everything except their own resolver, to force their
+    # filtering. On such a network all three upstreams above time out, dnsmasq
+    # has nowhere to forward to, and EVERY name lookup in the acquisition
+    # stack fails - every *arr at once, not one indexer.
+    #
+    # That failure is invisible from the host: NetworkManager gives the host
+    # the network's resolver, so `curl` and `ping` on the Pi work perfectly
+    # while the containers resolve nothing. It reads as "Prowlarr is broken",
+    # then "Lidarr too", then "all of them", and sends you looking at the
+    # applications.
+    #
+    # It happened on the APNK Library uplink (DNS 172.20.1.15/.16, every
+    # public resolver dropped). So: keep preferring our own upstreams, but
+    # when none of them answers, fall back to the ones the uplink's DHCP
+    # handed us rather than resolving nothing at all.
+    #
+    # The ordering still matters and is still honoured - the fallback is only
+    # ever used while the preferred upstreams are unreachable, and it is
+    # dropped again the moment they come back. filter-AAAA keeps working
+    # either way, because it is applied to the answer, not the upstream.
+    #
+    # frey-media-dns-upstream decides this; see its script and the README.
+    # -------------------------------------------------------------------------
+    fallback_to_uplink: true
+    # The name probed to decide whether an upstream is answering. Needs to be
+    # something that always resolves and is not itself an indexer.
+    probe_name: cloudflare.com
+    # Short on purpose: this runs against three upstreams in series, and on a
+    # network that blackholes 53 every one of them burns the full timeout.
+    probe_timeout_seconds: 3
+    # Read by dnsmasq via `servers-file`, which - unlike the main config - is
+    # re-read on SIGHUP. That is what lets the upstream list change without
+    # restarting the resolver and dropping the stack's DNS mid-search.
+    servers_file: /etc/dnsmasq.servers
     # Strip AAAA. This is the whole reason the container exists.
     filter_aaaa: true
     cache_size: 2000
