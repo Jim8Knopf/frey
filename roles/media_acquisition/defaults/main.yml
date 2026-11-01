@@ -215,45 +215,52 @@ media_acquisition:
       - 9.9.9.9
       - 1.1.1.1
       - 8.8.8.8
+
     # -------------------------------------------------------------------------
-    # WHEN THE NETWORK WILL NOT LET US REACH THOSE AT ALL
+    # PREFERRING PUBLIC DNS IS RIGHT. DEPENDING ON IT IS NOT.
     #
-    # Preferring public resolvers assumes we can reach them. Libraries,
-    # schools, hotels and corporate guest networks very often block outbound
-    # port 53 to everything except their own resolver, to force their
-    # filtering. On such a network all three upstreams above time out, dnsmasq
-    # has nowhere to forward to, and EVERY name lookup in the acquisition
-    # stack fails - every *arr at once, not one indexer.
+    # The list above assumes a network that lets a client talk to a resolver of
+    # its choosing. Plenty do not: forcing all port 53 to the local resolver is
+    # ordinary policy on library, hotel and campground Wi-Fi. When that happens
+    # every upstream here is unreachable and the resolver cannot answer
+    # anything - which takes out every indexer at once, even though the venue's
+    # own resolver would have served them perfectly well.
     #
-    # That failure is invisible from the host: NetworkManager gives the host
-    # the network's resolver, so `curl` and `ping` on the Pi work perfectly
-    # while the containers resolve nothing. It reads as "Prowlarr is broken",
-    # then "Lidarr too", then "all of them", and sends you looking at the
-    # applications.
+    # Measured on the `APNK Library` uplink, 2026-11-01: 9.9.9.9, 1.1.1.1 and
+    # 8.8.8.8 all timed out from the Pi, while the DHCP-supplied 172.20.1.15
+    # answered normally. Prowlarr reported "Indexers unavailable due to
+    # failures: YTS, The Pirate Bay, LimeTorrents, Knaben, 1337x".
     #
-    # It happened on the APNK Library uplink (DNS 172.20.1.15/.16, every
-    # public resolver dropped). So: keep preferring our own upstreams, but
-    # when none of them answers, fall back to the ones the uplink's DHCP
-    # handed us rather than resolving nothing at all.
+    # WORSE, THE CONTAINER LOOKED FINE. Its healthcheck resolves a name, and a
+    # 2000-entry cache meant that name kept answering from cache long after
+    # every upstream had gone away. `docker ps` said healthy while no new
+    # lookup could succeed, so the one signal pointing at DNS said the
+    # opposite.
     #
-    # The ordering still matters and is still honoured - the fallback is only
-    # ever used while the preferred upstreams are unreachable, and it is
-    # dropped again the moment they come back. filter-AAAA keeps working
-    # either way, because it is applied to the answer, not the upstream.
+    # So: probe the upstreams from the Pi at deploy time and configure only the
+    # ones that actually answer. If none do, fall back to the host's own
+    # DHCP-supplied nameservers, which by definition work on the network the
+    # van is parked on.
     #
-    # frey-media-dns-upstream decides this; see its script and the README.
+    # Probing rather than listing both tiers together is deliberate. dnsmasq
+    # queries all its servers and takes the first reply, so a venue resolver
+    # that censors a domain could beat a public resolver that does not, and the
+    # NXDOMAIN would be cached. `strict-order` would fix the ordering but make
+    # every uncached lookup wait out three dead servers first. Choosing at
+    # deploy time avoids both.
+    #
+    # The cost is that this is only correct for the network it was deployed on.
+    # Re-run `--tags media_config` after changing uplink if indexers stop
+    # resolving. That is the same requirement the rest of this stack already
+    # has, and it is checked by the resolver's own healthcheck.
     # -------------------------------------------------------------------------
-    fallback_to_uplink: true
-    # The name probed to decide whether an upstream is answering. Needs to be
-    # something that always resolves and is not itself an indexer.
-    probe_name: cloudflare.com
-    # Short on purpose: this runs against three upstreams in series, and on a
-    # network that blackholes 53 every one of them burns the full timeout.
-    probe_timeout_seconds: 3
-    # Read by dnsmasq via `servers-file`, which - unlike the main config - is
-    # re-read on SIGHUP. That is what lets the upstream list change without
-    # restarting the resolver and dropping the stack's DNS mid-search.
-    servers_file: /etc/dnsmasq.servers
+    probe_upstreams: true
+    # Name used to test whether an upstream really answers. Deliberately not an
+    # indexer domain: those are exactly what a filtering network blocks, so one
+    # would report a healthy resolver as dead.
+    probe_name: example.com
+    probe_timeout: 3
+    fall_back_to_host_resolvers: true
     # Strip AAAA. This is the whole reason the container exists.
     filter_aaaa: true
     cache_size: 2000
