@@ -557,6 +557,16 @@ services:
     environment:
       - TZ={{ tz }}
       - PORT={{ svc.cleanuparr.port }}
+      {#
+        The image bakes in PUID/PGID=1000. Without these it writes /config as
+        uid 1000, which cannot create files in a media-owned 0775 directory —
+        existing databases keep working while every NEW file fails, so the
+        container looks healthy and only /api/auth/status 500s, taking the
+        whole UI down. Must match the rest of the stack.
+      #}
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - UMASK={{ media.umask }}
     volumes:
       - "{{ appdata }}/cleanuparr:/config"
     networks:
