@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically reconcile SilverBullet group access
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -30,6 +30,8 @@
 
 ## Near Term
 
+- Prototype the linked campaign knowledge base and local assistant described in
+  [CAMPAIGN_ASSISTANT_PLAN.md](CAMPAIGN_ASSISTANT_PLAN.md).
 - Template the Jellyfin SSO plugin's configuration XML, once the plugin has
   proven itself on Jellyfin 12.3 and its schema can be read off an installed
   copy rather than guessed. Until then it stays a documented manual step.

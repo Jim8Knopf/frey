@@ -142,6 +142,17 @@ identity:
   # ----------------------------------------------------------------------------
   oidc_catalog:
 
+    silverbullet:
+      client_name: SilverBullet
+      public: false
+      token_endpoint_auth_method: client_secret_basic
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes: [openid, profile, email, offline_access]
+      redirect_uris:
+        - "https://silverbullet.{{ frey.service_domain }}/.auth/central/oidc/callback"
+      claims_policy: ""
+
     dashy:
       client_name: Dashy
       public: true

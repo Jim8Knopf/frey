@@ -1,0 +1,13 @@
+---
+silverbullet:
+  stack_dir: "{{ frey.base_dir }}/stacks/silverbullet"
+  data_dir: "{{ frey.base_dir }}/appdata/silverbullet"
+  uid: 10001
+  gid: 10001
+  identity_network: identity_internal
+  sync_admin_username: note_admin
+  space_prefix: /notes
+  image: "ghcr.io/silverbulletmd/silverbullet:{{ silverbullet_version }}"
+  host: silverbullet
+  port: 3000
+  mem_limit: 768m

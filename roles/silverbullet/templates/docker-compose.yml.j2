@@ -1,0 +1,47 @@
+# Managed by Ansible. Do not edit on the Pi.
+services:
+  silverbullet:
+    image: {{ silverbullet.image }}
+    container_name: silverbullet
+    restart: unless-stopped
+    environment:
+      SB_OIDC_CA_FILE: /frey-ca.crt
+    volumes:
+      - "{{ silverbullet.data_dir }}:/data"
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+    networks:
+      - {{ frey.proxy_network }}
+    mem_limit: {{ silverbullet.mem_limit }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.silverbullet.loadbalancer.server.port={{ silverbullet.port }}"
+      - "traefik.http.routers.silverbullet.rule=Host(`{{ silverbullet.host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.silverbullet.entrypoints=websecure"
+      - "traefik.http.routers.silverbullet.tls=true"
+      - "traefik.http.routers.silverbullet.middlewares=secure-headers@file,authelia@file"
+      # Only the upstream-documented static client paths bypass forward auth.
+      - "traefik.http.routers.silverbullet-client.rule=Host(`{{ silverbullet.host }}.{{ frey.service_domain }}`) && (Path(`/service_worker.js`) || PathPrefix(`/.client/`) || Path(`{{ silverbullet.space_prefix }}/service_worker.js`) || PathPrefix(`{{ silverbullet.space_prefix }}/.client/`))"
+      - "traefik.http.routers.silverbullet-client.priority=1000"
+      - "traefik.http.routers.silverbullet-client.entrypoints=websecure"
+      - "traefik.http.routers.silverbullet-client.tls=true"
+      - "traefik.http.routers.silverbullet-client.middlewares=secure-headers@file"
+      - "traefik.http.routers.silverbullet-client.service=silverbullet"
+      - "traefik.http.routers.silverbullet-legacy.rule=Host(`{{ silverbullet.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.silverbullet-legacy.entrypoints=websecure"
+      - "traefik.http.routers.silverbullet-legacy.tls=true"
+      - "traefik.http.routers.silverbullet-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.silverbullet-legacy.service=silverbullet"
+      - "traefik.http.routers.silverbullet-http.rule=Host(`{{ silverbullet.host }}.{{ frey.service_domain }}`) || Host(`{{ silverbullet.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.silverbullet-http.entrypoints=web"
+      - "traefik.http.routers.silverbullet-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.silverbullet-http.service=silverbullet"
+      - "frey.module=silverbullet"
+networks:
+  {{ frey.proxy_network }}:
+    external: true

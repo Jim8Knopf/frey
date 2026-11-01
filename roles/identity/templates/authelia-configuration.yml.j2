@@ -22,7 +22,7 @@
 {% set go = '{{' %}
 {% set og = '}}' %}
 {% set auth_host = identity.hosts.auth ~ '.' ~ frey.service_domain %}
-{% set oidc_services = identity_services | dict2items | selectattr('value.auth', 'equalto', 'oidc') | list %}
+{% set oidc_services = (identity_services | dict2items | selectattr('value.auth', 'equalto', 'oidc') | list) + (identity_services | dict2items | selectattr('value.auth', 'equalto', 'forward_auth') | selectattr('value.oidc_client', 'defined') | selectattr('value.oidc_client', 'equalto', true) | list) %}
 {% set fwd_services = identity_services | dict2items | selectattr('value.auth', 'equalto', 'forward_auth') | list %}
 ---
 theme: '{{ identity.authelia.theme }}'
@@ -188,8 +188,8 @@ notifier:
 # default_policy is deny: a host that is not listed here is not reachable
 # through forward auth at all, rather than quietly open.
 #
-# Only forward_auth services appear. Services set to `oidc` or `none` are never
-# routed through Authelia by Traefik, so these rules never see them.
+# Only forward_auth services appear, including those that also have an OIDC
+# client. Services set to `oidc` or `none` do not use this proxy policy.
 # ------------------------------------------------------------------------------
 access_control:
   default_policy: 'deny'
@@ -231,7 +231,7 @@ access_control:
 # ------------------------------------------------------------------------------
 # OIDC - APPS THAT LOG IN AGAINST AUTHELIA THEMSELVES
 #
-# One client per service with auth: oidc. The redirect URIs come from the
+# One client per service with auth: oidc or oidc_client: true. Redirect URIs come from the
 # catalog in roles/identity/defaults/main.yml, because they are a property of
 # the app rather than a choice.
 #

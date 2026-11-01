@@ -1,0 +1,10 @@
+http:
+  routers:
+    model:
+      rule: PathPrefix(`/`)
+      service: model
+  services:
+    model:
+      loadBalancer:
+        servers:
+          - url: http://model:8080

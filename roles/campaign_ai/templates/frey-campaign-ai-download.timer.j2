@@ -1,0 +1,10 @@
+[Unit]
+Description=Retry the local campaign model download when needed
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=frey-campaign-ai-download.service
+
+[Install]
+WantedBy=timers.target

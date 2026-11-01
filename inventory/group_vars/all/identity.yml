@@ -88,16 +88,16 @@ identity_users:
 # ==============================================================================
 # GROUPS
 #
-# Three is enough. Resist one group per service: the old stack had thirty-one
-# of them - sonarr_users, prowlarr_users, uptime_kuma_users, metrics_users -
-# every one still had to be hand-assigned, which is thirty-one chances to
-# forget one and no clearer an answer to "who can see what".
+# Groups represent distinct access needs. Notes are separate from media so
+# access to one does not implicitly grant access to the other.
 # ==============================================================================
 identity_groups:
   - name: frey_admins
     description: Full access, including the acquisition stack and admin tools
   - name: media
     description: Watch, listen and request. Family and guests.
+  - name: notes
+    description: Access the SilverBullet knowledge base
   - name: guests
     description: Deliberately narrow - nothing is granted to this group yet
 
@@ -120,6 +120,10 @@ identity_groups:
 #   none          The app keeps its own login. Not a failure: for something
 #                 that already authenticates against another service, this is
 #                 the correct answer.
+#
+# `oidc_client: true` additionally registers an OIDC client for a service
+# protected by forward auth, so its setup and its native accounts can both
+# use Authelia. The application still needs its own OIDC configuration.
 #
 # `groups` is who may pass. `hosts` is every hostname the service answers on -
 # the extras come from route_aliases in roles/media_*/defaults/main.yml, and a
@@ -147,8 +151,20 @@ identity_services:
 
   dashy:
     auth: oidc
-    groups: [frey_admins, media]
+    groups: [frey_admins, media, notes]
     hosts: [dashy]
+
+  silverbullet:
+    auth: forward_auth
+    # Protect first-run setup as well as registering the native SSO client.
+    oidc_client: true
+    groups: [frey_admins, notes]
+    hosts: [silverbullet]
+
+  campaign_ai:
+    auth: forward_auth
+    groups: [frey_admins, notes]
+    hosts: [campaign-ai]
 
   # --- Library ---------------------------------------------------------------
   jellyfin:

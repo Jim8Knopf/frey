@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+cd {{ campaign_ai.model_dir | quote }}
+if [ ! -f {{ campaign_ai.model_file | quote }} ]; then
+  curl --fail --silent --show-error --location --retry 3 --connect-timeout 30 --speed-limit 1024 --speed-time 120 --continue-at - --output {{ (campaign_ai.model_file ~ '.part') | quote }} {{ campaign_ai.model_url | quote }}
+  echo {{ (campaign_ai.model_sha256 ~ '  ' ~ campaign_ai.model_file ~ '.part') | quote }} | sha256sum -c -
+  mv {{ (campaign_ai.model_file ~ '.part') | quote }} {{ campaign_ai.model_file | quote }}
+fi
+docker compose -f {{ (campaign_ai.stack_dir ~ '/docker-compose.yml') | quote }} --profile model up -d model
