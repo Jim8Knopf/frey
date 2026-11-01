@@ -50,6 +50,65 @@ Two settings exist specifically to keep this working:
 Check state with `nmcli networking connectivity`, which reports `portal`
 distinctly from `full` and `none`.
 
+### Signing In Without a Human
+
+`frey-uplink-portal.timer` does the tap for you, on **click-through portals
+only** — the kind that want agreement to terms and nothing else.
+
+```bash
+systemctl status frey-uplink-portal.timer
+journalctl -t frey-uplink-portal          # every decision it has made
+```
+
+A network is opted in **by SSID**, never by default:
+
+```yaml
+# inventory/group_vars/all/main.yml
+network_gateway:
+  upstream:
+    portal:
+      enabled: true
+      allowlist:
+        - "APNK Library"
+```
+
+That is an allowlist rather than a denylist on purpose. Submitting a form to an
+unknown hotspot means agreeing to terms nobody has read, and a van drives past
+a lot of hotspots.
+
+It **refuses** rather than guesses. A password field, a voucher or room-number
+box, a required field it cannot fill, or a page whose forms look nothing like a
+click-through all end the same way: a line in the journal and no submission.
+Guessing at a login is worse than staying offline. Within a form it ticks a
+terms box and leaves a marketing opt-in alone, preserves every hidden field the
+portal planted, and presses `Accept` rather than the `Decline` beside it.
+
+Every page it acts on is saved to
+`/var/lib/frey/uplink-portal/captures/` (last five). That is deliberate: the
+van has usually driven away by the time anyone investigates why a portal did
+not yield, and the page is the only evidence that survives.
+
+It runs on an interval, not just on connect, because **a portal session expires
+mid-stay** and nothing about the radio changes when it does.
+
+With monitoring enabled it reports through node-exporter's textfile directory —
+`frey_portal_connectivity`, `frey_portal_accept_attempts_total`,
+`frey_portal_accept_success_total`. The file is rewritten on every run,
+including the runs that do nothing, so it cannot go stale and trip
+`FreyCollectorStale` with a warning that means nothing.
+
+The decision logic has offline regression tests, since the live portal stops
+being testable the moment it lets you in:
+
+```bash
+scripts/test-portal-logic.py
+```
+
+What it cannot do is invent the **password** for a WPA network nobody declared.
+That is outside knowledge: a protected SSID still has to go into
+`vault_uplink_networks` by hand, which is why `autojoin_open` only ever
+considers genuinely open networks.
+
 ## Adding Known Networks
 
 Networks live in the vault so a rebuild reproduces them. NetworkManager joins

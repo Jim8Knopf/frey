@@ -55,6 +55,7 @@ scripts/monitoring-check.sh            # every target up, rules loaded, collecto
 scripts/monitoring-check.sh --test     # prove a notification reaches the phone
 scripts/identity-check.sh              # assert SSO is actually enforcing
 scripts/media-check-updates.sh         # pinned image versions vs upstream (needs internet)
+scripts/test-portal-logic.py           # captive-portal accept logic, offline
 git-hooks/test-pre-commit.sh           # regression tests for the vault hook
 ```
 

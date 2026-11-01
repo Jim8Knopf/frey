@@ -71,6 +71,62 @@ network_gateway:
       state_dir: /var/lib/frey/uplink-autojoin
 
     # -------------------------------------------------------------
+    # Captive-portal auto-accept.
+    #
+    # `autojoin_open` treats a portal as success and walks away, because a
+    # check demanding real internet would reject exactly the networks it
+    # exists to join. That left signing in as the one manual step in an
+    # otherwise hands-off uplink. Every FreyHub client NATs out of the Pi's
+    # single uplink address, so one accept authorises the whole van - and
+    # when the portal's session expires the van goes quiet until somebody
+    # taps it again.
+    #
+    # Click-through portals only: agree-to-terms-and-continue. Anything
+    # wanting credentials is refused outright, by design.
+    # -------------------------------------------------------------
+    portal:
+      enabled: false
+      # SSIDs whose portal may be accepted automatically. Empty by default,
+      # and deliberately an allowlist rather than a denylist: submitting a
+      # form to an unknown hotspot means agreeing to terms nobody has read,
+      # so a network gets opted in by name or not at all.
+      allowlist: []
+      interval_seconds: 120
+      boot_delay_seconds: 60
+      timeout_seconds: 120
+      request_timeout_seconds: 10
+      # A portal that refuses us must not be hammered every interval forever.
+      max_attempts_per_window: 3
+      attempt_window_seconds: 1800
+      # The page is kept so a portal that did not yield can be diagnosed once
+      # the van has driven away, which is usually when anybody looks at it.
+      keep_captures: 5
+      # Portal gateways routinely serve a certificate for the name they are
+      # intercepting, so verifying it means never signing in at all. Nothing
+      # secret crosses this exchange: every form asking for credentials is
+      # refused before a byte is sent.
+      allow_insecure_tls: true
+      # Portals fingerprint the client. A browser UA gets the human sign-in
+      # page rather than the bare redirect meant for an OS connectivity probe.
+      user_agent: "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+      state_dir: /var/lib/frey/uplink-portal
+      # Must match monitoring.collectors.textfile_dir. Declared here rather
+      # than read out of the monitoring role because a role's defaults are
+      # only in scope while that role runs. The script skips the metric when
+      # the directory is absent, so monitoring being switched off is fine.
+      textfile_dir: "{{ frey.base_dir | default('/opt/frey') }}/metrics/textfile"
+      # Probed in order until one is conclusive. Plain HTTP on purpose: a
+      # portal can only intercept and rewrite HTTP, so an HTTPS probe just
+      # fails and tells you nothing about where the sign-in page lives.
+      probes:
+        - url: http://connectivitycheck.gstatic.com/generate_204
+          expect_status: 204
+          expect_body: ""
+        - url: http://detectportal.firefox.com/success.txt
+          expect_status: 200
+          expect_body: success
+
+    # -------------------------------------------------------------
     # Keeping the USB radio on the bus.
     #
     # The uplink is a Realtek RTL8821CU on USB, and it is the single
