@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+# Frey captive-portal auto-accept.
+# Managed by Ansible role: network_gateway
+#
+# Why this exists
+# ---------------
+# `frey-uplink-autojoin` deliberately treats a captive portal as SUCCESS and
+# walks away, because a check demanding real internet would reject exactly the
+# networks it exists to join. That leaves one manual step in an otherwise
+# hands-off uplink: somebody has to open a browser on a FreyHub client and tap
+# "accept". Every FreyHub client NATs out of the Pi's single uplink address, so
+# that one tap authorises the whole van - and when the portal's session expires
+# the van silently loses internet until a human does it again.
+#
+# This closes that gap for click-through portals: the kind that want agreement
+# to terms and nothing else.
+#
+# Rules this must never break
+# ---------------------------
+#   1. It only ever reads the UPSTREAM radio and talks HTTP. It never
+#      reconfigures a radio, never touches FreyHub, never edits a profile. The
+#      worst a bug in here can do is POST a form to a hotspot.
+#   2. It NEVER blind-submits a form on an unrecognised network. An SSID has to
+#      be on `allowlist` before a single byte is sent. A van meets hostile and
+#      paywalled hotspots, and silently agreeing to arbitrary terms is not on.
+#   3. It REFUSES anything asking for credentials. A password field, or a
+#      required field it cannot fill, means a human is needed - log and stop.
+#      Guessing at a login is worse than staying offline.
+#   4. It backs off. A portal that refuses us must not be hammered every
+#      interval forever.
+#
+# It always captures the page it was given before acting, so a portal that does
+# not yield can be diagnosed afterwards rather than re-reproduced on site - the
+# van has usually driven away by the time anyone looks.
+import fcntl
+import json
+import os
+import re
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.cookiejar import CookieJar
+from html.parser import HTMLParser
+
+UPLINK = "{{ network_gateway.upstream.interface }}"
+STATE_DIR = "{{ network_gateway.upstream.portal.state_dir }}"
+TEXTFILE_DIR = "{{ network_gateway.upstream.portal.textfile_dir }}"
+TIMEOUT = {{ network_gateway.upstream.portal.request_timeout_seconds }}
+MAX_ATTEMPTS = {{ network_gateway.upstream.portal.max_attempts_per_window }}
+WINDOW = {{ network_gateway.upstream.portal.attempt_window_seconds }}
+KEEP_CAPTURES = {{ network_gateway.upstream.portal.keep_captures }}
+INSECURE = {{ 'True' if network_gateway.upstream.portal.allow_insecure_tls else 'False' }}
+USER_AGENT = "{{ network_gateway.upstream.portal.user_agent }}"
+
+ALLOWLIST = [
+{% for ssid in network_gateway.upstream.portal.allowlist | default([]) %}
+    {{ ssid | to_json }},
+{% endfor %}
+]
+
+PROBES = [
+{% for probe in network_gateway.upstream.portal.probes %}
+    ({{ probe.url | to_json }}, {{ probe.expect_status }}, {{ probe.expect_body | to_json }}),
+{% endfor %}
+]
+
+# Two patterns, deliberately not one.
+#
+# A BUTTON is the thing we are looking for, and portals label it loosely
+# ("Continue", "Start browsing", "Free WiFi"), so this side can be generous -
+# we only ever press one button.
+ACCEPT_BUTTON_WORDS = re.compile(
+    r"accept|agree|terms|tos|consent|continue|connect|proceed|"
+    r"free|guest|start|submit|enter|online|internet|wifi",
+    re.I,
+)
+# A CHECKBOX is different: ticking the wrong one opts the van into something
+# nobody asked for. A loose pattern here would tick "free_trial" and
+# "send_me_offers" too, so this side only matches actual terms-agreement.
+ACCEPT_BOX_WORDS = re.compile(r"accept|agree|terms|tos|consent|policy|eula", re.I)
+
+# A field named like this is a human's job, not ours (rule 3).
+CREDENTIAL_WORDS = re.compile(r"pass|pin|voucher|code|token|user|email|account", re.I)
+
+META_REFRESH = re.compile(
+    r"""<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*""" r"""content\s*=\s*["']?[^"'>]*?url\s*=\s*([^"'>\s]+)""",
+    re.I,
+)
+JS_REDIRECT = re.compile(
+    r"""(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']""", re.I
+)
+
+
+def log(msg):
+    # journalctl -t frey-uplink-portal shows every decision this ever made.
+    subprocess.run(["logger", "-t", "frey-uplink-portal", "--", msg], check=False)
+    print(msg, flush=True)
+
+
+def nmcli(args):
+    try:
+        out = subprocess.run(
+            ["nmcli"] + args, capture_output=True, text=True, timeout=20, check=False
+        )
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def active_ssid():
+    """SSID currently on the uplink radio, or None if it is not connected."""
+    raw = nmcli(["-t", "-f", "DEVICE,STATE", "device", "status"])
+    connected = False
+    for line in raw.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 2 and parts[0] == UPLINK and parts[1] == "connected":
+            connected = True
+    if not connected:
+        return None
+    # SSID asked for LAST: nmcli escapes a literal colon inside a value as
+    # '\:', so taking everything from the final field on is the only safe way
+    # to read an SSID containing one. Same reasoning as frey-uplink-autojoin.
+    raw = nmcli(["-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "ifname", UPLINK])
+    for line in raw.splitlines():
+        if line.startswith("yes:"):
+            return line.split(":", 1)[1].replace("\\:", ":")
+    return None
+
+
+def connectivity():
+    # 'check' forces a fresh verdict rather than reusing NetworkManager's
+    # cached one, which can be minutes stale - and a stale verdict is exactly
+    # how a portal comes back as 'full'.
+    return nmcli(["networking", "connectivity", "check"]) or "unknown"
+
+
+def state_path(*parts):
+    return os.path.join(STATE_DIR, *parts)
+
+
+def load_counters():
+    try:
+        with open(state_path("counters.json")) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_counters(counters):
+    try:
+        tmp = state_path("counters.json.tmp")
+        with open(tmp, "w") as fh:
+            json.dump(counters, fh)
+        os.replace(tmp, state_path("counters.json"))
+    except OSError as exc:
+        log("could not persist counters: %s" % exc)
+
+
+def write_metrics(counters, state, ssid):
+    """Expose this collector through node-exporter's textfile directory.
+
+    Written on EVERY run, including the do-nothing ones. A .prom file that is
+    only refreshed when something happens goes stale the rest of the time and
+    trips FreyCollectorStale (600s) with a warning that means nothing.
+    """
+    if not os.path.isdir(TEXTFILE_DIR):
+        # Monitoring is switched off. Not an error, just nothing to feed.
+        return
+    now = int(time.time())
+    labels = 'ssid="' + (ssid or "").replace('"', "").replace("\\", "") + '"'
+    lines = [
+        "# HELP frey_portal_last_run_timestamp_seconds Last auto-accept run.",
+        "# TYPE frey_portal_last_run_timestamp_seconds gauge",
+        "frey_portal_last_run_timestamp_seconds " + str(now),
+        "# HELP frey_portal_connectivity Uplink connectivity per NetworkManager.",
+        "# TYPE frey_portal_connectivity gauge",
+    ]
+    for name in ("full", "portal", "limited", "none", "unknown"):
+        flag = "1" if state == name else "0"
+        lines.append('frey_portal_connectivity{state="' + name + '"} ' + flag)
+    lines += [
+        "# HELP frey_portal_accept_attempts_total Accept submissions attempted.",
+        "# TYPE frey_portal_accept_attempts_total counter",
+        "frey_portal_accept_attempts_total{" + labels + "} " + str(counters.get("attempts", 0)),
+        "# HELP frey_portal_accept_success_total Accepts that restored internet.",
+        "# TYPE frey_portal_accept_success_total counter",
+        "frey_portal_accept_success_total{" + labels + "} " + str(counters.get("successes", 0)),
+        "# HELP frey_portal_last_success_timestamp_seconds Last successful accept.",
+        "# TYPE frey_portal_last_success_timestamp_seconds gauge",
+        "frey_portal_last_success_timestamp_seconds " + str(counters.get("last_success", 0)),
+    ]
+    body = "\n".join(lines) + "\n"
+    # Write-then-rename: node-exporter must never read a half-written file.
+    try:
+        tmp = os.path.join(TEXTFILE_DIR, "frey-portal.prom.tmp")
+        with open(tmp, "w") as fh:
+            fh.write(body)
+        os.replace(tmp, os.path.join(TEXTFILE_DIR, "frey-portal.prom"))
+    except OSError as exc:
+        log("could not write metrics: %s" % exc)
+
+
+def tls_context():
+    if INSECURE:
+        # Scoped to the portal exchange only, and deliberate. Portal gateways
+        # routinely serve a certificate for a name they are intercepting, so
+        # verifying here means never signing in at all. Nothing secret is
+        # sent: rule 3 refuses every form that asks for credentials.
+        return ssl._create_unverified_context()
+    return ssl.create_default_context()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def probe_once(url, expect_status, expect_body):
+    """Return (online, portal_url). Does NOT follow redirects."""
+    opener = urllib.request.build_opener(
+        _NoRedirect, urllib.request.HTTPSHandler(context=tls_context())
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        resp = opener.open(req, timeout=TIMEOUT)
+        status, body, headers = resp.status, resp.read(65536), resp.headers
+    except urllib.error.HTTPError as exc:
+        status, body, headers = exc.code, exc.read(65536), exc.headers
+    except (urllib.error.URLError, OSError, ValueError):
+        # No answer at all is not a portal - it is a dead uplink.
+        return (False, None)
+
+    if status in (301, 302, 303, 307, 308):
+        return (False, urllib.parse.urljoin(url, headers.get("Location", "")))
+
+    text = body.decode("utf-8", "replace")
+    if status == expect_status and (not expect_body or expect_body in text):
+        return (True, None)
+
+    # A 200 where a 204 was due, or the wrong body: interception that answers
+    # in-band rather than redirecting. The portal is named inside the page.
+    for pattern in (META_REFRESH, JS_REDIRECT):
+        found = pattern.search(text)
+        if found:
+            return (False, urllib.parse.urljoin(url, found.group(1)))
+    return (False, url)
+
+
+def find_portal():
+    """(online, portal_url). Tries each probe until one is conclusive."""
+    for url, expect_status, expect_body in PROBES:
+        online, portal = probe_once(url, expect_status, expect_body)
+        if online:
+            return (True, None)
+        if portal:
+            return (False, portal)
+    return (False, None)
+
+
+class FormParser(HTMLParser):
+    """Just enough HTML to find a submittable form. No external parser."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.forms = []
+        self._cur = None
+        self._button = None
+
+    def handle_starttag(self, tag, attrs):
+        got = dict((k.lower(), (v or "")) for k, v in attrs)
+        if tag == "form":
+            self._cur = {
+                "action": got.get("action", ""),
+                "method": got.get("method", "get").lower(),
+                "fields": [],
+            }
+        elif tag in ("input", "button", "select", "textarea") and self._cur is not None:
+            default_type = "text" if tag == "input" else tag
+            field = {
+                "tag": tag,
+                "type": got.get("type", default_type).lower(),
+                "name": got.get("name", ""),
+                "id": got.get("id", ""),
+                "value": got.get("value", ""),
+                "checked": "checked" in got,
+                "required": "required" in got,
+                "text": "",
+            }
+            self._cur["fields"].append(field)
+            if tag == "button":
+                self._button = field
+
+    def handle_endtag(self, tag):
+        if tag == "form" and self._cur is not None:
+            self.forms.append(self._cur)
+            self._cur = None
+        elif tag == "button":
+            self._button = None
+
+    def handle_data(self, data):
+        if self._button is not None:
+            self._button["text"] += data
+
+
+def _blob(field):
+    return " ".join([field["name"], field["id"], field["value"], field["text"]])
+
+
+def is_accept_box(field):
+    return field["type"] == "checkbox" and bool(ACCEPT_BOX_WORDS.search(_blob(field)))
+
+
+def is_accept_button(field):
+    is_button = field["type"] in ("submit", "button", "image") or field["tag"] == "button"
+    return is_button and bool(ACCEPT_BUTTON_WORDS.search(_blob(field)))
+
+
+def choose_form(forms):
+    """Pick the one click-through form, or (None, reason) to stand down."""
+    best = None
+    best_score = 0
+    for form in forms:
+        fields = form["fields"]
+        if any(f["type"] == "password" for f in fields):
+            return (None, "form asks for a password - a human must sign in")
+        blocked = [
+            f
+            for f in fields
+            if f["required"]
+            and not f["value"]
+            and f["type"] in ("text", "email", "tel", "number", "textarea", "select")
+        ]
+        if blocked:
+            names = ", ".join(sorted(set(f["name"] or f["id"] or "?" for f in blocked)))
+            return (None, "form needs values we do not have (%s)" % names)
+        if any(
+            f["type"] in ("text", "email", "tel", "number")
+            and CREDENTIAL_WORDS.search(" ".join([f["name"], f["id"]]))
+            for f in fields
+        ):
+            return (None, "form looks like a credentialed login - leaving it alone")
+
+        score = 0
+        if any(is_accept_box(f) for f in fields):
+            score += 2
+        if any(is_accept_button(f) for f in fields):
+            score += 2
+        # A lone form with a submit button and nothing to fill in is almost
+        # certainly the click-through, even when nothing is worded helpfully.
+        if len(forms) == 1 and any(
+            f["type"] in ("submit", "button") or f["tag"] == "button" for f in fields
+        ):
+            score += 1
+        if score > best_score:
+            best, best_score = form, score
+
+    if best is None:
+        return (None, "no form on the page looks like a click-through accept")
+    return (best, None)
+
+
+def build_post(form):
+    """Submit values, preserving every hidden field the portal planted."""
+    data = []
+    for field in form["fields"]:
+        name, kind = field["name"], field["type"]
+        if not name:
+            continue
+        if kind == "checkbox":
+            # Tick a terms box, and leave a marketing opt-in alone. An
+            # already-checked box is the portal's own default: preserve it.
+            if field["checked"] or is_accept_box(field):
+                data.append((name, field["value"] or "on"))
+        elif kind == "radio":
+            if field["checked"]:
+                data.append((name, field["value"]))
+        elif kind in ("submit", "button", "image") or field["tag"] == "button":
+            continue  # exactly one of these is added below
+        else:
+            data.append((name, field["value"]))
+    # A form can carry several submit buttons ("Accept" next to "Decline").
+    # Press the agreeable one, and only one.
+    for field in form["fields"]:
+        if field["name"] and is_accept_button(field):
+            data.append((field["name"], field["value"] or "1"))
+            break
+    return data
+
+
+def capture(ssid, url, text):
+    """Keep the page, so a portal that fails is diagnosable off-site."""
+    try:
+        folder = state_path("captures")
+        os.makedirs(folder, exist_ok=True)
+        slug = re.sub(r"[^A-Za-z0-9_-]", "-", ssid or "unknown")[:32]
+        path = os.path.join(folder, "%s-%d.html" % (slug, int(time.time())))
+        with open(path, "w") as fh:
+            fh.write("<!-- frey-uplink-portal capture of %s -->\n" % url)
+            fh.write(text)
+        keep = sorted(
+            (os.path.join(folder, f) for f in os.listdir(folder)),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        for old in keep[KEEP_CAPTURES:]:
+            os.unlink(old)
+        return path
+    except OSError as exc:
+        log("could not write capture: %s" % exc)
+        return None
+
+
+def attempt_accept(ssid, portal_url):
+    """Fetch the portal, submit the accept form, report whether it worked."""
+    jar = CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        urllib.request.HTTPSHandler(context=tls_context()),
+    )
+    req = urllib.request.Request(portal_url, headers={"User-Agent": USER_AGENT})
+    try:
+        resp = opener.open(req, timeout=TIMEOUT)
+        page_url = resp.geturl()
+        text = resp.read(1048576).decode("utf-8", "replace")
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
+        log("could not load portal %s: %s" % (portal_url, exc))
+        return False
+
+    where = capture(ssid, page_url, text)
+    parser = FormParser()
+    try:
+        parser.feed(text)
+    except Exception as exc:  # a portal's HTML is not our problem to fix
+        log("could not parse portal HTML: %s" % exc)
+        return False
+
+    if not parser.forms:
+        log("portal at %s has no form; captured to %s" % (page_url, where))
+        return False
+
+    form, reason = choose_form(parser.forms)
+    if form is None:
+        log("standing down: %s (captured to %s)" % (reason, where))
+        return False
+
+    action = urllib.parse.urljoin(page_url, form["action"] or page_url)
+    data = build_post(form)
+    log("submitting %d field(s) to %s" % (len(data), action))
+
+    body = urllib.parse.urlencode(data).encode()
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": page_url,
+    }
+    try:
+        if form["method"] == "post":
+            opener.open(
+                urllib.request.Request(action, data=body, headers=headers),
+                timeout=TIMEOUT,
+            ).read(65536)
+        else:
+            joiner = "&" if "?" in action else "?"
+            opener.open(
+                urllib.request.Request(
+                    action + joiner + urllib.parse.urlencode(data), headers=headers
+                ),
+                timeout=TIMEOUT,
+            ).read(65536)
+    except urllib.error.HTTPError as exc:
+        # Plenty of portals answer the accept with a 302 to a page that is gone.
+        log("portal answered %s to the submission; checking anyway" % exc.code)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log("submission failed: %s" % exc)
+        return False
+
+    state = connectivity()
+    if state == "full":
+        return True
+    # The verdict can lag the gateway opening up by a second or two.
+    time.sleep(3)
+    state = connectivity()
+    if state == "full":
+        return True
+    log("still '%s' after submitting; captured to %s" % (state, where))
+    return False
+
+
+def main():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    # One run at a time. The timer interval is shorter than a slow portal
+    # exchange, and two overlapping runs would double-submit.
+    lock = open(state_path(".lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0
+
+    counters = load_counters()
+    ssid = active_ssid()
+    if ssid is None:
+        # Uplink down. frey-uplink-autojoin's job, not ours.
+        write_metrics(counters, "none", None)
+        return 0
+
+    state = connectivity()
+    if state == "full":
+        write_metrics(counters, state, ssid)
+        return 0
+
+    if ssid not in ALLOWLIST:
+        # Rule 2. Logged every interval would be noise, so say it once per SSID.
+        marker = state_path("announced-" + re.sub(r"[^A-Za-z0-9_-]", "-", ssid)[:32])
+        if not os.path.exists(marker):
+            log(
+                "'%s' is %s but not on the portal allowlist; not touching it"
+                % (ssid, state)
+            )
+            try:
+                open(marker, "w").close()
+            except OSError:
+                pass
+        write_metrics(counters, state, ssid)
+        return 0
+
+    now = int(time.time())
+    tries = [t for t in counters.get("recent", []) if now - t < WINDOW]
+    if len(tries) >= MAX_ATTEMPTS:
+        log(
+            "'%s' is %s but %d attempts in the last %ds already failed; backing off"
+            % (ssid, state, len(tries), WINDOW)
+        )
+        counters["recent"] = tries
+        save_counters(counters)
+        write_metrics(counters, state, ssid)
+        return 0
+
+    online, portal_url = find_portal()
+    if online:
+        # Connectivity said otherwise but the probe got through. Believe the probe.
+        write_metrics(counters, "full", ssid)
+        return 0
+    if not portal_url:
+        log("'%s' is %s and no portal could be located; nothing to submit" % (ssid, state))
+        write_metrics(counters, state, ssid)
+        return 0
+
+    log("'%s' is %s; portal at %s" % (ssid, state, portal_url))
+    tries.append(now)
+    counters["recent"] = tries
+    counters["attempts"] = counters.get("attempts", 0) + 1
+
+    if attempt_accept(ssid, portal_url):
+        counters["successes"] = counters.get("successes", 0) + 1
+        counters["last_success"] = now
+        counters["recent"] = []
+        log("accepted the portal on '%s'; uplink is now full" % ssid)
+        save_counters(counters)
+        write_metrics(counters, "full", ssid)
+        return 0
+
+    save_counters(counters)
+    write_metrics(counters, connectivity(), ssid)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:  # never let a crash here mark the unit failed
+        log("unexpected error: %s" % exc)
+        sys.exit(0)
