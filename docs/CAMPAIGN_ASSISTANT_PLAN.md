@@ -90,7 +90,9 @@ Discord or the hosting provider from the workflow.
   active using the existing `note_admin` account and has enrolled current Frey
   administrators; interactive sign-in and live group-change tests remain.
   It manages enrollment and roles from `frey_admins` and `notes`. See
-  `roles/silverbullet/README.md`.
+  `roles/silverbullet/README.md`. On 2026-11-02 the synchronization timer was
+  active and the service reported a successful result; this does not replace a
+  live test of group addition and removal.
 - [ ] Install the Android PWA; test initial sync, offline access and edits,
   reconnection and conflicts, and access after a phone/browser restart.
 - [ ] Set up backups and demonstrate a restore on a separate test location.
@@ -150,10 +152,11 @@ model download after a failure or reboot, and
 On 2026-11-02 the deployed identity configuration no longer contained the
 SilverBullet and assistant rules; the identity role restored them. The assistant
 readiness and anonymous-access checks passed, and a repeat identity deployment
-reported zero changes. The wider identity check passed except for its outdated
-Cleanuparr forward-auth expectation after Cleanuparr moved to OIDC; a 200
-response alone does not verify Cleanuparr sign-in. Interactive campaign sign-in
-and phone uploads remain untested.
+reported zero changes. The wider identity check failed its Cleanuparr
+forward-auth expectation; the configuration specifies OIDC, but the deployed
+OIDC start endpoint returned 404 on 2026-11-02. Cleanuparr sign-in and its
+deployed configuration need investigation. Interactive campaign sign-in and
+phone uploads remain untested.
 
 - [ ] Benchmark suitable small quantized models against real rules questions,
   response time, RAM, CPU, temperature and existing service responsiveness.
