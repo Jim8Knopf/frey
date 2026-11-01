@@ -128,6 +128,72 @@ sudo python3 -c 'import json; print(json.load(
 
 Byparr, Recyclarr and Unpackerr have no web UI and are not routed.
 
+## Cleanuparr
+
+Cleanuparr is configured over its REST API rather than by rendering a file,
+because it has neither: its settings live in its own SQLite database, and
+upstream dropped environment-variable configuration when v2 moved everything
+into the UI. `PORT`, `PUID`, `PGID`, `UMASK`, `TZ` and the database variables
+are the only environment knobs left, which is also why its `PUID` must be
+pinned explicitly — the image defaults to 1000 and then cannot create a file
+in the `media`-owned config directory.
+
+`tasks/configure/cleanuparr.yml` registers qBittorrent as its download client,
+registers Sonarr, Radarr and Lidarr with the same API keys Ansible seeded them
+with, and switches the queue cleaner on. Defaults live under
+`media_acquisition.cleanuparr_wiring`.
+
+Three things that are easy to get wrong:
+
+- **The API key is the inverse of the *arr keys.** Ansible chooses those and
+  seeds them before the container starts; Cleanuparr generates its own when
+  the first account is created. So the role reads it back out of Cleanuparr's
+  database read-only. Create the account once in the UI — until then the role
+  reports Cleanuparr as unwired and changes nothing. Set
+  `vault_media_api_keys.cleanuparr` to pin it in the repo instead.
+- **A fresh install does nothing.** Every strike counter ships at `0`, which
+  disables that category, so the container looks perfectly healthy and cleans
+  up nothing.
+- **`failed_import_pattern_mode` must be `Exclude` while the pattern list is
+  empty.** `Include` means *only* failed imports matching a pattern are
+  struck, so an empty list under `Include` is rejected outright and the whole
+  queue-cleaner section refuses to save.
+
+Chaptarr is absent on purpose: Cleanuparr has no Chaptarr application type,
+and its Readarr type is not a drop-in for it.
+
+### Single sign-on
+
+Cleanuparr is `auth: oidc`, not `forward_auth`. It keeps local accounts no
+matter what, so forward auth meant logging in twice — and the only way to stop
+that would have been its "disable auth for local addresses" switch, which also
+drops the credential requirement on `/api` for everything on FreyHub. Speaking
+OIDC itself gives one browser login while `/api` still needs the API key.
+
+**Finish it in the browser once.** Ansible configures the provider but cannot
+link it: open Cleanuparr, choose *Sign in with Frey*, and that binds your
+account to its OIDC subject (`authorizedSubject`). Only after that is
+`media_acquisition.cleanuparr_wiring.oidc.exclusive_mode: true` safe — turning
+it on with nothing linked removes local login while no OIDC identity is
+accepted yet, which leaves nobody able to sign in. The role never writes
+`exclusiveMode` or `authorizedSubject`, so it cannot undo the link.
+
+Three things cost time here and are worth knowing:
+
+- **The container has to trust the Frey CA.** Authelia derives its issuer from
+  the request and refuses a plain-HTTP one, so the back channel goes over
+  HTTPS through Traefik. Cleanuparr's own `httpCertificateValidation` setting
+  does *not* cover the OIDC library's HTTP client — discovery still failed the
+  handshake. The role assembles the Pi's public roots plus the Frey root and
+  mounts that over the image's bundle, which keeps public TLS verified rather
+  than switching verification off.
+- **Cleanuparr appends `/api/auth/oidc/callback`** to the redirect URL it is
+  configured with. So it is given the bare origin and Authelia registers the
+  full path. Get it wrong and Authelia — not Cleanuparr — reports
+  `redirect_uri does not match`.
+- **It does send PKCE** (S256), confirmed from the URL its own
+  `/api/auth/oidc/start` builds, so the Authelia client requires it.
+
 ## How The Wiring Works
 
 Ansible reaches the containers **through Traefik with an explicit `Host`

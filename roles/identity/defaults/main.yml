@@ -154,6 +154,26 @@ identity:
         - "https://dashy.{{ frey.service_domain }}/"
       claims_policy: frey_groups
 
+    cleanuparr:
+      client_name: Cleanuparr
+      public: false
+      token_endpoint_auth_method: client_secret_post
+      # Cleanuparr does send a code challenge -- confirmed from the authorize
+      # URL its own /api/auth/oidc/start builds -- so PKCE is required here
+      # rather than merely allowed.
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes: [openid, profile, email, groups, offline_access]
+      # Cleanuparr APPENDS /api/auth/oidc/callback to the redirect URL it is
+      # configured with, so the registered URI is that full path while
+      # Cleanuparr itself is given only the base. Registering the base here
+      # instead fails the authorization request with "the 'redirect_uri'
+      # parameter does not match any of the OAuth 2.0 Client's pre-registered
+      # 'redirect_uris'" -- which Authelia reports, so look there and not in
+      # Cleanuparr's log.
+      redirect_uris:
+        - "https://cleanuparr.{{ frey.service_domain }}/api/auth/oidc/callback"
+
     audiobookshelf:
       client_name: Audiobookshelf
       public: false

@@ -243,7 +243,19 @@ identity_services:
     api_bypass: true
 
   cleanuparr:
-    auth: forward_auth
+    # OIDC rather than forward auth, so there is one login instead of two.
+    # Under forward auth Authelia let you in and then Cleanuparr's own login
+    # page asked again -- it keeps local accounts regardless, and there is no
+    # way to tell it to trust the proxy without also dropping the API key
+    # requirement on /api for everything on FreyHub.
+    #
+    # Its back channel to Authelia needs the Frey CA, which this image cannot
+    # be made to trust without rebuilding it; media_acquisition therefore sets
+    # Cleanuparr's own httpCertificateValidation to DisabledForLocalAddresses.
+    #
+    # exclusive_mode stays off until an account has actually been linked --
+    # turning it on first leaves nobody able to log in at all.
+    auth: oidc
     groups: [frey_admins]
     hosts: [cleanuparr]
     api_bypass: true

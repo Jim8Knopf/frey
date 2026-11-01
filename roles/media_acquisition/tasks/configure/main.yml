@@ -148,6 +148,26 @@
     - media_acquisition
     - media_config
 
+- name: Configure Cleanuparr
+  # After the *arrs: this hands Cleanuparr the same API keys they were seeded
+  # with, so they have to exist first.
+  ansible.builtin.include_tasks:
+    file: cleanuparr.yml
+    # apply: is required. Tags on a dynamic include_tasks gate the
+    # include itself but are NOT inherited by the tasks inside it, so
+    # without this `--tags media_config` ran the include, skipped every
+    # task in it, and then cheerfully reported "wiring complete".
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
 - name: Report wiring problems
   ansible.builtin.debug:
     msg: >-
