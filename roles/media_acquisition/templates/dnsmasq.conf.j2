@@ -31,9 +31,30 @@ no-hosts
 filter-AAAA
 {% endif %}
 
+{% if d.fallback_to_uplink | default(true) | bool %}
+# ---------------------------------------------------------------------------
+# UPSTREAMS LIVE IN A SEPARATE FILE
+#
+# Not inline, because which upstreams are usable is a property of whatever
+# network the van is parked next to, and it changes without a deploy.
+#
+# `servers-file` is the one dnsmasq input that is re-read on SIGHUP; the main
+# config file is not. So the upstream list can be rewritten and picked up
+# without restarting the resolver, which would otherwise drop DNS for the
+# whole acquisition stack mid-search.
+#
+# frey-media-dns-upstream owns the contents: it prefers the upstreams in
+# `upstreams` and falls back to the uplink's own DHCP resolvers only while
+# none of those answers. See the `dns:` note in defaults/main.yml.
+# ---------------------------------------------------------------------------
+servers-file={{ d.servers_file | default('/etc/dnsmasq.servers') }}
+{% else %}
+# fallback_to_uplink is off, so the upstream list is fixed at deploy time and
+# the stack resolves nothing on a network that blocks outbound port 53.
 {% for server in d.upstreams %}
 server={{ server }}
 {% endfor %}
+{% endif %}
 
 # Campground DNS is frequently slow as well as wrong; a cache keeps a working
 # answer around rather than re-asking and re-failing.

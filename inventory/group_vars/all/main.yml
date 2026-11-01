@@ -367,6 +367,25 @@ network_gateway:
       # Slow or filtered internet can fail connectivity checks: stay joined.
       unusable_grace_seconds: 0
       ssid_denylist: []
+    # Sign in to click-through captive portals without a human.
+    #
+    # autojoin_open joins a portal network and then leaves it alone, so until
+    # now somebody had to tap "accept" in a browser on a FreyHub client. One
+    # tap authorises the whole van (every client NATs out of the Pi's single
+    # uplink address) - and the van went quiet again whenever the portal's
+    # session expired.
+    #
+    # Opted in BY SSID on purpose: this agrees to terms on your behalf, which
+    # is not something to do to every hotspot the van drives past. Anything
+    # asking for credentials is refused rather than guessed at.
+    # Full knobs in roles/network_gateway/defaults/main.yml.
+    portal:
+      enabled: true
+      allowlist:
+        # Aotearoa People's Network Kaharoa - the public library Wi-Fi.
+        # WPA2 with a password (so it is in vault_uplink_networks, not
+        # autojoin_open's open-network selector) plus a terms-only portal.
+        - "APNK Library"
     route_metric: 100
     country: NZ
     # Known networks, declared in the vault so a rebuild reproduces them.

@@ -1,0 +1,36 @@
+#!/bin/sh
+# NetworkManager dispatcher hook - managed by Ansible role: media_acquisition
+#
+# Re-selects the media resolver's upstreams when the uplink changes.
+#
+# Numbered 89 so it runs ahead of 90-frey-media-gate: the gate's first act on
+# coming online is to test every indexer, and that test is meaningless - worse,
+# it marks indexers failed - if the stack still has no working DNS.
+#
+# The real work is handed to a transient systemd unit with --no-block, not run
+# inline. Dispatcher scripts run serially and block every other hook behind
+# them, and this one probes up to five resolvers with a timeout each. Blocking
+# here would delay NetworkManager's own event handling - including events that
+# FreyHub depends on.
+
+IFACE="$1"
+ACTION="$2"
+
+case "${ACTION}" in
+  up | down | connectivity-change | dhcp4-change) ;;
+  *) exit 0 ;;
+esac
+
+# React to the uplink radio, or to any global connectivity verdict change
+# (which is how a captive portal sign-in finally completing shows up).
+#
+# dhcp4-change matters most here: a new lease is how new resolvers arrive.
+if [ "${IFACE}" != "{{ network_gateway.upstream.interface }}" ] \
+   && [ "${ACTION}" != "connectivity-change" ]; then
+  exit 0
+fi
+
+exec systemd-run --no-block --quiet \
+  --unit="frey-media-dns-upstream-$$" \
+  --description="Frey media resolver upstream selection" \
+  /usr/local/bin/frey-media-dns-upstream apply
