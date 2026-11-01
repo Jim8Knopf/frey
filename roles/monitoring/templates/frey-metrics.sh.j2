@@ -283,8 +283,20 @@ collect_nvme() {
       # smart-log prints "key : value", where value may carry a unit, a
       # percent sign, thousands separators, or a parenthesised second form
       # ("39 °C (312 K)"). Take the first number and nothing else.
+      #
+      # nvme-cli is not consistent about how it spells those keys. Most are
+      # lower_snake_case ("critical_warning"), but a handful print as Title
+      # Case with spaces ("Data Units Written"), and which group a key falls
+      # in has moved between releases. A key spelled the other way matches
+      # nothing, field() returns empty, and the metric is then silently
+      # skipped - the whole series simply never appears, with the collector
+      # still reporting success. So match case-insensitively and treat a
+      # space and an underscore as the same character, and one spelling
+      # works whichever way the installed nvme-cli prints it.
       field() {
-        echo "${log}" | sed -n "s/^$1[[:space:]]*:[[:space:]]*//p" \
+        local pattern
+        pattern=$(printf %s "$1" | sed -e 's/[ _]/[ _]/g')
+        echo "${log}" | sed -n "s/^${pattern}[[:space:]]*:[[:space:]]*//Ip" \
           | head -n1 | tr -d ',%' | awk '{print $1}'
       }
 
