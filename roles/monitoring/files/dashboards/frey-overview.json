@@ -90,7 +90,7 @@
         {
           "refId": "A",
           "instant": true,
-          "expr": "max(frey_uplink_connectivity{state=\"full\"} * 4 + frey_uplink_connectivity{state=\"portal\"} * 3 + frey_uplink_connectivity{state=\"limited\"} * 2 + frey_uplink_connectivity{state=\"none\"} * 1)"
+          "expr": "max(frey_uplink_connectivity{state=\"full\"}) * 4 + max(frey_uplink_connectivity{state=\"portal\"}) * 3 + max(frey_uplink_connectivity{state=\"limited\"}) * 2 + max(frey_uplink_connectivity{state=\"none\"}) * 1"
         }
       ],
       "fieldConfig": {

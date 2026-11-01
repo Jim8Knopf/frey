@@ -1,92 +1,13 @@
 ---
-# ==============================================================================
-#
-#   FREY MONITORING - SERVICE SETTINGS
-#
-#   What is watched, when it shouts, and how loudly. On/off switches live
-#   here; image versions live in inventory/group_vars/all/images.yml.
-#
-#   Everything structural - the Prometheus scrape config, the alert rules, the
-#   Grafana dashboards, the notification relay - stays in roles/monitoring/.
-#   You should not need to open those to run this day to day.
-#
-# ------------------------------------------------------------------------------
-#   THE THREE THINGS YOU WILL ACTUALLY DO
-#
-#   Change when something shouts:
-#       Edit monitoring_thresholds below. Every number any alert compares
-#       against is in that one block; the rules themselves are generated.
-#
-#   Stop something shouting:
-#       Add its alert name to monitoring_alerting.muted. Nothing is deleted,
-#       so you can unmute it later and the history is still there.
-#
-#   See it:
-#       https://grafana.hub.frey - log in with your Frey account.
-#
-# ------------------------------------------------------------------------------
-#   APPLY
-#
-#   Day to day, once it is up:
-#
-#       ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-#         --tags monitoring --vault-password-file .vault_pass
-#
-#   THE FIRST DEPLOY IS DIFFERENT, because three other modules have to do
-#   something before this one can work:
-#
-#       pki        reissues the certificate to cover grafana.hub.frey,
-#                  prometheus.hub.frey and alertmanager.hub.frey. (The existing
-#                  *.hub.frey wildcard already covers them, so this is
-#                  belt-and-braces rather than strictly required.)
-#       identity   generates the Grafana OIDC client secret. Without it Grafana
-#                  comes up with only its local admin account and single
-#                  sign-on is off.
-#       proxy      tells Traefik to publish its own metrics. That is a
-#                  service_proxy change, so the monitoring tag alone will not
-#                  do it, and the traefik scrape target would stay down.
-#
-#   So run the whole playbook the first time - it is idempotent, and a second
-#   run reports zero changes:
-#
-#       ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-#         --vault-password-file .vault_pass
-#
-#   Or, if you would rather keep the blast radius small, in this order:
-#
-#       --tags pki,identity,proxy,monitoring
-#
-# ------------------------------------------------------------------------------
-#   CHECK IT
-#
-#       scripts/monitoring-check.sh            # is everything actually up
-#       scripts/monitoring-check.sh --test     # ...and send a test alert
-#
-# ==============================================================================
-
 
 # Image versions live in inventory/group_vars/all/images.yml.
 
-# ==============================================================================
-# WHICH PIECES RUN
-#
-# Four layers, and they are independent on purpose:
-#
-#   metrics   Prometheus + node-exporter + cAdvisor + blackbox. The numbers.
-#   alerting  Alertmanager + the ntfy relay. The part that finds you.
-#   logs      Loki + Alloy. The part that tells you WHY, and the part that
-#             costs the most disk writes. Turn it off first if the NVMe ever
-#             becomes a worry.
-#   grafana   The dashboards. Purely a viewer - turning it off loses no data
-#             and stops no alert.
-#
-# alerting without metrics is pointless, and the role asserts that.
-# ==============================================================================
 monitoring_enable:
   metrics: true
   alerting: true
   logs: true
   grafana: true
+  dockge: true
 
   # Individual collectors, for when one of them misbehaves.
   node_exporter: true
@@ -97,52 +18,14 @@ monitoring_enable:
   # answers, NAT rules, container state. This is also where future van sensors
   # plug in - see THE SENSOR SEAM at the bottom of this file.
   host_collectors: true
-  # Repairs Docker's own container log files after an unclean shutdown, which
-  # leaves runs of NUL bytes in them and permanently stops Alloy from shipping
-  # the affected container's logs - silently, while `docker logs` still works.
-  # Turn it off only if you would rather inspect the damage by hand: it is the
-  # one host script that WRITES to something Docker owns, so it is listed
-  # separately from host_collectors on purpose.
   log_repair: true
 
-
-# ==============================================================================
-# WHERE IT LIVES
-#
-# All three are reached through Traefik at <name>.hub.frey and none of them
-# publishes a port on the host.
-#
-# Grafana logs in against Authelia (auth: oidc in identity.yml), so it knows
-# who you are and makes frey_admins members Grafana admins. Prometheus and
-# Alertmanager have no login of their own at all, so they sit behind forward
-# auth - which is also why they are in identity.yml rather than just here.
-# ==============================================================================
 monitoring_hosts:
   grafana: grafana
+  dockge: dockge
   prometheus: prometheus
   alertmanager: alertmanager
 
-
-# ==============================================================================
-# HOW LONG TO KEEP THINGS
-#
-# A year of metrics, two weeks of logs. The asymmetry is deliberate.
-#
-# METRICS are tiny and get more valuable with age. A year means you can answer
-# "is the NVMe running hotter than it did last summer", "is disk growth
-# accelerating", "how much power does the van actually draw overnight" - none
-# of which a fortnight of data can tell you. At this scrape volume a year is a
-# few GB against 3.4 TB free.
-#
-# LOGS are the opposite: bulky, write-heavy, and almost only ever read about
-# something that happened recently. Two weeks covers "what broke while we were
-# parked up" and stops there.
-#
-# Both have a SIZE cap as well as a time cap, and the size cap is the one that
-# actually protects the Pi: it is what stops a log loop or a metrics explosion
-# from filling the disk that the databases and the media library share.
-# Whichever limit is hit first wins.
-# ==============================================================================
 monitoring_retention:
   metrics_time: 365d
   # Hard ceiling for the Prometheus TSDB. Reached first, oldest data is
@@ -159,63 +42,7 @@ monitoring_retention:
   # run on their own slower clock.
   host_collector_interval: 30s
 
-
-# ==============================================================================
-# ALERTING
-#
-# THE SHAPE OF IT
-#
-#   Prometheus      decides something is wrong
-#   Alertmanager    groups it, silences duplicates, waits out flapping
-#   alert-relay     turns it into a phone notification, and holds it when the
-#                   van has no uplink
-#   ntfy            delivers it
-#
-# WHY A RELAY AND NOT ALERTMANAGER'S OWN WEBHOOK
-#
-# Because of the van. Alertmanager can POST to a webhook, but if that POST
-# fails because there is no internet, the notification is simply lost - and
-# "parked off-grid for two days" is exactly when you most want to know what
-# happened. The relay is about 400 lines of Python standard library whose whole
-# job is to survive that: it writes undelivered alerts to disk with the time
-# they really fired, and when an uplink appears it sends a short report of what
-# you missed and then the alerts themselves.
-#
-# It also means alerts that broke and fixed themselves while you were offline
-# still get mentioned - which is usually the most interesting kind.
-#
-# LOUD AND QUIET
-#
-# Two severities, and only two, so that the distinction stays meaningful:
-#
-#   critical   the van is degraded now, or is about to be. Buzzes your phone.
-#   warning    worth doing something about this week. Arrives silently.
-#
-# If you find yourself wanting to mute a critical, it was the wrong severity -
-# change it in monitoring_thresholds or move the rule, rather than training
-# yourself to ignore the loud ones.
-# ==============================================================================
 monitoring_alerting:
-  # --------------------------------------------------------------------------
-  # NTFY
-  #
-  # ntfy.sh is a public relay: the Pi POSTs out to it and your phone
-  # subscribes. Nothing listens on an inbound port, nothing needs a domain,
-  # and it works from behind campground NAT and through a captive portal the
-  # moment sign-in completes.
-  #
-  # THE TOPIC NAME IS THE PASSWORD. Anyone who knows it can read your alerts
-  # and send you fake ones, so it is generated long and random on the Pi
-  # (not committed here) and printed once at the end of the first deploy.
-  # Subscribe to it on your phone and it is done.
-  #
-  # To pin it yourself instead, put vault_ntfy_topic in secrets.yml.
-  #
-  # To self-host ntfy later, set `server` to your own instance. Be clear about
-  # the trade: a self-hosted ntfy on this Pi is only reachable from FreyHub,
-  # so it would tell you about problems only while you are standing next to
-  # the van - which is the one situation you do not need a notification for.
-  # --------------------------------------------------------------------------
   ntfy:
     server: https://ntfy.sh
     topic: "{{ vault_ntfy_topic | default('') }}"
@@ -225,13 +52,6 @@ monitoring_alerting:
     # connection and then never answer, and a blocked relay delivers nothing.
     timeout: 10
 
-  # --------------------------------------------------------------------------
-  # PRIORITY AND NOISE
-  #
-  # ntfy priorities: 1 min, 2 low, 3 default, 4 high, 5 max.
-  # 5 bypasses the phone's Do Not Disturb on Android. 2 arrives with no sound
-  # and no vibration, which is what "warnings are silent" means here.
-  # --------------------------------------------------------------------------
   priority:
     critical: 5
     warning: 2
@@ -242,10 +62,7 @@ monitoring_alerting:
   send_resolved:
     critical: true
     warning: false
-
-  # --------------------------------------------------------------------------
   # OFFLINE BEHAVIOUR
-  # --------------------------------------------------------------------------
   offline:
     # Hold undelivered alerts and send them when an uplink appears.
     queue: true
@@ -263,32 +80,8 @@ monitoring_alerting:
     # How often to retry a held queue.
     retry_interval_seconds: 60
 
-  # --------------------------------------------------------------------------
-  # MUTED ALERTS
-  #
-  # Alert names listed here are still evaluated, still visible in Grafana and
-  # still recorded - they just never notify. Use it for something you have
-  # consciously decided to live with.
-  #
-  #   muted:
-  #     - FreyNvmeWearHigh
-  # --------------------------------------------------------------------------
   muted: []
 
-  # --------------------------------------------------------------------------
-  # THE DEAD MAN'S SWITCH
-  #
-  # Monitoring that dies quietly is worse than no monitoring, because you
-  # believe you are covered. Two layers guard against it:
-  #
-  #   Prometheus sends a Watchdog alert every minute, forever. If the relay
-  #   stops seeing it, the relay tells you - so a dead Prometheus or a dead
-  #   Alertmanager is itself an alert.
-  #
-  #   A systemd timer on the HOST checks the containers and the relay's own
-  #   heartbeat, and notifies ntfy directly. That one needs no Docker and no
-  #   Prometheus, so it still speaks when the whole stack is down.
-  # --------------------------------------------------------------------------
   watchdog:
     enabled: true
     # Tell me if the Watchdog alert has not arrived for this long.
@@ -302,42 +95,9 @@ monitoring_alerting:
     # Do not repeat the same "monitoring is broken" message more often
     # than this.
     repeat_hours: 6
-    # ------------------------------------------------------------------------
-    # CONTAINERS OUTSIDE MONITORING THAT MUST ALSO COME BACK.
-    #
-    # The watchdog started life guarding its own stack, which left the one
-    # container every service depends on unguarded. On 2026-10-31 Traefik lost
-    # a boot race for port 80 - `Address already in use`, exit 255 - and
-    # Docker never retried it: RestartCount stayed 0 despite
-    # `restart: unless-stopped`. Nothing held the ports by the time anyone
-    # looked, so a plain `docker start` would have fixed it half an hour
-    # earlier. Instead every service in the van was unreachable by name until
-    # a human noticed, because a dead proxy answers nothing - including the
-    # dashboards you would use to find out why.
-    #
-    # This is the same argument that put restart_stopped here in the first
-    # place: if a container declared `unless-stopped` is not running, then
-    # either something stopped it or Docker declined to bring it back, and
-    # starting it is the right answer either way.
-    #
-    # Named, not derived, so that adding a service to the van does not
-    # silently enrol it in a restart policy nobody asked for.
-    # ------------------------------------------------------------------------
     extra_required:
       - "{{ service_proxy.traefik.container_name }}"
 
-
-# ==============================================================================
-# THRESHOLDS - WHERE EVERY NUMBER LIVES
-#
-# The alert rules in roles/monitoring/templates/rules/ are generated from
-# these. Change a number here, re-run with --tags monitoring, and the rule
-# changes; there is no second place to keep in sync.
-#
-# `_critical` buzzes, `_warning` is silent. The `_for` values are how long a
-# condition must hold before it counts, and they matter more than the
-# thresholds do: almost everything here spikes harmlessly for a few seconds.
-# ==============================================================================
 monitoring_thresholds:
 
   # --- Disk ------------------------------------------------------------------
@@ -369,12 +129,6 @@ monitoring_thresholds:
     load_per_core_warning: 2.0
     for_warning: 20m
 
-  # --- Temperature -----------------------------------------------------------
-  #
-  # The Pi 5 starts soft-throttling at 80 C and hard-throttles at 85 C. In a
-  # van in summer this is a real limit, not a theoretical one, so the warning
-  # sits well below it to give you time to move the airflow rather than find
-  # out by watching Jellyfin stutter.
   temperature:
     soc_warning: 75
     soc_critical: 82
@@ -383,33 +137,10 @@ monitoring_thresholds:
     nvme_warning: 70
     nvme_critical: 80
 
-  # --- Power -----------------------------------------------------------------
-  #
-  # Under-voltage is the single most useful alert on this list for a van. The
-  # Pi 5 reports it directly, and it means the supply is sagging - a tired
-  # DC-DC converter, a thin cable, a battery going flat under load. Left
-  # alone it corrupts filesystems. It is critical immediately, not after a
-  # grace period, because by the time it is sustained the damage is done.
   power:
     undervoltage_for: 1m
     throttling_for: 5m
 
-    # -------------------------------------------------------------------------
-    # THE 5V RAIL, WATCHED DIRECTLY
-    #
-    # The Pi's own under-voltage flag is a late signal: by the time it trips,
-    # the supply has already sagged out of spec and writes have already
-    # happened at that voltage. The PMIC reports the actual EXT5V rail, so a
-    # sag can be caught on the way down instead.
-    #
-    # Nominal is 5.1V; this Pi idles at 5.16V. The SoC flags under-voltage
-    # around 4.8V, so a warning at 4.95 gives real lead time and a critical at
-    # 4.80 coincides with the flag.
-    #
-    # Measured over a short window rather than instantaneously: the rail dips
-    # briefly whenever the NVMe or the USB radio draws a burst, and alerting
-    # on that would be noise.
-    # -------------------------------------------------------------------------
     rail_5v_warning: 4.95
     rail_5v_critical: 4.80
     rail_5v_for: 2m
@@ -505,20 +236,6 @@ monitoring_thresholds:
     # long NVMe stall does not cry wolf.
     log_repair_stale_seconds: 2700
 
-
-# ==============================================================================
-# WHAT GETS PROBED, AND HOW LOUDLY
-#
-# Every service in identity.yml is probed automatically, on its first
-# hostname. That is deliberate: a service added to the auth matrix starts
-# being monitored with no second edit, so monitoring cannot silently fall
-# behind the stack.
-#
-# This list only decides which of them are CORE - the ones whose failure
-# buzzes your phone rather than waiting for you to look. Keep it short. The
-# test is "would I want to be woken up", and in a van parked off-grid that is
-# playback and the ability to log in, not whether Prowlarr is reachable.
-# ==============================================================================
 monitoring_probe_core:
   - jellyfin
   - audiobookshelf
@@ -533,15 +250,6 @@ monitoring_probe_core:
 #     - { name: traefik_https, url: "https://10.20.0.1/", tier: core }
 monitoring_probe_extra_targets: []
 
-
-# ==============================================================================
-# LOGS
-#
-# Which containers' logs are worth keeping, and which lines to throw away
-# before they ever hit the disk. The *arrs and qBittorrent are extremely
-# chatty at debug level, and on an NVMe that also holds the databases, log
-# volume is a real cost rather than a theoretical one.
-# ==============================================================================
 monitoring_logs:
   # Every container Docker knows about, with its frey.module label attached,
   # so you can filter by module in Grafana rather than by remembering names.
@@ -552,77 +260,14 @@ monitoring_logs:
   journal: true
   journal_max_age: 12h
 
-  # ---------------------------------------------------------------------------
-  # Dropped before storage. These are the lines that are pure volume.
-  #
-  # PLAIN RE2 REGEXES, SINGLE-QUOTED. Write them exactly as the regex should
-  # read - no doubled backslashes. The role escapes them for Alloy's
-  # Go-style string syntax when it renders the config.
-  #
-  # Do not be tempted to escape them here instead. Alloy strings treat `\b` as
-  # a valid escape meaning BACKSPACE, so a hand-escaped `\\b` renders to `\b`,
-  # compiles happily, and then matches a literal backspace character instead
-  # of a word boundary - a filter that silently never fires. `\s` at least
-  # fails loudly, because Go has no such escape.
-  # ---------------------------------------------------------------------------
   drop_patterns:
     - '(?i)\blevel=(trace|debug)\b'
     - '(?i)^\s*(TRACE|DEBUG)\b'
     # Traefik logs every single request at INFO if access logs are on; the
     # same information is already in its Prometheus metrics, counted.
     - '"ClientAddr":'
-    # cAdvisor probes for cloud-provider metadata at startup and on every
-    # housekeeping pass, by reading /sys/class/dmi/id/product_name. A Pi has no
-    # DMI table, so the read fails, for ever, about 280 times a day.
-    #
-    # It is dropped rather than tolerated because of what it does to the level
-    # label: cAdvisor logs it at INFO, but the line contains the word "Error",
-    # so the level regex above tags it level=error. That is the one thing a
-    # noise line must not do - 280 phantom errors a day in {level="error"} is
-    # how a panel stops being read. Nothing on this Pi is in GCE, and nothing
-    # ever will be, so there is no version of this line worth keeping.
     - 'Error while reading product_name'
 
-
-# ==============================================================================
-# THE SENSOR SEAM - temperature in the van, and whatever comes after it
-#
-# This is the part that is built but not yet used, so that adding the first
-# real sensor is a small job rather than a redesign.
-#
-# node-exporter reads every *.prom file in:
-#
-#     /opt/frey/metrics/textfile/
-#
-# Anything that drops a file there is a monitored metric: it is scraped,
-# stored for a year, graphable in Grafana and alertable in exactly the same
-# way as CPU temperature. No broker, no exporter, no container.
-#
-# A DS18B20 on the Pi's 1-Wire bus would be about six lines:
-#
-#     cat > /opt/frey/metrics/textfile/van.prom.tmp <<EOF
-#     # HELP van_temp_celsius Cabin temperature
-#     # TYPE van_temp_celsius gauge
-#     van_temp_celsius{location="cabin"} $(awk '{print $2/1000}' \
-#       /sys/bus/w1/devices/28-*/temperature)
-#     EOF
-#     mv /opt/frey/metrics/textfile/van.prom.tmp \
-#        /opt/frey/metrics/textfile/van.prom
-#
-# The .tmp-then-mv matters: node-exporter will happily scrape a half-written
-# file and report nonsense.
-#
-# Add the script to monitoring_host_collectors below and the existing systemd
-# timer runs it on the same clock as everything else.
-#
-# WHEN TO ADD MQTT INSTEAD
-#
-# The moment a sensor is not physically wired to the Pi. Battery monitors,
-# Zigbee thermometers and ESP32 nodes all speak MQTT, and at that point a
-# broker plus an MQTT-to-Prometheus bridge is the right answer rather than a
-# script per device. Nothing here has to change to allow it - that is why
-# this is a seam and not a rewrite. See docs/MONITORING.md.
-# ==============================================================================
 monitoring_host_collectors:
   # Shipped with the role. Each is a script in roles/monitoring/templates/
   # that writes one .prom file.
@@ -632,22 +277,6 @@ monitoring_host_collectors:
   - docker      # container running state and restart counts
   - indexers    # *arr indexer health - see monitoring_indexer_apps below
 
-# ------------------------------------------------------------------------------
-# INDEXER HEALTH
-#
-# The one failure this stack had no signal for. A broken indexer leaves every
-# container running and healthy, Prowlarr backs the indexer off for hours, and
-# the only visible symptom is that nothing is ever found - so it was always
-# noticed by hand, days later, and always from the application side.
-#
-# Container names and ports are repeated here rather than read from
-# media_acquisition: a role's defaults are only in scope while that role runs,
-# and this collector belongs to monitoring. Keep them in step with
-# roles/media_acquisition/defaults/main.yml.
-#
-# The API key is NOT here. The collector reads it from each container's own
-# config.xml, inside the container, so no key reaches a host command line.
-# ------------------------------------------------------------------------------
 monitoring_indexer_apps:
   - {name: prowlarr, port: 9696, api_version: v1}
   - {name: sonarr, port: 8989, api_version: v3}

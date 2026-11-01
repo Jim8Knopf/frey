@@ -1,0 +1,23 @@
+---
+service_proxy:
+  bind_address: "{{ frey.service_address }}"
+  docker:
+    data_root: "{{ frey.base_dir }}/docker"
+    log_max_size: 10m
+    log_max_file: "3"
+    users:
+      - "{{ ansible_user | default('ansible') }}"
+  traefik:
+    image: "traefik:{{ traefik_version }}"
+    container_name: frey-traefik
+    network: "{{ frey.proxy_network }}"
+    dynamic_config_dir: "{{ frey.base_dir }}/proxy/traefik/dynamic"
+    dashboard_enabled: false
+    exposed_by_default: false
+    http_port: 80
+    https_port: 443
+
+    metrics:
+      enabled: "{{ 'monitoring' in (frey.modules.enabled | default([])) }}"
+      port: 8082
+      add_router_labels: true

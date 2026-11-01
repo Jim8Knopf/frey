@@ -26,7 +26,7 @@ is not consistent and you risk a corrupt database on the clone.
 
 - The **SD card is never written to.** It remains a complete, bootable fallback.
 - Boot order is currently **`0xf461` — SD first, then NVMe**, set in
-  `inventory/group_vars/all/main.yml`. Nibbles read right-to-left:
+  `inventory/group_vars/all/system.yml`. Nibbles read right-to-left:
   `1` = SD, `6` = NVMe, `4` = USB, `f` = restart.
 
   **While the SD card is inserted the Pi always runs from the card**, so the
@@ -133,7 +133,7 @@ Keep the card somewhere safe: it is a bootable snapshot of the pre-migration
 system, and with SD-first ordering it is also your one-step recovery.
 
 Once you are genuinely running from NVMe, set `require_nvme_root: true` in
-`inventory/group_vars/all/main.yml` so later rebuilds refuse to deploy service
+`inventory/group_vars/all/system.yml` so later rebuilds refuse to deploy service
 data onto the SD card.
 
 ## After Migration

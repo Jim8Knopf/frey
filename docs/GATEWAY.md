@@ -11,7 +11,7 @@ any internet connection. Sharing public Wi-Fi is the opportunistic extra.
 | FreyHub access point | `wlan0` | built-in Broadcom (`brcmfmac`) | Soldered down, best-proven AP driver on a Pi. Clients depend on it, so it gets the reliable radio. |
 | Public Wi-Fi uplink | `wlan1` | Realtek RTL8821CU USB (`rtw88_8821cu`) | Expendable and intermittent. A USB reset costs you internet, never FreyHub. External antenna reaches distant hotspots. |
 
-Both are set in `inventory/inventory/group_vars/all/main.yml`. Swapping the two
+Both are set in `inventory/group_vars/all/network.yml`. Swapping the two
 `interface:` lines swaps the roles — nothing else hardcodes a radio.
 
 **Never run AP and client mode on one radio.** The role asserts the two
@@ -63,7 +63,7 @@ journalctl -t frey-uplink-portal          # every decision it has made
 A network is opted in **by SSID**, never by default:
 
 ```yaml
-# inventory/group_vars/all/main.yml
+# inventory/group_vars/all/network.yml
 network_gateway:
   upstream:
     portal:
@@ -181,7 +181,7 @@ Its profiles are named `frey-open-*`, deliberately **not** the
 `frey-uplink-*` prefix — the prune step above deletes any `frey-uplink-*`
 profile missing from `networks`, which would wipe these on every run.
 
-Tune or disable in `inventory/group_vars/all/main.yml`:
+Tune or disable in `inventory/group_vars/all/network.yml`:
 
 ```yaml
 network_gateway:
@@ -307,7 +307,7 @@ If the run dies, your session drops, or the AP never comes up, the timer fires
 and restores the previous network — and it fires again after a reboot, so
 power-cycling a stranded Pi also recovers it.
 
-Tune or disable in `inventory/inventory/group_vars/all/main.yml`:
+Tune or disable in `inventory/group_vars/all/network.yml`:
 
 ```yaml
 network_gateway:

@@ -1,0 +1,164 @@
+---
+- name: Deploy Recyclarr configuration
+  # Ansible owns this one outright: it is the config-as-code definition of the
+  # quality profiles, so drift should be corrected, not preserved.
+  ansible.builtin.template:
+    src: recyclarr.yml.j2
+    dest: "{{ media.appdata_dir }}/recyclarr/recyclarr.yml"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "0640"
+  when: media_acquisition.services.recyclarr.enabled | bool
+  no_log: true
+  notify: Restart recyclarr
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+# DEPLOY
+
+- name: Create the internal media network
+  community.docker.docker_network:
+    name: "{{ media.network.name }}"
+    driver: bridge
+    state: present
+    ipam_config:
+      - subnet: "{{ media.network.subnet }}"
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+
+- name: Read the system CA bundle for Cleanuparr
+  # OIDC needs public roots plus the Frey CA; mount a bundle without changing the entrypoint.
+  ansible.builtin.slurp:
+    src: /etc/ssl/certs/ca-certificates.crt
+  register: media_acquisition_system_ca
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+
+- name: Read the Frey root certificate for Cleanuparr
+  ansible.builtin.slurp:
+    src: "{{ frey.pki_public_dir }}/frey-root-ca.crt"
+  register: media_acquisition_frey_ca
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+
+- name: Assemble the Cleanuparr trust store
+  ansible.builtin.copy:
+    content: |
+      {{ media_acquisition_system_ca.content | b64decode }}
+      {{ media_acquisition_frey_ca.content | b64decode }}
+    dest: "{{ media_acquisition.cleanuparr_wiring.ca_bundle }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  notify: Restart media acquisition stack
+  tags:
+    - media
+    - media_acquisition
+
+- name: Deploy media acquisition compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ media_acquisition.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+    validate: "docker compose -f %s config --quiet"
+  register: media_acquisition_compose
+  tags:
+    - media
+    - media_acquisition
+
+- name: Pre-pull media acquisition images one at a time
+  community.docker.docker_image_pull:
+    name: "{{ item }}"
+    pull: not_present
+  loop: >-
+    {{
+      (media_acquisition.services | dict2items
+       | selectattr('value.enabled', 'truthy')
+       | map(attribute='value.image')
+       | list
+       + ([media_acquisition.vpn.image] if (media_vpn.enabled | bool) else []))
+      | unique
+    }}
+  loop_control:
+    label: "{{ item }}"
+  register: media_acquisition_pull
+  retries: 8
+  delay: 30
+  until: media_acquisition_pull is succeeded
+  # ignore_errors, NOT failed_when: false - the latter rewrites every item's
+  # `failed` to false, so a genuinely failed pull becomes indistinguishable
+  # from a successful one and the check below silently passes. That is exactly
+  # how the first attempt at this reported success while Prowlarr's image was
+  # never pulled.
+  ignore_errors: true
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+
+- name: Fail clearly when images are missing
+  # The stack cannot start without them: `docker compose up` is all-or-
+  # nothing, so continuing would only produce a more confusing error.
+  ansible.builtin.fail:
+    msg: >-
+      Could not pull {{ media_acquisition_pull_failures | length }} image(s) after
+      8 attempts: {{ media_acquisition_pull_failures | join(', ') }}.
+      The uplink is too unreliable right now. Everything else is already
+      configured on disk - re-run `--tags media_acquisition` on a better
+      connection and it will pick up where it left off.
+  vars:
+    media_acquisition_pull_failures: >-
+      {{
+        media_acquisition_pull.results | default([])
+        | selectattr('failed', 'defined')
+        | selectattr('failed')
+        | map(attribute='item') | list
+      }}
+  when:
+    - media_acquisition_pull.results is defined
+    - media_acquisition_pull_failures | length > 0
+  tags:
+    - media
+    - media_acquisition
+
+- name: Start the media acquisition stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ media_acquisition.stack_dir }}"
+    state: present
+    remove_orphans: true
+    # never, not missing: every image is already local thanks to the serial
+    # pull above, and `missing` still makes compose issue a registry HEAD per
+    # service to resolve the tag - eleven round-trips that time out on a weak
+    # uplink even when nothing needs downloading.
+    pull: never
+    timeout: 300
+  register: media_acquisition_up
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+
+- name: Pull and recreate pinned media acquisition images
+  community.docker.docker_compose_v2:
+    project_src: "{{ media_acquisition.stack_dir }}"
+    state: present
+    pull: always
+    recreate: auto
+    timeout: 600
+  when:
+    - not ansible_check_mode
+    - media_update | default(false) | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_update

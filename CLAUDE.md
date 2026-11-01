@@ -111,9 +111,8 @@ network_gateway → rpi_nvme → service_proxy → security_baseline
                      perfectly healthy container)
   → media_acquisition → media_library   (acquisition generates the *arr API
                                          keys library wires Seerr to)
-  → monitoring      (reads identity's Grafana OIDC secret, and derives what
-                     to probe from identity_services)
-  → dockge          (optional, depends on nothing)
+  → wifi_portal → dashy
+  → monitoring      (metrics, logs, alerts, Grafana and optional Dockge)
 ```
 
 Adding a module: role + `defaults/main.yml` + `tasks/main.yml` + `README.md`,
@@ -126,16 +125,17 @@ then register it in `available` and list it in `enabled`. See
 | --- | --- |
 | `roles/<m>/defaults/main.yml` | everything specific to that module — the default home |
 | `inventory/group_vars/all/main.yml` | module registry, and only choices *two or more* modules must agree on |
-| `.../media.yml`, `.../identity.yml`, `.../monitoring.yml` | the per-module files a human edits day to day: image versions, toggles, thresholds, who may log in |
+| `.../{network,system,security,proxy,media,identity,monitoring}.yml` | operational settings by responsibility |
+| `.../images.yml` | all pinned image versions |
 | `.../secrets.yml` | vault ciphertext, nothing else |
 
 Two subtleties that have bitten:
 
 - **A role's defaults are only in scope while that role runs.** Anything one
   module must read from another (`frey.pki_public_dir`,
-  `service_proxy.traefik.metrics`) is therefore declared in `main.yml` as well,
+  `service_proxy.traefik.metrics`) is therefore declared in inventory group_vars as well,
   with a comment saying why. Don't "clean up" those apparent duplicates.
-- **`hash_behaviour = merge` in `ansible.cfg` is what lets `main.yml` set some
+- **`hash_behaviour = merge` in `ansible.cfg` is what lets inventory group_vars set some
   nested keys and inherit the rest** from role defaults. It is deprecated in
   ansible-core; `security_baseline.ssh` is spelled out in full rather than
   relying on the merge, because a half-rendered sshd drop-in is the one failure
@@ -152,7 +152,7 @@ Two radios, deliberately assigned:
 | FreyHub AP, `10.20.0.1/24` | `wlan0` built-in Broadcom | the critical always-on service gets the soldered-down radio with the best AP driver |
 | Public WiFi uplink | `wlan1` Realtek USB | expendable; losing it costs internet, never FreyHub |
 
-Swapping the two `interface:` lines in `main.yml` swaps the roles — nothing else
+Swapping the two `interface:` lines in `network.yml` swaps the roles — nothing else
 hardcodes a radio. **FreyHub must serve clients fully with no uplink present**;
 nothing below the Pi may depend on internet. dnsmasq resolves `frey` and
 everything under it, at any depth, to the Pi, answered locally.

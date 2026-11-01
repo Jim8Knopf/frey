@@ -8,7 +8,7 @@
 # run while media_acquisition is stopped, disabled or power-gated.
 #
 # Shared settings (paths, uid/gid, languages, internal network) live in
-# inventory/group_vars/all/main.yml under `media`.
+# inventory/group_vars/all/media.yml under `media`.
 # ==============================================================================
 
 media_library:

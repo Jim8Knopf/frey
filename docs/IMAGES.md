@@ -12,7 +12,7 @@ ansible-playbook playbooks/site.yml --tags media --check --diff
 ansible-playbook playbooks/site.yml --tags media
 ```
 
-Use `--tags monitoring`, `--tags identity`, `--tags dockge`, or `--tags proxy`
+Use `--tags monitoring`, `--tags identity`, `--tags dockge` (monitoring alias), or `--tags proxy`
 for those groups. Applying a tag can restart the affected services. Check the
 role's documentation and verify the service afterward. For a wider change,
 combine tags with commas. `scripts/media-check-updates.sh` and

@@ -217,8 +217,20 @@ groups:
             It ran and could not gather its metrics. Run it by hand to see
             why: `{{ monitoring.bin_dir }}/frey-metrics {{ go }} $labels.collector {{ og }}`.
 
+      # Two tiers, because the textfile directory has more than one writer and
+      # they do not share a cadence. See the long note on
+      # `collectors.stale_after_seconds` in defaults/main.yml: judged against
+      # the 30s tier, a healthy 15-minute collector reads as frozen. The
+      # `file` label is node-exporter's path inside its container, so these
+      # match on the basename rather than anchoring the whole string.
+      #
+      # `\\.` is not a typo and must not be "corrected" to `\.`. The expr is a
+      # single-quoted YAML scalar, which passes backslashes through verbatim,
+      # and PromQL string literals then use Go escaping - where a lone `\.` is
+      # an unknown escape sequence and promtool rejects the whole rule file.
+      # Two backslashes here reach the regex engine as one.
       - alert: FreyCollectorStale
-        expr: time() - node_textfile_mtime_seconds > 600
+        expr: 'time() - node_textfile_mtime_seconds{file!~".*/({{ monitoring.collectors.slow | join("|") }})\\.prom"} > {{ monitoring.collectors.stale_after_seconds }}'
         for: 10m
         labels:
           severity: warning
@@ -229,6 +241,24 @@ groups:
             frozen at its last value - the dashboards will look healthy and be
             wrong. Check
             `systemctl status {{ monitoring.collectors.service_name }}.timer`.
+
+      # The slow writers have timers of their own, so this one deliberately
+      # does NOT name frey-metrics.timer - pointing at the wrong unit is how
+      # the previous version of this alert would have sent you looking at a
+      # healthy timer. `systemctl list-timers` shows which one owns the file.
+      - alert: FreySlowCollectorStale
+        expr: 'time() - node_textfile_mtime_seconds{file=~".*/({{ monitoring.collectors.slow | join("|") }})\\.prom"} > {{ monitoring.collectors.slow_stale_after_seconds }}'
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Metrics file {{ go }} $labels.file {{ og }} has stopped updating'
+          description: >-
+            This file is written minutes apart rather than every 30 seconds,
+            and it has now missed several of its own intervals, so its metrics
+            are frozen at their last values. Find the timer that owns it with
+            `systemctl list-timers --all` and check that unit, not
+            {{ monitoring.collectors.service_name }}.timer.
 
       - alert: FreyTextfileParseErrors
         # A gauge, not a counter - 1 while a file in the directory will not

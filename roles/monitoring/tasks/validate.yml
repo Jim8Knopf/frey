@@ -1,0 +1,110 @@
+---
+- name: Validate the Prometheus configuration and rules
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}:/etc/prometheus:ro"
+      # The image's entrypoint is /bin/prometheus, so promtool has to be
+      # selected explicitly - otherwise its arguments are handed to the server
+      # and it exits with "unexpected promtool".
+      - --entrypoint
+      - promtool
+      - "{{ monitoring.services.prometheus.image }}"
+      - check
+      - config
+      - /etc/prometheus/prometheus.yml
+  register: monitoring_promtool
+  changed_when: false
+  when:
+    - monitoring_enable.metrics | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the Alertmanager configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}/alertmanager.yml:/alertmanager.yml:ro"
+      - --entrypoint
+      - amtool
+      - "{{ monitoring.services.alertmanager.image }}"
+      - check-config
+      - /alertmanager.yml
+  changed_when: false
+  when:
+    - monitoring_enable.alerting | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the Loki configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}/loki.yml:/loki.yml:ro"
+      - "{{ monitoring.services.loki.image }}"
+      - -verify-config
+      - -config.file=/loki.yml
+  changed_when: false
+  when:
+    - monitoring_enable.logs | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the Alloy configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ monitoring.config_dir }}/config.alloy:/config.alloy:ro"
+      - "{{ monitoring.services.alloy.image }}"
+      - validate
+      - /config.alloy
+  changed_when: false
+  when:
+    - monitoring_enable.logs | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Validate the dashboards are well-formed JSON
+  # A malformed dashboard is silently ignored by Grafana's provisioner, so the
+  # symptom is a folder that is simply missing a dashboard nobody notices.
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import glob, json, sys
+        bad = []
+        for path in sorted(glob.glob(sys.argv[1] + "/*.json")):
+            try:
+                json.load(open(path))
+            except Exception as exc:
+                bad.append("%s: %s" % (path, exc))
+        if bad:
+            sys.exit("\n".join(bad))
+        print("%d dashboard(s) ok" % len(glob.glob(sys.argv[1] + "/*.json")))
+      - "{{ monitoring.config_dir }}/grafana/dashboards"
+  changed_when: false
+  when:
+    - monitoring_enable.grafana | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]

@@ -1,0 +1,44 @@
+---
+- name: Pre-pull monitoring images one at a time
+  community.docker.docker_image_pull:
+    name: "{{ item }}"
+    pull: not_present
+  loop: >-
+    {{
+      monitoring.services | dict2items
+      | selectattr('value.enabled', 'truthy')
+      | map(attribute='value.image')
+      | list | unique
+    }}
+  loop_control:
+    label: "{{ item }}"
+  register: monitoring_pull
+  retries: 8
+  delay: 30
+  until: monitoring_pull is succeeded
+  # ignore_errors, not failed_when: false - failed_when would hide a failed
+  # pull entirely and the next task is what turns it into a readable error.
+  ignore_errors: true
+  when: not ansible_check_mode
+  tags: [monitoring, metrics]
+
+- name: Fail clearly when monitoring images are missing
+  ansible.builtin.fail:
+    msg: >-
+      Could not pull {{ monitoring_pull_failures | length }} image(s) after 8
+      attempts: {{ monitoring_pull_failures | join(', ') }}.
+      Re-run `--tags monitoring` on a better connection. Note that cAdvisor is
+      not on Docker Hub and some of its version numbers were never published
+      at all - check the tag exists before changing monitoring_versions.
+  vars:
+    monitoring_pull_failures: >-
+      {{
+        monitoring_pull.results | default([])
+        | selectattr('failed', 'defined')
+        | selectattr('failed')
+        | map(attribute='item') | list
+      }}
+  when:
+    - monitoring_pull.results is defined
+    - monitoring_pull_failures | length > 0
+  tags: [monitoring, metrics]

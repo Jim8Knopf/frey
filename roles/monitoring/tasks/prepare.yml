@@ -1,0 +1,140 @@
+---
+- name: Validate monitoring configuration
+  ansible.builtin.assert:
+    that:
+      - monitoring.stack_dir | length > 0
+      - monitoring.config_dir | length > 0
+      - monitoring.textfile_dir | length > 0
+      # Must not collide with FreyHub, the media network (172.28.0.0/16) or
+      # identity (172.29.0.0/24). The archived media role used FreyHub's own
+      # range for a container network, which would have blackholed the access
+      # point - the one service that must never break.
+      - not monitoring.network.subnet.startswith('10.20.0.')
+      - not monitoring.network.subnet.startswith('172.28.')
+      - not monitoring.network.subnet.startswith('172.29.')
+      # The central knobs file must be present, or every image tag, threshold
+      # and on/off switch silently resolves to nothing.
+      - monitoring_versions is defined
+      - monitoring_enable is defined
+      - monitoring_thresholds is defined
+      - monitoring_alerting is defined
+      # Alerting with no metrics has nothing to alert on.
+      - not (monitoring_enable.alerting | bool) or (monitoring_enable.metrics | bool)
+      - not (monitoring_enable.dockge | bool) or monitoring_hosts.dockge in identity_protect
+    fail_msg: >-
+      monitoring configuration is invalid. The internal Docker network
+      ({{ monitoring.network.subnet }}) must not overlap FreyHub's
+      {{ network_gateway.downstream.network_cidr }}, the media network or the
+      identity network. images.yml must define monitoring_versions, and
+      inventory/group_vars/all/monitoring.yml must define monitoring_enable, monitoring_thresholds and
+      monitoring_alerting. Alerting requires metrics. Dockge requires its hostname in identity_protect.
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Ensure Dockge data directory exists
+  ansible.builtin.file:
+    path: "{{ monitoring.dockge.appdata_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: monitoring_enable.dockge | bool
+  tags: [monitoring, metrics]
+
+- name: Install host collector dependencies
+  ansible.builtin.apt:
+    name: "{{ monitoring.collectors.packages + ['iw'] }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: monitoring_enable.host_collectors | bool
+  tags: [monitoring, metrics]
+
+- name: Ensure the monitoring group exists
+  ansible.builtin.group:
+    name: "{{ monitoring.user.name }}"
+    gid: "{{ monitoring.user.gid }}"
+    state: present
+  tags: [monitoring, metrics]
+
+- name: Ensure the monitoring user exists
+  ansible.builtin.user:
+    name: "{{ monitoring.user.name }}"
+    uid: "{{ monitoring.user.uid }}"
+    group: "{{ monitoring.user.name }}"
+    shell: /usr/sbin/nologin
+    create_home: false
+    system: true
+    state: present
+  tags: [monitoring, metrics]
+
+- name: Ensure monitoring configuration directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ monitoring.stack_dir }}"
+    - "{{ monitoring.config_dir }}"
+    - "{{ monitoring.config_dir }}/{{ monitoring.prometheus.rules_dir }}"
+    - "{{ monitoring.config_dir }}/grafana"
+    - "{{ monitoring.config_dir }}/grafana/provisioning"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/datasources"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/dashboards"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/plugins"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/alerting"
+    - "{{ monitoring.config_dir }}/grafana/provisioning/notifiers"
+    - "{{ monitoring.config_dir }}/grafana/dashboards"
+    # The interface other things write metrics into - including, later, the
+    # van's sensors. World-readable on purpose: node-exporter mounts it.
+    - "{{ monitoring.textfile_dir }}"
+  tags: [monitoring, metrics]
+
+- name: Ensure monitoring data directories exist
+  # Owned by the uid the containers run as. Pinned rather than left to each
+  # image's default, because four images choosing four different users is four
+  # chances at a crash loop nobody can diagnose from the logs.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ monitoring.user.uid }}"
+    group: "{{ monitoring.user.gid }}"
+    mode: "0750"
+  loop:
+    - "{{ monitoring.appdata_dir }}"
+    - "{{ monitoring.appdata_dir }}/prometheus"
+    - "{{ monitoring.appdata_dir }}/alertmanager"
+    - "{{ monitoring.appdata_dir }}/loki"
+    - "{{ monitoring.appdata_dir }}/grafana"
+    - "{{ monitoring.relay.data_dir }}"
+  tags: [monitoring, metrics]
+
+- name: Ensure the Alloy data directory exists
+  # Alloy is one of the three that stay root - it reads the Docker socket and
+  # the journal - so its own directory is root too.
+  ansible.builtin.file:
+    path: "{{ monitoring.appdata_dir }}/alloy"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when: monitoring_enable.logs | bool
+  tags: [monitoring, metrics]
+
+- name: Resolve monitoring secrets
+  ansible.builtin.include_tasks:
+    file: secrets.yml
+    apply:
+      tags: [monitoring, metrics, monitoring_config]
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Ensure the private monitoring network exists
+  community.docker.docker_network:
+    name: "{{ monitoring.network.name }}"
+    driver: bridge
+    state: present
+    ipam_config:
+      - subnet: "{{ monitoring.network.subnet }}"
+  when: not ansible_check_mode
+  tags: [monitoring, metrics]
