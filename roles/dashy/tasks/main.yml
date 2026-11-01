@@ -15,6 +15,24 @@
   loop:
     - "{{ dashy.stack_dir }}"
     - "{{ dashy.config_dir }}"
+    - "{{ dashy.config_dir }}/setup"
+
+- name: Install the certificate setup server
+  ansible.builtin.copy:
+    src: setup-server.js
+    dest: "{{ dashy.config_dir }}/setup/setup-server.js"
+    owner: root
+    group: root
+    mode: "0644"
+  register: dashy_setup_server
+
+- name: Configure the certificate setup page
+  ansible.builtin.template:
+    src: setup.html.j2
+    dest: "{{ dashy.config_dir }}/setup/index.html"
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Pull the pinned Dashy image
   community.docker.docker_image_pull:
@@ -79,7 +97,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ dashy.stack_dir }}"
     state: present
-    recreate: "{{ 'always' if dashy_config.changed else 'auto' }}"
+    recreate: "{{ 'always' if dashy_config.changed or dashy_setup_server.changed else 'auto' }}"
     pull: never
     timeout: 180
   when: not ansible_check_mode
