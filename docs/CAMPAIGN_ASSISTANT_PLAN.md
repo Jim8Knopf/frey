@@ -1,7 +1,8 @@
 # Campaign Knowledge and Local Assistant Plan
 
-Status: phases 1 and 2 in progress. SilverBullet is deployed and the initial
-rules and campaign structure are in the Notes space. Check product
+Status: phases 1–3 are in progress and phase 4 evaluation has started.
+SilverBullet is deployed and the initial rules and campaign structure are in
+the Notes space. Check product
 versions, licensing, compatibility and policies again when implementing each
 phase.
 
@@ -93,11 +94,17 @@ Discord or the hosting provider from the workflow.
 - [ ] Install the Android PWA; test initial sync, offline access and edits,
   reconnection and conflicts, and access after a phone/browser restart.
 - [ ] Set up backups and demonstrate a restore on a separate test location.
-- [ ] Complete the SilverBullet first-run setup; then run
-  `bash scripts/silverbullet-check.sh` and test authenticated use. The check
-  returns status 2 while first-run setup prevents testing the static PWA paths.
+  On 2026-11-02 an ad hoc archive of the live Notes space was restored to a
+  private temporary directory on the admin computer; 68 regular files matched
+  the archive by SHA-256, and the temporary files were removed. This did not
+  test an application-level restore or a consistent snapshot during edits,
+  and no scheduled or retained backup was established.
+- [ ] Complete and verify SilverBullet first-run setup and authenticated use.
+  On 2026-11-02 `bash scripts/silverbullet-check.sh` passed: anonymous space
+  paths redirected, the service worker loaded and the manifest required
+  SilverBullet login. This does not verify interactive sign-in or offline sync.
 - [ ] Complete service acceptance checks, including the authenticated and PWA
-  checks after first-run setup. The focused dry run and deployment succeeded,
+  checks with an authenticated user. The focused dry run and deployment succeeded,
   and the repeat deployment reported zero changes on 2026-11-01. Anonymous
   content access was denied; the existing identity and monitoring checks passed.
 
@@ -132,14 +139,21 @@ page creation remain later steps.
 
 On 2026-11-01 the `campaign_ai` role was deployed with Frey group access,
 an isolated local runtime and a background download of Qwen3 1.7B Q4_K_M.
-The chat, phone attachments and response quality still need a real test once
-the model has finished downloading. A linked "Turn ideas into pages" guide
+The model has finished downloading; chat and phone attachments still need a
+real user test. A linked "Turn ideas into pages" guide
 and two reusable prompts are now in the Pirate campaign home; its source is
 `docs/CAMPAIGN_IDEA_WORKFLOW.md`. See `roles/campaign_ai/README.md`.
 The pinned chat UI bundle contains Markdown and plain-text attachment support;
 the actual phone upload remains untested. A retry timer resumes an incomplete
 model download after a failure or reboot, and
 `scripts/campaign-ai-ready-check.sh` reports download and readiness status.
+On 2026-11-02 the deployed identity configuration no longer contained the
+SilverBullet and assistant rules; the identity role restored them. The assistant
+readiness and anonymous-access checks passed, and a repeat identity deployment
+reported zero changes. The wider identity check passed except for its outdated
+Cleanuparr forward-auth expectation after Cleanuparr moved to OIDC; a 200
+response alone does not verify Cleanuparr sign-in. Interactive campaign sign-in
+and phone uploads remain untested.
 
 - [ ] Benchmark suitable small quantized models against real rules questions,
   response time, RAM, CPU, temperature and existing service responsiveness.
@@ -155,7 +169,15 @@ model download after a failure or reboot, and
   `scripts/campaign-rules-benchmark.py` now provides six repeatable questions
   using excerpts from the actual draft, including missing rules and a possible
   long-rest contradiction. Its answers need human review against the printed
-  rubrics; these additional model tests have not yet been run.
+  rubrics. On 2026-11-02 the deployed Q4_K_M model answered all six in
+  19.64–48.40 seconds each. It got the mana cost and cross-training numbers
+  right and recognized that maximum mana lacks a formula. It contradicted
+  itself about failed evasion, did not flag the untrained-skill ambiguity,
+  and missed the long-rest contradiction; two answers hit the 250-token
+  limit. This small model is not reliable for rules decisions without review.
+  After the run Docker reported 2.5 GiB of its 3 GiB limit and the CPU
+  temperature was 60.6 °C; these are single post-run readings, not peak
+  measurements or a comparison of models or service responsiveness.
 - [ ] Choose and pin a runtime and model; arrange model downloads ahead of
   offline use. Add an authenticated dashboard interface and explicit start,
   stop and running status; define behavior after reboot and redeployment.
@@ -184,6 +206,17 @@ campaign material. The script does not start a model or download one.
 
 ### 4. Evaluate a restricted agent and reviewable edits
 
+On 2026-11-02 the existing assistant was tested on two synthetic recap and
+note-update prompts. It preserved the rumor but incorrectly attributed an
+existing page fact to the new source. See `docs/CAMPAIGN_AGENT_EVALUATION.md`
+for the prompts, results, review criteria and Hermes isolation requirements.
+This is a baseline, not a Hermes comparison or a test with real campaign notes.
+A four-minute pull of a pinned ARM64 Hermes image timed out before completion;
+an additional 15-minute attempt also timed out. No Hermes container was
+started, and the pull is no longer running. Monitoring
+reported all targets up but ntfy delivery failing with seven queued alerts;
+the cause was not established. See the evaluation for the image digest.
+
 - [ ] Compare Hermes with a simpler assistant on actual recap and note-update
   tasks; verify compatibility with the selected local model and Pi resources.
 - [ ] Isolate the selected agent and give it access only to approved inputs and
@@ -200,6 +233,15 @@ to campaign truth without GM review.
 
 - [ ] Inspect the site's actual storage, API or export and permissions before
   choosing an integration. Recheck if the site changes.
+  On 2026-11-02 the live GM JavaScript matched the locally cached
+  `origin/main` version and used the Firebase SDK's Firestore listener on
+  `campaigns/{campaignId}/characters`. The checked-in prototype rules allow
+  unauthenticated reads and writes to those documents; the actually deployed
+  Firestore rules have not been verified. The campaign ID is not an access
+  control mechanism. The local checkout has uncommitted changes and its
+  `origin/main` reference may be stale; no live character data was fetched.
+  Verify the deployed rules and authorization before integrating, and use a
+  read-only identity rather than relying on client-side behavior.
 - [ ] Choose the fields to import and keep the campaign identifier configurable.
 - [ ] Implement a read-only import if reliable; record source, last successful
   update and errors, and preserve the last valid offline snapshot.
