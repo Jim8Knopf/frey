@@ -314,10 +314,35 @@ else
   while read -r file mtime; do
     [[ -z "${file}" ]] && continue
     age=$(( now - ${mtime%.*} ))
-    if (( age > 600 )); then
+
+    # Stale is relative to the WRITER'S interval, not one number for the whole
+    # directory. frey-metrics runs every 30s, but it is not the only thing
+    # writing here, and judging a 15-minute collector against the 30s tier
+    # reports a timer that has never missed a run as frozen - which this
+    # script did, as a hard FAIL, for 300s out of every 900s. See the note on
+    # `collectors.stale_after_seconds` in roles/monitoring/defaults/main.yml.
+    #
+    # Keep these in step with the timers that own each file:
+    case "${file}" in
+      # frey-log-repair.timer <- monitoring.log_repair.interval
+      frey-logrepair.prom) interval=900 ;;
+      # frey-media-dns-upstream.timer, owned by the media_acquisition role
+      media_dns.prom)      interval=600 ;;
+      # frey-uplink-portal.timer <- network_gateway.upstream.portal.interval_seconds
+      frey-portal.prom)    interval=120 ;;
+      # everything else is frey-metrics.timer
+      *)                   interval=30  ;;
+    esac
+
+    # Three missed runs warns, six fails - but never tighter than the original
+    # 180s/600s, so the 30s tier behaves exactly as it always has.
+    warn_at=$(( interval * 3 )); (( warn_at < 180 )) && warn_at=180
+    fail_at=$(( interval * 6 )); (( fail_at < 600 )) && fail_at=600
+
+    if (( age > fail_at )); then
       fail "${file}" "last written ${age}s ago - metrics are frozen"
-    elif (( age > 180 )); then
-      warn "${file}" "last written ${age}s ago"
+    elif (( age > warn_at )); then
+      warn "${file}" "last written ${age}s ago (writes every ${interval}s)"
     else
       pass "${file}" "${age}s old"
     fi
