@@ -21,13 +21,21 @@
 #
 # What counts as broken
 # ---------------------
-# NOT broken: "disconnected" (state 30). That is the normal state when no
-# known network is in range, and it is the autojoin timer's job, not ours.
-# Resetting the adapter for it would reset the radio every two minutes while
-# parked somewhere remote.
+# NOT broken: "disconnected" (state 30) on its own. That is the normal state
+# when no known network is in range, and it is the autojoin timer's job, not
+# ours. Resetting the adapter for it would reset the radio every two minutes
+# while parked somewhere remote.
 # Broken: the USB device is gone, or it is present but the kernel has no
 # netdev for it, or the netdev exists and NetworkManager reports it
 # "unavailable" (state 20) - the radio is on the bus but not answering.
+# Also broken: disconnected AND not finishing scans. The adapter can wedge
+# its scan engine while still presenting a netdev in a managed state, which
+# looks identical to "nothing in range" from every angle except the scan
+# clock. Nothing else recovers that - autojoin has a radio that will not
+# scan, and NetworkManager will not autoconnect to an SSID it cannot see -
+# so it sat for 3h16m on 2026-11-02 until the adapter happened to recover.
+# The discriminator is LastScan, not the scan results: parked in the
+# wilderness, scans still COMPLETE and return nothing.
 set -uo pipefail
 
 UPLINK="{{ network_gateway.upstream.interface }}"
@@ -38,12 +46,16 @@ STATE_DIR="{{ network_gateway.upstream.usb_resilience.watchdog.state_dir }}"
 NEED_FAILS="{{ network_gateway.upstream.usb_resilience.watchdog.failures_before_action }}"
 COOLDOWN="{{ network_gateway.upstream.usb_resilience.watchdog.cooldown_seconds }}"
 MAX_PER_HOUR="{{ network_gateway.upstream.usb_resilience.watchdog.max_actions_per_hour }}"
+SCAN_STALL="{{ network_gateway.upstream.usb_resilience.watchdog.scan_stall_seconds }}"
 
 # Kernel paths as constants rather than inline literals, so the test harness
-# can point them at a fixture tree instead of the real bus.
-SYSFS_USB_DEVICES=/sys/bus/usb/devices
-SYSFS_USB_DRIVERS=/sys/bus/usb/drivers
-SYSFS_NET=/sys/class/net
+# can point them at a fixture tree instead of the real bus. Assigned only if
+# unset, which is what makes that override possible; nothing in production
+# sets them, so the defaults below are what actually runs on the Pi.
+: "${SYSFS_USB_DEVICES:=/sys/bus/usb/devices}"
+: "${SYSFS_USB_DRIVERS:=/sys/bus/usb/drivers}"
+: "${SYSFS_NET:=/sys/class/net}"
+: "${PROC_UPTIME:=/proc/uptime}"
 
 log() { logger -t frey-uplink-usb-watchdog -- "$1"; echo "$1"; }
 
@@ -87,6 +99,42 @@ nm_state_num() {
   printf '%s' "${s%%[^0-9]*}"
 }
 
+# NetworkManager's own clock for the last scan that FINISHED, read straight
+# off the device's D-Bus object because nmcli does not expose it. Units are
+# CLOCK_BOOTTIME milliseconds, which is what /proc/uptime counts, and -1
+# means no scan has ever completed on this boot. Prints nothing if the
+# property cannot be read at all, which is what keeps this check optional:
+# no reading, no verdict, and the hardware checks carry on as before.
+nm_last_scan_ms() {
+  local path
+  path="$(busctl --system call org.freedesktop.NetworkManager \
+            /org/freedesktop/NetworkManager org.freedesktop.NetworkManager \
+            GetDeviceByIpIface s "${UPLINK}" 2>/dev/null |
+          sed -nE 's/^o "(.*)"$/\1/p')"
+  [ -n "${path}" ] || return 1
+  busctl --system get-property org.freedesktop.NetworkManager "${path}" \
+    org.freedesktop.NetworkManager.Device.Wireless LastScan 2>/dev/null |
+    sed -nE 's/^x[[:space:]]+(-?[0-9]+)$/\1/p'
+}
+
+boottime_ms() { awk '{printf "%d\n", $1 * 1000}' "${PROC_UPTIME}"; }
+
+# Seconds since a scan last finished, or since boot if none ever has.
+# Prints nothing when the scan clock is unreadable.
+scan_age_seconds() {
+  local last now
+  last="$(nm_last_scan_ms)" || return 1
+  [ -n "${last}" ] || return 1
+  now="$(boottime_ms)"
+  if [ "${last}" -le 0 ]; then
+    # Never scanned on this boot: uptime IS the age, which is what catches
+    # an adapter that came up wedged rather than wedging later.
+    printf '%s' $(( now / 1000 ))
+  else
+    printf '%s' $(( ( now - last ) / 1000 ))
+  fi
+}
+
 # ---------------------------------------------------------------------
 # Health check.
 # ---------------------------------------------------------------------
@@ -110,6 +158,17 @@ diagnose() {
   if [ "${st}" -le 20 ]; then
     echo "unavailable"
     return
+  fi
+  # 30 = disconnected. Only a verdict when the scan clock has also stopped;
+  # see the header. Anything above 30 means associating or associated, and a
+  # radio that is doing either is plainly scanning fine.
+  if [ "${st}" -eq 30 ] && [ "${SCAN_STALL}" -gt 0 ]; then
+    local age
+    age="$(scan_age_seconds)" || age=""
+    if [ -n "${age}" ] && [ "${age}" -ge "${SCAN_STALL}" ]; then
+      echo "scan-stalled"
+      return
+    fi
   fi
   echo "healthy"
 }
@@ -228,6 +287,19 @@ esac
 # Give the adapter time to come back, then report. The next run re-checks and
 # either clears the ladder or escalates.
 sleep 8
+if [ "${verdict}" = "scan-stalled" ]; then
+  # Eight seconds is not long enough for a radio that was reset moments ago
+  # to finish a scan, so re-reading the scan clock here would always say
+  # "still broken" while re-reading only the hardware would always say
+  # "fixed". Neither is evidence. Leave the ladder exactly where it is and
+  # let the next timer run decide - by then there has been a full interval
+  # to produce a scan, and it either reports healthy and clears the ladder
+  # or escalates one rung. Clearing it here would pin recovery at level 1
+  # forever and never reach the rebind that actually re-inits the scanner.
+  log "recovery level ${level} applied; next check decides whether ${UPLINK} scans again"
+  exit 0
+fi
+
 after="$(diagnose)"
 if [ "${after}" = "healthy" ]; then
   log "recovery level ${level} worked; ${UPLINK} is back"
