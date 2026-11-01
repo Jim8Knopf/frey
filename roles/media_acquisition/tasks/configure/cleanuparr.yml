@@ -148,6 +148,8 @@
                 cleanuparr_general.json | combine({
                   'statusCheckEnabled': media_acquisition.cleanuparr_wiring.general.status_check_enabled,
                   'displaySupportBanner': media_acquisition.cleanuparr_wiring.general.display_support_banner,
+                  'httpCertificateValidation':
+                    media_acquisition.cleanuparr_wiring.general.http_certificate_validation,
                 }, recursive=True)
               }}
 
@@ -299,4 +301,118 @@
             status_code: [200, 204]
             timeout: "{{ media_acquisition.configure.api_timeout }}"
           when: cleanuparr_queue_want != cleanuparr_queue.json
+          no_log: true
+
+        # ----------------------------------------------------------------------
+        # SINGLE SIGN-ON
+        #
+        # Cleanuparr speaks OIDC itself rather than trusting the proxy, so its
+        # /api keeps requiring the API key while the browser gets one login.
+        #
+        # The client secret is identity's, read from the file that role
+        # persists it in -- the same route roles/monitoring/ takes to Grafana's
+        # secret, and the reason both are read from a file rather than a
+        # variable is that a role's defaults are not in scope outside it.
+        # ----------------------------------------------------------------------
+        - name: Check for the identity secret file
+          ansible.builtin.stat:
+            path: "{{ media_acquisition.cleanuparr_wiring.identity_key_file }}"
+          register: cleanuparr_identity_stat
+
+        - name: Read the identity secrets
+          ansible.builtin.slurp:
+            src: "{{ media_acquisition.cleanuparr_wiring.identity_key_file }}"
+          register: cleanuparr_identity_blob
+          when: cleanuparr_identity_stat.stat.exists
+          no_log: true
+
+        - name: Pick up the Cleanuparr OIDC client secret
+          ansible.builtin.set_fact:
+            cleanuparr_oidc_secret: >-
+              {{
+                (
+                  (cleanuparr_identity_blob.content | b64decode | from_json)
+                  | default({}, true)
+                ).cleanuparr_oidc_secret | default('', true)
+                if cleanuparr_identity_stat.stat.exists
+                else ''
+              }}
+          no_log: true
+
+        - name: Decide whether Cleanuparr uses single sign-on
+          ansible.builtin.set_fact:
+            cleanuparr_use_oidc: >-
+              {{
+                (identity_services | default({})).cleanuparr is defined
+                and (identity_services | default({})).cleanuparr.auth | default('') == 'oidc'
+                and cleanuparr_oidc_secret | length > 0
+              }}
+
+        - name: Warn when Cleanuparr single sign-on cannot be configured
+          ansible.builtin.debug:
+            msg: >-
+              Cleanuparr is set to auth: oidc but no client secret was found in
+              {{ media_acquisition.cleanuparr_wiring.identity_key_file }}.
+              Deploy the identity module first, then re-run with
+              --tags media_config. Cleanuparr's local login still works.
+          when:
+            - (identity_services | default({})).cleanuparr.auth | default('') == 'oidc'
+            - not (cleanuparr_use_oidc | bool)
+
+        - name: Read the Cleanuparr OIDC configuration
+          ansible.builtin.uri:
+            url: "{{ media_api_base }}/api/account/oidc"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_oidc
+          changed_when: false
+          when: cleanuparr_use_oidc | bool
+          no_log: true
+
+        - name: Align the Cleanuparr OIDC configuration
+          # Compared field by field rather than as a whole object, because the
+          # GET masks clientSecret as bullet characters: a whole-object compare
+          # would differ on every run and rewrite the settings forever.
+          #
+          # exclusiveMode and authorizedSubject are deliberately NOT asserted.
+          # The subject is set by linking an account from the UI, and
+          # overwriting either from here would undo that link -- or, worse,
+          # enable exclusive mode with nothing linked and lock the UI.
+          ansible.builtin.uri:
+            url: "{{ media_api_base }}/api/account/oidc"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: >-
+              {{
+                {
+                  'enabled': true,
+                  'issuerUrl': 'https://' ~ (identity_hosts.auth | default('auth'))
+                               ~ '.' ~ frey.service_domain,
+                  'clientId': 'cleanuparr',
+                  'clientSecret': cleanuparr_oidc_secret,
+                  'scopes': media_acquisition.cleanuparr_wiring.oidc.scopes,
+                  'providerName': media_acquisition.cleanuparr_wiring.oidc.provider_name,
+                  'redirectUrl': 'https://cleanuparr.' ~ frey.service_domain,
+                  'authorizedSubject': cleanuparr_oidc.json.authorizedSubject | default(''),
+                  'exclusiveMode': cleanuparr_oidc.json.exclusiveMode | default(false),
+                }
+              }}
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          when:
+            - cleanuparr_use_oidc | bool
+            - >-
+              not cleanuparr_oidc.json.enabled | default(false)
+              or cleanuparr_oidc.json.issuerUrl | default('')
+                 != 'https://' ~ (identity_hosts.auth | default('auth')) ~ '.' ~ frey.service_domain
+              or cleanuparr_oidc.json.clientId | default('') != 'cleanuparr'
+              or cleanuparr_oidc.json.scopes | default('')
+                 != media_acquisition.cleanuparr_wiring.oidc.scopes
+              or cleanuparr_oidc.json.providerName | default('')
+                 != media_acquisition.cleanuparr_wiring.oidc.provider_name
+              or cleanuparr_oidc.json.redirectUrl | default('')
+                 != 'https://cleanuparr.' ~ frey.service_domain
           no_log: true

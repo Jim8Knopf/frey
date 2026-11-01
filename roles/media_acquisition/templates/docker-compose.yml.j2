@@ -570,6 +570,11 @@ services:
       - UMASK={{ media.umask }}
     volumes:
       - "{{ appdata }}/cleanuparr:/config"
+      # The image's trust store, replaced by the Pi's public roots plus the
+      # Frey root. Needed only for the OIDC back channel to Authelia, which
+      # goes over HTTPS through Traefik because Authelia derives its issuer
+      # from the request and refuses a plain-HTTP one.
+      - "{{ media_acquisition.cleanuparr_wiring.ca_bundle }}:/etc/ssl/certs/ca-certificates.crt:ro"
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}

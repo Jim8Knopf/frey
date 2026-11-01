@@ -248,6 +248,42 @@ media_acquisition:
       # like a fault -- that is the "cleanuparr-status.pages.dev" noise.
       status_check_enabled: false
       display_support_banner: false
+      # Required for the OIDC back channel, and scoped as tightly as the
+      # application allows.
+      #
+      # Cleanuparr has to reach https://auth.hub.frey server-side to exchange
+      # the authorization code. That name resolves to Traefik and is served
+      # with the Frey CA, which this image does not trust: it is not a
+      # linuxserver image, so it has no /custom-cont-init.d hook to run
+      # update-ca-certificates with, and overriding the entrypoint to do it by
+      # hand would skip the PUID/PGID switch the container depends on.
+      #
+      # Left Enabled. DisabledForLocalAddresses looks like the answer for a
+      # private CA and is not: it governs Cleanuparr's own HTTP clients, not
+      # the OIDC library's, so metadata discovery still failed the handshake
+      # with "Unable to retrieve document from
+      # https://auth.hub.frey/.well-known/openid-configuration". The trust
+      # store below is the actual fix, and it leaves verification on.
+      http_certificate_validation: Enabled
+    # The assembled trust store: the Pi's public roots plus the Frey root,
+    # mounted over the image's own bundle so .NET's OpenSSL-backed chain
+    # building accepts Traefik's certificate on the OIDC back channel.
+    ca_bundle: "{{ media_acquisition.stack_dir }}/cleanuparr-ca-certificates.crt"
+    # Where identity persists the plaintext OIDC client secrets. Declared here
+    # as well as in roles/identity/ because a role's defaults are only in
+    # scope while that role runs; roles/monitoring/ reads Grafana's secret the
+    # same way, for the same reason.
+    identity_key_file: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+    oidc:
+      # Shown on Cleanuparr's login button.
+      provider_name: Frey
+      # A space-separated string, not a list -- Cleanuparr stores it verbatim.
+      scopes: "openid profile email"
+      # Leave false. Exclusive mode removes local login entirely, and the
+      # account must be linked to an OIDC subject BEFORE that is safe: enable
+      # it with nothing linked and there is no way left to sign in. Link once
+      # from the UI, then set this true if you want OIDC to be the only route.
+      exclusive_mode: false
 
   # ---------------------------------------------------------------------------
   # SERVICES

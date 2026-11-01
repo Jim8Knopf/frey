@@ -451,6 +451,52 @@
     - media
     - media_acquisition
 
+- name: Read the system CA bundle for Cleanuparr
+  # Cleanuparr has to fetch Authelia's OIDC metadata from
+  # https://auth.hub.frey, served with the Frey CA, and nothing in the
+  # application can be told to accept it: its own
+  # httpCertificateValidation setting does not reach the OIDC library's
+  # HttpClient, which fails the handshake before any of Cleanuparr's own
+  # configuration applies.
+  #
+  # The image is not a linuxserver one, so there is no /custom-cont-init.d
+  # hook to run update-ca-certificates from, and overriding the entrypoint to
+  # run it would skip the PUID/PGID switch the container depends on. So the
+  # trust store is assembled here and mounted over the image's own: the Pi's
+  # public roots plus the Frey root, which keeps public TLS verifying
+  # normally instead of turning verification off.
+  ansible.builtin.slurp:
+    src: /etc/ssl/certs/ca-certificates.crt
+  register: media_acquisition_system_ca
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+
+- name: Read the Frey root certificate for Cleanuparr
+  ansible.builtin.slurp:
+    src: "{{ frey.pki_public_dir }}/frey-root-ca.crt"
+  register: media_acquisition_frey_ca
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+
+- name: Assemble the Cleanuparr trust store
+  ansible.builtin.copy:
+    content: |
+      {{ media_acquisition_system_ca.content | b64decode }}
+      {{ media_acquisition_frey_ca.content | b64decode }}
+    dest: "{{ media_acquisition.cleanuparr_wiring.ca_bundle }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  notify: Restart media acquisition stack
+  tags:
+    - media
+    - media_acquisition
+
 - name: Deploy media acquisition compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
