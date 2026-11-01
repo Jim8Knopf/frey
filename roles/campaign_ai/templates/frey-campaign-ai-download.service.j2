@@ -1,0 +1,10 @@
+[Unit]
+Description=Download and verify the local campaign model
+Wants=network-online.target
+After=network-online.target docker.service
+ConditionPathExists=!{{ campaign_ai.model_dir }}/{{ campaign_ai.model_file }}
+
+[Service]
+Type=oneshot
+ExecStart={{ campaign_ai.stack_dir }}/download-model.sh
+TimeoutStartSec=infinity

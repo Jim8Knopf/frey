@@ -124,6 +124,23 @@ pages without relying on the AI.
 
 ### 3. Add local AI reading and search
 
+**Immediate priority:** get a usable local chat for turning pasted ideas and
+Markdown documents from the GM's phone into proposed linked campaign pages.
+The first workflow is review-and-copy into SilverBullet, with no automatic
+access to notes, photos or other services. Whole-campaign search and automatic
+page creation remain later steps.
+
+On 2026-11-01 the `campaign_ai` role was deployed with Frey group access,
+an isolated local runtime and a background download of Qwen3 1.7B Q4_K_M.
+The chat, phone attachments and response quality still need a real test once
+the model has finished downloading. A linked "Turn ideas into pages" guide
+and two reusable prompts are now in the Pirate campaign home; its source is
+`docs/CAMPAIGN_IDEA_WORKFLOW.md`. See `roles/campaign_ai/README.md`.
+The pinned chat UI bundle contains Markdown and plain-text attachment support;
+the actual phone upload remains untested. A retry timer resumes an incomplete
+model download after a failure or reboot, and
+`scripts/campaign-ai-ready-check.sh` reports download and readiness status.
+
 - [ ] Benchmark suitable small quantized models against real rules questions,
   response time, RAM, CPU, temperature and existing service responsiveness.
   The Pi has approximately 12 GiB available RAM in the current configuration.
@@ -132,8 +149,13 @@ pages without relying on the AI.
   with its rule supplied in the prompt produced the expected answer in 4.84 s
   (about 6.1 generated tokens/s); idle memory while loaded was 2.185 GiB. This
   is one simple test, not a quality or retrieval evaluation. The temporary
-  container was removed; Docker retains the runtime image and model volume
-  `frey-llm-benchmark-models` for later work.
+  container was removed. On a later check the model volume was empty, although
+  the runtime image remained. A fresh download was stopped because the uplink
+  was slow; the incomplete download and temporary container were removed.
+  `scripts/campaign-rules-benchmark.py` now provides six repeatable questions
+  using excerpts from the actual draft, including missing rules and a possible
+  long-rest contradiction. Its answers need human review against the printed
+  rubrics; these additional model tests have not yet been run.
 - [ ] Choose and pin a runtime and model; arrange model downloads ahead of
   offline use. Add an authenticated dashboard interface and explicit start,
   stop and running status; define behavior after reboot and redeployment.
@@ -145,6 +167,20 @@ pages without relying on the AI.
 
 **Done when:** the GM can start the local assistant, ask grounded questions and
 stop it without compromising Frey's network or other essential services.
+
+To compare a running local OpenAI-compatible model against the draft, run:
+
+```sh
+python3 scripts/campaign-rules-benchmark.py /path/to/Pirate_TTRPG_Rules_Draft.md --url http://127.0.0.1:8080
+```
+
+Use `--model` if the server requires a particular model name. The benchmark
+accepts only a loopback server address. If the server is on Frey, use an SSH
+tunnel to its loopback-only port; do not expose an unauthenticated inference
+API to the network. Each JSON line contains a question, answer, timing and a
+rubric for manual review. These questions supply their own excerpts, so they
+test rule reasoning, not search or retrieval. Treat the results as private
+campaign material. The script does not start a model or download one.
 
 ### 4. Evaluate a restricted agent and reviewable edits
 

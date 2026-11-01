@@ -161,6 +161,7 @@ frey:
       # entirely, and the service 404s with a perfectly healthy container.
       - identity
       - silverbullet
+      - campaign_ai
       # Acquisition runs BEFORE library: it generates the shared *arr API
       # keys that the library module needs to wire Seerr to Sonarr/Radarr,
       # so a single run comes up fully connected.
@@ -242,6 +243,10 @@ frey:
         role: silverbullet
         tags:
           - silverbullet
+      campaign_ai:
+        role: campaign_ai
+        tags:
+          - campaign_ai
       wifi_portal:
         role: wifi_portal
         tags:

@@ -1,5 +1,6 @@
 ---
 silverbullet_version: "2.12.1"
+campaign_ai_llama_version: "server-b12019"
 # Container image tags for every active Frey service.
 # Edit the tag here, then deploy the affected role (see docs/IMAGES.md).
 # Quote new tags, especially tags that resemble numbers.

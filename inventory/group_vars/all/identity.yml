@@ -161,6 +161,11 @@ identity_services:
     groups: [frey_admins, notes]
     hosts: [silverbullet]
 
+  campaign_ai:
+    auth: forward_auth
+    groups: [frey_admins, notes]
+    hosts: [campaign-ai]
+
   # --- Library ---------------------------------------------------------------
   jellyfin:
     # OIDC through the jellyfin-sso community plugin. Jellyfin's local accounts
