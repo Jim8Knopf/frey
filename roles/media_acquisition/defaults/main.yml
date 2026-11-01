@@ -166,6 +166,90 @@ media_acquisition:
     api_delay: 10
 
   # ---------------------------------------------------------------------------
+  # CLEANUPARR WIRING
+  #
+  # Cleanuparr keeps its entire configuration in its own SQLite database. It
+  # has no config file to template and, apart from PORT/PUID/PGID/UMASK/TZ and
+  # the database variables, no environment overrides either -- upstream removed
+  # env-var configuration when v2 moved settings into the UI. So the only
+  # supported way to configure it is its REST API, and this role drives it the
+  # same way it drives the *arrs: over Traefik, with X-Api-Key.
+  #
+  # That key is Cleanuparr's own account API key, which the APPLICATION
+  # generates when the first account is created -- the inverse of the *arr
+  # keys, which Ansible chooses and seeds before the container ever starts.
+  # Ansible therefore cannot invent it: put it in
+  # vault_media_api_keys.cleanuparr (Settings -> Account -> API Key in the UI).
+  # Without it this module reports Cleanuparr as unwired and changes nothing,
+  # rather than failing the play.
+  # ---------------------------------------------------------------------------
+  cleanuparr_wiring:
+    # The *arr applications Cleanuparr should watch.
+    #
+    # `version` is Cleanuparr's own application-version selector, NOT an API
+    # version, and it is the only value its UI offers for that application --
+    # so it has to match the major version actually pinned in images.yml.
+    # Cleanuparr rejects anything else.
+    #
+    # Chaptarr is deliberately absent: Cleanuparr has no Chaptarr application
+    # type at all. Its nearest type is Readarr, which Chaptarr is a successor
+    # to rather than a drop-in for, so pointing one at the other would wire a
+    # mismatched API rather than add coverage.
+    instances:
+      sonarr:
+        version: 4
+      radarr:
+        version: 6
+      lidarr:
+        version: 3
+    # Cleanuparr talks to qBittorrent directly on the stack's internal
+    # network, not through Traefik: it is a container-to-container call, and
+    # the firewall drops anything from a Docker bridge to the host anyway.
+    #
+    # Username and password, never apiKey. Cleanuparr validates that it was
+    # given one or the other and refuses both at once.
+    download_client:
+      name: qBittorrent
+      type_name: qBittorrent
+      host: "http://qbittorrent:8080"
+    # Strikes before Cleanuparr removes a download, blocklists the release and
+    # asks the *arr to search again. 0 disables that category entirely, which
+    # is how a fresh install ships -- every counter off, so the container runs
+    # and does nothing.
+    #
+    # Five strikes on a five-minute schedule is ~25 minutes of no progress
+    # before a release is given up on. Deliberately patient: on campground
+    # wifi a download that looks dead for ten minutes is often just slow.
+    queue_cleaner:
+      enabled: true
+      cron_expression: "0 0/5 * * * ?"
+      failed_import_max_strikes: 5
+      downloading_metadata_max_strikes: 5
+      errored_max_strikes: 5
+      # Must be Exclude while the pattern list is empty. "Include" means only
+      # failed imports MATCHING a pattern are struck, so an empty list under
+      # Include matches nothing and Cleanuparr rejects the whole section with
+      # "At least one pattern must be specified when using the Include pattern
+      # mode" -- which is how a fresh install ships, and why simply switching
+      # the queue cleaner on through the API fails. Exclude with no patterns
+      # is the honest spelling of "strike every failed import".
+      failed_import_pattern_mode: Exclude
+    # Left off on purpose. The malware blocker fetches blocklists from the
+    # internet, and the download cleaner only acts on seeding rules that do
+    # not exist until someone defines them -- so both would be either broken
+    # or inert in a van. Flip them in media.yml once there is a reason to.
+    malware_blocker:
+      enabled: false
+    download_cleaner:
+      enabled: false
+    general:
+      # Both of these phone home. With no uplink the status check fails every
+      # few minutes and fills the log with connection stack traces that look
+      # like a fault -- that is the "cleanuparr-status.pages.dev" noise.
+      status_check_enabled: false
+      display_support_banner: false
+
+  # ---------------------------------------------------------------------------
   # SERVICES
   # ---------------------------------------------------------------------------
   # ---------------------------------------------------------------------------

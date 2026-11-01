@@ -128,6 +128,40 @@ sudo python3 -c 'import json; print(json.load(
 
 Byparr, Recyclarr and Unpackerr have no web UI and are not routed.
 
+## Cleanuparr
+
+Cleanuparr is configured over its REST API rather than by rendering a file,
+because it has neither: its settings live in its own SQLite database, and
+upstream dropped environment-variable configuration when v2 moved everything
+into the UI. `PORT`, `PUID`, `PGID`, `UMASK`, `TZ` and the database variables
+are the only environment knobs left, which is also why its `PUID` must be
+pinned explicitly — the image defaults to 1000 and then cannot create a file
+in the `media`-owned config directory.
+
+`tasks/configure/cleanuparr.yml` registers qBittorrent as its download client,
+registers Sonarr, Radarr and Lidarr with the same API keys Ansible seeded them
+with, and switches the queue cleaner on. Defaults live under
+`media_acquisition.cleanuparr_wiring`.
+
+Three things that are easy to get wrong:
+
+- **The API key is the inverse of the *arr keys.** Ansible chooses those and
+  seeds them before the container starts; Cleanuparr generates its own when
+  the first account is created. So the role reads it back out of Cleanuparr's
+  database read-only. Create the account once in the UI — until then the role
+  reports Cleanuparr as unwired and changes nothing. Set
+  `vault_media_api_keys.cleanuparr` to pin it in the repo instead.
+- **A fresh install does nothing.** Every strike counter ships at `0`, which
+  disables that category, so the container looks perfectly healthy and cleans
+  up nothing.
+- **`failed_import_pattern_mode` must be `Exclude` while the pattern list is
+  empty.** `Include` means *only* failed imports matching a pattern are
+  struck, so an empty list under `Include` is rejected outright and the whole
+  queue-cleaner section refuses to save.
+
+Chaptarr is absent on purpose: Cleanuparr has no Chaptarr application type,
+and its Readarr type is not a drop-in for it.
+
 ## How The Wiring Works
 
 Ansible reaches the containers **through Traefik with an explicit `Host`

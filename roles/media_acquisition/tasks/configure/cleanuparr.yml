@@ -1,0 +1,302 @@
+---
+# ==============================================================================
+# CLEANUPARR
+#
+# Cleanuparr is the only application in this stack that cannot be configured
+# by rendering a file. Its settings live in its own SQLite database, it has no
+# config file, and upstream dropped environment-variable configuration when v2
+# moved everything into the UI -- PORT/PUID/PGID/UMASK/TZ and the database
+# variables are all that is left. So it is configured here over its REST API.
+#
+# AUTHENTICATION IS THE INVERSE OF THE *ARRS
+#
+# Ansible chooses the *arr API keys and seeds them before those containers
+# first start, which is what lets the rest of the wiring happen with no
+# clicking. Cleanuparr generates its own key when the first account is
+# created, so Ansible cannot invent it -- it has to be handed one, via
+# vault_media_api_keys.cleanuparr. With no key this file reports Cleanuparr as
+# unwired and writes nothing, exactly like an app whose API never answered.
+#
+# Every write is read-modify-write: GET the section, merge the keys this role
+# owns, and PUT only when the merge actually differs. Anything configured in
+# the UI that this role does not mention is therefore left alone, and a
+# re-run reports no change.
+# ==============================================================================
+
+- name: Read the Cleanuparr account API key from its own database
+  # Cleanuparr generates this key itself when the first account is created,
+  # so unlike every *arr key Ansible cannot choose it ahead of time -- and no
+  # API call hands it over without already holding it. It is therefore read
+  # out of the application's own database, read-only, rather than asked of a
+  # human: that keeps the stack deployable with no copy-and-paste step and no
+  # second copy of the secret living in the vault.
+  #
+  # Never written -- Cleanuparr owns this file. Returns empty when nobody has
+  # created the account yet, which is not an error: the steps below then
+  # report Cleanuparr as unwired and change nothing.
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
+      - "-c"
+      - |
+        import sqlite3, sys
+        try:
+            db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+            row = db.execute("select api_key from users limit 1").fetchone()
+        except Exception:
+            row = None
+        sys.stdout.write(row[0] if row and row[0] else "")
+      - "{{ media.appdata_dir }}/cleanuparr/users.db"
+  register: cleanuparr_key_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Resolve the Cleanuparr API key
+  # A vault entry still wins, so the key can be pinned in the repo instead.
+  ansible.builtin.set_fact:
+    cleanuparr_key: >-
+      {{
+        (media_secrets | default({})).cleanuparr
+        | default(cleanuparr_key_probe.stdout | default('') | trim, true)
+      }}
+  no_log: true
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Record Cleanuparr as unwired when no API key is available
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + ['cleanuparr: no API key. Copy it from Settings -> Account -> API Key
+            into vault_media_api_keys.cleanuparr and re-run with
+            --tags media_config.']
+      }}
+  when: cleanuparr_key | length == 0
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Wire Cleanuparr
+  when: cleanuparr_key | length > 0
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+  block:
+    - name: Define the Cleanuparr API endpoint
+      # Through Traefik with a Host header, like every other app here. The
+      # /api prefix is served by the cleanuparr-api router, which carries no
+      # forward-auth middleware, so an X-Api-Key request is not intercepted
+      # by Authelia and bounced to a login page.
+      ansible.builtin.set_fact:
+        cleanuparr_url: "{{ media_api_base }}/api/configuration"
+        cleanuparr_headers:
+          Host: "cleanuparr.{{ frey.local_domain }}"
+          X-Api-Key: "{{ cleanuparr_key }}"
+      no_log: true
+
+    - name: Wait for the Cleanuparr API to become available
+      ansible.builtin.uri:
+        url: "{{ media_api_base }}/api/auth/status"
+        method: GET
+        headers:
+          Host: "cleanuparr.{{ frey.local_domain }}"
+        status_code: 200
+        timeout: "{{ media_acquisition.configure.api_timeout }}"
+      register: cleanuparr_ready
+      retries: "{{ media_acquisition.configure.api_retries }}"
+      delay: "{{ media_acquisition.configure.api_delay }}"
+      until: cleanuparr_ready.status | default(0) == 200
+      failed_when: false
+      changed_when: false
+
+    - name: Record Cleanuparr as unwired when its API never answered
+      ansible.builtin.set_fact:
+        media_wiring_failures: "{{ media_wiring_failures + ['cleanuparr: API never answered'] }}"
+      when: cleanuparr_ready.status | default(0) != 200
+
+    - name: Configure Cleanuparr
+      when: cleanuparr_ready.status | default(0) == 200
+      block:
+        # ----------------------------------------------------------------------
+        # GENERAL
+        # ----------------------------------------------------------------------
+        - name: Read the Cleanuparr general configuration
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/general"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_general
+          changed_when: false
+          no_log: true
+
+        - name: Define the desired Cleanuparr general configuration
+          ansible.builtin.set_fact:
+            cleanuparr_general_want: >-
+              {{
+                cleanuparr_general.json | combine({
+                  'statusCheckEnabled': media_acquisition.cleanuparr_wiring.general.status_check_enabled,
+                  'displaySupportBanner': media_acquisition.cleanuparr_wiring.general.display_support_banner,
+                }, recursive=True)
+              }}
+
+        - name: Align the Cleanuparr general configuration
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/general"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_general_want }}"
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          when: cleanuparr_general_want != cleanuparr_general.json
+          no_log: true
+
+        # ----------------------------------------------------------------------
+        # DOWNLOAD CLIENT
+        # ----------------------------------------------------------------------
+        - name: Read the Cleanuparr download clients
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/download_client"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_clients
+          changed_when: false
+          no_log: true
+
+        - name: Register qBittorrent with Cleanuparr
+          # Username and password, never apiKey: Cleanuparr validates that it
+          # was handed one or the other and rejects a payload carrying both.
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/download_client"
+            method: POST
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body:
+              enabled: true
+              name: "{{ media_acquisition.cleanuparr_wiring.download_client.name }}"
+              typeName: "{{ media_acquisition.cleanuparr_wiring.download_client.type_name }}"
+              host: "{{ media_acquisition.cleanuparr_wiring.download_client.host }}"
+              username: "{{ media_acquisition.services.qbittorrent.web_username }}"
+              password: "{{ media_secrets.qbittorrent_password }}"
+              urlBase: ""
+            status_code: [200, 201]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          when:
+            - media_acquisition.services.qbittorrent.enabled | bool
+            - media_acquisition.cleanuparr_wiring.download_client.name
+              not in (cleanuparr_clients.json.clients | default([]) | map(attribute='name') | list)
+          no_log: true
+
+        # ----------------------------------------------------------------------
+        # THE *ARR APPLICATIONS
+        # ----------------------------------------------------------------------
+        - name: Read the configured Cleanuparr application instances
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/{{ item.key }}"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_arrs
+          changed_when: false
+          no_log: true
+          loop: "{{ media_acquisition.cleanuparr_wiring.instances | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          when: media_acquisition.services[item.key].enabled | bool
+
+        - name: Register the *arr applications with Cleanuparr
+          # One instance per application, named after it. Cleanuparr reaches
+          # them on the stack's internal network by container hostname, which
+          # is why no Host header or Traefik route is involved here.
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/{{ item.item.key }}/instances"
+            method: POST
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            # Built as one Jinja expression so `version` stays a JSON number.
+            # Written as an ordinary YAML mapping its value templates to the
+            # string "4", and Cleanuparr rejects that with a 400.
+            body: >-
+              {{
+                {
+                  'name': item.item.key,
+                  'url': 'http://' ~ media_acquisition.services[item.item.key].hostname
+                         ~ ':' ~ media_acquisition.services[item.item.key].port,
+                  'apiKey': media_secrets[item.item.key],
+                  'version': item.item.value.version | int,
+                  'enabled': true,
+                }
+              }}
+            status_code: [200, 201]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          loop: "{{ cleanuparr_arrs.results | default([]) }}"
+          loop_control:
+            label: "{{ item.item.key | default('skipped') }}"
+          when:
+            - not (item.skipped | default(false))
+            - item.item.key not in (item.json.instances | default([]) | map(attribute='name') | list)
+          no_log: true
+
+        # ----------------------------------------------------------------------
+        # JOBS
+        #
+        # A fresh install ships with every strike counter at 0, which disables
+        # that category -- so the container runs, reports healthy, and cleans
+        # up nothing at all until these are set.
+        # ----------------------------------------------------------------------
+        - name: Read the Cleanuparr queue cleaner configuration
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/queue_cleaner"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_queue
+          changed_when: false
+          no_log: true
+
+        - name: Define the desired Cleanuparr queue cleaner configuration
+          ansible.builtin.set_fact:
+            cleanuparr_queue_want: >-
+              {{
+                cleanuparr_queue.json | combine({
+                  'enabled': media_acquisition.cleanuparr_wiring.queue_cleaner.enabled,
+                  'cronExpression': media_acquisition.cleanuparr_wiring.queue_cleaner.cron_expression,
+                  'downloadingMetadataMaxStrikes':
+                    media_acquisition.cleanuparr_wiring.queue_cleaner.downloading_metadata_max_strikes,
+                  'failedImport': {
+                    'maxStrikes': media_acquisition.cleanuparr_wiring.queue_cleaner.failed_import_max_strikes,
+                    'patternMode': media_acquisition.cleanuparr_wiring.queue_cleaner.failed_import_pattern_mode,
+                  },
+                  'errored': {
+                    'maxStrikes': media_acquisition.cleanuparr_wiring.queue_cleaner.errored_max_strikes,
+                  },
+                }, recursive=True)
+              }}
+
+        - name: Align the Cleanuparr queue cleaner
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/queue_cleaner"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_queue_want }}"
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          when: cleanuparr_queue_want != cleanuparr_queue.json
+          no_log: true
