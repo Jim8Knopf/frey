@@ -14,6 +14,11 @@ appConfig:
       adminGroup: frey_admins
       scope: openid profile email groups
 sections:
+  - name: Device setup
+    items:
+      - title: Install Frey root certificate
+        description: Download the certificate and read setup instructions
+        url: {{ ('https://' ~ dashy.host ~ '.' ~ frey.service_domain ~ '/setup') | to_json }}
 {% for section in dashy.sections %}
 {% set entries = section.services | select('in', identity_services) | list %}
 {% set visible = [] %}

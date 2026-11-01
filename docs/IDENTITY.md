@@ -15,6 +15,17 @@ sent back over HTTP, and it refuses plain-HTTP redirect URIs for public OIDC
 clients outright. So Frey runs its own certificate authority, and your devices
 have to be told to trust it once.
 
+On a new device connected to FreyHub, open **http://dashy.hub.frey/setup**
+for a download and device-specific instructions. The page is available before
+sign-in or certificate trust. Because HTTP cannot authenticate the download,
+compare its SHA-256 fingerprint with a value obtained from the administrator
+through a trusted channel before installing it. The administrator can obtain it
+from the controller with:
+
+```bash
+openssl x509 -in ca/frey-root-ca.crt -noout -fingerprint -sha256
+```
+
 The certificate is fetched back beside the playbook on every deploy:
 
 ```bash
