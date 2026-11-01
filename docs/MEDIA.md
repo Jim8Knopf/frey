@@ -291,6 +291,54 @@ Pointing the stack at a resolver that drops AAAA removes the failure, and
 because the resolver is ours, a campground's broken or filtering DNS can no
 longer disable indexers either.
 
+### When the network will not let us reach a public resolver
+
+Preferring our own upstreams assumes we can reach them. Libraries, schools,
+hotels and corporate guest networks routinely **block outbound port 53 to
+everything except their own resolver**, to force their filtering. On such a
+network all three upstreams time out, dnsmasq has nowhere to forward, and
+every name lookup in the acquisition stack fails at once — not one indexer,
+all of them, in every app.
+
+**Why it resists diagnosis:** NetworkManager hands the *host* the network's
+resolver, so `curl`, `ping` and `getent` on the Pi all work perfectly while
+the containers resolve nothing. It reads as "Prowlarr is broken", then
+"Lidarr too", then "all of them", and sends you reading application logs.
+`frey-media-dns` does go unhealthy, but `FreyContainerUnhealthy` is a warning,
+so it arrives silently.
+
+`frey-media-dns-upstream` handles it: it prefers the configured upstreams and
+falls back to the resolvers the uplink's DHCP handed us only while none of
+ours answers, going back the moment they return. Every candidate is probed
+**from inside the resolver container** before it is written, because the
+container's egress is NAT'd and firewalled differently from the host's —
+"the host can reach it" is not evidence the container can. `filter-AAAA` is
+unaffected either way, since it applies to the answer, not the upstream.
+
+It runs from the NetworkManager dispatcher on uplink events and from a
+10-minute timer, which is what notices recovery — a network that starts
+blocking 53 mid-stay, or preferred upstreams coming back, changes no interface
+state and produces no event.
+
+```bash
+# What is it using, and what can it actually reach?
+frey-media-dns-upstream status
+
+# Force a re-selection now rather than waiting for the timer.
+sudo frey-media-dns-upstream apply
+
+# Which mode is live, for Prometheus:
+#   frey_media_dns_upstream_mode{mode="preferred"} 1   -> ours
+#   frey_media_dns_upstream_mode{mode="uplink"}    1   -> on the fallback
+#   frey_media_dns_upstream_mode{mode="none"}      1   -> nothing resolves
+curl -s localhost:9100/metrics | grep frey_media_dns
+```
+
+Set `media_acquisition.dns.fallback_to_uplink: false` to refuse the fallback
+and keep a fixed upstream list — at the cost of resolving nothing at all on
+these networks. The selection logic has offline tests:
+`scripts/test-media-dns-upstream.py`.
+
 ### When an indexer fails anyway
 
 ```bash
@@ -311,6 +359,7 @@ Three causes, in rough order of likelihood:
 | --- | --- | --- |
 | One indexer fails forever, others fine | its public domain died | check the hostname in Prowlarr's log against the definition's `links`, then drop it from `media_indexers` or let Prowlarr fall through to a mirror |
 | `403` or `Http request timed out` | Cloudflare challenge | the indexer needs `cloudflare: true` in `media_indexers`; if it already has it, Byparr may be solving slower than `request_timeout` — Byparr logs the real duration |
+| Every indexer fails at once, in every app, while the Pi itself resolves fine | the resolver cannot reach any upstream — usually a network blocking outbound port 53 | `frey-media-dns-upstream status`, then `sudo frey-media-dns-upstream apply` |
 | Every indexer fails at once | the resolver is down, or there is no uplink | `docker ps --filter name=frey-media-dns`, then `frey-media-gate status` |
 
 A Cloudflare solve on a Pi 5 genuinely takes 30–70 seconds, which is why

@@ -1,0 +1,17 @@
+[Unit]
+# Managed by Ansible role: media_acquisition
+Description=Frey media resolver upstream selection (prefer ours, fall back to the uplink's)
+Documentation=file:///opt/frey/stacks/media_acquisition
+After=docker.service NetworkManager.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-media-dns-upstream apply
+# A failure here must never block boot. It also must never look successful
+# when it was not, so unlike the gate this does not launder exit 1 into
+# success - there is a metric and a journal line either way.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
