@@ -19,11 +19,12 @@ sections:
       - title: Install Frey root certificate
         description: Download the certificate and read setup instructions
         url: {{ ('https://' ~ dashy.host ~ '.' ~ frey.service_domain ~ '/setup') | to_json }}
+{% set monitoring_switches = {'grafana': monitoring_enable.grafana, 'prometheus': monitoring_enable.metrics, 'alertmanager': monitoring_enable.alerting, 'dockge': monitoring_enable.dockge} %}
 {% for section in dashy.sections %}
 {% set entries = section.services | select('in', identity_services) | list %}
 {% set visible = [] %}
 {% for name in entries %}
-{% set enabled = media_enable[name] if name in media_enable else (monitoring_enable.grafana if name == 'grafana' else (monitoring_enable.metrics if name == 'prometheus' else (monitoring_enable.alerting if name == 'alertmanager' else true))) %}
+{% set enabled = media_enable.get(name, monitoring_switches.get(name, true)) %}
 {% if enabled %}{% set _ = visible.append(name) %}{% endif %}
 {% endfor %}
 {% if visible | length > 0 %}
@@ -41,7 +42,7 @@ sections:
 {% set assigned = dashy.sections | map(attribute='services') | flatten %}
 {% set other = [] %}
 {% for name in identity_services if name not in assigned and name != 'dashy' %}
-{% if (media_enable[name] | default(true)) %}{% set _ = other.append(name) %}{% endif %}
+{% if media_enable.get(name, monitoring_switches.get(name, true)) %}{% set _ = other.append(name) %}{% endif %}
 {% endfor %}
 {% if other | length > 0 %}
   - name: Other services

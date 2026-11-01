@@ -1,0 +1,47 @@
+---
+security_baseline:
+  packages:
+    - ufw
+    - fail2ban
+  firewall:
+    enabled: true
+    downstream_interface: "{{ network_gateway.downstream.interface }}"
+    upstream_interface: "{{ network_gateway.upstream.interface }}"
+    allow_ssh_from_control_interface: true
+    downstream_tcp_ports:
+      - 22
+      - 53
+      - 80
+      - 443
+    downstream_udp_ports:
+      - 53
+      - 67
+    allow_gateway_routing: true
+  # Keep the complete SSH block and trusted exemptions: this Pi has no console.
+  ssh:
+    manage_config: true
+    config_file: /etc/ssh/sshd_config.d/10-frey-ssh-access.conf
+    legacy_config_files:
+      - /etc/ssh/sshd_config.d/10-frey-resilience.conf
+    login_grace_time: 30
+    max_startups: "30:60:200"
+    per_source_max_startups: 60
+    per_source_net_block_size: "32:128"
+    trusted_max_auth_tries: 20
+  trusted:
+    enabled: true
+    networks:
+      - "{{ network_gateway.downstream.network_cidr }}"
+    include_loopback: true
+    # Trusted machines that are not pinned devices go here.
+    addresses: []
+  fail2ban:
+    enabled: true
+  sysctl:
+    net.ipv4.tcp_syncookies: "1"
+    net.ipv4.conf.all.rp_filter: "2"
+    net.ipv4.conf.default.rp_filter: "2"
+    net.ipv4.conf.all.accept_redirects: "0"
+    net.ipv4.conf.default.accept_redirects: "0"
+    net.ipv4.conf.all.send_redirects: "0"
+    net.ipv4.icmp_echo_ignore_broadcasts: "1"

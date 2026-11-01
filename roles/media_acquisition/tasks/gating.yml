@@ -1,0 +1,142 @@
+---
+- name: Install the media gating script
+  ansible.builtin.template:
+    src: frey-media-gate.sh.j2
+    dest: /usr/local/bin/frey-media-gate
+    owner: root
+    group: root
+    mode: "0755"
+  tags:
+    - media
+    - media_acquisition
+    - media_gating
+
+- name: Ensure the Frey configuration directory exists
+  ansible.builtin.file:
+    path: /etc/frey
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  tags:
+    - media
+    - media_acquisition
+    - media_gating
+    - audiobook_import
+
+- name: Install media gating credentials
+  ansible.builtin.template:
+    src: media-gate.env.j2
+    dest: /etc/frey/media-gate.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  tags:
+    - media
+    - media_acquisition
+    - media_gating
+    - audiobook_import
+
+- name: Install completed audiobook importer
+  ansible.builtin.template:
+    src: frey-audiobook-import.py.j2
+    dest: /usr/local/bin/frey-audiobook-import
+    owner: root
+    group: root
+    mode: "0755"
+    validate: "python3 -m py_compile %s"
+  tags:
+    - media
+    - media_acquisition
+    - audiobook_import
+
+- name: Install audiobook import units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-audiobook-import.service
+    - frey-audiobook-import.timer
+  register: audiobook_import_units
+  tags:
+    - media
+    - media_acquisition
+    - audiobook_import
+
+- name: Enable audiobook import timer
+  ansible.builtin.systemd:
+    name: frey-audiobook-import.timer
+    daemon_reload: "{{ audiobook_import_units.changed }}"
+    enabled: "{{ media_enable.audiobookrequest | bool and media_enable.audiobookshelf | bool and media_acquisition.services.qbittorrent.enabled | bool }}"
+    state: "{{ 'started' if (media_enable.audiobookrequest | bool and media_enable.audiobookshelf | bool and media_acquisition.services.qbittorrent.enabled | bool) else 'stopped' }}"
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+    - audiobook_import
+
+- name: Install the NetworkManager dispatcher hook for media gating
+  ansible.builtin.template:
+    src: 90-frey-media-gate.j2
+    dest: /etc/NetworkManager/dispatcher.d/90-frey-media-gate
+    owner: root
+    group: root
+    # NetworkManager refuses to run dispatcher scripts that are writable by
+    # anyone other than root.
+    mode: "0755"
+  when: media_acquisition.uplink_gating.mode != 'off'
+  tags:
+    - media
+    - media_acquisition
+    - media_gating
+
+- name: Remove the media gating dispatcher hook when gating is off
+  ansible.builtin.file:
+    path: /etc/NetworkManager/dispatcher.d/90-frey-media-gate
+    state: absent
+  when: media_acquisition.uplink_gating.mode == 'off'
+  tags:
+    - media
+    - media_acquisition
+    - media_gating
+
+- name: Install media gating systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-media-gate.service
+    - frey-media-gate.timer
+  notify: Reload systemd for media gating
+  tags:
+    - media
+    - media_acquisition
+    - media_gating
+
+- name: Apply systemd unit changes
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - media
+    - media_acquisition
+    - media_gating
+    - media_config
+
+- name: Enable the media gating timer
+  ansible.builtin.systemd:
+    name: frey-media-gate.timer
+    enabled: "{{ media_acquisition.uplink_gating.mode != 'off' }}"
+    state: "{{ 'started' if media_acquisition.uplink_gating.mode != 'off' else 'stopped' }}"
+  # Check mode does not write the unit file, so systemd cannot see a unit to
+  # enable and the task would fail on a run that changes nothing.
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+    - media_gating

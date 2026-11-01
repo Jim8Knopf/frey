@@ -1,0 +1,60 @@
+---
+- name: Deploy the monitoring compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ monitoring.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+    validate: "docker compose -f %s config --quiet"
+  register: monitoring_compose
+  no_log: true
+  tags: [monitoring, metrics]
+
+- name: Migrate Dockge and start monitoring
+  ansible.builtin.import_tasks: migrate_dockge.yml
+  tags: [monitoring, metrics]
+
+- name: Pull and recreate pinned monitoring images
+  # Gated on a variable rather than a `never` tag, matching the media modules:
+  #     -e monitoring_update=true
+  community.docker.docker_compose_v2:
+    project_src: "{{ monitoring.stack_dir }}"
+    state: present
+    pull: always
+    recreate: auto
+    timeout: 600
+  when:
+    - not ansible_check_mode
+    - monitoring_update | default(false) | bool
+  tags: [monitoring, metrics, monitoring_update]
+
+- name: Wait for the stack to become healthy
+  # Checked through Docker rather than over the network: nothing here
+  # publishes a host port, and ufw's default-deny INPUT blocks a Docker bridge
+  # from reaching the host anyway (verified on this Pi), so there is no path
+  # from an Ansible task to these ports except through the containers.
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - '{{ "{{" }}.State.Health.Status{{ "}}" }}'
+      - "{{ item }}"
+  loop: >-
+    {{
+      monitoring.services | dict2items
+      | selectattr('value.enabled', 'truthy')
+      | map(attribute='value.container_name')
+      | list
+    }}
+  loop_control:
+    label: "{{ item }}"
+  register: monitoring_health
+  retries: "{{ monitoring.configure.health_retries }}"
+  delay: "{{ monitoring.configure.health_delay }}"
+  until: monitoring_health.stdout in ['healthy', '<no value>', '']
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+  tags: [monitoring, metrics]

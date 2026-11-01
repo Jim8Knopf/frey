@@ -1,34 +1,36 @@
 ---
-# ==============================================================================
-#
-#   FREY MEDIA - SERVICE SETTINGS
-#
-#   On/off switches and the VPN toggle, all in one place so
-#   you never have to go hunting through the roles for them.
-#
-#   Everything structural - volumes, networks, Traefik labels, API wiring -
-#   stays in roles/media_acquisition/ and roles/media_library/. You should not
-#   need to touch those to run the stack day to day.
-#
-# ------------------------------------------------------------------------------
-#   UPDATING IMAGES
-#
-#   1. See what is out of date:
-#          scripts/media-check-updates.sh
-#   2. Edit media_versions in inventory/group_vars/all/images.yml.
-#   3. Apply, while you still have a connection:
-#          ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-#            --tags media --vault-password-file .vault_pass
-#
-#   Images are pinned on purpose. The old stack used `latest` everywhere,
-#   which means an unattended pull on a campground Wi-Fi can hand you a broken
-#   stack with no internet left to fix it with.
-#
-#   To re-pull the same pinned tags (linuxserver rebuilds them for base-image
-#   security fixes without changing the version):
-#       ansible-playbook ... --tags media_update -e media_update=true
-#
-# ==============================================================================
+# Shared storage, permissions, network and playback policy.
+media:
+  # One /data mount per container keeps imports on the same filesystem for hardlinks.
+  data_dir: "{{ frey.base_dir }}/data"
+  appdata_dir: "{{ frey.base_dir }}/appdata"
+
+  # Single uid/gid shared by every media container, so hardlinks and
+  # permissions work across the whole stack.
+  user:
+    name: media
+    uid: 63342
+    gid: 63342
+  # 002 so group members can write each other's files (umask, not a mode).
+  umask: "002"
+
+  languages:
+    # Primary drives Jellyfin metadata, *arr language profiles and Bazarr.
+    primary: en
+    secondary: de
+    metadata_country: NZ
+
+  network:
+    name: frey_media
+    subnet: 172.28.0.0/16
+
+  # Pi 5 has no hardware video encoder; prefer formats clients can direct-play.
+  clients:
+    direct_play_codecs:
+      - h264
+    max_resolution: 1080p
+    reject_hdr_only: true
+    reject_av1: true
 
 
 # Image versions live in inventory/group_vars/all/images.yml.
@@ -37,48 +39,11 @@
 # leave the indexer list to whatever you add by hand in the UI.
 media_audiobook_public_indexer: true
 
-# ------------------------------------------------------------------------------
-# INDEXERS
-#
-# Ansible adds every indexer listed here to Prowlarr if it is not already
-# there, and Prowlarr pushes them into Sonarr, Radarr, Lidarr and Chaptarr.
-# Add one here rather than in the UI and it survives a rebuild - a
-# hand-added indexer does not, which is how the list quietly drifted before.
-#
-# Existing indexers are never reconfigured or removed. This list is a floor,
-# not a mirror: anything extra you add in the UI is left alone, so the UI
-# stays usable for private trackers whose credentials do not belong in here.
-#
-#   definition  Prowlarr's own name for the source. The exact spelling matters;
-#               it is the `definitionName` from /api/v1/indexer/schema, and
-#               for Cardigann sources it is the filename under
-#               /opt/frey/appdata/prowlarr/Definitions/.
-#   cloudflare  Route this one through Byparr. Only set it where the tracker
-#               actually challenges - a browser solve is slow, and Byparr is
-#               the heaviest container in the stack.
-#   audiobooks  Part of the audiobook set gated by the flag above.
-#
-# A public indexer's domain dies regularly. When one does, Prowlarr keeps
-# using the dead address from its own definition, so the symptom is an
-# indexer that fails forever while every other one works - check
-# `docker logs prowlarr` for the hostname before assuming the stack is at
-# fault. docs/MEDIA.md has the procedure.
-# ------------------------------------------------------------------------------
 media_indexers:
 
   # --- Film and television ----------------------------------------------------
   - name: The Pirate Bay
     definition: thepiratebay
-    # Also carries category 3030 (audiobooks), so Chaptarr sees it too.
-  # base_url pins the address, overriding the one in Prowlarr's own
-  # definition. YTS needs it: the definition's primary link `yts.gg` now
-  # 301-redirects to `web.yts.gg`, and the scraper parses the redirect
-  # landing page instead of a movie list - so it fails with nothing in the
-  # log but a search line, and gets backed off for hours.
-  #
-  # This is the knob to reach for whenever one indexer fails forever while the
-  # rest are fine. Prowlarr's definitions list the alternates:
-  #   grep -A6 '^links:' /opt/frey/appdata/prowlarr/Definitions/<name>.yml
   - name: YTS
     definition: yts
     base_url: https://web.yts.gg/
@@ -111,14 +76,6 @@ media_indexers:
 media_qbittorrent_max_active_downloads: 15
 media_qbittorrent_max_active_torrents: 18
 
-
-
-# ==============================================================================
-# WHICH SERVICES RUN
-#
-# Turning one off stops and removes its container on the next deploy; its data
-# under /opt/frey/appdata is left alone, so turning it back on resumes.
-# ==============================================================================
 media_enable:
 
   # --- Library ---------------------------------------------------------------
@@ -149,45 +106,6 @@ media_enable:
   cleanuparr: true
   unpackerr: true
 
-
-# ==============================================================================
-# VPN
-#
-#   Flip enabled to true, fill in the credentials, and re-deploy:
-#
-#       ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-#         --tags media_acquisition --vault-password-file .vault_pass
-#
-#   WHAT CHANGES WHEN YOU DO
-#
-#   qBittorrent stops having its own network connection and routes entirely
-#   through the Gluetun container (`network_mode: service:gluetun`). If the
-#   tunnel drops, Gluetun's firewall blocks everything - so torrent traffic
-#   cannot leak to the campground's network, it simply stops. That killswitch
-#   is the point of doing it this way rather than pointing qBittorrent at a
-#   proxy.
-#
-#   Ansible re-points the *arrs at the tunnel automatically; nothing else here
-#   needs changing. The qBittorrent web UI stays at qbittorrent.frey.
-#
-#   WHERE THE CREDENTIALS GO
-#
-#   In the vault, never here:
-#       ansible-vault edit inventory/group_vars/all/secrets.yml \
-#         --vault-password-file .vault_pass
-#
-#   WireGuard (preferred - faster, and the only option on some providers):
-#       vault_vpn_wireguard_private_key: "..."
-#       vault_vpn_wireguard_addresses: "10.2.0.2/32"
-#       vault_vpn_wireguard_preshared_key: ""      # optional
-#
-#   OpenVPN:
-#       vault_vpn_openvpn_user: "..."
-#       vault_vpn_openvpn_password: "..."
-#
-#   A deploy with enabled: true and no credentials fails immediately with an
-#   explanatory message rather than silently starting an open tunnel.
-# ==============================================================================
 media_vpn:
   enabled: false
 

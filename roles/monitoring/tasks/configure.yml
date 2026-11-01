@@ -1,0 +1,143 @@
+---
+- name: Deploy the Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ monitoring.config_dir }}/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_prometheus_config
+  when: monitoring_enable.metrics | bool
+  notify: Reload Prometheus
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the alert rules
+  ansible.builtin.template:
+    src: "rules/{{ item }}.rules.yml.j2"
+    dest: "{{ monitoring.config_dir }}/{{ monitoring.prometheus.rules_dir }}/{{ item }}.rules.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - host
+    - gateway
+    - services
+    - monitoring
+  register: monitoring_rules
+  when: monitoring_enable.metrics | bool
+  notify: Reload Prometheus
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Alertmanager configuration
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ monitoring.config_dir }}/alertmanager.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_alertmanager_config
+  when: monitoring_enable.alerting | bool
+  notify: Reload Alertmanager
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the notification relay
+  ansible.builtin.copy:
+    src: alert-relay.py
+    dest: "{{ monitoring.config_dir }}/alert-relay.py"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_relay_script
+  when: monitoring_enable.alerting | bool
+  notify: Restart monitoring relay
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Check the notification relay parses
+  # The relay is bind-mounted rather than built into an image, so there is no
+  # build step to catch a syntax error - it would present as a container that
+  # restarts forever and an alerting chain that silently delivers nothing.
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -m
+      - py_compile
+      - "{{ monitoring.config_dir }}/alert-relay.py"
+  changed_when: false
+  when:
+    - monitoring_enable.alerting | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the blackbox configuration
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: "{{ monitoring.config_dir }}/blackbox.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_blackbox_config
+  when:
+    - monitoring_enable.metrics | bool
+    - monitoring_enable.blackbox | bool
+  notify: Reload blackbox exporter
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Loki configuration
+  ansible.builtin.template:
+    src: loki.yml.j2
+    dest: "{{ monitoring.config_dir }}/loki.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_loki_config
+  when: monitoring_enable.logs | bool
+  notify: Restart Loki
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Alloy configuration
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: "{{ monitoring.config_dir }}/config.alloy"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_alloy_config
+  when: monitoring_enable.logs | bool
+  notify: Restart Alloy
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Grafana datasources
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: "{{ monitoring.config_dir }}/grafana/provisioning/datasources/frey.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_enable.grafana | bool
+  notify: Restart Grafana
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the Grafana dashboard provider
+  ansible.builtin.template:
+    src: grafana-dashboards.yml.j2
+    dest: "{{ monitoring.config_dir }}/grafana/provisioning/dashboards/frey.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_enable.grafana | bool
+  notify: Restart Grafana
+  tags: [monitoring, metrics, monitoring_config]
+
+- name: Deploy the dashboards
+  # Files in this role, not downloads. The archived stack fetched its
+  # dashboards from grafana.com during the deploy, which on a van with no
+  # uplink produced a working metrics database and an empty Grafana.
+  ansible.builtin.copy:
+    src: dashboards/
+    dest: "{{ monitoring.config_dir }}/grafana/dashboards/"
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_enable.grafana | bool
+  notify: Restart Grafana
+  tags: [monitoring, metrics, monitoring_config]

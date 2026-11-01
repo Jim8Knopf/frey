@@ -8,7 +8,7 @@
 # own without touching playback.
 #
 # Shared settings (paths, uid/gid, languages, internal network, client
-# targets) live in inventory/group_vars/all/main.yml under `media`.
+# targets) live in inventory/group_vars/all/media.yml under `media`.
 #
 # IMAGE PINS
 # Every tag below is a concrete version, not `latest`. The old stack used

@@ -130,6 +130,27 @@ networks:
     external: true
 
 services:
+{% if svc.dockge.enabled | bool %}
+  dockge:
+    image: {{ svc.dockge.image }}
+    container_name: {{ svc.dockge.container_name }}
+    hostname: dockge
+    restart: unless-stopped
+    environment:
+      - TZ={{ tz }}
+      - DOCKGE_STACKS_DIR={{ m.dockge.stacks_dir }}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "{{ m.dockge.appdata_dir }}:/app/data"
+      # Compose paths must match the host; Ansible owns these files.
+      - "{{ m.dockge.stacks_dir }}:{{ m.dockge.stacks_dir }}{{ '' if m.dockge.stacks_writable | bool else ':ro' }}"
+    networks:
+      - {{ frey.proxy_network }}
+    mem_limit: {{ svc.dockge.mem_limit }}
+{{ logging() }}
+{{ proxy_labels(monitoring_hosts.dockge, 'dockge', svc.dockge.port) }}
+{% endif %}
+
 {% if svc.prometheus.enabled | bool %}
   # ============================================================================
   # PROMETHEUS - the metrics database and the thing that decides what is wrong

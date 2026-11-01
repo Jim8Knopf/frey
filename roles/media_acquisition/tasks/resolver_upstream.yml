@@ -1,0 +1,97 @@
+---
+- name: Install the media resolver upstream selector
+  ansible.builtin.template:
+    src: frey-media-dns-upstream.sh.j2
+    dest: /usr/local/bin/frey-media-dns-upstream
+    owner: root
+    group: root
+    mode: "0755"
+    validate: "bash -n %s"
+  when: media_acquisition.services.resolver.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_dns
+
+- name: Install media resolver upstream units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-media-dns-upstream.service
+    - frey-media-dns-upstream.timer
+  when: media_acquisition.services.resolver.enabled | bool
+  notify: Reload systemd for media resolver upstreams
+  tags:
+    - media
+    - media_acquisition
+    - media_dns
+
+- name: Install the NetworkManager dispatcher hook for resolver upstreams
+  ansible.builtin.template:
+    src: 89-frey-media-dns-upstream.j2
+    dest: /etc/NetworkManager/dispatcher.d/89-frey-media-dns-upstream
+    owner: root
+    group: root
+    # NetworkManager refuses to run dispatcher scripts that are writable by
+    # anyone other than root.
+    mode: "0755"
+  when:
+    - media_acquisition.services.resolver.enabled | bool
+    - media_acquisition.dns.fallback_to_uplink | default(true) | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_dns
+
+- name: Remove the resolver upstream dispatcher hook when fallback is off
+  ansible.builtin.file:
+    path: /etc/NetworkManager/dispatcher.d/89-frey-media-dns-upstream
+    state: absent
+  when: not (media_acquisition.dns.fallback_to_uplink | default(true) | bool)
+  tags:
+    - media
+    - media_acquisition
+    - media_dns
+
+- name: Apply resolver upstream unit changes
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - media
+    - media_acquisition
+    - media_dns
+
+- name: Enable the media resolver upstream timer
+  ansible.builtin.systemd:
+    name: frey-media-dns-upstream.timer
+    enabled: "{{ want_dns_timer }}"
+    state: "{{ 'started' if want_dns_timer else 'stopped' }}"
+  vars:
+    want_dns_timer: >-
+      {{ (media_acquisition.services.resolver.enabled | bool)
+         and (media_acquisition.dns.fallback_to_uplink | default(true) | bool) }}
+  # Check mode does not write the unit file, so systemd cannot see a unit to
+  # enable and the task would fail on a run that changes nothing.
+  when: not ansible_check_mode
+  tags:
+    - media
+    - media_acquisition
+    - media_dns
+
+- name: Select resolver upstreams now
+  ansible.builtin.command:
+    cmd: /usr/local/bin/frey-media-dns-upstream apply
+  register: media_dns_upstream_apply
+  changed_when: false
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - media_acquisition.services.resolver.enabled | bool
+    - media_acquisition.dns.fallback_to_uplink | default(true) | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_dns

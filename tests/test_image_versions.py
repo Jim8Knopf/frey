@@ -15,13 +15,13 @@ class ImageVersionsTest(unittest.TestCase):
         for group in ('media_versions', 'monitoring_versions', 'identity_versions'):
             self.assertTrue(central[group])
             self.assertTrue(all(isinstance(value, str) and value for value in central[group].values()), group)
-        for group in ('traefik_version', 'dockge_version'):
+        for group in ('traefik_version', 'dashy_version'):
             self.assertTrue(isinstance(central[group], str) and central[group])
         for path in (ROOT / 'inventory/group_vars/all').glob('*.yml'):
             if path.name in ('images.yml', 'secrets.yml'):
                 continue
             variables = yaml.safe_load(path.read_text()) or {}
-            for group in ('media_versions', 'monitoring_versions', 'identity_versions', 'traefik_version', 'dockge_version'):
+            for group in ('media_versions', 'monitoring_versions', 'identity_versions', 'traefik_version', 'dashy_version'):
                 self.assertNotIn(group, variables, str(path))
 
     def test_role_references_have_a_tag(self):

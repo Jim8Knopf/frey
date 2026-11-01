@@ -175,7 +175,7 @@ fi
 echo "Containers"
 # -----------------------------------------------------------------------------
 running="$(ssh_pi "sudo docker ps --filter label=frey.module=monitoring --format '{{.Names}}'")"
-expected="prometheus alertmanager alert-relay node-exporter cadvisor blackbox loki alloy grafana"
+expected="prometheus alertmanager alert-relay node-exporter cadvisor blackbox loki alloy grafana dockge"
 
 for container in ${expected}; do
   if grep -qx "${container}" <<< "${running}"; then
@@ -480,6 +480,7 @@ if not pinned:
 # tags are not contiguous - v0.53.0 and v0.54.0 were never published - so
 # "bump to the next number" is not safe for it.
 REPOS = {
+    "dockge": ("hub", "louislam/dockge", r"\d+\.\d+\.\d+"),
     "prometheus": ("hub", "prom/prometheus", r"v\d+\.\d+\.\d+"),
     "alertmanager": ("hub", "prom/alertmanager", r"v\d+\.\d+\.\d+"),
     "node_exporter": ("hub", "prom/node-exporter", r"v\d+\.\d+\.\d+"),

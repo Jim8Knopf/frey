@@ -7,7 +7,6 @@
 # Core services
 traefik_version: "v3.7.16"
 dashy_version: "4.7.0"
-dockge_version: "1.5.0"
 
 identity_versions:
   authelia: "4.39.28"
@@ -60,6 +59,7 @@ media_versions:
   gluetun: "v3.41.3"
 
 monitoring_versions:
+  dockge: "1.5.0"
   prometheus: "v3.15.1"
   alertmanager: "v0.34.1"
   node_exporter: "v1.12.1"

@@ -24,7 +24,7 @@ Day-to-day knobs live in **`inventory/group_vars/all/media.yml`**:
 `media_vpn` (the tunnel). You should not need to edit this role to run the
 stack.
 
-Shared values come from `media` in `inventory/group_vars/all/main.yml`:
+Shared values come from `media` in `inventory/group_vars/all/media.yml`:
 `data_dir`, `appdata_dir`, `user.{name,uid,gid}`, `umask`, `languages`,
 `network.{name,subnet}`. Structure lives in `defaults/main.yml`.
 

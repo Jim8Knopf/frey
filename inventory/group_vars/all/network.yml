@@ -1,0 +1,61 @@
+---
+network_gateway:
+  upstream:
+    enabled: true
+    interface: wlan1
+    # Join open networks nobody declared - the campground/cafe case.
+    # `networks` below can only cover SSIDs known in advance, because
+    # NetworkManager never auto-connects to a profile that does not exist.
+    # NetworkManager handles declared networks; open selection runs when down.
+    # Full knobs in roles/network_gateway/defaults/main.yml.
+    autojoin_open:
+      enabled: true
+      # Try even very weak open networks and retry failed associations soon.
+      min_signal: 0
+      failure_backoff_seconds: 120
+      # Slow or filtered internet can fail connectivity checks: stay joined.
+      unusable_grace_seconds: 0
+      ssid_denylist: []
+    portal:
+      enabled: true
+      allowlist:
+        # Aotearoa People's Network Kaharoa - the public library Wi-Fi.
+        # WPA2 with a password (so it is in vault_uplink_networks, not
+        # autojoin_open's open-network selector) plus a terms-only portal.
+        - "APNK Library"
+    route_metric: 100
+    country: NZ
+    # Known networks, declared in the vault so a rebuild reproduces them.
+    # NetworkManager joins whichever is in range; none in range is fine.
+    networks: "{{ vault_uplink_networks | default([]) }}"
+
+  downstream:
+    enabled: true
+    mode: ap
+    interface: wlan0
+    connection_name: frey-hub-ap
+    address: 10.20.0.1
+    prefix: 24
+    netmask: 255.255.255.0
+    network_cidr: 10.20.0.0/24
+    dhcp_range_start: 10.20.0.50
+    dhcp_range_end: 10.20.0.150
+    dhcp_lease_time: 12h
+    domain: "{{ frey.local_domain }}"
+    ap:
+      ssid: FreyHub
+      password: "{{ vault_freyhub_ap_password | default('') }}"
+      country: NZ
+      # 2.4 GHz channel 6: non-DFS, widest client support, and it carries
+      # through a van body better than 5 GHz. Once the AP has proven stable,
+      # switching to band 'a' channel 36 (also non-DFS in NZ) roughly
+      # trebles throughput for media streaming at shorter range.
+      band: bg
+      channel: 6
+      hidden: false
+
+  safety:
+    allow_reconfigure_control_interface: false
+    rollback:
+      enabled: true
+      timeout_seconds: 600

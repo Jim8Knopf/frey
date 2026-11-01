@@ -123,7 +123,7 @@ deal. The run prints the URLs and API keys to paste in.
 
 ## Required Variables
 
-Shared values come from `media` in `inventory/group_vars/all/main.yml`.
+Shared values come from `media` in `inventory/group_vars/all/media.yml`.
 Everything else is in `defaults/main.yml`. No vault entries are required;
 the Jellyfin admin password and Jellystat's secrets are generated on first
 deploy into `/opt/frey/appdata/.media-keys.json` (mode 0600).
