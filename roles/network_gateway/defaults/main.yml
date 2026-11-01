@@ -199,6 +199,23 @@ network_gateway:
         # uplink interface while it is still healthy.
         usb_id: "0bda:c811"
         kernel_module: rtw88_8821cu
+        # How long NetworkManager may go without FINISHING a scan, while
+        # the uplink is disconnected, before the radio counts as wedged.
+        #
+        # This is the one case where "disconnected" is our problem rather
+        # than the autojoin timer's. The adapter can stop completing scans
+        # while still sitting on the bus with a netdev and a managed state,
+        # and then nothing recovers it: wpa_supplicant repeats "Reject scan
+        # trigger since one is already pending", NetworkManager never sees
+        # an SSID in scan results, and autoconnect cannot fire however many
+        # retries the profile has left. Observed 2026-11-02 as a 3h16m
+        # outage with a perfectly healthy-looking wlan1.
+        #
+        # A radio parked somewhere genuinely remote still finishes its scans
+        # and simply finds nothing, so a frozen scan clock - not an empty
+        # scan result - is what tells a wedged scan engine from an empty sky.
+        # Set to 0 to disable this check and only watch for hardware faults.
+        scan_stall_seconds: 600
 
   # ---------------------------------------------------------------
   # Downstream: FreyHub. This is the critical always-on service.

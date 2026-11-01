@@ -11,7 +11,16 @@
   this host has no console. The task that renders this validates that root=
   survived before replacing the file, and keeps a backup.
 -#}
-{%- set managed_keys = rpi_nvme.cmdline.params | map('regex_replace', '=.*$', '') | list -%}
+{#-
+  Disabling the host memory buffer is escalation step 3 and off by default, so
+  it is appended here rather than sitting in params as a token that is usually
+  wrong. Its key then becomes managed, which is what drops the firmware's own
+  `nvme.max_host_mem_size_mb=32`. While it stays off the key is unmanaged and
+  the firmware value is preserved untouched. See rpi_nvme.hmb in defaults.
+-#}
+{%- set hmb = ['nvme.max_host_mem_size_mb=0'] if (rpi_nvme.hmb.disable | default(false) | bool) else [] -%}
+{%- set params = rpi_nvme.cmdline.params + hmb -%}
+{%- set managed_keys = params | map('regex_replace', '=.*$', '') | list -%}
 {%- set managed_re = '^(' ~ (managed_keys | map('regex_escape') | join('|')) ~ ')=' -%}
 {%- set kept = rpi_nvme_cmdline_tokens.split() | reject('match', managed_re) | list -%}
-{{ (kept + rpi_nvme.cmdline.params) | join(' ') }}
+{{ (kept + params) | join(' ') }}

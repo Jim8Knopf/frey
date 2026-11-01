@@ -76,6 +76,49 @@ rpi_nvme:
       - nvme_core.default_ps_max_latency_us=0
       - pcie_aspm.policy=performance
       # -----------------------------------------------------------------
+      # WHAT THE 2026-11-01 FORENSICS ACTUALLY SHOWED, AND WHY `policy`
+      # WAS NOT ENOUGH.
+      #
+      # That wedge happened with default_ps_max_latency_us=0 and
+      # pcie_aspm.policy=performance both confirmed on the running kernel's
+      # cmdline - and `nvme get-feature -f 0x0c` confirms APSTE: Disabled, so
+      # the drive was genuinely not entering ps3/ps4. APST was not the cause.
+      #
+      # What the log shows instead is eight link-layer failures in twelve
+      # minutes, each recovered by a controller reset:
+      #
+      #   nvme nvme0: controller is down; will reset:
+      #               CSTS=0xffffffff, PCI_STATUS=0x10
+      #   nvme0n1: I/O Cmd(0x2) ... I/O Error (sct 0x3 / sc 0x71)
+      #
+      # sct 0x3 / sc 0x71 is Path Related Status / Transient Transport Error,
+      # and SMART is immaculate throughout - 0 media errors, 0 error-log
+      # entries, 0% wear, 40C, throttled=0x0. So this is the PCIe transport,
+      # not the NAND, not heat and not power.
+      #
+      # `pcie_aspm.policy=performance` only selects a policy; ASPM support
+      # stays compiled in and active, and individual devices can still
+      # negotiate L1 substates. `pcie_aspm=off` disables it outright.
+      # `pcie_port_pm=off` additionally stops the kernel runtime-suspending
+      # the root port itself, which is a separate mechanism from ASPM and is
+      # not covered by either of the above. Both are what the kernel prints
+      # in its own advice on the failure line, and neither had been applied:
+      #
+      #   Try "nvme_core.default_ps_max_latency_us=0 pcie_aspm=off
+      #        pcie_port_pm=off" and report a bug
+      #
+      # They cost idle power, not throughput, which makes them much cheaper
+      # than the Gen 1 downgrade - so they belong before it in the ladder,
+      # not after.
+      #
+      # The `policy=performance` token above is deliberately kept rather than
+      # removed: this role replaces tokens sharing a key and cannot retract
+      # one it stops managing, so dropping the line would leave it on the
+      # cmdline anyway. With `pcie_aspm=off` the policy is inert.
+      # -----------------------------------------------------------------
+      - pcie_aspm=off
+      - pcie_port_pm=off
+      # -----------------------------------------------------------------
       # THE MEMORY CGROUP, WHICH THIS PI HAS BEEN RUNNING WITHOUT.
       #
       # Raspberry Pi firmware puts `cgroup_disable=memory` on the cmdline on
@@ -193,6 +236,34 @@ rpi_nvme:
     manage_error_behaviour: true
     # continue | remount-ro | panic
     error_behaviour: panic
+
+  # ---------------------------------------------------------------
+  # HOST MEMORY BUFFER - ESCALATION STEP 3, HELD IN RESERVE.
+  #
+  # This drive is DRAM-less, so it borrows host RAM instead:
+  #
+  #   nvme nvme0: allocated 32 MiB host memory buffer (1 segment).
+  #   nvme nvme0: using unchecked data buffer
+  #
+  # HMB means the controller DMAs into system memory for its own flash
+  # translation layer, so every one of those accesses crosses the same PCIe
+  # link that is producing `sct 0x3 / sc 0x71` transport errors - and an FTL
+  # that cannot reach its own mapping table is a plausible reason a reset
+  # escalates into `Identify namespace failed (-4)` rather than recovering
+  # cleanly. DRAM-less Realtek controllers plus Pi 5 HMB is a combination
+  # with a track record.
+  #
+  # Turning it off trades sustained random-write performance for one fewer
+  # thing on the failing link. Deliberately NOT enabled yet: it is step 3,
+  # after pcie_aspm=off/pcie_port_pm=off (step 1, ~free) and the Gen 1
+  # downgrade (step 2, already applied). Changing several variables at once
+  # on an intermittent fault tells you nothing about which one mattered.
+  #
+  # Set to true to append `nvme.max_host_mem_size_mb=0`, which replaces the
+  # firmware's own `=32` token because the two share a key.
+  # ---------------------------------------------------------------
+  hmb:
+    disable: false
 
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every

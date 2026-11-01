@@ -88,7 +88,13 @@ and a udev rule pinning runtime PM off. Module options apply on reboot.
 Recovery: `frey-uplink-usb-watchdog.timer` escalates interface bounce →
 `usbreset` → driver rebind → module reload, with a confirmation count, a
 cooldown and an hourly cap. A merely *disconnected* radio is never reset —
-that is the normal no-network-in-range state.
+that is the normal no-network-in-range state — with one exception: if it is
+disconnected *and* NetworkManager's `LastScan` clock has been frozen for
+`watchdog.scan_stall_seconds` (600), the scan engine has wedged and no amount
+of autoconnect retries can help, because there is nothing visible to connect
+to. A radio parked in real wilderness still finishes its scans and finds
+nothing, which is why the clock and not the result is the test. See
+`docs/GATEWAY.md`.
 
 Cannot affect FreyHub: the AP is brcmfmac on SDIO, the uplink is USB.
 

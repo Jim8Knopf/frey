@@ -278,11 +278,58 @@ journalctl -t frey-uplink-usb-watchdog     # every decision and recovery
 
 What it deliberately does not do:
 
-- **Act on a disconnected radio.** NetworkManager state 30 ("disconnected") is
-  the *normal* state when no known network is in range. Treating it as a fault
-  would reset the radio every minute while parked somewhere remote. Only a
-  missing USB device, a missing netdev, or state 20 ("unavailable" — on the bus
-  but not answering) counts as broken.
+- **Act on a disconnected radio, on its own.** NetworkManager state 30
+  ("disconnected") is the *normal* state when no known network is in range.
+  Treating it as a fault would reset the radio every minute while parked
+  somewhere remote. A missing USB device, a missing netdev, and state 20
+  ("unavailable" — on the bus but not answering) all count as broken, and so
+  does the one case below.
+
+### The scan wedge
+
+The adapter can stop *finishing* scans while still presenting a netdev in a
+managed state. From every angle except one it is identical to "nothing in
+range", and nothing recovers it on its own: `wpa_supplicant` repeats
+
+```
+wlan1: Reject scan trigger since one is already pending
+wlan1: Failed to initiate AP scan
+```
+
+NetworkManager never sees an SSID in scan results, so autoconnect cannot fire
+however many retries the profile has left (`autoconnect-retries=0`, forever,
+does not help — there is nothing to connect *to*), and `frey-uplink-autojoin`
+has a radio that will not scan. On 2026-11-02 that left the van with no uplink
+for **3h16m**, from 03:47 to 07:04, with a wlan1 that looked perfectly healthy;
+it ended only when the adapter happened to latch a different BSSID on 5 GHz.
+
+The discriminator is the scan **clock**, not the scan results — a radio parked
+in genuine wilderness still *completes* its scans and simply returns nothing:
+
+```bash
+# NetworkManager's LastScan, in CLOCK_BOOTTIME ms (-1 = never). Compare to
+# /proc/uptime; nmcli does not expose this, hence busctl.
+dev=$(busctl --system call org.freedesktop.NetworkManager \
+        /org/freedesktop/NetworkManager org.freedesktop.NetworkManager \
+        GetDeviceByIpIface s wlan1 | sed -nE 's/^o "(.*)"$/\1/p')
+busctl --system get-property org.freedesktop.NetworkManager "$dev" \
+  org.freedesktop.NetworkManager.Device.Wireless LastScan
+awk '{printf "%d\n", $1 * 1000}' /proc/uptime
+```
+
+So state 30 plus a scan clock frozen for longer than
+`usb_resilience.watchdog.scan_stall_seconds` (default 600) is the verdict
+`scan-stalled`, and it runs the same escalation ladder. Set it to `0` to go
+back to watching hardware faults only. Recovery is deliberately not verified
+eight seconds later the way the hardware faults are — a radio reset that
+recently cannot have finished a scan yet, so the ladder is left in place and
+the *next* run decides, which is what lets it escalate as far as the driver
+rebind that actually re-initialises the scanner.
+
+Note that restarting `wpa_supplicant` is **not** on the ladder and must not be:
+NetworkManager drives FreyHub's AP mode through the same supplicant, so
+bouncing it would take the AP down. Every rung is scoped to the USB device or
+the uplink netdev by name.
 - **React to a blip.** It needs `failures_before_action` consecutive bad checks
   (default 2) before touching anything.
 - **Reset in a loop.** `cooldown_seconds` between attempts and
