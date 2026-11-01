@@ -557,6 +557,17 @@ services:
     environment:
       - TZ={{ tz }}
       - PORT={{ svc.cleanuparr.port }}
+      # The image bakes in PUID/PGID=1000 and its entrypoint chowns /config to
+      # them, so without these it owns /config as uid 1000 and cannot create
+      # files in the media-owned tree: existing databases keep working while
+      # every NEW file fails, which leaves the container healthy and only
+      # /api/auth/status 500ing, taking the whole UI down with
+      # "Could not connect to server". Keep these as plain YAML comments --
+      # Ansible renders with trim_blocks, so a Jinja comment block here eats
+      # the newline after it and YAML folds the next "- " into PORT's value.
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - UMASK={{ media.umask }}
     volumes:
       - "{{ appdata }}/cleanuparr:/config"
     networks:
