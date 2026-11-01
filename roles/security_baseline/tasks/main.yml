@@ -139,12 +139,46 @@
   tags:
     - security
 
+# ==============================================================================
+# READ THE FIREWALL STATE BEFORE ASSERTING IT
+#
+# `ufw default deny incoming` prints "Default incoming policy changed to
+# 'deny'" whether or not anything changed, and `ufw --force enable` always
+# prints "Firewall is active and enabled on system startup". The four tasks
+# below keyed changed_when off those strings, so every one of them reported
+# changed on every run, forever. A second deploy could never reach the
+# 0-changed state this repo treats as its acceptance test, which means the one
+# signal that would reveal real drift was permanently buried under four lines
+# of noise.
+#
+# So read the state once and only run each command when it does not already
+# match. changed_when then needs no string matching at all: the command runs
+# only when there is something to change.
+#
+# EVERY CONDITION BELOW FAILS TOWARDS RUNNING THE COMMAND. If this read is
+# skipped, errors, or returns something unparseable, `'...' not in ''` is true
+# and the policy gets asserted anyway. On a host whose only route in is a
+# radio, re-asserting a correct firewall policy costs nothing; skipping a
+# missing one could close port 22.
+# ==============================================================================
+- name: Read the current UFW state
+  ansible.builtin.command:
+    cmd: ufw status verbose
+  register: security_baseline_ufw_state
+  changed_when: false
+  failed_when: false
+  when: security_baseline.firewall.enabled | bool
+  tags:
+    - security
+
 - name: Set UFW default incoming policy
   ansible.builtin.command:
     cmd: ufw default deny incoming
   register: security_baseline_ufw_default_in
-  changed_when: "'Default incoming policy changed' in security_baseline_ufw_default_in.stdout"
-  when: security_baseline.firewall.enabled | bool
+  when:
+    - security_baseline.firewall.enabled | bool
+    # Absent or unreadable state means assert the policy, not skip it.
+    - "'deny (incoming)' not in (security_baseline_ufw_state.stdout | default(''))"
   tags:
     - security
 
@@ -152,8 +186,10 @@
   ansible.builtin.command:
     cmd: ufw default allow outgoing
   register: security_baseline_ufw_default_out
-  changed_when: "'Default outgoing policy changed' in security_baseline_ufw_default_out.stdout"
-  when: security_baseline.firewall.enabled | bool
+  when:
+    - security_baseline.firewall.enabled | bool
+    # Absent or unreadable state means assert the policy, not skip it.
+    - "'allow (outgoing)' not in (security_baseline_ufw_state.stdout | default(''))"
   tags:
     - security
 
@@ -161,8 +197,10 @@
   ansible.builtin.command:
     cmd: ufw default deny routed
   register: security_baseline_ufw_default_routed
-  changed_when: "'Default routed policy changed' in security_baseline_ufw_default_routed.stdout"
-  when: security_baseline.firewall.enabled | bool
+  when:
+    - security_baseline.firewall.enabled | bool
+    # Absent or unreadable state means assert the policy, not skip it.
+    - "'deny (routed)' not in (security_baseline_ufw_state.stdout | default(''))"
   tags:
     - security
 
@@ -231,9 +269,10 @@
   ansible.builtin.command:
     cmd: ufw --force enable
   register: security_baseline_ufw_enable
-  changed_when: "'Firewall is active and enabled' in security_baseline_ufw_enable.stdout"
   when:
     - security_baseline.firewall.enabled | bool
     - not ansible_check_mode
+    # Not already active - and an unreadable state enables it anyway.
+    - "'Status: active' not in (security_baseline_ufw_state.stdout | default(''))"
   tags:
     - security

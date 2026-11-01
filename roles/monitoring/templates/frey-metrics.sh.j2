@@ -262,6 +262,17 @@ collect_nvme() {
     echo "# TYPE frey_nvme_power_cycles_total counter"
     echo "# HELP frey_nvme_error_log_entries_total Entries in the drive's error log."
     echo "# TYPE frey_nvme_error_log_entries_total counter"
+    # Declared up here with the rest, NOT next to the code that emits
+    # them. The resets sample comes out inside the device loop below, and
+    # the Prometheus text format rejects a TYPE line that follows a sample
+    # of the same metric - "second TYPE line for metric name, or TYPE
+    # reported after samples". node-exporter then discards the WHOLE file,
+    # so one misplaced line silently took out every NVMe metric including
+    # the dropout counter these exist to provide.
+    echo "# HELP frey_nvme_controller_resets_total Times the controller dropped off the PCIe bus this boot."
+    echo "# TYPE frey_nvme_controller_resets_total counter"
+    echo "# HELP frey_nvme_apst_max_latency_us Kernel APST latency ceiling in use; 0 means APST is disabled."
+    echo "# TYPE frey_nvme_apst_max_latency_us gauge"
 
     for device in /dev/nvme[0-9]; do
       [[ -e "${device}" ]] || continue
@@ -324,8 +335,6 @@ collect_nvme() {
     # the unrecoverable one, and nothing else in this stack reports them.
     # The counter resets at boot, which is what increase() expects.
     # -------------------------------------------------------------------
-    echo "# HELP frey_nvme_controller_resets_total Times the controller dropped off the PCIe bus this boot."
-    echo "# TYPE frey_nvme_controller_resets_total counter"
 
     # -------------------------------------------------------------------
     # Whether the fix for the above is actually live.
@@ -338,8 +347,6 @@ collect_nvme() {
     # an alert say so. 0 means APST is disabled and the drive cannot sleep
     # itself off the bus.
     # -------------------------------------------------------------------
-    echo "# HELP frey_nvme_apst_max_latency_us Kernel APST latency ceiling in use; 0 means APST is disabled."
-    echo "# TYPE frey_nvme_apst_max_latency_us gauge"
 
     local apst_param apst
     apst_param=/sys/module/nvme_core/parameters/default_ps_max_latency_us
