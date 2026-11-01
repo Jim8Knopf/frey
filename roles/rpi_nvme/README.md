@@ -45,16 +45,77 @@ because the journal is on the disk that just vanished. Only a power cut ends it.
 That is why this looked like a software fault every single time, and why it cost
 13 unsafe shutdowns in 19 power cycles.
 
-**Two independent mitigations, deliberately:**
+### APST was not the whole story — corrected 2026-11-01
 
-1. `nvme_core.default_ps_max_latency_us=0` forbids the deep states outright, and
-   `pcie_aspm.policy=performance` disables L1 link power management, which is the
-   other half of the same class of fault. Both are boot cmdline parameters, so
-   **they need a reboot** — the role says so when it changes the line.
-2. `kernel.hung_task_panic=1` + `kernel.panic=10` convert a wedge that gets past
-   mitigation 1 into an automatic reboot in about two and a half minutes. This is
-   the part that matters in a van: recovery stops requiring a human.
-3. `tune2fs -e panic` on the root filesystem covers the fault mitigation 2
+The account above was the diagnosis as of 2026-10-29, and it is now known to be
+incomplete. The van wedged again on 2026-11-01 **with APST already off and
+proven off**:
+
+```
+# nvme get-feature /dev/nvme0n1 -f 0x0c -H
+  Autonomous Power State Transition Enable (APSTE): Disabled
+```
+
+The running kernel's cmdline carried `nvme_core.default_ps_max_latency_us=0`
+and `pcie_aspm.policy=performance`, and the drive was genuinely not entering
+`ps3`/`ps4`. It still produced **eight `controller is down` events in twelve
+minutes**, each recovered by a reset, with:
+
+```
+nvme0n1: I/O Cmd(0x2) @ LBA 4789774464, 256 blocks, I/O Error (sct 0x3 / sc 0x71)
+```
+
+`sct 0x3 / sc 0x71` is *Path Related Status / Transient Transport Error*. Over
+the same window SMART stayed immaculate — 0 media errors, 0 error-log entries,
+0 % wear, 40 °C, `throttled=0x0`. So the fault is the **PCIe transport**, not
+the NAND, not heat and not power, and "APST, fixed" is no longer a sufficient
+explanation. The kernel's `Does your device have a faulty power saving mode
+enabled?` line is generic boilerplate printed on every controller reset — it is
+not a diagnosis, and it misled this investigation twice.
+
+Note also that the wedged boot trained at **`5.0 GT/s PCIe x1`**, not 2.5: the
+`pciex1_gen=1` line was in `config.txt` but the Pi had not rebooted since it was
+written, so **Gen 1 had never actually been in effect for a single fault.** A
+cmdline or `config.txt` setting that is correct on disk is not a setting the
+kernel is running — which is why all of these are exported as metrics.
+
+### Cures, and separately, recovery
+
+These are two different things and the distinction matters. The cures try to
+stop the link failing. Recovery only decides what happens *after* it fails, so
+it is the fallback, never the answer — a van that reboots itself every few hours
+is not a fixed van.
+
+**Cures, in cost order. Change ONE at a time:** this is an intermittent fault,
+so altering several variables at once buys a quiet week and no knowledge of
+which one bought it.
+
+| # | Change | Cost | State |
+| --- | --- | --- | --- |
+| 1 | `nvme_core.default_ps_max_latency_us=0` | a fraction of a watt at idle | applied; APSTE confirmed Disabled, **did not prevent the fault** |
+| 2 | `pcie_aspm=off` + `pcie_port_pm=off` | idle power only, no throughput | **applied 2026-11-01**, untested against a fault |
+| 3 | `dtparam=pciex1_gen=1` | halves link bandwidth (~250 MB/s) | in `config.txt` since 2026-10-31 but **only in effect since the 2026-11-01 reboot**, untested against a fault |
+| 4 | `rpi_nvme.hmb.disable` → `nvme.max_host_mem_size_mb=0` | sustained random-write performance | **held in reserve** |
+| 5 | Reseat the NVMe and its FFC ribbon | hands on hardware | not done |
+| 6 | Replace the drive | money | not done |
+
+Steps 2 and 3 are the kernel's own suggestion and have never faced a fault, so
+**the ladder is not exhausted and hardware is not yet indicated.** Step 2 went
+in before step 3's downgrade would be judged, because it costs no bandwidth;
+if the van proves stable, step 3 is the one to try removing first to get the
+bandwidth back.
+
+Step 5 is where this stops being a software problem. `DevSta: CorrErr+
+FatalErr+` on the endpoint, a transport-error signature, and a cable that lives
+in a moving vehicle all point at signal integrity. Re-check
+`/sys/bus/pci/devices/0001:01:00.0/aer_dev_*` before and after reseating.
+
+**Recovery — the fallback, not the fix:**
+
+1. `kernel.hung_task_panic=1` + `kernel.panic=10` convert a wedge into an
+   automatic reboot in about two and a half minutes. This is the part that
+   matters in a van: recovery stops requiring a human.
+2. `tune2fs -e panic` on the root filesystem covers the fault the one above
    cannot see. **`hung_task_panic` only fires when a task BLOCKS**, and on
    2026-11-01 the drive returned errors instead of hanging: nothing blocked,
    nothing panicked, and the Pi sat reachable-by-ping and answering nothing
@@ -71,12 +132,6 @@ correct on disk while the running kernel has none of them: `frey_nvme_apst_max_l
 `frey_kernel_hung_task_panic` / `frey_kernel_panic_reboot_secs`, and
 `frey_root_fs_error_behaviour`, with `FreyNvmeApstEnabled`,
 `FreyWedgeRecoveryDisarmed` and `FreyRootFsErrorsNotFatal` to say so.
-
-If a dropout still happens with both in place, in order: drop the link to
-`dtparam=pciex1_gen=1` (signal integrity), **reseat the NVMe and its FFC ribbon**
-— vibration is a real failure mode in a vehicle and `RxErr`/`BadTLP` on the link
-would point there — and then treat the drive itself as suspect, since a
-DRAM-less Realtek controller is a marginal choice for a Pi 5.
 
 Check the count before blaming software:
 

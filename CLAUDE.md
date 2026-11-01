@@ -255,12 +255,25 @@ corruption across the *arrs, Jellyfin and LLDAP. `FreyUnsafeShutdown` and
 `Frey5vRailLow` are both critical. When something is behaving strangely, check
 that count before blaming software.
 
-Most of them had one cause, now fixed in `rpi_nvme`: APST parked the DRAM-less
-drive in a 5 mW state it could not reliably wake from, it left the PCIe bus
-(`controller is down; CSTS=0xffffffff`), and the host **wedged rather than
-crashed** — systemd keeps petting the hardware watchdog from RAM, so nothing
-rebooted and only the button recovered it. The full account is in
-`roles/rpi_nvme/README.md`. Two traps worth carrying forward:
+The drive leaves the PCIe bus (`controller is down; CSTS=0xffffffff`) and the
+host **wedges rather than crashes**, so nothing reboots and only the button
+recovers it. **This is NOT fixed, and APST was not the cause** — an earlier
+version of this file said both. It recurred on 2026-11-01 with APST confirmed
+off at the controller (`APSTE: Disabled`), producing eight resets in twelve
+minutes with `I/O Error (sct 0x3 / sc 0x71)` — *transient transport error* —
+while SMART stayed immaculate. It is the PCIe link, not the NAND, not heat and
+not power. The kernel's `faulty power saving mode` line is boilerplate on every
+reset, not a diagnosis; it misled this twice. `roles/rpi_nvme/README.md` holds
+the cure ladder, which is **not exhausted** — `pcie_aspm=off`/`pcie_port_pm=off`
+and PCIe Gen 1 only took effect on 2026-11-01 and have never faced a fault, and
+disabling the host memory buffer is still held in reserve. Change one at a time;
+hardware (reseat the FFC ribbon, then the drive) comes after those.
+
+Note the shape of the trap: `pciex1_gen=1` sat in `config.txt` for a day while
+every boot still trained at 5 GT/s, because the Pi had not rebooted. **A setting
+correct on disk is not a setting the kernel is running**, which is why APST, the
+panic sysctls and the ext4 error behaviour are all exported as metrics with
+alerts. Three traps worth carrying forward:
 
 - **A wedged Pi that answers ping but refuses SSH is not a lockout.** `sshd`
   cannot read `authorized_keys` off a dead disk, so it fails authentication with
@@ -270,6 +283,10 @@ rebooted and only the button recovered it. The full account is in
 - **An empty journal after a freeze is evidence, not a gap.** The journal lives
   on the disk that disappeared, so the kernel's complaint never reached it.
   Loki has it, because it was shipped off-host before the wedge.
+- **Read the boot that died, not the one you are in.** `journalctl --list-boots`
+  and then `-b -2` — after a power cycle the wedge is two boots back, and `-b -1`
+  is the clean one that followed it. The whole eight-reset sequence above was
+  sitting in `-b -2` the entire time, with journald now `storage: persistent`.
 
 ## Secrets
 
