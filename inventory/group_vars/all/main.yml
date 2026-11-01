@@ -37,10 +37,31 @@ frey:
   service_address: "{{ network_gateway.downstream.address }}"
   proxy_network: frey_proxy
   # Private link shared by Traefik and Navidrome for trusted identity headers.
+  #
+  # BOTH ends are pinned, and they have to be. Navidrome trusts
+  # traefik_ip/32 and nothing else - that single address is the whole
+  # security boundary, which is why Traefik's end cannot be dynamic.
+  #
+  # The other end could not be left dynamic either. On this /29 the gateway
+  # takes .1, so the first address Docker hands out is .2 - exactly the one
+  # reserved for Traefik. service_proxy runs before media_library, but the
+  # navidrome container outlives a deploy while Traefik gets recreated
+  # whenever its config changes, so on 2026-11-01 navidrome held .2 and the
+  # deploy failed with
+  #
+  #   Error connecting container to network frey_navidrome_proxy - 403
+  #   Forbidden ("Address already in use")
+  #
+  # Traefik then ran with that network simply absent from its container, so
+  # it could not reach Navidrome at all - and ND_EXTAUTH_TRUSTEDSOURCES was
+  # pointing at Navidrome's own address rather than the proxy's. The failure
+  # is quiet from the outside: navidrome.hub.frey still answers 302, because
+  # that redirect is forward auth firing before any backend is contacted.
   navidrome_network:
     name: frey_navidrome_proxy
     subnet: 172.31.250.0/29
     traefik_ip: 172.31.250.2
+    navidrome_ip: 172.31.250.3
 
   # Where frey_pki publishes the root certificate and the script that installs
   # it into a container's trust store. Declared here rather than only in

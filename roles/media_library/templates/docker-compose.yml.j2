@@ -186,8 +186,12 @@ services:
     volumes:
       - "{{ appdata }}/navidrome:/data"
       - "{{ media.data_dir }}/media/music:/music:ro"
+    # Pinned, not dynamic: the first free address on this /29 is the one
+    # reserved for Traefik, and whichever container attaches first takes it.
+    # See frey.navidrome_network in inventory/group_vars/all/main.yml.
     networks:
-      - {{ frey.navidrome_network.name }}
+      {{ frey.navidrome_network.name }}:
+        ipv4_address: {{ frey.navidrome_network.navidrome_ip }}
 {{ proxy_labels('navidrome', 'navidrome', svc.navidrome.port, network=frey.navidrome_network.name) }}
     mem_limit: {{ svc.navidrome.mem_limit }}
     cpus: "{{ svc.navidrome.cpus }}"
