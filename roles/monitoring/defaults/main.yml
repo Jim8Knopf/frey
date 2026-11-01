@@ -340,6 +340,43 @@ monitoring:
     packages:
       - bind9-dnsutils
 
+    # --------------------------------------------------------------------------
+    # STALENESS IS RELATIVE TO THE WRITER'S OWN INTERVAL
+    #
+    # `Anything writing a .prom file into the textfile directory becomes a
+    # monitored metric on the same terms` is the seam this stack is built on -
+    # but "the same terms" cannot include one staleness threshold, because the
+    # writers do not share a cadence. frey-metrics runs every 30s; the files
+    # below are written by timers of their own, minutes apart.
+    #
+    # Judged against the 30s tier's 600s threshold, a perfectly healthy
+    # 15-minute collector reports as frozen for 300s out of every 900s - which
+    # is exactly what `scripts/monitoring-check.sh` was doing for
+    # frey-logrepair.prom: a hard FAIL, a third of the time, on a timer that
+    # had never missed a run. A check that cries wolf on a third of its runs
+    # is worse than no check, because it teaches you to discount the one
+    # signal that matters.
+    #
+    # media_dns.prom is the subtler one. Its writer runs every 10 minutes, so
+    # its steady-state age reaches the 600s threshold exactly - and the alert
+    # below (`> 600` held `for: 10m`) would fire the first time a single run
+    # was skipped. It had not misfired yet; it was 300s away from it.
+    #
+    # So: two tiers. Add a slow writer here when you add one, and record its
+    # interval in the comment so the next person can check the arithmetic.
+    # --------------------------------------------------------------------------
+    stale_after_seconds: 600
+    # Basenames, without `.prom`. Written minutes apart rather than every 30s.
+    slow:
+      # frey-log-repair.timer, OnUnitActiveSec = monitoring.log_repair.interval
+      - frey-logrepair          # 15min
+      # frey-media-dns-upstream.timer, owned by the media_acquisition role
+      - media_dns               # 10min
+    # Three missed runs of the slowest writer above. Generous on purpose: a
+    # collector that has genuinely stopped stays stale forever, so waiting is
+    # free, while firing early on a timer that is merely slow is not.
+    slow_stale_after_seconds: 2700
+
   watchdog:
     service_name: frey-monitor-watchdog
     state_dir: /run/frey-monitor-watchdog
