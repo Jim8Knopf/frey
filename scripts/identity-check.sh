@@ -52,7 +52,7 @@ code() { # scheme host path
 
 # Services behind the login page. Keep in step with identity_services.
 PROTECTED=(sonarr radarr lidarr chaptarr prowlarr bazarr cleanuparr
-           qbittorrent maintainerr jellystat audiobookrequest)
+           qbittorrent maintainerr jellystat audiobookrequest navidrome)
 # Services that keep their own login, or none. These must stay on HTTP.
 OPEN=(jellyfin audiobookshelf seerr)
 

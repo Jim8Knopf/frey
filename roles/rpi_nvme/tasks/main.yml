@@ -59,7 +59,222 @@
     value: "{{ item.value }}"
     state: present
     reload: true
+    # NOT the module's /etc/sysctl.conf default, which Debian 13's
+    # systemd-sysctl never reads - see frey.sysctl_file in
+    # inventory/group_vars/all/main.yml. Writing there applies the values live
+    # and loses them at the next boot, which for hung_task_panic means the
+    # wedge self-reboot is armed only until the first reboot.
+    sysctl_file: "{{ frey.sysctl_file }}"
   loop: "{{ rpi_nvme.sysctl | dict2items }}"
+  tags:
+    - system
+    - nvme
+
+# ==============================================================================
+# NVMe POWER-STATE STABILITY
+#
+# Why this exists at all is in roles/rpi_nvme/defaults/main.yml, next to the
+# parameters. Short version: APST parks this drive in a 5mW state it does not
+# reliably wake from, it leaves the PCIe bus, and the host wedges in a way the
+# hardware watchdog cannot catch.
+#
+# This writes the boot cmdline, so it is the single most dangerous task in the
+# repo after the gateway: get it wrong and the Pi does not come up, with no
+# console to find out why. Hence the read-modify-write through a template, the
+# backup, and the validate that refuses to install a line that lost root=.
+# ==============================================================================
+- name: Read the current kernel cmdline
+  ansible.builtin.slurp:
+    src: "{{ rpi_nvme.cmdline.path }}"
+  register: rpi_nvme_cmdline_raw
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
+- name: Keep the existing cmdline tokens to merge against
+  ansible.builtin.set_fact:
+    # cmdline.txt is a single line. Anything after the first is not read by
+    # the bootloader, so only the first is carried forward.
+    rpi_nvme_cmdline_tokens: >-
+      {{ (rpi_nvme_cmdline_raw.content | b64decode).splitlines() | first | default('', true) | trim }}
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
+- name: Keep a pristine copy of the original kernel cmdline
+  # `force: false` means this is written once and never again, so it always
+  # holds the line the Pi last booted successfully with - which is the one you
+  # want when recovering by putting the card in a reader.
+  #
+  # Done by hand rather than with the template's `backup: true`, because
+  # /boot/firmware is FAT32 and Ansible's backup filenames contain colons
+  # (cmdline.txt.107101.2026-10-29@22:43:09~), which vfat rejects outright:
+  #   [Errno 22] Invalid argument
+  # That failure aborted the task before it wrote anything, so it failed safe -
+  # but it also meant the fix could never land.
+  ansible.builtin.copy:
+    src: "{{ rpi_nvme.cmdline.path }}"
+    dest: "{{ rpi_nvme.cmdline.backup_path }}"
+    remote_src: true
+    force: false
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
+- name: Set the NVMe power-state parameters on the kernel cmdline
+  ansible.builtin.template:
+    src: cmdline.txt.j2
+    dest: "{{ rpi_nvme.cmdline.path }}"
+    # No owner/group/mode: vfat has no concept of either, and asking for them
+    # is another way for this task to fail on the one file that must not be
+    # left half-written.
+    #
+    # A line without root= is an unbootable Pi, and this host has no console
+    # and no SD card to fall back to. Refuse rather than install it.
+    validate: "grep -qE '(^| )root=' %s"
+  register: rpi_nvme_cmdline_written
+  when: rpi_nvme.cmdline.manage | bool
+  tags:
+    - system
+    - nvme
+
+- name: Point out that the cmdline change needs a reboot
+  ansible.builtin.debug:
+    msg: >-
+      The kernel cmdline changed and these parameters only apply at boot, so
+      the NVMe is still running with its old power-state policy. Reboot when
+      convenient - `sudo reboot` - then confirm with:
+      cat /sys/module/nvme_core/parameters/default_ps_max_latency_us  (expect 0)
+      and: sudo nvme get-feature /dev/nvme0 -f 0x0c -H  (expect APSTE Disabled).
+      The line the Pi last booted successfully with is kept at
+      {{ rpi_nvme.cmdline.backup_path }} - restore it from a card reader if
+      this host ever fails to come back up.
+  when:
+    - rpi_nvme.cmdline.manage | bool
+    - rpi_nvme_cmdline_written.changed | default(false)
+  tags:
+    - system
+    - nvme
+
+# ==============================================================================
+# PCIe LINK SPEED
+#
+# Escalation step 1 after APST alone proved insufficient. See the comment on
+# rpi_nvme.pcie in defaults/main.yml for the measurement that forced it.
+#
+# lineinfile rather than a template because config.txt carries firmware
+# settings this role has no business owning - the display, the audio, the
+# camera overlays. The regexp matches a commented-out form too, so toggling
+# this off and on cannot leave two contradictory lines behind.
+# ==============================================================================
+- name: Limit the PCIe link to Gen 1 for NVMe stability
+  ansible.builtin.lineinfile:
+    path: "{{ rpi_nvme.pcie.config_path }}"
+    line: dtparam=pciex1_gen=1
+    regexp: '^\s*#?\s*dtparam=pciex1_gen='
+    state: present
+    insertafter: EOF
+    owner: root
+    group: root
+    mode: "0755"
+  register: rpi_nvme_pcie_gen
+  when: rpi_nvme.pcie.limit_to_gen1 | bool
+  tags:
+    - system
+    - nvme
+
+# Removes the line entirely rather than setting gen=2, so the Pi falls back to
+# whatever the firmware defaults to on this board revision instead of this role
+# asserting a speed it has not measured.
+- name: Restore the default PCIe link speed
+  ansible.builtin.lineinfile:
+    path: "{{ rpi_nvme.pcie.config_path }}"
+    regexp: '^\s*#?\s*dtparam=pciex1_gen='
+    state: absent
+  register: rpi_nvme_pcie_gen_removed
+  when: not (rpi_nvme.pcie.limit_to_gen1 | bool)
+  tags:
+    - system
+    - nvme
+
+- name: Point out that the PCIe link speed needs a reboot
+  ansible.builtin.debug:
+    msg: >-
+      config.txt now pins the PCIe link to Gen 1, which only applies at boot -
+      so the NVMe is still running at its old link speed. Reboot when
+      convenient - `sudo reboot` - then confirm the link trained at 2.5GT/s
+      with: sudo lspci -vv -s $(lspci | grep -i non-volatile | cut -d" " -f1)
+      | grep -i "LnkSta:". Expect about 250 MB/s sequential rather than 500.
+      If dropouts continue after this, the remaining steps need hands on the
+      hardware: reseat the NVMe and its FFC ribbon, then suspect the drive.
+  when: rpi_nvme_pcie_gen.changed | default(false)
+  tags:
+    - system
+    - nvme
+
+# ==============================================================================
+# ext4 ERROR BEHAVIOUR
+#
+# Closes the gap hung_task_panic cannot: an NVMe fault that returns errors
+# instead of blocking. See rpi_nvme.root_fs in defaults/main.yml for the
+# 2026-11-01 outage this comes from - the superblock was on `Continue`, so
+# nothing panicked and the van needed a power cycle.
+#
+# Read-then-set rather than running tune2fs every time, because tune2fs always
+# exits 0 and would otherwise report changed on every deploy.
+# ==============================================================================
+- name: Read the current ext4 error behaviour of the root filesystem
+  ansible.builtin.command:
+    cmd: tune2fs -l {{ rpi_nvme_root_source.stdout | trim }}
+  register: rpi_nvme_root_tune2fs
+  changed_when: false
+  check_mode: false
+  when: rpi_nvme.root_fs.manage_error_behaviour | bool
+  tags:
+    - system
+    - nvme
+
+# tune2fs prints "Errors behavior:  Continue" / "Remount read-only" / "Panic",
+# which matches none of the spellings -e accepts, so compare on the first word
+# lowercased: continue / remount / panic.
+- name: Set how ext4 reacts to an I/O error on the root filesystem
+  ansible.builtin.command:
+    cmd: tune2fs -e {{ rpi_nvme.root_fs.error_behaviour }} {{ rpi_nvme_root_source.stdout | trim }}
+  register: rpi_nvme_root_errors_set
+  changed_when: true
+  when:
+    - rpi_nvme.root_fs.manage_error_behaviour | bool
+    - rpi_nvme_root_current_behaviour != rpi_nvme.root_fs.error_behaviour | regex_replace('^remount-ro$', 'remount')
+  vars:
+    rpi_nvme_root_current_behaviour: >-
+      {{ (rpi_nvme_root_tune2fs.stdout_lines | default([])
+          | select('match', '^\s*Errors behavior:')
+          | first | default('Errors behavior: unknown'))
+         | regex_replace('^\s*Errors behavior:\s*', '')
+         | lower | split(' ') | first }}
+  tags:
+    - system
+    - nvme
+
+# A change to the superblock applies to the NEXT mount, so the running kernel
+# still has the old behaviour until a reboot. Said out loud because the whole
+# point of this setting is that it is armed before the next fault, and a deploy
+# reporting "changed" is not the same as the van being protected.
+- name: Point out that the ext4 error behaviour needs a reboot to take effect
+  ansible.builtin.debug:
+    msg: >-
+      The root filesystem superblock is now set to
+      '{{ rpi_nvme.root_fs.error_behaviour }}' on an I/O error, but the mounted
+      filesystem keeps the behaviour it was mounted with until the next boot.
+      Reboot when convenient, then confirm with:
+      sudo tune2fs -l {{ rpi_nvme_root_source.stdout | trim }} | grep 'Errors behavior'
+      With kernel.panic={{ rpi_nvme.sysctl['kernel.panic'] | default('10') }} this
+      is what turns the next NVMe fault into an automatic reboot instead of a
+      Pi that pings but answers nothing until someone cuts the power.
+  when: rpi_nvme_root_errors_set.changed | default(false)
   tags:
     - system
     - nvme

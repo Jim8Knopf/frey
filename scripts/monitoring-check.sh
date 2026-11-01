@@ -120,18 +120,44 @@ curl_in() {
 # a Prometheus that is answering perfectly - which is exactly what sent anyone
 # looking at Prometheus instead of at this script.
 #
-# Staging the body in a file and feeding python3 from the file removes the last
-# pipe: with `> file`, the same responses came back whole on every run. Keep it
-# that way - any future `docker exec ... | something` here reintroduces the bug.
+# STAGING THE BODY IN A FILE WAS STILL NOT ENOUGH. That was the previous fix
+# here, and the comment above used to end by claiming `> file` had settled it.
+# It had not. Measured again on 2026-11-01, three identical runs back to back
+# with the redirect already in place:
+#
+#   run 1   targets 24,371   rules 46,989
+#   run 2   targets 24,371   rules 46,989
+#   run 3   targets  3,918   rules  3,918      <- both, same 4 KB again
+#
+# So the race is not about what `docker exec`'s stdout happens to be pointed
+# at. It is inside the exec stream itself: the CLI attaches to the API, copies
+# the output, and can return before it has drained - a file on the far end of
+# that copy truncates exactly like a pipe did. Redirecting merely moved where
+# the short read landed.
+#
+# The fix is to stop streaming the body through `docker exec` at all. wget
+# writes it to a file INSIDE the container and `docker cp` lifts it out over a
+# tar stream, which is not subject to this. Four consecutive runs returned
+# 46,978 bytes of valid JSON with no short reads.
+#
+# Keep it that way: any `docker exec` here whose stdout carries a response body
+# reintroduces the bug, redirect or no redirect. The symptom to recognise is
+# this script reporting "rules api: no response" or "prometheus targets api:
+# no response" about a Prometheus that is answering perfectly - which is what
+# sent people looking at Prometheus instead of at this script, twice.
 # ------------------------------------------------------------------------------
 remote_py() {
   local source="$1" container="$2" url="$3"
   local b64 remote="/tmp/frey-mon-check-$$.py" body="/tmp/frey-mon-check-$$.json"
+  local inner="/tmp/frey-mon-check-body-$$.json"
   b64="$(printf '%s' "${source}" | base64 -w0)"
   ssh_pi "printf '%s' '${b64}' | base64 -d > '${remote}' \
-          && sudo docker exec ${container} wget -q -O - --timeout=15 '${url}' > '${body}' \
+          && sudo docker exec ${container} wget -q -O '${inner}' --timeout=15 '${url}' \
+          && sudo docker cp '${container}:${inner}' '${body}' >/dev/null \
           && python3 '${remote}' < '${body}'; \
-          rc=\$?; rm -f '${remote}' '${body}'; exit \$rc"
+          rc=\$?; \
+          sudo docker exec ${container} rm -f '${inner}' >/dev/null 2>&1; \
+          rm -f '${remote}' '${body}'; exit \$rc"
 }
 
 echo
@@ -149,7 +175,7 @@ fi
 echo "Containers"
 # -----------------------------------------------------------------------------
 running="$(ssh_pi "sudo docker ps --filter label=frey.module=monitoring --format '{{.Names}}'")"
-expected="prometheus alertmanager alert-relay node-exporter cadvisor blackbox loki alloy grafana"
+expected="prometheus alertmanager alert-relay node-exporter cadvisor blackbox loki alloy grafana dockge"
 
 for container in ${expected}; do
   if grep -qx "${container}" <<< "${running}"; then
@@ -288,10 +314,35 @@ else
   while read -r file mtime; do
     [[ -z "${file}" ]] && continue
     age=$(( now - ${mtime%.*} ))
-    if (( age > 600 )); then
+
+    # Stale is relative to the WRITER'S interval, not one number for the whole
+    # directory. frey-metrics runs every 30s, but it is not the only thing
+    # writing here, and judging a 15-minute collector against the 30s tier
+    # reports a timer that has never missed a run as frozen - which this
+    # script did, as a hard FAIL, for 300s out of every 900s. See the note on
+    # `collectors.stale_after_seconds` in roles/monitoring/defaults/main.yml.
+    #
+    # Keep these in step with the timers that own each file:
+    case "${file}" in
+      # frey-log-repair.timer <- monitoring.log_repair.interval
+      frey-logrepair.prom) interval=900 ;;
+      # frey-media-dns-upstream.timer, owned by the media_acquisition role
+      media_dns.prom)      interval=600 ;;
+      # frey-uplink-portal.timer <- network_gateway.upstream.portal.interval_seconds
+      frey-portal.prom)    interval=120 ;;
+      # everything else is frey-metrics.timer
+      *)                   interval=30  ;;
+    esac
+
+    # Three missed runs warns, six fails - but never tighter than the original
+    # 180s/600s, so the 30s tier behaves exactly as it always has.
+    warn_at=$(( interval * 3 )); (( warn_at < 180 )) && warn_at=180
+    fail_at=$(( interval * 6 )); (( fail_at < 600 )) && fail_at=600
+
+    if (( age > fail_at )); then
       fail "${file}" "last written ${age}s ago - metrics are frozen"
-    elif (( age > 180 )); then
-      warn "${file}" "last written ${age}s ago"
+    elif (( age > warn_at )); then
+      warn "${file}" "last written ${age}s ago (writes every ${interval}s)"
     else
       pass "${file}" "${age}s old"
     fi
@@ -429,6 +480,7 @@ if not pinned:
 # tags are not contiguous - v0.53.0 and v0.54.0 were never published - so
 # "bump to the next number" is not safe for it.
 REPOS = {
+    "dockge": ("hub", "louislam/dockge", r"\d+\.\d+\.\d+"),
     "prometheus": ("hub", "prom/prometheus", r"v\d+\.\d+\.\d+"),
     "alertmanager": ("hub", "prom/alertmanager", r"v\d+\.\d+\.\d+"),
     "node_exporter": ("hub", "prom/node-exporter", r"v\d+\.\d+\.\d+"),

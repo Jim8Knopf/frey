@@ -15,15 +15,65 @@
   loop:
     - "{{ dashy.stack_dir }}"
     - "{{ dashy.config_dir }}"
+    - "{{ dashy.config_dir }}/setup"
+
+- name: Install the certificate setup server
+  ansible.builtin.copy:
+    src: setup-server.js
+    dest: "{{ dashy.config_dir }}/setup/setup-server.js"
+    owner: root
+    group: root
+    mode: "0644"
+  register: dashy_setup_server
+
+- name: Configure the certificate setup page
+  ansible.builtin.template:
+    src: setup.html.j2
+    dest: "{{ dashy.config_dir }}/setup/index.html"
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Pull the pinned Dashy image
   community.docker.docker_image_pull:
     name: "{{ dashy.image }}"
+    # `not_present` rather than the module's default of `always`, matching the
+    # media roles. The image is version-pinned, so once it is on disk there is
+    # nothing a registry round trip can tell us - and on 2026-11-01 that round
+    # trip failed the whole deploy:
+    #
+    #   Error pulling image lissy93/dashy:4.7.0 - 500 ... Get
+    #   "https://registry-1.docker.io/v2/": dial tcp 100.49.148.156:443:
+    #   connect: connection refused
+    #
+    # while that exact image was already present and the container was up and
+    # healthy. The van had an uplink and a default route; it was behind a
+    # captive portal, which looks online to a route table and is not. This is
+    # the condition the whole project is built around, so a deploy must not
+    # hard-fail on it - least of all for the optional dashboard module.
+    pull: not_present
   register: dashy_pull
   retries: 8
   delay: 30
   until: dashy_pull is succeeded
+  # ignore_errors rather than failed_when: false, for the reason given in
+  # media_acquisition - failed_when would hide a genuinely failed pull. The
+  # task below turns a real miss into a clear message instead of a raw 500.
+  ignore_errors: true
   when: not ansible_check_mode
+
+- name: Fail clearly when the Dashy image is missing
+  ansible.builtin.fail:
+    msg: >-
+      Could not pull {{ dashy.image }} after 8 attempts, and it is not already
+      on the host, so Dashy cannot start. Re-run `--tags dashy` on a better
+      connection - and check for a captive portal, which leaves a default
+      route in place while blocking the registry. Set
+      frey.modules.enabled without `dashy` to deploy everything else
+      meanwhile.
+  when:
+    - dashy_pull is defined
+    - dashy_pull is failed
 
 - name: Configure Dashy
   ansible.builtin.template:
@@ -47,7 +97,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ dashy.stack_dir }}"
     state: present
-    recreate: "{{ 'always' if dashy_config.changed else 'auto' }}"
+    recreate: "{{ 'always' if dashy_config.changed or dashy_setup_server.changed else 'auto' }}"
     pull: never
     timeout: 180
   when: not ansible_check_mode

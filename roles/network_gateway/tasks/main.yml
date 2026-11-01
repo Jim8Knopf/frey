@@ -173,6 +173,12 @@
     value: "1"
     state: present
     reload: true
+    # "Persistently" is the whole point of this task and it was not true: the
+    # module's /etc/sysctl.conf default is never read at boot on Debian 13.
+    # Forwarding survived anyway only because Docker sets it too, which is
+    # luck standing in for configuration. See frey.sysctl_file in
+    # inventory/group_vars/all/main.yml.
+    sysctl_file: "{{ frey.sysctl_file }}"
   tags: [network, gateway, hub]
 
 # Two radios briefly share one subnet during the migration. Loose reverse-path
@@ -184,6 +190,11 @@
     value: "{{ item.value }}"
     state: present
     reload: true
+    # See frey.sysctl_file in inventory/group_vars/all/main.yml. This one was
+    # the least harmful of the four: the dual-homed window it protects only
+    # exists during the migration deploy itself, and `reload: true` does apply
+    # the values live, so it was right exactly when it had to be.
+    sysctl_file: "{{ frey.sysctl_file }}"
   loop:
     - { key: net.ipv4.conf.all.rp_filter, value: "2" }
     - { key: net.ipv4.conf.all.arp_ignore, value: "1" }
@@ -435,6 +446,96 @@
     - ngw_autojoin_script.stat.exists | default(false)
     - not ansible_check_mode
   tags: [network, gateway, uplink, wifi_recovery]
+
+# ---------------------------------------------------------------------
+# Captive-portal auto-accept.
+#
+# The autojoin above joins the network; this signs in to it. Both only
+# ever drive the upstream radio, and this one does not even do that - it
+# reads state and talks HTTP, so the worst it can do is POST a form.
+#
+# Opt-in per SSID (`portal.allowlist`): submitting a form to an unknown
+# hotspot means agreeing to terms nobody read.
+# ---------------------------------------------------------------------
+- name: Create the portal auto-accept state directory
+  ansible.builtin.file:
+    path: "{{ network_gateway.upstream.portal.state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.portal.enabled | bool
+  tags: [network, gateway, uplink, portal]
+
+- name: Install the captive-portal auto-accept script
+  ansible.builtin.template:
+    src: frey-uplink-portal.py.j2
+    dest: /usr/local/sbin/frey-uplink-portal
+    owner: root
+    group: root
+    mode: "0755"
+    # A SyntaxError here would only surface on the timer's next tick, by
+    # which time the van is parked somewhere with no internet to fix it.
+    validate: /usr/bin/python3 -m py_compile %s
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.portal.enabled | bool
+  tags: [network, gateway, uplink, portal]
+
+- name: Install the captive-portal auto-accept units
+  ansible.builtin.template:
+    src: "frey-uplink-portal.{{ item }}.j2"
+    dest: "/etc/systemd/system/frey-uplink-portal.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  register: ngw_portal_units
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.portal.enabled | bool
+  tags: [network, gateway, uplink, portal]
+
+- name: Enable the captive-portal auto-accept timer
+  ansible.builtin.systemd:
+    name: frey-uplink-portal.timer
+    enabled: true
+    state: "{{ 'restarted' if ngw_portal_units.changed else 'started' }}"
+    daemon_reload: true
+  when:
+    - network_gateway.upstream.enabled | bool
+    - network_gateway.upstream.portal.enabled | bool
+    - not ansible_check_mode
+  tags: [network, gateway, uplink, portal]
+
+# Turning the feature off must also stop it, not just stop managing it.
+- name: Disable the captive-portal auto-accept timer when the feature is off
+  ansible.builtin.systemd:
+    name: frey-uplink-portal.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  failed_when: false
+  when:
+    - not (network_gateway.upstream.portal.enabled | bool)
+      or not (network_gateway.upstream.enabled | bool)
+    - not ansible_check_mode
+  tags: [network, gateway, uplink, portal]
+
+# A frozen .prom would keep feeding Prometheus its last value forever and
+# trip FreyCollectorStale with a warning that means nothing.
+- name: Remove the portal metrics file when the feature is off
+  ansible.builtin.file:
+    path: "{{ network_gateway.upstream.portal.textfile_dir }}/frey-portal.prom"
+    state: absent
+  when:
+    - not (network_gateway.upstream.portal.enabled | bool)
+      or not (network_gateway.upstream.enabled | bool)
+  tags: [network, gateway, uplink, portal]
 
 # ---------------------------------------------------------------------
 # Keeping the USB uplink radio on the bus.

@@ -13,6 +13,257 @@ rpi_nvme:
   sysctl:
     vm.swappiness: "10"
     vm.vfs_cache_pressure: "50"
+    # ---------------------------------------------------------------
+    # TURN AN NVMe WEDGE INTO A REBOOT.
+    #
+    # When the NVMe controller drops off the PCIe bus, every task that
+    # touches the filesystem blocks forever - but systemd runs from RAM and
+    # carries on petting the hardware watchdog, so the watchdog never fires.
+    # The Pi sits there, reachable by ping, answering nothing, until someone
+    # physically cuts the power. Observed: a 28-minute wedge that ended with
+    # a button press, and 13 unsafe shutdowns in 19 power cycles.
+    #
+    # hung_task_panic turns a task blocked for longer than the timeout into a
+    # panic, and kernel.panic reboots a few seconds later. The van recovers on
+    # its own in about two and a half minutes instead of waiting for a human.
+    #
+    # 120s is deliberately generous: a healthy NVMe never blocks a task for
+    # two minutes, so this only fires on a genuine fault.
+    # ---------------------------------------------------------------
+    kernel.hung_task_timeout_secs: "120"
+    kernel.hung_task_panic: "1"
+    kernel.panic: "10"
+
+  # ---------------------------------------------------------------
+  # KERNEL PARAMETERS THAT ONLY WORK FROM THE BOOT CMDLINE.
+  #
+  # The root cause of this Pi's recurring freezes. The fitted drive is a
+  # KLEVV CRAS C910 4TB - a DRAM-less Realtek RTS5772DL - and it advertises
+  # two non-operational power states:
+  #
+  #   ps3  0.1500W  enter 5000us   exit 10000us
+  #   ps4  0.0050W  enter 17000us  exit 60000us
+  #
+  # The kernel's default default_ps_max_latency_us is 100000, which is above
+  # ps4's 77ms round trip, so APST is allowed to park the drive in ps4 - a
+  # 5-milliwatt state with a 60ms wake-up. This controller intermittently
+  # fails to come back from it, and the drive vanishes from the bus:
+  #
+  #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff, PCI_STATUS=0x10
+  #
+  # Six of those inside 25 minutes were recovered by the kernel's own reset.
+  # When the reset also fails, the host wedges as described above. Nothing
+  # appears in the journal afterwards, because the journal lives on the disk
+  # that just disappeared - which is why this hid for so long and looked
+  # like a software fault every time.
+  #
+  # 0 forbids every non-operational state. 5500 would allow ps3 but not ps4
+  # and keeps most of the idle saving; prefer 0 until the van has gone a few
+  # weeks without a dropout, because stability here is worth more than the
+  # fraction of a watt.
+  #
+  # ASPM is set away from powersave for the same reason: L1 link power
+  # management is the other half of the same class of fault.
+  # ---------------------------------------------------------------
+  cmdline:
+    manage: true
+    path: /boot/firmware/cmdline.txt
+    # FAT32-safe name: no colons. Written once, never overwritten.
+    backup_path: /boot/firmware/cmdline.txt.frey-orig
+    # Appended verbatim. Any existing token sharing a key is replaced, so
+    # re-running cannot duplicate or conflict.
+    params:
+      - nvme_core.default_ps_max_latency_us=0
+      - pcie_aspm.policy=performance
+      # -----------------------------------------------------------------
+      # WHAT THE 2026-11-01 FORENSICS ACTUALLY SHOWED, AND WHY `policy`
+      # WAS NOT ENOUGH.
+      #
+      # That wedge happened with default_ps_max_latency_us=0 and
+      # pcie_aspm.policy=performance both confirmed on the running kernel's
+      # cmdline - and `nvme get-feature -f 0x0c` confirms APSTE: Disabled, so
+      # the drive was genuinely not entering ps3/ps4. APST was not the cause.
+      #
+      # What the log shows instead is eight link-layer failures in twelve
+      # minutes, each recovered by a controller reset:
+      #
+      #   nvme nvme0: controller is down; will reset:
+      #               CSTS=0xffffffff, PCI_STATUS=0x10
+      #   nvme0n1: I/O Cmd(0x2) ... I/O Error (sct 0x3 / sc 0x71)
+      #
+      # sct 0x3 / sc 0x71 is Path Related Status / Transient Transport Error,
+      # and SMART is immaculate throughout - 0 media errors, 0 error-log
+      # entries, 0% wear, 40C, throttled=0x0. So this is the PCIe transport,
+      # not the NAND, not heat and not power.
+      #
+      # `pcie_aspm.policy=performance` only selects a policy; ASPM support
+      # stays compiled in and active, and individual devices can still
+      # negotiate L1 substates. `pcie_aspm=off` disables it outright.
+      # `pcie_port_pm=off` additionally stops the kernel runtime-suspending
+      # the root port itself, which is a separate mechanism from ASPM and is
+      # not covered by either of the above. Both are what the kernel prints
+      # in its own advice on the failure line, and neither had been applied:
+      #
+      #   Try "nvme_core.default_ps_max_latency_us=0 pcie_aspm=off
+      #        pcie_port_pm=off" and report a bug
+      #
+      # They cost idle power, not throughput, which makes them much cheaper
+      # than the Gen 1 downgrade - so they belong before it in the ladder,
+      # not after.
+      #
+      # The `policy=performance` token above is deliberately kept rather than
+      # removed: this role replaces tokens sharing a key and cannot retract
+      # one it stops managing, so dropping the line would leave it on the
+      # cmdline anyway. With `pcie_aspm=off` the policy is inert.
+      # -----------------------------------------------------------------
+      - pcie_aspm=off
+      - pcie_port_pm=off
+      # -----------------------------------------------------------------
+      # THE MEMORY CGROUP, WHICH THIS PI HAS BEEN RUNNING WITHOUT.
+      #
+      # Raspberry Pi firmware puts `cgroup_disable=memory` on the cmdline on
+      # Pi 5 by default (it is in /proc/cmdline but not in cmdline.txt, which
+      # is why it is easy to miss). The consequence is that every `mem_limit`
+      # in this repo - 25 of them - was silently doing nothing, `docker stats`
+      # reported 0B of memory for every container, and the
+      # FreyContainerMemoryHigh alert could not have fired whatever happened.
+      # A runaway container could take the whole van down unopposed.
+      #
+      # Enabling it makes all 25 limits binding AT ONCE, so they were measured
+      # against real usage first. Grafana was 189 MiB over its limit and alloy
+      # had 120 MiB of headroom; both were raised in
+      # roles/monitoring/defaults/main.yml before this was switched on.
+      # Everything else had room. Without that pass, this line would have
+      # OOM-killed Grafana on the next boot.
+      #
+      # Jellyfin is the one to keep an eye on: 441 MiB measured against a 2g
+      # limit is comfortable, but the Pi 5 has no hardware encoder, so a
+      # software transcode is the one workload that could still surprise us.
+      #
+      # TWO STEPS, NOT ONE. Docker does not merely leave a limit unenforced
+      # when the controller is missing - it drops it when the container is
+      # CREATED, logging
+      #   "Your kernel does not support memory limit capabilities or the
+      #    cgroup is not mounted. Limitation discarded."
+      # and storing HostConfig.Memory=0. A reboot restarts containers from
+      # that stored config, so the limits still will not apply.
+      #
+      # RE-RUNNING THE DEPLOY DOES NOT FIX IT. This comment used to claim it
+      # did - "compose sees desired != actual and recreates them" - and that
+      # is wrong. docker_compose_v2 with `state: present` recreates a
+      # container only when the desired config differs from what it last
+      # applied, and the compose file never changed: `mem_limit` was always
+      # in it. So compose correctly does nothing. Measured 2026-11-01 after a
+      # full deploy reporting changed=36: nineteen of thirty-four containers
+      # still had HostConfig.Memory=0, jellyfin, authelia, lldap, prometheus
+      # and loki among them.
+      #
+      # Forcing it needs `recreate: always`, which is the one thing a routine
+      # deploy must not do, so it lives in its own playbook:
+      #   ansible-playbook playbooks/rebind_container_limits.yml
+      # Run it once, after the reboot. Verify with
+      #   docker inspect grafana --format '{{.HostConfig.Memory}}'
+      # which must be non-zero. frey-traefik legitimately reads 0 - its
+      # compose declares no mem_limit.
+      # -----------------------------------------------------------------
+      - cgroup_enable=memory
+      - cgroup_memory=1
+
+  # ---------------------------------------------------------------
+  # PCIe LINK SPEED - ESCALATION STEP 1, NOW IN FORCE.
+  #
+  # Turning APST off was supposed to end the dropouts. It did not: on
+  # 2026-10-31, twelve minutes after a boot with
+  # nvme_core.default_ps_max_latency_us=0 and pcie_aspm.policy=performance
+  # both confirmed live in /sys, the drive left the bus again -
+  #
+  #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff
+  #
+  # - so power management was a cause and not the only one. The documented
+  # next lever is link speed. The Pi 5's connector is electrically marginal
+  # for Gen 2 and this drive is a DRAM-less Realtek RTS5772DL; Gen 1 halves
+  # the signalling rate, which is the standard remedy for a link that trains
+  # but does not stay up. It is also the only one of the three remaining
+  # steps that can be done from here - the other two are reseating the FFC
+  # ribbon and replacing the drive.
+  #
+  # THE COST IS REAL: Gen 1 x1 is about 250 MB/s against 500. That is far
+  # more than Jellyfin needs - a 1080p stream is single-digit MB/s - and it
+  # is slower for large library copies and the *arrs' bulk imports. A wedge
+  # that needs a human in a van costs more than either.
+  #
+  # config.txt, so it needs a reboot. Set false and re-run to go back to
+  # Gen 2 once the ribbon has been reseated or the drive replaced.
+  # ---------------------------------------------------------------
+  pcie:
+    limit_to_gen1: true
+    config_path: /boot/firmware/config.txt
+
+  # ---------------------------------------------------------------
+  # WHAT ext4 DOES WHEN THE DISK ERRORS - THE LAST GAP IN THE
+  # "NEVER NEEDS A BUTTON PRESS" CHAIN.
+  #
+  # hung_task_panic above only catches a wedge where tasks BLOCK. On
+  # 2026-11-01 the NVMe errored without blocking: every filesystem call
+  # returned an error immediately instead of hanging, so the hung-task
+  # detector never fired, nothing panicked, and the Pi sat reachable-by-ping
+  # and answering nothing until the power was cut. sshd accepted TCP and
+  # reset before its banner; Traefik answered in 2ms and 404'd every host
+  # because dockerd had stopped answering its provider.
+  #
+  # The cause was the ext4 superblock, which was set to the kernel's oldest
+  # default:
+  #
+  #   tune2fs -l /dev/nvme0n1p2 | grep 'Errors behavior'   ->  Continue
+  #
+  # `Continue` is the worst of the three. ext4 notes the error and carries
+  # on, which risks writing through a fault - and, critically, it never
+  # panics, so kernel.panic can never reboot the van out of it.
+  #
+  # `panic` hands the error to the panic path, and kernel.panic=10 above
+  # reboots ten seconds later. That is the same bet already taken with
+  # hung_task_panic: in a van, a reboot - even an unclean one - beats a box
+  # that is dead until a human drives to it.
+  #
+  # Deliberately the SUPERBLOCK and not /etc/fstab. The root line in fstab
+  # says `defaults`, which carries no errors= option at all, so the
+  # superblock value is what the kernel actually uses - and it applies from
+  # the very first mount, before systemd-remount-fs would ever read fstab.
+  # Editing the root line in fstab to achieve the same thing risks a
+  # malformed entry on the one filesystem the Pi cannot boot without.
+  # ---------------------------------------------------------------
+  root_fs:
+    manage_error_behaviour: true
+    # continue | remount-ro | panic
+    error_behaviour: panic
+
+  # ---------------------------------------------------------------
+  # HOST MEMORY BUFFER - ESCALATION STEP 3, HELD IN RESERVE.
+  #
+  # This drive is DRAM-less, so it borrows host RAM instead:
+  #
+  #   nvme nvme0: allocated 32 MiB host memory buffer (1 segment).
+  #   nvme nvme0: using unchecked data buffer
+  #
+  # HMB means the controller DMAs into system memory for its own flash
+  # translation layer, so every one of those accesses crosses the same PCIe
+  # link that is producing `sct 0x3 / sc 0x71` transport errors - and an FTL
+  # that cannot reach its own mapping table is a plausible reason a reset
+  # escalates into `Identify namespace failed (-4)` rather than recovering
+  # cleanly. DRAM-less Realtek controllers plus Pi 5 HMB is a combination
+  # with a track record.
+  #
+  # Turning it off trades sustained random-write performance for one fewer
+  # thing on the failing link. Deliberately NOT enabled yet: it is step 3,
+  # after pcie_aspm=off/pcie_port_pm=off (step 1, ~free) and the Gen 1
+  # downgrade (step 2, already applied). Changing several variables at once
+  # on an intermittent fault tells you nothing about which one mattered.
+  #
+  # Set to true to append `nvme.max_host_mem_size_mb=0`, which replaces the
+  # firmware's own `=32` token because the two share a key.
+  # ---------------------------------------------------------------
+  hmb:
+    disable: false
 
   journald:
     # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every

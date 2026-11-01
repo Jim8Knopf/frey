@@ -1,6 +1,6 @@
 # media_library
 
-Playback and browsing: Jellyfin, Audiobookshelf, Seerr, AudioBookRequest,
+Playback and browsing: Jellyfin, Navidrome, Audiobookshelf, Seerr, AudioBookRequest,
 Maintainerr and Jellystat.
 
 This is the half of the media stack that works with **no internet at all**.
@@ -14,6 +14,7 @@ other module ran first.
 | Service | URL (and aliases) | Purpose |
 | --- | --- | --- |
 | Jellyfin | `jellyfin.frey` | Film, TV, music |
+| Navidrome | `navidrome.frey` | Music and Subsonic-compatible clients |
 | Audiobookshelf | `audiobookshelf.frey`, `books.frey` | Audiobooks and podcasts |
 | Seerr | `seerr.frey`, `requests.frey`, `jellyseerr.frey` | Request films and shows |
 | AudioBookRequest | `audiobookrequest.frey`, `bookrequests.frey` | Request audiobooks |
@@ -29,6 +30,25 @@ Offline behaviour: Jellyfin and Audiobookshelf serve from local disk and need
 nothing upstream. Seerr needs TMDB to browse, so with no uplink it degrades to
 showing what is already requested — the queue still drains later when the
 *arrs get a connection.
+
+## Music setup
+
+Open `https://navidrome.hub.frey` and sign in with your Frey account. Authelia
+handles web authentication; the first authenticated user becomes Navidrome
+administrator. Access is initially limited to `frey_admins` to make this safe.
+After an administrator signs in, add `media` to Navidrome's groups in
+`inventory/group_vars/all/identity.yml` and deploy the `identity,dashy` tags
+if other media users should have access. Navidrome creates user records with
+random passwords but no separate login is needed for the web player. Subsonic
+clients are not configured for single sign-on. It scans the shared
+`/data/media/music` library through a read-only `/music` mount and keeps its
+database and cache in `/opt/frey/appdata/navidrome`. Lidarr imports into that
+same library using the existing Prowlarr and qBittorrent configuration.
+Navidrome continues to play local music while acquisition is stopped or offline.
+
+Traefik and Navidrome use fixed, distinct addresses on their private proxy
+network. This keeps Docker startup order from assigning Traefik's trusted
+address to Navidrome after a reboot.
 
 ## The Pi 5 Cannot Transcode
 
@@ -103,7 +123,7 @@ deal. The run prints the URLs and API keys to paste in.
 
 ## Required Variables
 
-Shared values come from `media` in `inventory/group_vars/all/main.yml`.
+Shared values come from `media` in `inventory/group_vars/all/media.yml`.
 Everything else is in `defaults/main.yml`. No vault entries are required;
 the Jellyfin admin password and Jellystat's secrets are generated on first
 deploy into `/opt/frey/appdata/.media-keys.json` (mode 0600).

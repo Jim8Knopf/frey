@@ -198,7 +198,8 @@ from the repo instead, set `vault_media_api_keys` in
 | --- | --- | --- |
 | Prowlarr | Sonarr, Radarr, Lidarr, Chaptarr | Registered as applications at `fullSync` — indexers propagate |
 | AudioBookRequest | Prowlarr → qBittorrent → Audiobookshelf | Direct requests use the `audiobookrequest` category. A five-minute timer hardlinks completed audio into the Audiobookshelf `Requests` folder; the torrent remains available for seeding. |
-| Prowlarr | Byparr | Cloudflare solver, applied to `cloudflare`-tagged indexers |
+| Prowlarr | Byparr | Cloudflare solver. Applied only to indexers carrying the `cloudflare` tag, which `media_indexers` declares and Ansible applies — the tag existing is not enough |
+| Every *arr, Byparr, qBittorrent | `frey-media-dns` | All external DNS, with AAAA stripped. See below |
 | Sonarr, Radarr, Lidarr, Chaptarr | qBittorrent | Download client with the right category |
 | Sonarr, Radarr, Lidarr, Chaptarr | — | Root folders under `/data/media` |
 | Bazarr | Sonarr, Radarr | Templated `config.yaml` |
@@ -214,6 +215,25 @@ it does not unpack archives. Check `journalctl -u frey-audiobook-import.service`
 if a completed request does not appear. An indexer can only find titles and
 languages currently available from its sources.
 
+### Which indexers actually carry audiobooks
+
+Audiobooks are Torznab category **3030**, and only some sources publish it:
+
+| Indexer | Audiobooks (3030) | Notes |
+| --- | --- | --- |
+| The Pirate Bay | yes | the bulk of results in practice |
+| Knaben | yes | meta-search across other public sources, so it finds things no single tracker lists |
+| 1337x | yes | needs Byparr; see the Cloudflare note above |
+| Internet Archive | **no** — Books (7000) | where LibriVox publishes, so it is the public-domain catalogue. Chaptarr syncs 7000, so it sees these; a category-3030 search will not show them |
+| YTS, LimeTorrents | no | film and TV |
+
+So a 3030 search is served by The Pirate Bay, Knaben and 1337x, while the
+Internet Archive adds public-domain material that reaches Chaptarr through
+category 7000. The audiobook sources sit on their own Prowlarr sync profile
+(`Audiobook requests`) with RSS off and **search on** — RSS would feed a
+general tracker's whole firehose into unrelated apps, but automatic search
+being off meant Chaptarr and AudiobookRequest could not search them at all.
+
 ## First-Run Steps That Are Not Automated
 
 Five things. The deploy prints the values you need for each.
@@ -223,10 +243,12 @@ Five things. The deploy prints the values you need for each.
    Not automated because Jellyfin 12.3's `/Startup/User` endpoint does not
    create the administrator, and completing the wizard without one leaves a
    server nobody can log into. See `roles/media_library/README.md`.
-2. **Additional Prowlarr indexers.** Knaben is added as a public search source
-   when `media_audiobook_public_indexer` is true; private sources may need your
-   own tracker credentials. Add those at
-   `http://prowlarr.frey` and they propagate to every *arr automatically.
+2. **Private Prowlarr indexers.** The public list is declarative — see
+   `media_indexers` in `inventory/group_vars/all/media.yml`, which Ansible adds
+   to Prowlarr on every deploy. Private trackers still need adding by hand at
+   `http://prowlarr.frey`, because their credentials have no business in
+   `group_vars`; they propagate to every *arr automatically and Ansible never
+   touches them.
 3. **Seerr setup** at `http://seerr.frey`. Point it at
    `http://jellyfin:8096`, then add Sonarr (`http://sonarr:8989`) and Radarr
    (`http://radarr:7878`) with the API keys from the secret file. Not
@@ -252,11 +274,10 @@ there is neither** — with the anything-else copy replaced automatically once
 an English release appears. Parked off-grid, a watchable Italian copy now
 beats an English copy in three weeks.
 
-Which languages: `media.languages` in `inventory/group_vars/all/main.yml`.
-How strict: `media_language_require_one` in
-`inventory/group_vars/all/media.yml` — `false` (default) keeps the last-resort
-grab, `true` rejects it and leaves the episode missing until English or German
-exists.
+Which languages: `media.languages`. How strict:
+`media_language_require_one` — `false` (default) keeps the last-resort grab,
+`true` rejects it and leaves the episode missing until English or German
+exists. Both live in `inventory/group_vars/all/media.yml`.
 
 | release | score | outcome |
 | --- | --- | --- |
@@ -299,6 +320,145 @@ re-run `--tags media_config` to put them back.
 
 Audio *playback* is separate: see step 5 of the first-run steps above. The
 *arrs choose the file; Jellyfin chooses the track inside it.
+
+## Why Indexers Used To Fail, And What Fixes It
+
+The acquisition stack resolves DNS through its own dnsmasq container,
+`frey-media-dns`, which exists to **strip AAAA records**.
+
+The van's uplink has no usable IPv6 — no address on the uplink interface, no
+default route, nothing in the containers. Campground resolvers still answer
+AAAA for Cloudflare-fronted trackers, Docker forwards whatever DHCP handed the
+Pi, and .NET's `HttpClient` then tries an unreachable address and fails:
+
+```
+System.Net.Http.HttpRequestException: Resource temporarily unavailable
+  (www.limetorrents.fun:443)
+```
+
+Prowlarr blames "DNS/SSL issues", backs the indexer off with escalating delay,
+and Sonarr and Radarr report *All search-capable indexers are temporarily
+unavailable*.
+
+**Why it resisted diagnosis:** `curl` to the same URL works, because curl
+falls back to IPv4 and .NET does not. Every check by hand says the tracker is
+fine, and the backoff makes the whole thing look intermittent.
+
+Pointing the stack at a resolver that drops AAAA removes the failure, and
+because the resolver is ours, a campground's broken or filtering DNS can no
+longer disable indexers either.
+
+### When the network will not let us reach a public resolver
+
+Preferring our own upstreams assumes we can reach them. Libraries, schools,
+hotels and corporate guest networks routinely **block outbound port 53 to
+everything except their own resolver**, to force their filtering. On such a
+network all three upstreams time out, dnsmasq has nowhere to forward, and
+every name lookup in the acquisition stack fails at once — not one indexer,
+all of them, in every app.
+
+**Why it resists diagnosis:** NetworkManager hands the *host* the network's
+resolver, so `curl`, `ping` and `getent` on the Pi all work perfectly while
+the containers resolve nothing. It reads as "Prowlarr is broken", then
+"Lidarr too", then "all of them", and sends you reading application logs.
+`frey-media-dns` does go unhealthy, but `FreyContainerUnhealthy` is a warning,
+so it arrives silently.
+
+`frey-media-dns-upstream` handles it: it prefers the configured upstreams and
+falls back to the resolvers the uplink's DHCP handed us only while none of
+ours answers, going back the moment they return. Every candidate is probed
+**from inside the resolver container** before it is written, because the
+container's egress is NAT'd and firewalled differently from the host's —
+"the host can reach it" is not evidence the container can. `filter-AAAA` is
+unaffected either way, since it applies to the answer, not the upstream.
+
+It runs from the NetworkManager dispatcher on uplink events and from a
+10-minute timer, which is what notices recovery — a network that starts
+blocking 53 mid-stay, or preferred upstreams coming back, changes no interface
+state and produces no event.
+
+```bash
+# What is it using, and what can it actually reach?
+frey-media-dns-upstream status
+
+# Force a re-selection now rather than waiting for the timer.
+sudo frey-media-dns-upstream apply
+
+# Which mode is live, for Prometheus:
+#   frey_media_dns_upstream_mode{mode="preferred"} 1   -> ours
+#   frey_media_dns_upstream_mode{mode="uplink"}    1   -> on the fallback
+#   frey_media_dns_upstream_mode{mode="none"}      1   -> nothing resolves
+curl -s localhost:9100/metrics | grep frey_media_dns
+```
+
+Set `media_acquisition.dns.fallback_to_uplink: false` to refuse the fallback
+and keep a fixed upstream list — at the cost of resolving nothing at all on
+these networks. The selection logic has offline tests:
+`scripts/test-media-dns-upstream.py`.
+
+#### On the fallback, the network's filtering applies
+
+This is the cost, and it is worth knowing before you go looking for a fault
+that is not there. A network that blocks public DNS is usually a network that
+filters, and once we are forwarding to its resolver we inherit that. Expect
+trackers to be blocked outright, by two different mechanisms, while
+`frey_media_dns_upstream_mode{mode="uplink"} 1`.
+
+Tell them apart in one pass — run it from inside a container, not the host:
+
+```bash
+docker exec prowlarr getent hosts yts.mx                 # nothing  -> DNS-filtered
+docker exec prowlarr curl -s -o /dev/null -w '%{http_code}\n' \
+  --connect-timeout 8 https://thepiratebay.org/           # 000      -> TLS killed
+docker exec prowlarr curl -s -o /dev/null -w '%{http_code}\n' \
+  http://thepiratebay.org/                                # 403      -> their filter
+docker exec prowlarr curl -s -o /dev/null -w '%{http_code}\n' \
+  https://api.github.com                                  # 200      -> the stack is fine
+```
+
+That pattern — ordinary sites answering 200 while trackers give NXDOMAIN, a
+`000` after a 0.1s TCP connect, and a 403 over plain HTTP — is the uplink's
+content filter, not a Frey fault. Nothing configurable on the Pi changes it:
+**downloads will not work on that network.** Observed on the APNK Library
+uplink on 2026-11-01.
+
+Everything else keeps working, which is the point of fixing the resolver
+anyway: metadata, artwork, Seerr, update checks and the *arrs' own APIs all
+resolve again. The indexers stay marked failed until a successful re-test —
+`frey-media-gate` retries every 30 minutes, so they clear themselves once the
+van is on a network that does not filter them.
+
+### When an indexer fails anyway
+
+```bash
+# 1. Is the resolver doing its job? An IPv4-mapped ::ffff: answer is correct;
+#    a real 2606:… address means something is bypassing it.
+docker exec prowlarr getent ahostsv6 thepiratebay.org
+
+# 2. What is Prowlarr actually complaining about, and about which host?
+docker logs prowlarr 2>&1 | grep -iE "unable to connect|indexer" | tail
+
+# 3. Is it a Cloudflare challenge? Byparr logs each solve and its duration.
+docker logs byparr 2>&1 | tail -20
+```
+
+Three causes, in rough order of likelihood:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| One indexer fails forever, others fine | its public domain died | check the hostname in Prowlarr's log against the definition's `links`, then drop it from `media_indexers` or let Prowlarr fall through to a mirror |
+| `403` or `Http request timed out` | Cloudflare challenge | the indexer needs `cloudflare: true` in `media_indexers`; if it already has it, Byparr may be solving slower than `request_timeout` — Byparr logs the real duration |
+| Every indexer fails at once, in every app, while the Pi itself resolves fine | the resolver cannot reach any upstream — usually a network blocking outbound port 53 | `frey-media-dns-upstream status`, then `sudo frey-media-dns-upstream apply` |
+| Every indexer fails at once | the resolver is down, or there is no uplink | `docker ps --filter name=frey-media-dns`, then `frey-media-gate status` |
+
+A Cloudflare solve on a Pi 5 genuinely takes 30–70 seconds, which is why
+`request_timeout` defaults to 180. Byparr is single-browser and serialises
+solves, so several challenged indexers in one search are slow by nature.
+
+> Byparr does not implement FlareSolverr's `sessions.*` commands, and
+> Prowlarr's proxy **test** button uses one. So the test fails with
+> `502 Proxy validation failed` while solving works perfectly. Judge Byparr by
+> `docker logs byparr`, not by that button.
 
 ## Download Gating
 
@@ -345,7 +505,7 @@ Three replacements since that stack was written:
 | Was | Now | Why |
 | --- | --- | --- |
 | Jellyseerr | **Seerr** `v3.5.1` | Jellyseerr is discontinued; Overseerr and Jellyseerr merged upstream into Seerr. Its Jellyfin auth also breaks on Jellyfin 12. |
-| FlareSolverr | **Byparr** `2.0.1` | FlareSolverr is archived upstream and no longer clears the Cloudflare challenges trackers use. Byparr is a drop-in for its API. |
+| FlareSolverr | **Byparr** `3.0.4` | FlareSolverr is archived upstream and no longer clears the Cloudflare challenges trackers use. Byparr is a drop-in for its API — except for `sessions.*`, which is only used by Prowlarr's test button. |
 | Jellyfin 10.x | **Jellyfin 12.3** | Major version jump. See `roles/media_library/README.md` for the breaking changes. |
 
 Also added: **Chaptarr** for audiobooks and ebooks, the maintained successor

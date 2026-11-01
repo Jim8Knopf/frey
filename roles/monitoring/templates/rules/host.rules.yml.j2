@@ -303,6 +303,103 @@ groups:
   - name: frey_nvme
     rules:
 
+      # The alert this van actually needed. Every other rule in this group
+      # reads the drive's own health, and this drive's health is immaculate -
+      # 0% wear, 0 media errors, no critical warning - while it repeatedly
+      # falls off the PCIe bus and takes the host down with it. SMART cannot
+      # see a link-layer dropout, so without this the failure is invisible to
+      # monitoring and gets blamed on whatever was busy at the time.
+      #
+      # Critical at a single occurrence, deliberately. One recovered reset is
+      # a multi-second I/O stall across the whole host - mid-film buffering,
+      # an *arr timing out, a database write hanging - and the next one may
+      # not be recovered at all. There is no benign version of this.
+      # The van's recovery guarantee, asserted rather than assumed. Without
+      # both of these an NVMe wedge does not end on its own: systemd keeps
+      # petting the hardware watchdog from RAM, so nothing reboots and the Pi
+      # waits for a human to cut the power. They are set by rpi_nvme, and they
+      # spent two days silently reverted at every boot because they had been
+      # written to a file Debian 13 does not read.
+      #
+      # Warning, not critical: it reports a missing safety net rather than an
+      # active fault, and the alert that matters during the fault itself is
+      # FreyNvmeControllerReset.
+      - alert: FreyWedgeRecoveryDisarmed
+        expr: >-
+          frey_kernel_hung_task_panic == 0
+          or frey_kernel_panic_reboot_secs == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The NVMe wedge self-reboot is not armed'
+          description: >-
+            kernel.hung_task_panic or kernel.panic is 0, so a task blocked
+            forever on a disappeared NVMe will hang the van until someone
+            power-cycles it by hand instead of rebooting in about two and a
+            half minutes. Check that frey.sysctl_file is landing in
+            /etc/sysctl.d/ and not /etc/sysctl.conf, which is not read at
+            boot, then re-run `--tags nvme`. Confirm with
+            `cat /proc/sys/kernel/hung_task_panic /proc/sys/kernel/panic`.
+
+      # The other half of FreyWedgeRecoveryDisarmed, and the half that was
+      # missing on 2026-11-01. hung_task_panic only fires when a task BLOCKS;
+      # that outage had the NVMe returning errors instead, so nothing hung,
+      # nothing panicked, and the van sat pingable and useless until the power
+      # was cut. The ext4 superblock was on `Continue`, which also means ext4
+      # keeps writing through a fault.
+      - alert: FreyRootFsErrorsNotFatal
+        expr: frey_root_fs_error_behaviour < 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'An NVMe I/O error will not reboot the van'
+          description: >-
+            The root filesystem is set to carry on (or merely remount
+            read-only) when the disk errors, so a fault that returns errors
+            rather than blocking will leave the Pi reachable by ping and
+            answering nothing - sshd resetting before its banner, Traefik
+            404ing every host - until someone cuts the power. `Continue` also
+            risks writing through the fault. Re-run `--tags nvme` and reboot;
+            the superblock only takes effect at mount. Confirm with
+            `sudo tune2fs -l $(findmnt -n -o SOURCE /) | grep 'Errors behavior'`.
+
+      - alert: FreyNvmeControllerReset
+        expr: increase(frey_nvme_controller_resets_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} dropped off the PCIe bus'
+          description: >-
+            The controller left the bus and the kernel reset it. Disk I/O
+            stalled for seconds while that happened, which is what buffering
+            and random service timeouts look like from the outside - do not go
+            looking for a CPU hog. Confirm with `journalctl -k -b | grep -i
+            'controller is down'`. If FreyNvmeApstEnabled is also firing the
+            cure has not booted yet; otherwise set `pciex1_gen=1`, then
+            reseat the NVMe ribbon - it is a van, and that cable moves.
+
+      # Deployment drift that no `0 changed` run can catch. The cmdline file
+      # can be correct on disk for weeks while the running kernel still has
+      # APST enabled, because the parameter only applies at boot - so the repo
+      # says fixed, Ansible says fixed, and the drive goes on sleeping itself
+      # off the bus. Read the kernel's live value instead and say so.
+      - alert: FreyNvmeApstEnabled
+        expr: frey_nvme_apst_max_latency_us != 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'NVMe APST is enabled - the dropout fix is not live'
+          description: >-
+            The running kernel allows APST up to {{ go }} $value {{ og }}us,
+            so this controller can still be parked in a power state it does
+            not reliably wake from. `nvme_core.default_ps_max_latency_us=0` is
+            in rpi_nvme's cmdline but a cmdline change needs a reboot to take
+            effect. Reboot at a convenient moment; until then expect dropouts.
+
       - alert: FreyNvmeCriticalWarning
         expr: frey_nvme_critical_warning != 0
         for: 5m

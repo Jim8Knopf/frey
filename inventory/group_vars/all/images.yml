@@ -7,7 +7,6 @@
 # Core services
 traefik_version: "v3.7.16"
 dashy_version: "4.7.0"
-dockge_version: "1.5.0"
 
 identity_versions:
   authelia: "4.39.28"
@@ -19,6 +18,7 @@ media_versions:
   # Jellyfin 12.x. Upgrading from 10.x is a ONE-WAY database migration and
   # plugins must be uninstalled first - see roles/media_library/README.md.
   jellyfin: "12.3ubu2604-ls56"
+  navidrome: "0.64.2"
   audiobookshelf: "2.37.2"
   # Seerr: the maintained continuation of Overseerr and Jellyseerr, both of
   # which are discontinued.
@@ -47,6 +47,11 @@ media_versions:
   # Byparr: replaces FlareSolverr, archived upstream and no longer able to
   # clear current Cloudflare challenges.
   byparr: "3.0.4"
+  # dnsmasq, used as the acquisition stack's own resolver. It exists to strip
+  # AAAA records: the van's uplink has no working IPv6, but campground
+  # resolvers hand out AAAA for Cloudflare-fronted trackers anyway, and the
+  # *arrs then fail every search. See roles/media_acquisition/README.md.
+  dnsmasq: "2.93"
   recyclarr: "8.8.0"
   cleanuparr: "2.10.12"
   unpackerr: "1.0.0"
@@ -54,6 +59,7 @@ media_versions:
   gluetun: "v3.41.3"
 
 monitoring_versions:
+  dockge: "1.5.0"
   prometheus: "v3.15.1"
   alertmanager: "v0.34.1"
   node_exporter: "v1.12.1"

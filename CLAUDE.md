@@ -55,6 +55,8 @@ scripts/monitoring-check.sh            # every target up, rules loaded, collecto
 scripts/monitoring-check.sh --test     # prove a notification reaches the phone
 scripts/identity-check.sh              # assert SSO is actually enforcing
 scripts/media-check-updates.sh         # pinned image versions vs upstream (needs internet)
+scripts/test-portal-logic.py           # captive-portal accept logic, offline
+scripts/test-media-dns-upstream.py     # media resolver upstream selection, offline
 git-hooks/test-pre-commit.sh           # regression tests for the vault hook
 ```
 
@@ -109,9 +111,8 @@ network_gateway → rpi_nvme → service_proxy → security_baseline
                      perfectly healthy container)
   → media_acquisition → media_library   (acquisition generates the *arr API
                                          keys library wires Seerr to)
-  → monitoring      (reads identity's Grafana OIDC secret, and derives what
-                     to probe from identity_services)
-  → dockge          (optional, depends on nothing)
+  → wifi_portal → dashy
+  → monitoring      (metrics, logs, alerts, Grafana and optional Dockge)
 ```
 
 Adding a module: role + `defaults/main.yml` + `tasks/main.yml` + `README.md`,
@@ -124,16 +125,17 @@ then register it in `available` and list it in `enabled`. See
 | --- | --- |
 | `roles/<m>/defaults/main.yml` | everything specific to that module — the default home |
 | `inventory/group_vars/all/main.yml` | module registry, and only choices *two or more* modules must agree on |
-| `.../media.yml`, `.../identity.yml`, `.../monitoring.yml` | the per-module files a human edits day to day: image versions, toggles, thresholds, who may log in |
+| `.../{network,system,security,proxy,media,identity,monitoring}.yml` | operational settings by responsibility |
+| `.../images.yml` | all pinned image versions |
 | `.../secrets.yml` | vault ciphertext, nothing else |
 
 Two subtleties that have bitten:
 
 - **A role's defaults are only in scope while that role runs.** Anything one
   module must read from another (`frey.pki_public_dir`,
-  `service_proxy.traefik.metrics`) is therefore declared in `main.yml` as well,
+  `service_proxy.traefik.metrics`) is therefore declared in inventory group_vars as well,
   with a comment saying why. Don't "clean up" those apparent duplicates.
-- **`hash_behaviour = merge` in `ansible.cfg` is what lets `main.yml` set some
+- **`hash_behaviour = merge` in `ansible.cfg` is what lets inventory group_vars set some
   nested keys and inherit the rest** from role defaults. It is deprecated in
   ansible-core; `security_baseline.ssh` is spelled out in full rather than
   relying on the merge, because a half-rendered sshd drop-in is the one failure
@@ -150,7 +152,7 @@ Two radios, deliberately assigned:
 | FreyHub AP, `10.20.0.1/24` | `wlan0` built-in Broadcom | the critical always-on service gets the soldered-down radio with the best AP driver |
 | Public WiFi uplink | `wlan1` Realtek USB | expendable; losing it costs internet, never FreyHub |
 
-Swapping the two `interface:` lines in `main.yml` swaps the roles — nothing else
+Swapping the two `interface:` lines in `network.yml` swaps the roles — nothing else
 hardcodes a radio. **FreyHub must serve clients fully with no uplink present**;
 nothing below the Pi may depend on internet. dnsmasq resolves `frey` and
 everything under it, at any depth, to the Pi, answered locally.
@@ -212,6 +214,15 @@ is what makes an import a hardlink rather than a copy. The internal container
 network (`172.28.0.0/16`) must never overlap FreyHub's `10.20.0.0/24` — the
 archived role used `10.20.0.0/24` here, which would have blackholed the AP.
 
+**Every *arr failing at once is a DNS fault, not an application one.** The
+stack resolves through its own dnsmasq (`frey-media-dns`), which prefers public
+upstreams on purpose. Networks that block outbound port 53 — libraries,
+schools, hotels — leave it with nowhere to forward, and the giveaway is that
+the *host* still resolves perfectly, because NetworkManager gave it the
+network's own resolver. `frey-media-dns-upstream` falls back to that resolver
+while ours are unreachable; `frey-media-dns-upstream status` says which set is
+live. Don't go reading Prowlarr's logs until that says `preferred` or `uplink`.
+
 **The Pi 5 has no hardware video encoder.** Every transcode is software and
 competes with the gateway for CPU, so quality profiles chase direct play
 (H.264 + AAC, 1080p, reject 2160p/HDR-only/AV1) rather than relying on
@@ -243,6 +254,39 @@ count of times power was cut rather than halted. Every one is a chance of SQLite
 corruption across the *arrs, Jellyfin and LLDAP. `FreyUnsafeShutdown` and
 `Frey5vRailLow` are both critical. When something is behaving strangely, check
 that count before blaming software.
+
+The drive leaves the PCIe bus (`controller is down; CSTS=0xffffffff`) and the
+host **wedges rather than crashes**, so nothing reboots and only the button
+recovers it. **This is NOT fixed, and APST was not the cause** — an earlier
+version of this file said both. It recurred on 2026-11-01 with APST confirmed
+off at the controller (`APSTE: Disabled`), producing eight resets in twelve
+minutes with `I/O Error (sct 0x3 / sc 0x71)` — *transient transport error* —
+while SMART stayed immaculate. It is the PCIe link, not the NAND, not heat and
+not power. The kernel's `faulty power saving mode` line is boilerplate on every
+reset, not a diagnosis; it misled this twice. `roles/rpi_nvme/README.md` holds
+the cure ladder, which is **not exhausted** — `pcie_aspm=off`/`pcie_port_pm=off`
+and PCIe Gen 1 only took effect on 2026-11-01 and have never faced a fault, and
+disabling the host memory buffer is still held in reserve. Change one at a time;
+hardware (reseat the FFC ribbon, then the drive) comes after those.
+
+Note the shape of the trap: `pciex1_gen=1` sat in `config.txt` for a day while
+every boot still trained at 5 GT/s, because the Pi had not rebooted. **A setting
+correct on disk is not a setting the kernel is running**, which is why APST, the
+panic sysctls and the ext4 error behaviour are all exported as metrics with
+alerts. Three traps worth carrying forward:
+
+- **A wedged Pi that answers ping but refuses SSH is not a lockout.** `sshd`
+  cannot read `authorized_keys` off a dead disk, so it fails authentication with
+  `Permission denied (publickey)` — which reads exactly like the
+  `PerSourcePenalties` problem in `docs/SSH_ACCESS.md` and sends you to the
+  wrong page. Check whether the journal has stopped before concluding anything.
+- **An empty journal after a freeze is evidence, not a gap.** The journal lives
+  on the disk that disappeared, so the kernel's complaint never reached it.
+  Loki has it, because it was shipped off-host before the wedge.
+- **Read the boot that died, not the one you are in.** `journalctl --list-boots`
+  and then `-b -2` — after a power cycle the wedge is two boots back, and `-b -1`
+  is the clean one that followed it. The whole eight-reset sequence above was
+  sitting in `-b -2` the entire time, with journald now `storage: persistent`.
 
 ## Secrets
 

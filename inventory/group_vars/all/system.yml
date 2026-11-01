@@ -1,0 +1,26 @@
+---
+rpi_nvme:
+  # SD-first (0xf461) preserves recovery; 0xf416 prefers NVMe.
+  migrate:
+    boot_order: "0xf461"
+
+  # Confirmed running from NVMe (nvme0n1p2) since 2026-10-26, SD card removed.
+  # Enforced so a later rebuild refuses to deploy service data onto an SD card
+  # instead of quietly filling it.
+  require_nvme_root: true
+
+  packages:
+    - nvme-cli
+    - smartmontools
+
+  sysctl:
+    vm.swappiness: "10"
+    vm.vfs_cache_pressure: "50"
+
+  journald:
+    # Raspberry Pi OS defaults the journal to RAM (volatile), which loses every
+    # log line on reboot. On NVMe there is no card to spare, and the logs from
+    # before an unclean power loss are the whole point of having them.
+    storage: persistent
+    system_max_use: 256M
+    max_file_sec: 7day

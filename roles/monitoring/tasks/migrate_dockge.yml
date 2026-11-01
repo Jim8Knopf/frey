@@ -1,0 +1,89 @@
+---
+# Validate/render/pull first. Keep the old file until the replacement is running.
+- name: Check for the standalone Dockge stack
+  ansible.builtin.stat:
+    path: "{{ monitoring.dockge.legacy_stack_dir }}/docker-compose.yml"
+  register: monitoring_legacy_dockge
+
+- name: Inspect existing Dockge ownership
+  community.docker.docker_container_info:
+    name: "{{ monitoring.services.dockge.container_name }}"
+  register: monitoring_dockge_container
+
+- name: Require a known Compose owner before migrating Dockge
+  ansible.builtin.assert:
+    that:
+      - monitoring.dockge.legacy_stack_dir != monitoring.stack_dir
+      - >-
+        not monitoring_dockge_container.exists or
+        monitoring_dockge_container.container.Config.Labels.get('com.docker.compose.project', '')
+        in [monitoring.stack_dir | basename, monitoring.dockge.legacy_stack_dir | basename]
+      - >-
+        not monitoring_dockge_container.exists or
+        monitoring_dockge_container.container.Config.Labels.get('com.docker.compose.project', '')
+        != (monitoring.dockge.legacy_stack_dir | basename) or
+        monitoring_legacy_dockge.stat.exists
+    fail_msg: "Dockge belongs to an unknown project or its old Compose file is missing; refusing to remove it."
+
+- name: Transfer Dockge to the monitoring project
+  when: not ansible_check_mode
+  block:
+    - name: Remove the standalone Dockge container
+      community.docker.docker_compose_v2:
+        project_src: "{{ monitoring.dockge.legacy_stack_dir }}"
+        state: absent
+        remove_volumes: false
+      when: monitoring_legacy_dockge.stat.exists
+
+    - name: Start the monitoring stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ monitoring.stack_dir }}"
+        state: present
+        remove_orphans: true
+        pull: never
+        timeout: 300
+
+    - name: Wait for Dockge to answer inside its container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ monitoring.services.dockge.container_name }}"
+          - node
+          - -e
+          - >-
+            require('http').get('http://127.0.0.1:{{ monitoring.services.dockge.port }}/',
+            r => process.exit(r.statusCode < 400 ? 0 : 1))
+            .on('error', () => process.exit(1)).setTimeout(5000, () => process.exit(1));
+      register: monitoring_dockge_ready
+      changed_when: false
+      retries: "{{ monitoring.configure.health_retries }}"
+      delay: "{{ monitoring.configure.health_delay }}"
+      until: monitoring_dockge_ready.rc == 0
+      when: monitoring_enable.dockge | bool
+
+  rescue:
+    - name: Remove replacement Dockge before restoring the standalone stack
+      community.docker.docker_container:
+        name: "{{ monitoring.services.dockge.container_name }}"
+        state: absent
+      when: monitoring_legacy_dockge.stat.exists
+
+    - name: Restore the standalone Dockge stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ monitoring.dockge.legacy_stack_dir }}"
+        state: present
+        pull: never
+      when: monitoring_legacy_dockge.stat.exists
+
+    - name: Report the failed monitoring deployment
+      ansible.builtin.fail:
+        msg: "Monitoring deployment failed. The standalone Dockge stack was restored if present; its data was preserved."
+
+- name: Remove the retired Dockge Compose file
+  ansible.builtin.file:
+    path: "{{ monitoring.dockge.legacy_stack_dir }}/docker-compose.yml"
+    state: absent
+  when:
+    - monitoring_legacy_dockge.stat.exists
+    - not ansible_check_mode

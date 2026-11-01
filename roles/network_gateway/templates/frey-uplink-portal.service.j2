@@ -1,0 +1,18 @@
+[Unit]
+Description=Frey captive-portal auto-accept
+Documentation=file://{{ frey.base_dir | default('/opt/frey') }}/docs/GATEWAY.md
+# NetworkManager owns the radios and answers the connectivity check, so there
+# is nothing to do before it is up.
+After=NetworkManager.service
+Wants=NetworkManager.service
+# Deliberately NOT ordered after network-online.target. A captive portal is
+# precisely the state in which that target never arrives, which would mean
+# this unit never ran in the one situation it exists for.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/frey-uplink-portal
+# A probe, a page fetch, a submission and a re-check. If it has not finished
+# by then it never will, and the timer simply tries again.
+TimeoutStartSec={{ network_gateway.upstream.portal.timeout_seconds }}
+Nice=10

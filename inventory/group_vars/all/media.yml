@@ -1,45 +1,52 @@
 ---
-# ==============================================================================
-#
-#   FREY MEDIA - SERVICE SETTINGS
-#
-#   On/off switches and the VPN toggle, all in one place so
-#   you never have to go hunting through the roles for them.
-#
-#   Everything structural - volumes, networks, Traefik labels, API wiring -
-#   stays in roles/media_acquisition/ and roles/media_library/. You should not
-#   need to touch those to run the stack day to day.
-#
-# ------------------------------------------------------------------------------
-#   UPDATING IMAGES
-#
-#   1. See what is out of date:
-#          scripts/media-check-updates.sh
-#   2. Edit media_versions in inventory/group_vars/all/images.yml.
-#   3. Apply, while you still have a connection:
-#          ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-#            --tags media --vault-password-file .vault_pass
-#
-#   Images are pinned on purpose. The old stack used `latest` everywhere,
-#   which means an unattended pull on a campground Wi-Fi can hand you a broken
-#   stack with no internet left to fix it with.
-#
-#   To re-pull the same pinned tags (linuxserver rebuilds them for base-image
-#   security fixes without changing the version):
-#       ansible-playbook ... --tags media_update -e media_update=true
-#
-# ==============================================================================
+# Shared storage, permissions, network and playback policy.
+media:
+  # One /data mount per container keeps imports on the same filesystem for hardlinks.
+  data_dir: "{{ frey.base_dir }}/data"
+  appdata_dir: "{{ frey.base_dir }}/appdata"
+
+  # Single uid/gid shared by every media container, so hardlinks and
+  # permissions work across the whole stack.
+  user:
+    name: media
+    uid: 63342
+    gid: 63342
+  # 002 so group members can write each other's files (umask, not a mode).
+  umask: "002"
+
+  languages:
+    # Primary drives Jellyfin metadata, *arr language profiles and Bazarr.
+    # *_arr_name is the same language spelled the way Sonarr and Radarr spell
+    # it - a custom format matches on the app's own language name, and the ids
+    # behind those names are resolved at run time by
+    # media_acquisition/tasks/configure/languages.yml, so none is pinned here.
+    primary: en
+    primary_arr_name: English
+    secondary: de
+    secondary_arr_name: German
+    metadata_country: NZ
+
+  network:
+    name: frey_media
+    subnet: 172.28.0.0/16
+
+  # Pi 5 has no hardware video encoder; prefer formats clients can direct-play.
+  clients:
+    direct_play_codecs:
+      - h264
+    max_resolution: 1080p
+    reject_hdr_only: true
+    reject_av1: true
 
 
 # Image versions live in inventory/group_vars/all/images.yml.
 
-# Add Knaben as a public audiobook search source in Prowlarr. Its sync profile
-# permits interactive searches only in other *arr apps, not RSS or auto grabs.
+# Add the audiobook-oriented public sources below to Prowlarr. Set false to
+# leave the indexer list to whatever you add by hand in the UI.
 media_audiobook_public_indexer: true
 
-# SPOKEN LANGUAGE: which languages is set in group_vars/all/main.yml
-# (media.languages - English primary, German secondary). This is the one knob
-# about how strict that is.
+# SPOKEN LANGUAGE: which languages is media.languages above - English
+# primary, German secondary. This is the one knob about how strict that is.
 #
 # false  prefer English, then German, and grab something in another language
 #        if that is all the indexers have. It is replaced automatically when
@@ -49,23 +56,48 @@ media_audiobook_public_indexer: true
 #        episode stays missing for as long as it takes.
 media_language_require_one: false
 
+media_indexers:
+
+  # --- Film and television ----------------------------------------------------
+  - name: The Pirate Bay
+    definition: thepiratebay
+  - name: YTS
+    definition: yts
+    base_url: https://web.yts.gg/
+  - name: LimeTorrents
+    definition: limetorrents
+
+  # --- General, and the bulk of the audiobook catalogue -----------------------
+  # 1337x indexes audiobooks (3030) and ebooks (7020) as well as film and TV,
+  # and is the single biggest win for finding audiobooks. It sits behind
+  # Cloudflare and answers 403 without a solver, which is what Byparr is for.
+  - name: 1337x
+    definition: 1337x
+    cloudflare: true
+
+  # --- Audiobooks -------------------------------------------------------------
+  # Knaben is a meta-search across other public sources, so it finds things no
+  # single tracker lists.
+  - name: Knaben
+    definition: Knaben
+    audiobooks: true
+  # The Internet Archive is where LibriVox publishes, so this is the
+  # public-domain audiobook catalogue - tens of thousands of readings, legal,
+  # and the only source here that never breaks or gets challenged.
+  - name: Internet Archive
+    definition: internetarchive
+    audiobooks: true
+
 # Permit 15 concurrent downloads and reserve three more active-torrent slots
 # for the existing upload limit. qBittorrent's global limit applies to both.
 media_qbittorrent_max_active_downloads: 15
 media_qbittorrent_max_active_torrents: 18
 
-
-
-# ==============================================================================
-# WHICH SERVICES RUN
-#
-# Turning one off stops and removes its container on the next deploy; its data
-# under /opt/frey/appdata is left alone, so turning it back on resumes.
-# ==============================================================================
 media_enable:
 
   # --- Library ---------------------------------------------------------------
   jellyfin: true
+  navidrome: true
   audiobookshelf: true
   seerr: true
   audiobookrequest: true
@@ -91,45 +123,6 @@ media_enable:
   cleanuparr: true
   unpackerr: true
 
-
-# ==============================================================================
-# VPN
-#
-#   Flip enabled to true, fill in the credentials, and re-deploy:
-#
-#       ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-#         --tags media_acquisition --vault-password-file .vault_pass
-#
-#   WHAT CHANGES WHEN YOU DO
-#
-#   qBittorrent stops having its own network connection and routes entirely
-#   through the Gluetun container (`network_mode: service:gluetun`). If the
-#   tunnel drops, Gluetun's firewall blocks everything - so torrent traffic
-#   cannot leak to the campground's network, it simply stops. That killswitch
-#   is the point of doing it this way rather than pointing qBittorrent at a
-#   proxy.
-#
-#   Ansible re-points the *arrs at the tunnel automatically; nothing else here
-#   needs changing. The qBittorrent web UI stays at qbittorrent.frey.
-#
-#   WHERE THE CREDENTIALS GO
-#
-#   In the vault, never here:
-#       ansible-vault edit inventory/group_vars/all/secrets.yml \
-#         --vault-password-file .vault_pass
-#
-#   WireGuard (preferred - faster, and the only option on some providers):
-#       vault_vpn_wireguard_private_key: "..."
-#       vault_vpn_wireguard_addresses: "10.2.0.2/32"
-#       vault_vpn_wireguard_preshared_key: ""      # optional
-#
-#   OpenVPN:
-#       vault_vpn_openvpn_user: "..."
-#       vault_vpn_openvpn_password: "..."
-#
-#   A deploy with enabled: true and no credentials fails immediately with an
-#   explanatory message rather than silently starting an open tunnel.
-# ==============================================================================
 media_vpn:
   enabled: false
 

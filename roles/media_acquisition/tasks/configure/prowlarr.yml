@@ -13,96 +13,11 @@
 # it, so the browser engine is not in the path for trackers that do not need
 # it.
 #
-# Private indexers remain user-managed. Knaben is an optional public source
-# used by AudioBookRequest; its restricted sync profile avoids enabling RSS or
-# automated searches in unrelated applications.
+# Private indexers remain user-managed: their credentials have no business in
+# group_vars. The public indexer list, the audiobook sync profile and the
+# tagging that actually puts Byparr in an indexer's path are all in
+# indexers.yml, which runs after this file.
 # ==============================================================================
-
-- name: "prowlarr: read application sync profiles"
-  ansible.builtin.uri:
-    url: "{{ media_api_base }}/api/v1/appprofile"
-    headers:
-      Host: "prowlarr.{{ frey.local_domain }}"
-      X-Api-Key: "{{ media_secrets.prowlarr }}"
-    return_content: true
-    timeout: "{{ media_acquisition.configure.api_timeout }}"
-  register: prowlarr_audiobook_profiles
-  changed_when: false
-  when: media_audiobook_public_indexer | default(false) | bool
-
-- name: "prowlarr: add an interactive-only sync profile for audiobook sources"
-  ansible.builtin.uri:
-    url: "{{ media_api_base }}/api/v1/appprofile"
-    method: POST
-    headers:
-      Host: "prowlarr.{{ frey.local_domain }}"
-      X-Api-Key: "{{ media_secrets.prowlarr }}"
-    body_format: json
-    body:
-      name: Audiobook requests
-      enableRss: false
-      enableAutomaticSearch: false
-      enableInteractiveSearch: true
-      minimumSeeders: 1
-    status_code: [200, 201]
-    return_content: true
-    timeout: "{{ media_acquisition.configure.api_timeout }}"
-  register: prowlarr_audiobook_profile_added
-  changed_when: prowlarr_audiobook_profile_added.status | default(0) in [200, 201]
-  when:
-    - media_audiobook_public_indexer | default(false) | bool
-    - "'Audiobook requests' not in (prowlarr_audiobook_profiles.json | map(attribute='name') | list)"
-
-- name: "prowlarr: inspect configured audiobook indexers"
-  ansible.builtin.uri:
-    url: "{{ media_api_base }}/api/v1/indexer"
-    headers:
-      Host: "prowlarr.{{ frey.local_domain }}"
-      X-Api-Key: "{{ media_secrets.prowlarr }}"
-    return_content: true
-    timeout: "{{ media_acquisition.configure.api_timeout }}"
-  register: prowlarr_audiobook_indexers
-  changed_when: false
-  no_log: true
-  when: media_audiobook_public_indexer | default(false) | bool
-
-- name: "prowlarr: read available indexer definitions"
-  ansible.builtin.uri:
-    url: "{{ media_api_base }}/api/v1/indexer/schema"
-    headers:
-      Host: "prowlarr.{{ frey.local_domain }}"
-      X-Api-Key: "{{ media_secrets.prowlarr }}"
-    return_content: true
-    timeout: "{{ media_acquisition.configure.api_timeout }}"
-  register: prowlarr_audiobook_schema
-  changed_when: false
-  no_log: true
-  when:
-    - media_audiobook_public_indexer | default(false) | bool
-    - "'Knaben' not in (prowlarr_audiobook_indexers.json | map(attribute='name') | list)"
-
-- name: "prowlarr: add the public Knaben audiobook search source"
-  ansible.builtin.uri:
-    url: "{{ media_api_base }}/api/v1/indexer"
-    method: POST
-    headers:
-      Host: "prowlarr.{{ frey.local_domain }}"
-      X-Api-Key: "{{ media_secrets.prowlarr }}"
-    body_format: json
-    body: "{{ knaben_definition | combine({'appProfileId': audiobook_profile_id | int}) }}"
-    status_code: [200, 201]
-    timeout: "{{ media_acquisition.configure.api_timeout }}"
-  vars:
-    knaben_definition: "{{ prowlarr_audiobook_schema.json | selectattr('name', 'equalto', 'Knaben') | first }}"
-    audiobook_profile_id: >-
-      {{ (prowlarr_audiobook_profiles.json | selectattr('name', 'equalto', 'Audiobook requests') | map(attribute='id') | first)
-         | default(prowlarr_audiobook_profile_added.json.id | default(0)) }}
-  register: prowlarr_knaben_added
-  changed_when: prowlarr_knaben_added.status | default(0) in [200, 201]
-  no_log: true
-  when:
-    - media_audiobook_public_indexer | default(false) | bool
-    - "'Knaben' not in (prowlarr_audiobook_indexers.json | map(attribute='name') | list)"
 
 - name: "prowlarr: read existing download clients"
   ansible.builtin.uri:
@@ -236,7 +151,7 @@
         - name: host
           value: "http://{{ media_acquisition.services.byparr.hostname }}:{{ media_acquisition.services.byparr.port }}/"
         - name: requestTimeout
-          value: 60
+          value: "{{ media_acquisition.services.byparr.request_timeout }}"
       tags: "{{ prowlarr_proxy_tag_ids }}"
     status_code: [200, 201]
     timeout: "{{ media_acquisition.configure.api_timeout }}"
@@ -253,6 +168,47 @@
     - "'Byparr' not in (prowlarr_proxies.json | map(attribute='name') | list)"
   register: prowlarr_proxy_add
   failed_when: false
+
+- name: "prowlarr: correct the solve timeout on an existing Byparr proxy"
+  # The task above only fires when the proxy is absent, so a proxy registered
+  # by an earlier deploy keeps whatever timeout it was created with - which
+  # for a long time was 60s, below the real solve time. Correct it in place.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/indexerproxy/{{ existing_proxy.id }}"
+    method: PUT
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body: >-
+      {{
+        existing_proxy | combine({
+          'fields': (existing_proxy.fields | rejectattr('name', 'equalto', 'requestTimeout') | list)
+                    + [{'name': 'requestTimeout', 'value': media_acquisition.services.byparr.request_timeout | int}]
+        })
+      }}
+    status_code: [200, 202]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    existing_proxy: >-
+      {{
+        (prowlarr_proxies.json | default([]))
+        | selectattr('name', 'equalto', 'Byparr')
+        | first | default({})
+      }}
+    current_timeout: >-
+      {{
+        (existing_proxy.fields | default([]))
+        | selectattr('name', 'equalto', 'requestTimeout')
+        | map(attribute='value') | first | default(0)
+      }}
+  register: prowlarr_proxy_timeout_fixed
+  changed_when: prowlarr_proxy_timeout_fixed.status | default(0) in [200, 202]
+  failed_when: false
+  when:
+    - media_acquisition.services.byparr.enabled | bool
+    - existing_proxy.id is defined
+    - (current_timeout | int) != (media_acquisition.services.byparr.request_timeout | int)
 
 - name: "prowlarr: record Byparr registration failure"
   ansible.builtin.set_fact:

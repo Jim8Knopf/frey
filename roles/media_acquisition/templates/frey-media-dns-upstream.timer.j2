@@ -1,0 +1,24 @@
+[Unit]
+# Managed by Ansible role: media_acquisition
+Description=Re-check which upstreams the media resolver can actually reach
+Documentation=file:///opt/frey/stacks/media_acquisition
+
+[Timer]
+# Safety net behind the NetworkManager dispatcher hook, and the thing that
+# notices recovery.
+#
+# Two transitions produce no interface event at all: a network that starts
+# blocking port 53 part-way through a stay, and - more often - the preferred
+# upstreams becoming reachable again after a captive portal is signed into
+# from some other device. Neither changes the uplink's state, so only a
+# periodic re-check moves the stack back off the fallback.
+#
+# Sooner after boot than the gate, because the gate's first act is to test
+# indexers and that test needs working DNS to mean anything.
+OnBootSec=90s
+OnUnitActiveSec=10min
+AccuracySec=30s
+Unit=frey-media-dns-upstream.service
+
+[Install]
+WantedBy=timers.target

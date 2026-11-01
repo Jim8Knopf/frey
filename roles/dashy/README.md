@@ -13,3 +13,8 @@ Deploy changes with `ansible-playbook playbooks/site.yml --tags proxy,identity,d
 Devices must trust the Frey CA; see `docs/IDENTITY.md`. Verify sign-in and
 tile visibility with accounts in the media and admin groups. Wi-Fi controls
 are not provided by this module.
+
+New devices can open http://dashy.hub.frey/setup without signing in to download
+the public CA and read installation instructions. The setup page is served over
+HTTP for bootstrapping; verify the CA fingerprint through a trusted channel as
+described in `docs/IDENTITY.md`. The signed-in dashboard also links to it.

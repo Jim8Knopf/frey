@@ -1,0 +1,18 @@
+{#-
+  ============================================================================
+  Initial upstream list for the acquisition stack's resolver.
+  Rendered ONCE, by Ansible, and owned by frey-media-dns-upstream afterwards.
+  ============================================================================
+
+  Deployed with force:false on purpose. Ansible guarantees this file exists;
+  it must not keep rewriting it. Re-rendering it on every deploy would
+  overwrite a live fallback with upstreams the current network blocks, and
+  take DNS away from the entire acquisition stack until the timer next ran.
+
+  See the `dns:` note in defaults/main.yml.
+-#}
+# Managed by frey-media-dns-upstream. Do not edit - it is rewritten.
+# mode: seed   written: by Ansible at deploy time
+{% for server in media_acquisition.dns.upstreams %}
+server={{ server }}
+{% endfor %}

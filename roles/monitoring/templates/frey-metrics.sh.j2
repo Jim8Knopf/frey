@@ -262,6 +262,17 @@ collect_nvme() {
     echo "# TYPE frey_nvme_power_cycles_total counter"
     echo "# HELP frey_nvme_error_log_entries_total Entries in the drive's error log."
     echo "# TYPE frey_nvme_error_log_entries_total counter"
+    # Declared up here with the rest, NOT next to the code that emits
+    # them. The resets sample comes out inside the device loop below, and
+    # the Prometheus text format rejects a TYPE line that follows a sample
+    # of the same metric - "second TYPE line for metric name, or TYPE
+    # reported after samples". node-exporter then discards the WHOLE file,
+    # so one misplaced line silently took out every NVMe metric including
+    # the dropout counter these exist to provide.
+    echo "# HELP frey_nvme_controller_resets_total Times the controller dropped off the PCIe bus this boot."
+    echo "# TYPE frey_nvme_controller_resets_total counter"
+    echo "# HELP frey_nvme_apst_max_latency_us Kernel APST latency ceiling in use; 0 means APST is disabled."
+    echo "# TYPE frey_nvme_apst_max_latency_us gauge"
 
     for device in /dev/nvme[0-9]; do
       [[ -e "${device}" ]] || continue
@@ -272,8 +283,20 @@ collect_nvme() {
       # smart-log prints "key : value", where value may carry a unit, a
       # percent sign, thousands separators, or a parenthesised second form
       # ("39 °C (312 K)"). Take the first number and nothing else.
+      #
+      # nvme-cli is not consistent about how it spells those keys. Most are
+      # lower_snake_case ("critical_warning"), but a handful print as Title
+      # Case with spaces ("Data Units Written"), and which group a key falls
+      # in has moved between releases. A key spelled the other way matches
+      # nothing, field() returns empty, and the metric is then silently
+      # skipped - the whole series simply never appears, with the collector
+      # still reporting success. So match case-insensitively and treat a
+      # space and an underscore as the same character, and one spelling
+      # works whichever way the installed nvme-cli prints it.
       field() {
-        echo "${log}" | sed -n "s/^$1[[:space:]]*:[[:space:]]*//p" \
+        local pattern
+        pattern=$(printf %s "$1" | sed -e 's/[ _]/[ _]/g')
+        echo "${log}" | sed -n "s/^${pattern}[[:space:]]*:[[:space:]]*//Ip" \
           | head -n1 | tr -d ',%' | awk '{print $1}'
       }
 
@@ -293,7 +316,111 @@ collect_nvme() {
         value=$(num "$(field "${pair%%:*}")")
         [[ -n "${value}" ]] && echo "${pair##*:}{device=\"${name}\"} ${value}"
       done
+
+      # Read from the journal rather than dmesg: the ring buffer wraps and
+      # six dropouts in 25 minutes is a volume that can push the earliest
+      # ones out of it, which would quietly walk the counter backwards.
+      local resets
+      resets=$(journalctl -k -b --no-pager 2>/dev/null \
+        | grep -c "nvme ${name}: controller is down") || resets=0
+      echo "frey_nvme_controller_resets_total{device=\"${name}\"} ${resets}"
     done
+
+    # -------------------------------------------------------------------
+    # CONTROLLER DROPOUTS, WHICH SMART CANNOT SEE.
+    #
+    # This drive's failure mode is not wear, spare blocks or media errors.
+    # Every one of those reads perfectly clean while it is happening,
+    # which is exactly why it went misdiagnosed for days. What actually
+    # happens is that the drive leaves the PCIe bus:
+    #
+    #   nvme nvme0: controller is down; will reset: CSTS=0xffffffff, ...
+    #
+    # The kernel usually resets it and carries on. That recovery is not
+    # free: it stalls every read on the host for seconds at a time, which
+    # surfaces as Jellyfin buffering mid-playback and invites you to blame
+    # whatever happens to be busy on the CPU at the time. When the reset
+    # also fails, the host wedges instead of rebooting and needs a human
+    # with a finger on the button.
+    #
+    # So the recovered dropouts are the only early warning that exists for
+    # the unrecoverable one, and nothing else in this stack reports them.
+    # The counter resets at boot, which is what increase() expects.
+    # -------------------------------------------------------------------
+
+    # -------------------------------------------------------------------
+    # Whether the fix for the above is actually live.
+    #
+    # APST parks this controller in a 5 mW state it does not reliably wake
+    # from, and the cure is nvme_core.default_ps_max_latency_us=0 on the
+    # kernel cmdline - which only takes effect after a reboot. A cmdline
+    # that was written but never booted looks identical to a fixed Pi from
+    # the repo side, so export what the kernel is actually running and let
+    # an alert say so. 0 means APST is disabled and the drive cannot sleep
+    # itself off the bus.
+    # -------------------------------------------------------------------
+
+    local apst_param apst
+    apst_param=/sys/module/nvme_core/parameters/default_ps_max_latency_us
+    if [[ -r "${apst_param}" ]]; then
+      apst=$(num "$(cat "${apst_param}" 2>/dev/null)")
+      [[ -n "${apst}" ]] && echo "frey_nvme_apst_max_latency_us ${apst}"
+    fi
+
+    # -------------------------------------------------------------------
+    # IS THE WEDGE SELF-REBOOT ACTUALLY ARMED?
+    #
+    # Same class of bug as the APST metric above, and it has now bitten
+    # twice. kernel.hung_task_panic + kernel.panic are what turn an NVMe
+    # wedge into an automatic reboot instead of a drive home to press the
+    # button, and they were written to /etc/sysctl.conf - a file Debian 13's
+    # systemd-sysctl does not read. `sysctl -p` applied them live, so the
+    # deploy worked, a second run said 0 changed, and the values reverted at
+    # the next boot. They read 0 on 2026-10-31, which is to say the recovery
+    # guarantee was absent at exactly the moment it was supposed to fire.
+    #
+    # A guarantee nobody measures is a guess, so export it.
+    # -------------------------------------------------------------------
+    echo "# HELP frey_kernel_hung_task_panic 1 when a task blocked past the timeout panics the kernel."
+    echo "# TYPE frey_kernel_hung_task_panic gauge"
+    echo "# HELP frey_kernel_panic_reboot_secs Seconds after a panic before rebooting; 0 never reboots."
+    echo "# TYPE frey_kernel_panic_reboot_secs gauge"
+
+    local htp panic_secs
+    htp=$(num "$(cat /proc/sys/kernel/hung_task_panic 2>/dev/null)")
+    [[ -n "${htp}" ]] && echo "frey_kernel_hung_task_panic ${htp}"
+    panic_secs=$(num "$(cat /proc/sys/kernel/panic 2>/dev/null)")
+    [[ -n "${panic_secs}" ]] && echo "frey_kernel_panic_reboot_secs ${panic_secs}"
+
+    # -------------------------------------------------------------------
+    # THE OTHER HALF OF THE SELF-REBOOT GUARANTEE.
+    #
+    # hung_task_panic above only catches a fault where tasks BLOCK. On
+    # 2026-11-01 the NVMe returned errors instead of blocking, so nothing
+    # hung, nothing panicked, and the van needed a power cycle. The reason
+    # was the ext4 superblock sitting on `Continue` - it had never been
+    # configured, by this repo or anyone else.
+    #
+    # Exported for the same reason as APST: it only takes effect at mount,
+    # so a deploy saying "changed" does not mean the running system is
+    # protected. 2 = panic (armed), 1 = remount-ro, 0 = continue.
+    # -------------------------------------------------------------------
+    echo "# HELP frey_root_fs_error_behaviour How ext4 reacts to an I/O error on root: 2 panic, 1 remount-ro, 0 continue."
+    echo "# TYPE frey_root_fs_error_behaviour gauge"
+
+    local root_src behaviour behaviour_code
+    root_src=$(findmnt -n -o SOURCE / 2>/dev/null)
+    if [[ -n "${root_src}" ]] && command -v tune2fs >/dev/null 2>&1; then
+      behaviour=$(tune2fs -l "${root_src}" 2>/dev/null \
+        | awk -F: '/Errors behavior/ {gsub(/^[ \t]+/, "", $2); print tolower($2); exit}')
+      case "${behaviour}" in
+        panic*) behaviour_code=2 ;;
+        remount*) behaviour_code=1 ;;
+        continue*) behaviour_code=0 ;;
+        *) behaviour_code="" ;;
+      esac
+      [[ -n "${behaviour_code}" ]] && echo "frey_root_fs_error_behaviour ${behaviour_code}"
+    fi
 
     collector_meta nvme "${ok}" "${started}"
   } | emit nvme
@@ -589,6 +716,93 @@ collect_docker() {
 # dashboards keep cheerfully showing the last value they saw. Monitoring that
 # looks fine and is lying is the worst failure mode in the whole stack.
 # =============================================================================
+# =============================================================================
+# INDEXERS - whether the *arrs can actually reach an indexer
+#
+# This is the gap that let a dead indexer go unnoticed for days: every
+# container runs, every healthcheck passes, Prowlarr quietly backs the indexer
+# off for six hours at a time, and the only symptom is that nothing is ever
+# found. Nothing in the stack said a word.
+#
+# Servarr reports it in /health, with a source name beginning "Indexer":
+# IndexerStatusCheck, IndexerLongTermStatusCheck, IndexerRssCheck,
+# IndexerSearchCheck. The last two mean EVERY indexer is unusable, which is
+# the state worth a notification.
+#
+# The counting happens INSIDE each container, so what crosses the docker exec
+# pipe is two integers. A health response is easily large enough to be
+# truncated in transit, and truncated JSON looks exactly like a broken
+# service - a false alarm is worse than no alarm here.
+#
+# The API key never reaches a host command line: it is read from the
+# container's own config.xml by the shell running inside it.
+# =============================================================================
+INDEXER_APPS=(
+{% for app in monitoring_indexer_apps | default([]) %}
+  "{{ app.name }} {{ app.port }} {{ app.api_version }}"
+{% endfor %}
+)
+
+collect_indexers() {
+  local started ok app name port api_version out issues all_down
+  started=$(date +%s.%N)
+  ok=1
+
+  if ! have docker; then
+    { echo "# docker not installed"; collector_meta indexers 0 "${started}"; } | emit indexers
+    return
+  fi
+
+  {
+    echo "# HELP frey_indexer_health_issues Servarr health issues whose source is an indexer check."
+    echo "# TYPE frey_indexer_health_issues gauge"
+    echo "# HELP frey_indexer_all_unavailable Every search- or RSS-capable indexer is unusable."
+    echo "# TYPE frey_indexer_all_unavailable gauge"
+    echo "# HELP frey_indexer_query_success The collector could read this app's health at all."
+    echo "# TYPE frey_indexer_query_success gauge"
+
+    for app in "${INDEXER_APPS[@]}"; do
+      read -r name port api_version <<< "${app}"
+
+      # Not running is not this collector's problem to report. collect_docker
+      # already covers a container that should be up and is not, and
+      # media_acquisition stops the *arrs on purpose when the uplink is gone.
+      docker inspect -f '{% raw %}{{.State.Running}}{% endraw %}' "${name}" 2>/dev/null | grep -q true || continue
+
+      out=$(docker exec -e API_PORT="${port}" -e API_VERSION="${api_version}" "${name}" sh -c '
+          key=$(sed -n "s#.*<ApiKey>\(.*\)</ApiKey>.*#\1#p" /config/config.xml)
+          [ -n "${key}" ] || exit 1
+          curl -fsS --max-time 20 -H "X-Api-Key: ${key}" \
+            "http://127.0.0.1:${API_PORT}/api/${API_VERSION}/health" > /tmp/frey-health.json || exit 1
+          printf "%s %s\n" \
+            "$(grep -c "\"source\": *\"Indexer[A-Za-z]*\"" /tmp/frey-health.json)" \
+            "$(grep -c "\"source\": *\"Indexer\(Rss\|Search\)Check\"" /tmp/frey-health.json)"
+        ' 2>/dev/null)
+
+      issues=$(num "$(printf '%s' "${out}" | awk '{print $1}')")
+      all_down=$(num "$(printf '%s' "${out}" | awk '{print $2}')")
+
+      if [[ -z "${issues}" || -z "${all_down}" ]]; then
+        # Running but unreadable - a restarting app, or a missing API key.
+        # Report the failure rather than a reassuring zero.
+        echo "frey_indexer_query_success{app=\"${name}\"} 0"
+        ok=0
+        continue
+      fi
+
+      echo "frey_indexer_query_success{app=\"${name}\"} 1"
+      echo "frey_indexer_health_issues{app=\"${name}\"} ${issues}"
+      if [[ "${all_down}" -gt 0 ]]; then
+        echo "frey_indexer_all_unavailable{app=\"${name}\"} 1"
+      else
+        echo "frey_indexer_all_unavailable{app=\"${name}\"} 0"
+      fi
+    done
+
+    collector_meta indexers "${ok}" "${started}"
+  } | emit indexers
+}
+
 collector_meta() {
   local collector="$1" ok="$2" started="$3"
   local duration
@@ -643,6 +857,7 @@ main() {
       nvme) collect_nvme ;;
       gateway) collect_gateway ;;
       docker) collect_docker ;;
+      indexers) collect_indexers ;;
       *)
         echo "frey-metrics: unknown collector '${collector}'" >&2
         exit 64

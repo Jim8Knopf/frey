@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up secure access to Frey</title>
+  <style>
+    body { font: 16px/1.6 system-ui, sans-serif; color: #243047; background: #eef2f7; margin: 0; }
+    main { max-width: 48rem; margin: 2rem auto; padding: 1.5rem; background: white; border-radius: 12px; }
+    h1, h2 { line-height: 1.2; } h2 { margin-top: 2rem; font-size: 1.2rem; }
+    a.button { display: inline-block; background: #315c85; color: white; padding: .7rem 1rem; border-radius: 6px; text-decoration: none; }
+    code { overflow-wrap: anywhere; } .note { background: #fff3d7; padding: 1rem; border-radius: 6px; }
+  </style>
+</head>
+<body><main>
+  <h1>Set up secure access to Frey</h1>
+  <p>Connect to FreyHub Wi-Fi, then install the Frey root certificate once on this device. It lets your device verify the HTTPS certificates used by Frey services.</p>
+  <p class="note"><strong>Check before trusting:</strong> This setup page uses HTTP so a new device can open it. HTTP cannot verify the certificate download. Compare the certificate's SHA-256 fingerprint with one obtained from the Frey administrator through a trusted channel before installing it. A trusted root can authenticate other websites too.</p>
+  <p><a class="button" href="/setup/frey-root-ca.crt" download>Download Frey root certificate</a></p>
+  <h2>Android</h2>
+  <p>Open Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate, then select the downloaded file. Menu names vary by device. Some apps do not trust user-installed certificates.</p>
+  <h2>iPhone or iPad</h2>
+  <p>Download the certificate in Safari. Open Settings → General → VPN &amp; Device Management and install the downloaded profile. Then open Settings → General → About → Certificate Trust Settings and enable full trust for Frey Root CA.</p>
+  <h2>Windows</h2>
+  <p>Open the downloaded file, select Install Certificate, and place it in Trusted Root Certification Authorities for the current user (or Local Machine with administrator access).</p>
+  <h2>macOS</h2>
+  <p>Open the downloaded file in Keychain Access, add it to a keychain, open the certificate, and under Trust choose Always Trust.</p>
+  <h2>Linux</h2>
+  <p>In a terminal, from the folder containing the downloaded file:</p>
+  <p>Debian/Ubuntu: <code>sudo cp frey-root-ca.crt /usr/local/share/ca-certificates/ &amp;&amp; sudo update-ca-certificates</code></p>
+  <p>Arch/Manjaro: <code>sudo cp frey-root-ca.crt /etc/ca-certificates/trust-source/anchors/ &amp;&amp; sudo trust extract-compat</code></p>
+  <p>Firefox or Chromium may require importing the certificate into their own certificate store.</p>
+  <h2>Finish</h2>
+  <p>Close and reopen your browser, then visit <a href="https://{{ dashy.host }}.{{ frey.service_domain }}">Frey dashboard</a>. It should open without a certificate warning. If it does not, check that the certificate is installed and trusted, and that you are connected to FreyHub.</p>
+</main></body></html>

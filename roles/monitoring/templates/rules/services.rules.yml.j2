@@ -182,6 +182,103 @@ groups:
             killing it, which will present as a restart loop. Either it has a
             leak or its cap is too low.
 
+      # One container pegging one core is invisible to every other CPU signal
+      # here. FreyLoadHigh watches load15 per core against a threshold of 2.0,
+      # and on four cores a single saturated container contributes about 0.25
+      # - so it can spin flat out indefinitely and nothing says a word. That
+      # is not hypothetical: it was noticed by a human watching a film stutter
+      # and guessing, which is the opposite of monitoring.
+      #
+      # The point is attribution rather than capacity. The Pi can usually
+      # spare a core; what it cannot spare is not knowing which container took
+      # it, because the honest answer is often that the container is stuck
+      # retrying I/O on a drive that keeps vanishing - see
+      # FreyNvmeControllerReset - and the CPU is a symptom, not the cause.
+      - alert: FreyContainerCpuSaturated
+        expr: >-
+          sum by (name) (
+            rate(container_cpu_usage_seconds_total{
+              name!="",
+              name!~"{{ t.containers.cpu_exempt | join('|') }}"
+            }[5m])
+          )
+          > {{ t.containers.cpu_cores_warning }}
+        for: {{ t.containers.cpu_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Container {{ go }} $labels.name {{ og }} is using {{ go }} printf "%.1f" $value {{ og }} cores'
+          description: >-
+            Sustained for {{ t.containers.cpu_for }}. Jellyfin is excluded
+            because a software transcode is meant to saturate its cap, so this
+            is something that is not supposed to be busy. From an *arr in
+            particular, suspect a stuck background task or disk I/O that keeps
+            failing and being retried rather than real work.
+
+  # ============================================================================
+  # INDEXERS
+  #
+  # The failure every other rule here misses. An unreachable indexer leaves
+  # every container running and healthy, every probe green and every
+  # certificate valid - Prowlarr simply backs the indexer off for hours and
+  # nothing is ever found again. It was always noticed by hand, days late.
+  #
+  # Both are warnings, not critical: there is nothing to do about it parked
+  # off-grid, and this must not buzz at 3am. See the severity note in
+  # monitoring.yml.
+  # ============================================================================
+  - name: frey_indexers
+    rules:
+
+      - alert: FreyIndexersAllUnavailable
+        # IndexerRssCheck / IndexerSearchCheck mean EVERY capable indexer is
+        # unusable - not one tracker having a bad day.
+        expr: frey_indexer_all_unavailable == 1
+        # Long, on purpose. A captive portal, a lost uplink or a single failed
+        # search all clear themselves, and media_acquisition's uplink gating
+        # already pauses the stack when the uplink goes. Only a state that
+        # outlives all of that is worth saying out loud.
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Every indexer is unavailable in {{ go }} $labels.app {{ og }}'
+          description: >-
+            Searches have been failing for two hours with the uplink up.
+            Usual causes, in order: a public tracker whose domain died (check
+            `docker logs prowlarr` for the hostname), a Cloudflare challenge
+            on an indexer not tagged for Byparr, or the resolver container
+            being down - which would make every name lookup in the stack
+            fail. docs/MEDIA.md has the procedure.
+
+      - alert: FreyIndexerProblems
+        # Some, but not all, indexers failing. Normal for public trackers in
+        # ones and twos; a standing count is the signal.
+        expr: frey_indexer_health_issues > 0
+        for: 12h
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $labels.app {{ og }} has had indexer problems for 12h'
+          description: >-
+            At least one indexer has been failing for half a day. Searches
+            still work through the others, so this is a cleanup task, not an
+            outage - a dead public tracker usually wants removing from
+            media_indexers in media.yml.
+
+      - alert: FreyIndexerHealthUnknown
+        # The collector could not read an app's health at all. Without this,
+        # a broken collector looks exactly like "no indexer problems".
+        expr: frey_indexer_query_success == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Cannot read indexer health from {{ go }} $labels.app {{ og }}'
+          description: >-
+            The container is running but its health API did not answer. The
+            indexer alerts above are blind for this app until it does.
+
   # ============================================================================
   # TRAEFIK
   #

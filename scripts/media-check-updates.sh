@@ -125,6 +125,7 @@ def same_version(pinned, latest):
 # name in media_versions -> how to find its current upstream version
 LSIO = {"jellyfin", "prowlarr", "sonarr", "radarr", "lidarr", "bazarr", "qbittorrent"}
 GITHUB = {
+    "navidrome": "navidrome/navidrome",
     "audiobookshelf": "advplyr/audiobookshelf",
     "seerr": "seerr-team/seerr",
     "maintainerr": "jorenn92/Maintainerr",
@@ -135,7 +136,11 @@ GITHUB = {
     "byparr": "ThePhaseless/Byparr",
     "gluetun": "qdm12/gluetun",
 }
-HUB = {"chaptarr": "chaptarr/chaptarr", "audiobookrequest": "markbeep/audiobookrequest"}
+HUB = {
+    "chaptarr": "chaptarr/chaptarr",
+    "audiobookrequest": "markbeep/audiobookrequest",
+    "dnsmasq": "dockurr/dnsmasq",
+}
 SKIP = {
     "jellystat_db": "PostgreSQL major upgrades need a migration, not a bump - check deliberately",
 }

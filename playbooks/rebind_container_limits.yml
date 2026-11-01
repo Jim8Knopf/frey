@@ -1,0 +1,153 @@
+---
+# ==============================================================================
+# REBIND CONTAINER RESOURCE LIMITS - a one-time migration, not part of a deploy.
+#
+# WHY THIS EXISTS
+#
+# Raspberry Pi firmware ships `cgroup_disable=memory` on the Pi 5 cmdline, so
+# this Pi ran for months with no memory cgroup at all. Docker does not merely
+# leave a `mem_limit` unenforced in that state - it DISCARDS it when the
+# container is created, logging
+#
+#   "Your kernel does not support memory limit capabilities or the cgroup is
+#    not mounted. Limitation discarded."
+#
+# and storing HostConfig.Memory=0 permanently on that container.
+#
+# `rpi_nvme` now puts cgroup_enable=memory on the cmdline and the controller is
+# live. That is necessary and not sufficient: the stored HostConfig is what
+# Docker restarts a container from, so every container created before the flip
+# keeps Memory=0 for as long as it exists. A reboot does not help - it restarts
+# from the same stored config.
+#
+# AND RE-RUNNING THE DEPLOY DOES NOT FIX IT EITHER.
+#
+# This is the part that is easy to get wrong, and the comment in
+# roles/rpi_nvme/defaults/main.yml used to say "re-run the deploy" as though it
+# were enough. It is not. `docker_compose_v2` with `state: present` recreates a
+# container only when the desired config differs from the file it last applied,
+# and the compose file has not changed - `mem_limit: 2g` was always there. So
+# compose correctly concludes there is nothing to do, reports ok, and 19 of 34
+# containers keep running with no limit at all. Measured on 2026-11-01, after a
+# full deploy that reported changed=36: jellyfin, authelia, lldap, prometheus,
+# loki and fourteen others all read HostConfig.Memory=0.
+#
+# `recreate: always` is what forces it, which is why this is a separate
+# playbook: it is exactly the thing you do not want a routine deploy doing.
+#
+# WHAT IT COSTS
+#
+# Every container in the listed stacks is stopped and recreated. Expect roughly
+# a minute of downtime per stack: SSO drops while Authelia and LLDAP come back,
+# playback stops, and the *arrs reconnect. Containers are stopped gracefully,
+# so the SQLite databases are flushed rather than cut off - which matters on
+# this van, where unsafe shutdowns are already the standing corruption risk.
+#
+# Nothing is lost. Every stack's compose file and all persistent state live in
+# Ansible-managed mounts under /opt/frey, so a recreated container comes back
+# identical apart from the limits it should have had all along.
+#
+# USAGE
+#
+#   ansible-playbook playbooks/rebind_container_limits.yml > /tmp/rebind.log 2>&1
+#
+# Then confirm no managed container is still unlimited:
+#
+#   ssh ansible@10.20.0.1 'for c in $(docker ps --format "{{ .Names }}"); do \
+#     printf "%s %s\n" "$c" "$(docker inspect -f "{{ .HostConfig.Memory }}" $c)"; \
+#     done | grep " 0$"'
+#
+# frey-traefik is expected in that output: its compose declares no mem_limit,
+# so 0 is correct for it rather than a leftover.
+#
+# Safe to re-run. It is a no-op in the sense that matters - it changes no
+# configuration and converges on the same state - but it does restart the
+# stacks every time, so do not put it in a loop or a cron.
+# ==============================================================================
+- name: Rebind container resource limits after the memory cgroup was enabled
+  hosts: frey_gateways
+  become: true
+  gather_facts: true
+
+  vars:
+    # Built from frey.base_dir rather than read from `<module>.stack_dir`,
+    # because a role's defaults are only in scope while that role is running -
+    # this playbook includes no roles, so `media_library.stack_dir` would be
+    # undefined here. Every one of them is `{{ frey.base_dir }}/stacks/<module>`
+    # and the assertion below fails loudly if that ever stops being true.
+    #
+    # The modules holding containers that declare limits. dockge and dashy are
+    # omitted deliberately: they were created after the cgroup flip and already
+    # hold their limits, so recreating them would be downtime for nothing.
+    rebind_modules:
+      - media_library
+      - media_acquisition
+      - monitoring
+      - identity
+    rebind_stacks: >-
+      {{ rebind_modules | map('regex_replace', '^', frey.base_dir ~ '/stacks/') | list }}
+
+  pre_tasks:
+    # The whole point of this playbook is to make limits bind, and they cannot
+    # bind if the controller is still missing - which is the state of any Pi
+    # that has had the cmdline written but not yet rebooted into it. Recreating
+    # every container in that state would discard the limits again and cost the
+    # downtime for nothing, so refuse instead.
+    - name: Read the available cgroup controllers
+      ansible.builtin.slurp:
+        src: /sys/fs/cgroup/cgroup.controllers
+      register: rebind_cgroup_controllers
+
+    - name: Require that the memory cgroup controller is live
+      ansible.builtin.assert:
+        that:
+          - "'memory' in (rebind_cgroup_controllers.content | b64decode).split()"
+        fail_msg: >-
+          The memory cgroup controller is not mounted, so recreating containers
+          now would discard their limits exactly as before. cgroup_enable=memory
+          is set on the kernel cmdline by rpi_nvme but only applies at boot:
+          reboot first, confirm `memory` appears in
+          /sys/fs/cgroup/cgroup.controllers, then run this again.
+        success_msg: "The memory cgroup controller is live; limits will bind."
+
+    # The stack paths are reconstructed rather than read from the roles that own
+    # them, so prove each one is really there instead of handing compose a
+    # directory that does not exist and reading the error later.
+    - name: Check that every stack directory is where it is expected
+      ansible.builtin.stat:
+        path: "{{ rebind_stack }}/docker-compose.yml"
+      register: rebind_stack_files
+      loop: "{{ rebind_stacks }}"
+      loop_control:
+        loop_var: rebind_stack
+        label: "{{ rebind_stack | basename }}"
+
+    - name: Require that each stack has a compose file
+      ansible.builtin.assert:
+        that:
+          - rebind_stack_file.stat.exists
+        fail_msg: >-
+          No compose file at {{ rebind_stack_file.rebind_stack }}. These paths
+          are rebuilt from frey.base_dir on the assumption that every stack
+          lives at <base_dir>/stacks/<module>; if a role's stack_dir has moved,
+          update rebind_modules in this playbook to match.
+      loop: "{{ rebind_stack_files.results }}"
+      loop_control:
+        loop_var: rebind_stack_file
+        label: "{{ rebind_stack_file.rebind_stack | basename }}"
+
+  tasks:
+    - name: Recreate each stack so the stored HostConfig picks up its limits
+      community.docker.docker_compose_v2:
+        project_src: "{{ rebind_stack }}"
+        state: present
+        recreate: always
+        # Same reason as the service roles: `missing` still costs a registry
+        # HEAD per service, which is what times out on a van's uplink.
+        pull: never
+        timeout: 300
+      loop: "{{ rebind_stacks }}"
+      loop_control:
+        loop_var: rebind_stack
+        label: "{{ rebind_stack | basename }}"
+      when: not ansible_check_mode

@@ -8,7 +8,7 @@ dashy:
   mem_limit: 512m
   sections:
     - name: Media library
-      services: [jellyfin, audiobookshelf, seerr, audiobookrequest, maintainerr, jellystat]
+      services: [jellyfin, navidrome, audiobookshelf, seerr, audiobookrequest, maintainerr, jellystat]
     - name: Media downloads
       services: [sonarr, radarr, lidarr, chaptarr, prowlarr, bazarr, cleanuparr, qbittorrent]
     - name: Monitoring

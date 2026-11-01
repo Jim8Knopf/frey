@@ -1,0 +1,93 @@
+---
+- name: Validate media acquisition configuration
+  ansible.builtin.assert:
+    that:
+      - media.data_dir | length > 0
+      - media.appdata_dir | length > 0
+      - media.network.name | length > 0
+      - media_acquisition.stack_dir | length > 0
+      # The internal container network must never overlap FreyHub's LAN. The
+      # archived media role put it on 10.20.0.0/24 - the access point's own
+      # subnet - which would have taken down the one service that must always
+      # survive. Fail loudly rather than deploy that again.
+      - not media.network.subnet.startswith('10.20.0.')
+      - media_acquisition.uplink_gating.mode in ['pause', 'stop', 'off']
+      - media_acquisition.auth.method in ['External', 'Forms']
+      # The central knobs file must be present, or every image tag and
+      # on/off switch silently resolves to nothing.
+      - media_versions is defined
+      - media_enable is defined
+      - media_vpn is defined
+    fail_msg: >-
+      media_acquisition configuration is invalid. The internal Docker network
+      ({{ media.network.subnet }}) must not overlap FreyHub's
+      {{ network_gateway.downstream.network_cidr }}, and
+      inventory/group_vars/all/images.yml must define media_versions; media.yml must define
+      media_enable and media_vpn.
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Validate VPN configuration
+  # Checked separately so the message can be specific. Turning the tunnel on
+  # without credentials must fail here and now, not start an unconfigured
+  # Gluetun that blocks all torrent traffic and looks like a broken stack.
+  ansible.builtin.assert:
+    that:
+      - media_vpn.type in ['wireguard', 'openvpn']
+      - media_vpn.provider | length > 0
+      - >-
+        (media_vpn.type == 'wireguard'
+         and media_vpn.credentials.wireguard_private_key | length > 0
+         and media_vpn.credentials.wireguard_addresses | length > 0)
+        or
+        (media_vpn.type == 'openvpn'
+         and media_vpn.credentials.openvpn_user | length > 0
+         and media_vpn.credentials.openvpn_password | length > 0)
+    fail_msg: >-
+      media_vpn.enabled is true but the credentials for a
+      {{ media_vpn.type }} connection are missing. Add them to the vault:
+      ansible-vault edit inventory/group_vars/all/secrets.yml
+      --vault-password-file .vault_pass
+      -- then vault_vpn_wireguard_private_key and
+      vault_vpn_wireguard_addresses for WireGuard, or vault_vpn_openvpn_user
+      and vault_vpn_openvpn_password for OpenVPN. See the comments in
+      inventory/group_vars/all/media.yml.
+    success_msg: "VPN enabled: {{ media_vpn.provider }} over {{ media_vpn.type }}."
+  when: media_vpn.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
+- name: Prepare media storage
+  ansible.builtin.include_tasks:
+    file: storage.yml
+    apply:
+      tags:
+        - media
+        - media_acquisition
+  tags:
+    - media
+    - media_acquisition
+
+- name: Resolve media secrets
+  ansible.builtin.include_tasks:
+    file: secrets.yml
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+        # media_gating too: the gating credentials file needs the qBittorrent
+        # password, so `--tags media_gating` on its own fails with
+        # "'media_secrets' is undefined" without this.
+        - media_gating
+        - audiobook_import
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+    - media_gating
+    - audiobook_import

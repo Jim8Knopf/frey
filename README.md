@@ -1,295 +1,81 @@
 # Frey
 
-Frey is a modular Raspberry Pi Ansible project that runs a self-contained
-private network in a van.
+Ansible configures a Raspberry Pi 5 as the private network and service host in a
+van. FreyHub runs on `wlan0`; `wlan1` supplies an optional public Wi-Fi uplink.
+Local services and playback keep working offline.
 
-**FreyHub** is the access point the Pi broadcasts on `wlan0`. It is the
-critical always-on service: it is how you reach Immich, the media stack and
-SSH, with or without internet. When a public Wi-Fi network is available, the
-Pi joins it on `wlan1` and shares it through to FreyHub clients.
+Services use `https://<service>.hub.frey`. Old `<service>.frey` names redirect.
+Install `ca/frey-root-ca.crt` on client devices for trusted HTTPS.
 
-Services are reached by name as `service.hub.frey`, for example
-`immich.hub.frey`. The shorter `service.frey` still works and redirects there.
+## Where to change things
 
-Legacy service stacks are archived under `archive/legacy-stack/`.
+All settings below live in `inventory/group_vars/all/`.
 
-## Current Layout
+| File | Responsibility |
+| --- | --- |
+| `main.yml` | Shared paths, domains, trusted devices and ordered module registry |
+| `network.yml` | AP, uplink, known networks and rollback settings |
+| `system.yml` | NVMe, boot and journal settings |
+| `security.yml` | Firewall, SSH and fail2ban |
+| `proxy.yml` | Docker and Traefik |
+| `identity.yml` | Accounts, groups and service access |
+| `media.yml` | Storage, playback, acquisition switches and VPN |
+| `monitoring.yml` | Metrics, logs, alerts, Grafana and Dockge switches |
+| `images.yml` | Pinned container versions |
+| `secrets.yml` | Ansible Vault encrypted credentials |
 
-```text
-playbooks/site.yml                       # Thin module orchestrator
-inventory/hosts.yml                      # Target Pi inventory
-inventory/group_vars/all/main.yml        # Active module registry and config
-inventory/group_vars/all/images.yml      # Image tags for all services
-inventory/group_vars/all/media.yml       # Media toggles and VPN switch
-inventory/group_vars/all/identity.yml    # Who can log in, and what each service checks
-inventory/group_vars/all/secrets.yml     # Vault: AP passphrase, known networks
-scripts/media-check-updates.sh           # What media images have newer versions
-scripts/identity-check.sh                # Assert SSO is actually enforcing
-roles/network_gateway/                   # FreyHub AP + public Wi-Fi uplink + NAT/DNS
-roles/service_proxy/                     # Docker + Traefik service entrypoint
-roles/frey_pki/                          # Frey CA + the certificate Traefik serves
-roles/identity/                          # LLDAP directory + Authelia single sign-on
-roles/security_baseline/                 # Firewall, fail2ban, network hardening
-roles/rpi_nvme/                          # Pi/NVMe runtime tuning
-roles/media_acquisition/                 # *arrs + qBittorrent (needs uplink)
-roles/media_library/                     # Jellyfin, Audiobookshelf, Seerr (offline-capable)
-roles/monitoring/                        # Metrics, logs, dashboards, phone alerts
-roles/dockge/                            # A window onto the compose stacks
-inventory/group_vars/all/monitoring.yml  # Alert thresholds, retention, what is core
-scripts/monitoring-check.sh              # Assert the monitoring is actually monitoring
-docs/                                    # Active architecture docs
-archive/legacy-stack/                    # Previous service stack, docs, roles
-```
+Roles contain implementation defaults, templates and tasks. Monitoring and
+media acquisition have short `tasks/main.yml` entry points; follow their imports
+to edit a particular part. Generated files under `/opt/frey` belong to Ansible.
+The old stack in `archive/legacy-stack/` is reference-only.
 
-`group_vars/` lives beside `inventory/`, not at the repo root. Ansible only
-discovers `group_vars/` next to the inventory or next to the playbook, so a
-root-level copy is silently ignored when running `playbooks/site.yml`.
+## Stack layout
 
-## Hardware Assumptions
+| Module | Owns |
+| --- | --- |
+| `network_gateway`, `rpi_nvme`, `security_baseline` | Network, host storage and access safeguards |
+| `service_proxy`, `frey_pki`, `identity` | Docker, routing, certificates and login |
+| `media_acquisition` | Downloads, *arrs, resolver and uplink gating |
+| `media_library` | Playback, requests and library services |
+| `wifi_portal`, `dashy` | Wi-Fi controls and service dashboard |
+| `monitoring` | Metrics, logs, alerts, Grafana and Dockge |
 
-| Purpose | Interface | Hardware |
-| --- | --- | --- |
-| FreyHub access point | `wlan0` | Built-in Broadcom — the reliable radio runs the critical service |
-| Public Wi-Fi uplink | `wlan1` | Realtek USB — expendable, external antenna |
+The registry keeps dependencies ordered: proxy → PKI → identity, acquisition →
+library, monitoring last. Acquisition stays separate because it can pause when
+there is no uplink without interrupting playback.
 
-There is no Ethernet and no console on this Pi. Both ways in are radios, which
-is why changes to the AP radio arm a deadman rollback. See
-[docs/GATEWAY.md](docs/GATEWAY.md).
-
-## Secrets
+## Deploy and check
 
 ```bash
-ansible-vault edit inventory/group_vars/all/secrets.yml --vault-password-file .vault_pass
+ansible-galaxy install -r requirements.yml
+ansible-vault edit inventory/group_vars/all/secrets.yml
+ansible-playbook playbooks/site.yml --tags monitoring --check --diff > /tmp/frey-check.log 2>&1
+ansible-playbook playbooks/site.yml --tags monitoring
+ansible-playbook playbooks/site.yml --tags monitoring  # should report zero changes
+scripts/monitoring-check.sh
 ```
 
-```yaml
-vault_freyhub_ap_password: "the FreyHub passphrase"
-vault_uplink_networks:
-  - ssid: "Campground WiFi"
-    password: ""        # empty = open or captive-portal network
-    priority: 10
-```
+Omit `--tags` for a full deployment. Use `media`, `identity`, `proxy`, `uplink`
+or `hub` for focused changes. `--tags dockge` is an alias for the monitoring
+module; switch Dockge off with `monitoring_enable.dockge: false`.
 
-Known networks are declared here rather than configured on the device, so a
-rebuild from scratch reproduces them. NetworkManager joins whichever is in
-range; none in range is a normal state and FreyHub keeps running.
+`ansible.cfg` supplies inventory and `.vault_pass`; keep that file local and
+mode `600`. Override the target with `-e frey_host=<address>` if needed.
 
-## Deploy
+There is no Ethernet or console. Preserve network rollback and trusted-device
+SSH exemptions. For first setup or radio changes, follow [GATEWAY](docs/GATEWAY.md).
+Move storage before deploying services: [NVME_MIGRATION](docs/NVME_MIGRATION.md).
 
-Everything:
+## Maintenance
 
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --vault-password-file .vault_pass
-```
+- Edit image pins in `images.yml`, then deploy the owning module.
+- Use Dockge at `dockge.hub.frey` for logs and restarts. Its stack files are
+  read-only; make lasting changes in the roles.
+- Run `scripts/identity-check.sh` after authentication changes and
+  `scripts/monitoring-check.sh` after monitoring changes.
+- Run `python3 scripts/check-repository-files.py` and
+  `python3 -m unittest discover -s tests` for local repository checks.
 
-Just the uplink, or just FreyHub:
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --tags uplink --vault-password-file .vault_pass
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --tags hub --vault-password-file .vault_pass
-```
-
-Point at a different address without editing the inventory:
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  -e frey_host=10.20.0.1 --vault-password-file .vault_pass
-```
-
-Dry run:
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --check --diff --vault-password-file .vault_pass
-```
-
-**First-time setup on a Pi whose SSH arrives on `wlan0` needs the two-phase
-migration in [docs/GATEWAY.md](docs/GATEWAY.md).** The role will refuse to
-convert the radio carrying your session into an access point.
-
-## Storage
-
-The Pi boots from the SD card out of the box. To move the whole install to the
-4TB NVMe so the card can be removed, see
-[docs/NVME_MIGRATION.md](docs/NVME_MIGRATION.md). Do it **before** deploying
-services: cloning a live root filesystem is safe on a fresh install, not once
-databases are running.
-
-`roles/rpi_nvme/` only *tunes* an NVMe-backed system; the migration is a
-separate playbook.
-
-## Local Services
-
-FreyHub's DNS resolves `frey` and everything beneath it — at any depth — to the
-Pi, answered locally so it works with no internet. Traefik then routes
-hostnames to Docker containers by label, so new services need no DNS change.
-
-Services live at **`<name>.hub.frey`**, served over HTTPS with the Frey
-certificate. `<name>.frey` still works and redirects there; see
-[docs/IDENTITY.md](docs/IDENTITY.md) for why the extra label exists (short
-answer: a single-label domain cannot carry a shared session cookie, so single
-sign-on is impossible without it).
-
-For a new service such as Immich:
-
-- Join the Docker network `frey_proxy`.
-- Add a router rule like ``Host(`immich.hub.frey`)``.
-- Set the container port with `traefik.http.services.<name>.loadbalancer.server.port`.
-- To put it behind the login page, add one line to `identity_services`.
-
-See [docs/SERVICE_MODULES.md](docs/SERVICE_MODULES.md).
-
-## Logging In
-
-One directory of people, one login page, one place to say who may reach what.
-
-- `https://auth.hub.frey` — the login page
-- `https://users.hub.frey` — where you add people
-- `inventory/group_vars/all/identity.yml` — the only file you normally edit
-
-**Install `ca/frey-root-ca.crt` on your devices first**, or every service shows
-a certificate warning. Jellyfin, Audiobookshelf and Seerr deliberately still
-answer plain HTTP so televisions — which cannot install a private certificate —
-keep working.
-
-See [docs/IDENTITY.md](docs/IDENTITY.md).
-
-## Media
-
-The media stack is split in two along the line that matters in a van:
-
-- `media_library` — Jellyfin (`jellyfin.hub.frey`), Audiobookshelf
-  (`audiobookshelf.hub.frey`, also `books.hub.frey`) and Seerr
-  (`seerr.hub.frey`, also `requests.hub.frey`). Works with **no internet at
-  all**, and these three still answer plain HTTP so a television can reach
-  them.
-- `media_acquisition` — Prowlarr, Sonarr, Radarr, Lidarr, Chaptarr, Bazarr and
-  qBittorrent. Needs an uplink, and pauses itself when there isn't one.
-
-Downloads and the library share a single `/opt/frey/data` tree so imports are
-hardlinks rather than copies, and downloading pauses automatically when the
-uplink is unusable — including behind a captive portal, which looks online to
-an application but is not.
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --tags media --vault-password-file .vault_pass
-```
-
-Service switches and VPN settings are in `inventory/group_vars/all/media.yml`.
-Image tags are in `inventory/group_vars/all/images.yml`. To check media updates:
-
-```bash
-scripts/media-check-updates.sh
-```
-
-Setting `media_vpn.enabled: true` there (with credentials in the vault) moves
-qBittorrent inside a Gluetun tunnel with a killswitch, and repoints the rest
-of the stack at it automatically.
-
-See [docs/MEDIA.md](docs/MEDIA.md). Note that the Pi 5 has no hardware video
-encoder, so the quality profiles deliberately chase direct play rather than
-relying on transcoding.
-
-## Monitoring
-
-The van tells you when something is wrong, rather than you finding out.
-
-Dashboards at **`grafana.hub.frey`**, logged in with your Frey account. Alerts
-reach your phone through **ntfy** — and when the van has no uplink they are held
-on disk with the time they really fired, then delivered with a short "while you
-were offline" report that also names anything which broke and recovered on its
-own. That last part is invisible everywhere else.
-
-Two severities, deliberately. `critical` buzzes; `warning` arrives silently.
-
-It watches the ordinary things — CPU, memory, disk, containers — and the ones
-that actually matter in a vehicle:
-
-- **under-voltage and throttling**, which the Pi reports directly and which mean
-  the supply is sagging or the cabin is too hot. Under-voltage corrupts
-  filesystems, so it is loud and immediate.
-- **NVMe wear, media errors and unsafe shutdowns** — the drive's own count of the
-  times the power was cut rather than halted.
-- **real board power draw**, per PMIC rail. The start of answering what the van's
-  server costs in amp-hours.
-- **FreyHub actually serving**: AP clients, DHCP leases, DNS answering, NAT
-  present — and captive-portal state, which looks online to an application and
-  is not.
-- **whether each service answers through Traefik over HTTPS**, as a browser
-  would ask. That catches the failure container metrics call healthy: a perfectly
-  running container behind a router Traefik has dropped.
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --tags monitoring --vault-password-file .vault_pass
-```
-
-Thresholds, retention and what counts as a core service all live in one file,
-`inventory/group_vars/all/monitoring.yml`. To check it is genuinely working
-rather than merely running:
-
-```bash
-scripts/monitoring-check.sh            # every target up, rules loaded, collectors fresh
-scripts/monitoring-check.sh --test     # prove a notification reaches your phone
-```
-
-Temperature and other van sensors are not wired up yet, but the seam for them
-is: anything that writes a `.prom` file into `/opt/frey/metrics/textfile/` becomes
-a monitored metric on the same terms as CPU temperature.
-
-See [docs/MONITORING.md](docs/MONITORING.md).
-
-### Power, specifically
-
-The NVMe counts how many times the Pi was cut off rather than halted, and on
-this van that number is the one to watch: every unclean shutdown is a chance of
-SQLite corruption across the *arrs, Jellyfin and LLDAP. `FreyUnsafeShutdown` is
-critical and buzzes.
-
-The 5V supply rail is watched directly as well, because the Pi's own
-under-voltage flag is a late signal - it only trips once the supply has already
-gone out of spec, by which time writes have happened at that voltage.
-`Frey5vRailLow` fires while there is still time to do something about it.
-
-## Seeing The Stack
-
-**Dockge** at `dockge.hub.frey` lists the compose stacks and their containers in
-one place, which beats remembering which of twenty-odd container names belongs
-to which module.
-
-It is a window, not a control panel. The stacks are generated by Ansible, so
-anything edited through the UI is reverted by the next deploy - the role mounts
-them read-only for exactly that reason. Read logs and restart things with it;
-make lasting changes in `roles/<module>/templates/` and deploy.
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --tags dockge --vault-password-file .vault_pass
-```
-
-It holds the Docker socket, which is root on the host by another name, so it is
-behind single sign-on and restricted to `frey_admins`. See
-[roles/dockge/README.md](roles/dockge/README.md).
-
-## Add A Module
-
-1. Create `roles/<module_name>/`.
-2. Put role defaults in `roles/<module_name>/defaults/main.yml`.
-3. Add the module to `frey.modules.available` in `inventory/group_vars/all/main.yml`.
-4. Add the module name to `frey.modules.enabled`.
-
-See [docs/ADDING_MODULES.md](docs/ADDING_MODULES.md).
-
-## Container image versions
-
-Edit all image tags in `inventory/group_vars/all/images.yml`. See
-[docs/IMAGES.md](docs/IMAGES.md) for update checks and deployment commands.
-
-Repository checks run on GitHub pushes and pull requests via
-[checks.yml](.github/workflows/checks.yml). They cover playbook syntax,
-active YAML/JSON, shell scripts, focused Python tests, and the vault hook;
-they do not deploy or require the Pi's vault password.
+See [IDENTITY](docs/IDENTITY.md), [MEDIA](docs/MEDIA.md),
+[MONITORING](docs/MONITORING.md) and [ADDING_MODULES](docs/ADDING_MODULES.md).
+CI runs syntax, shell, YAML/JSON and focused regression checks without the Pi.

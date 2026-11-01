@@ -11,7 +11,7 @@ any internet connection. Sharing public Wi-Fi is the opportunistic extra.
 | FreyHub access point | `wlan0` | built-in Broadcom (`brcmfmac`) | Soldered down, best-proven AP driver on a Pi. Clients depend on it, so it gets the reliable radio. |
 | Public Wi-Fi uplink | `wlan1` | Realtek RTL8821CU USB (`rtw88_8821cu`) | Expendable and intermittent. A USB reset costs you internet, never FreyHub. External antenna reaches distant hotspots. |
 
-Both are set in `inventory/inventory/group_vars/all/main.yml`. Swapping the two
+Both are set in `inventory/group_vars/all/network.yml`. Swapping the two
 `interface:` lines swaps the roles — nothing else hardcodes a radio.
 
 **Never run AP and client mode on one radio.** The role asserts the two
@@ -49,6 +49,65 @@ Two settings exist specifically to keep this working:
 
 Check state with `nmcli networking connectivity`, which reports `portal`
 distinctly from `full` and `none`.
+
+### Signing In Without a Human
+
+`frey-uplink-portal.timer` does the tap for you, on **click-through portals
+only** — the kind that want agreement to terms and nothing else.
+
+```bash
+systemctl status frey-uplink-portal.timer
+journalctl -t frey-uplink-portal          # every decision it has made
+```
+
+A network is opted in **by SSID**, never by default:
+
+```yaml
+# inventory/group_vars/all/network.yml
+network_gateway:
+  upstream:
+    portal:
+      enabled: true
+      allowlist:
+        - "APNK Library"
+```
+
+That is an allowlist rather than a denylist on purpose. Submitting a form to an
+unknown hotspot means agreeing to terms nobody has read, and a van drives past
+a lot of hotspots.
+
+It **refuses** rather than guesses. A password field, a voucher or room-number
+box, a required field it cannot fill, or a page whose forms look nothing like a
+click-through all end the same way: a line in the journal and no submission.
+Guessing at a login is worse than staying offline. Within a form it ticks a
+terms box and leaves a marketing opt-in alone, preserves every hidden field the
+portal planted, and presses `Accept` rather than the `Decline` beside it.
+
+Every page it acts on is saved to
+`/var/lib/frey/uplink-portal/captures/` (last five). That is deliberate: the
+van has usually driven away by the time anyone investigates why a portal did
+not yield, and the page is the only evidence that survives.
+
+It runs on an interval, not just on connect, because **a portal session expires
+mid-stay** and nothing about the radio changes when it does.
+
+With monitoring enabled it reports through node-exporter's textfile directory —
+`frey_portal_connectivity`, `frey_portal_accept_attempts_total`,
+`frey_portal_accept_success_total`. The file is rewritten on every run,
+including the runs that do nothing, so it cannot go stale and trip
+`FreyCollectorStale` with a warning that means nothing.
+
+The decision logic has offline regression tests, since the live portal stops
+being testable the moment it lets you in:
+
+```bash
+scripts/test-portal-logic.py
+```
+
+What it cannot do is invent the **password** for a WPA network nobody declared.
+That is outside knowledge: a protected SSID still has to go into
+`vault_uplink_networks` by hand, which is why `autojoin_open` only ever
+considers genuinely open networks.
 
 ## Adding Known Networks
 
@@ -122,7 +181,7 @@ Its profiles are named `frey-open-*`, deliberately **not** the
 `frey-uplink-*` prefix — the prune step above deletes any `frey-uplink-*`
 profile missing from `networks`, which would wipe these on every run.
 
-Tune or disable in `inventory/group_vars/all/main.yml`:
+Tune or disable in `inventory/group_vars/all/network.yml`:
 
 ```yaml
 network_gateway:
@@ -219,11 +278,58 @@ journalctl -t frey-uplink-usb-watchdog     # every decision and recovery
 
 What it deliberately does not do:
 
-- **Act on a disconnected radio.** NetworkManager state 30 ("disconnected") is
-  the *normal* state when no known network is in range. Treating it as a fault
-  would reset the radio every minute while parked somewhere remote. Only a
-  missing USB device, a missing netdev, or state 20 ("unavailable" — on the bus
-  but not answering) counts as broken.
+- **Act on a disconnected radio, on its own.** NetworkManager state 30
+  ("disconnected") is the *normal* state when no known network is in range.
+  Treating it as a fault would reset the radio every minute while parked
+  somewhere remote. A missing USB device, a missing netdev, and state 20
+  ("unavailable" — on the bus but not answering) all count as broken, and so
+  does the one case below.
+
+### The scan wedge
+
+The adapter can stop *finishing* scans while still presenting a netdev in a
+managed state. From every angle except one it is identical to "nothing in
+range", and nothing recovers it on its own: `wpa_supplicant` repeats
+
+```
+wlan1: Reject scan trigger since one is already pending
+wlan1: Failed to initiate AP scan
+```
+
+NetworkManager never sees an SSID in scan results, so autoconnect cannot fire
+however many retries the profile has left (`autoconnect-retries=0`, forever,
+does not help — there is nothing to connect *to*), and `frey-uplink-autojoin`
+has a radio that will not scan. On 2026-11-02 that left the van with no uplink
+for **3h16m**, from 03:47 to 07:04, with a wlan1 that looked perfectly healthy;
+it ended only when the adapter happened to latch a different BSSID on 5 GHz.
+
+The discriminator is the scan **clock**, not the scan results — a radio parked
+in genuine wilderness still *completes* its scans and simply returns nothing:
+
+```bash
+# NetworkManager's LastScan, in CLOCK_BOOTTIME ms (-1 = never). Compare to
+# /proc/uptime; nmcli does not expose this, hence busctl.
+dev=$(busctl --system call org.freedesktop.NetworkManager \
+        /org/freedesktop/NetworkManager org.freedesktop.NetworkManager \
+        GetDeviceByIpIface s wlan1 | sed -nE 's/^o "(.*)"$/\1/p')
+busctl --system get-property org.freedesktop.NetworkManager "$dev" \
+  org.freedesktop.NetworkManager.Device.Wireless LastScan
+awk '{printf "%d\n", $1 * 1000}' /proc/uptime
+```
+
+So state 30 plus a scan clock frozen for longer than
+`usb_resilience.watchdog.scan_stall_seconds` (default 600) is the verdict
+`scan-stalled`, and it runs the same escalation ladder. Set it to `0` to go
+back to watching hardware faults only. Recovery is deliberately not verified
+eight seconds later the way the hardware faults are — a radio reset that
+recently cannot have finished a scan yet, so the ladder is left in place and
+the *next* run decides, which is what lets it escalate as far as the driver
+rebind that actually re-initialises the scanner.
+
+Note that restarting `wpa_supplicant` is **not** on the ladder and must not be:
+NetworkManager drives FreyHub's AP mode through the same supplicant, so
+bouncing it would take the AP down. Every rung is scoped to the USB device or
+the uplink netdev by name.
 - **React to a blip.** It needs `failures_before_action` consecutive bad checks
   (default 2) before touching anything.
 - **Reset in a loop.** `cooldown_seconds` between attempts and
@@ -248,7 +354,7 @@ If the run dies, your session drops, or the AP never comes up, the timer fires
 and restores the previous network — and it fires again after a reboot, so
 power-cycling a stranded Pi also recovers it.
 
-Tune or disable in `inventory/inventory/group_vars/all/main.yml`:
+Tune or disable in `inventory/group_vars/all/network.yml`:
 
 ```yaml
 network_gateway:

@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-media-dns-upstream - keep the media resolver pointed at an upstream that
+#                           actually answers
+# Managed by Ansible role: media_acquisition. Do not edit on the Pi.
+# =============================================================================
+#
+# THE PROBLEM THIS SOLVES
+#
+# The acquisition stack resolves through its own dnsmasq, which forwards to
+# public resolvers on purpose - a campground's resolver is often slow,
+# filtering, or lying, and that alone is enough to disable every indexer.
+#
+# But that assumes we can REACH a public resolver. Libraries, schools, hotels
+# and corporate guest networks routinely block outbound port 53 to anything
+# except their own resolver. On such a network every preferred upstream times
+# out, dnsmasq has nowhere to forward, and every name lookup in the stack fails
+# at once - Prowlarr, Sonarr, Radarr, Lidarr, Bazarr, qBittorrent.
+#
+# The worst part is how it looks. NetworkManager hands the HOST the network's
+# resolver, so `curl` and `ping` on the Pi work perfectly while the containers
+# resolve nothing. So it reads as "Prowlarr is broken", then "Lidarr too",
+# then "all of them", and sends you reading application logs.
+#
+# WHAT IT DOES
+#
+# Prefer the configured upstreams. Only while NONE of them answers, fall back
+# to the resolvers the uplink's DHCP handed us - which beats resolving
+# nothing. Go back the moment the preferred ones return.
+#
+# Every candidate is PROVEN before it is written: each one is probed from
+# inside the resolver container, which is the only path that matters. The
+# container's egress is NAT'd and firewalled differently from the host's, so
+# "the host can reach it" is not evidence the container can.
+#
+# filter-AAAA is unaffected by any of this - it applies to the answer, not to
+# the upstream - so the original reason this container exists keeps working on
+# the fallback too.
+#
+# Invoked by the NetworkManager dispatcher on uplink events, by its own timer
+# as a safety net, and safe to run by hand:
+#     frey-media-dns-upstream status
+#     frey-media-dns-upstream apply
+#
+set -uo pipefail
+
+CONTAINER="{{ media_acquisition.services.resolver.container_name }}"
+PROBE_NAME="{{ media_acquisition.dns.probe_name | default('cloudflare.com') }}"
+PROBE_TIMEOUT="{{ media_acquisition.dns.probe_timeout_seconds | default(3) }}"
+FALLBACK_ENABLED="{{ media_acquisition.dns.fallback_to_uplink | default(true) | bool | lower }}"
+UPLINK_IFACE="{{ network_gateway.upstream.interface }}"
+# The host side of the bind mount that dnsmasq reads as
+# {{ media_acquisition.dns.servers_file | default('/etc/dnsmasq.servers') }}.
+SERVERS_FILE="{{ media.appdata_dir }}/resolver/servers.conf"
+METRIC_DIR="{{ frey.base_dir }}/metrics/textfile"
+METRIC_FILE="${METRIC_DIR}/media_dns.prom"
+# Overridable only so scripts/test-media-dns-upstream.py can exercise the
+# selection logic without root and without a real /run. Nothing in the running
+# system sets it.
+STATE_DIR="${FREY_MEDIA_DNS_STATE_DIR:-/run/frey-media-dns-upstream}"
+
+PREFERRED=(
+{% for server in media_acquisition.dns.upstreams %}
+  "{{ server }}"
+{% endfor %}
+)
+
+log() { logger -t frey-media-dns-upstream -- "$*"; [ -t 1 ] && echo "$*"; }
+
+mkdir -p "${STATE_DIR}"
+chmod 0700 "${STATE_DIR}"
+
+# -----------------------------------------------------------------------------
+# Probing
+# -----------------------------------------------------------------------------
+
+resolver_running() {
+  [ "$(docker inspect -f '{% raw %}{{ .State.Running }}{% endraw %}' "${CONTAINER}" 2>/dev/null)" = "true" ]
+}
+
+# Ask one upstream directly, from inside the resolver container.
+#
+# busybox nslookup has no portable timeout flag, so it is wrapped twice: once
+# inside the container so a hung lookup cannot pin a process there, and once
+# outside so a hung `docker exec` cannot stall the whole run.
+probe_upstream() {
+  local addr="$1"
+  timeout $((PROBE_TIMEOUT + 3)) docker exec "${CONTAINER}" \
+    timeout "${PROBE_TIMEOUT}" nslookup "${PROBE_NAME}" "${addr}" >/dev/null 2>&1
+}
+
+any_preferred_answers() {
+  local addr
+  for addr in "${PREFERRED[@]}"; do
+    if probe_upstream "${addr}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The resolvers this network's DHCP gave us.
+#
+# `nmcli -g IP4.DNS` separates multiple values with " | ", not newlines, so it
+# has to be split rather than read line by line. IPv4 only: the uplink has no
+# IPv6 route, which is the entire reason for filter-AAAA.
+uplink_resolvers() {
+  nmcli -g IP4.DNS device show "${UPLINK_IFACE}" 2>/dev/null \
+    | tr '|' '\n' \
+    | tr -d ' ' \
+    | grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+}
+
+# -----------------------------------------------------------------------------
+# Writing the upstream list
+# -----------------------------------------------------------------------------
+
+render_servers() {
+  local mode="$1"; shift
+  echo "# Managed by frey-media-dns-upstream. Do not edit - it is rewritten."
+  echo "# mode: ${mode}   written: $(date -Is)"
+  local addr
+  for addr in "$@"; do
+    echo "server=${addr}"
+  done
+}
+
+# Write IN PLACE, never by rename.
+#
+# This file is bind-mounted into the container as a single file, so the mount
+# is bound to its INODE. An atomic `mv` would give the host a new inode and
+# leave dnsmasq reading the old one forever - the update would appear to work
+# and change nothing. Truncating and rewriting keeps the inode.
+write_servers_in_place() {
+  local content="$1"
+  printf '%s\n' "${content}" > "${SERVERS_FILE}"
+}
+
+# Make dnsmasq re-read it.
+#
+# `servers-file` is the one dnsmasq input that is re-read on SIGHUP; the main
+# config file is not. So this is a reload, not a restart, and the stack's DNS
+# is never dropped mid-search.
+#
+# Deliberately `docker exec ... kill`, NOT `docker kill -s HUP`: signalling
+# through Docker's API flags the container as manually stopped, which defeats
+# its `unless-stopped` policy and makes it silently fail to come back at the
+# next reboot.
+reload_resolver() {
+  if docker exec "${CONTAINER}" sh -c 'kill -HUP $(pidof dnsmasq)' >/dev/null 2>&1; then
+    return 0
+  fi
+  log "SIGHUP failed; restarting ${CONTAINER} instead"
+  docker restart "${CONTAINER}" >/dev/null 2>&1
+}
+
+# -----------------------------------------------------------------------------
+# Metrics
+#
+# Written only when the textfile directory exists, so this role keeps working
+# with monitoring switched off and never creates monitoring's directories for
+# it. Anything landing there becomes a monitored metric on the usual terms.
+# -----------------------------------------------------------------------------
+
+emit_metrics() {
+  local mode="$1" count="$2" m
+  [ -d "${METRIC_DIR}" ] || return 0
+  {
+    echo "# HELP frey_media_dns_upstream_mode Which upstream set the media resolver is using."
+    echo "# TYPE frey_media_dns_upstream_mode gauge"
+    for m in preferred uplink none; do
+      if [ "${m}" = "${mode}" ]; then
+        echo "frey_media_dns_upstream_mode{mode=\"${m}\"} 1"
+      else
+        echo "frey_media_dns_upstream_mode{mode=\"${m}\"} 0"
+      fi
+    done
+    echo "# HELP frey_media_dns_upstreams_working Upstreams proven to answer from inside the resolver."
+    echo "# TYPE frey_media_dns_upstreams_working gauge"
+    echo "frey_media_dns_upstreams_working ${count}"
+    echo "# HELP frey_media_dns_upstream_last_run_seconds Unix time of the last upstream selection."
+    echo "# TYPE frey_media_dns_upstream_last_run_seconds gauge"
+    echo "frey_media_dns_upstream_last_run_seconds $(date +%s)"
+  } > "${METRIC_FILE}.tmp" && mv "${METRIC_FILE}.tmp" "${METRIC_FILE}"
+}
+
+# -----------------------------------------------------------------------------
+# Selection
+# -----------------------------------------------------------------------------
+
+select_upstreams() {
+  local mode desired=() working=0 addr candidate content current
+
+  if any_preferred_answers; then
+    # At least one preferred upstream answers. Write them ALL rather than only
+    # the ones that answered this second: dnsmasq already prefers servers it
+    # knows are up, and pruning on every probe would rewrite this file - and
+    # reload the resolver - every time one of three public resolvers blinked.
+    mode=preferred
+    desired=("${PREFERRED[@]}")
+    for addr in "${PREFERRED[@]}"; do
+      probe_upstream "${addr}" && working=$((working + 1))
+    done
+  elif [ "${FALLBACK_ENABLED}" = "true" ]; then
+    while read -r candidate; do
+      [ -n "${candidate}" ] || continue
+      if probe_upstream "${candidate}"; then
+        desired+=("${candidate}")
+        working=$((working + 1))
+      fi
+    done < <(uplink_resolvers)
+
+    # `working` is incremented exactly when an address is appended, so it
+    # stands in for the array's length here. Counting the array directly needs
+    # bash's dollar-brace-hash length syntax, whose first two characters are
+    # also how Jinja opens a comment - and this file is a template, so writing
+    # it would silently eat the rest of the script.
+    if [ "${working}" -gt 0 ]; then
+      mode=uplink
+      log "no preferred upstream answers; falling back to the uplink's own resolvers: ${desired[*]}"
+    else
+      # Nothing at all answers. Keep the preferred list so recovery is
+      # automatic the moment the network starts behaving, rather than leaving
+      # the stack pinned to resolvers that were also dead.
+      mode=none
+      desired=("${PREFERRED[@]}")
+      log "no upstream answers at all, preferred or uplink; leaving the preferred list in place"
+    fi
+  else
+    mode=none
+    desired=("${PREFERRED[@]}")
+    log "no preferred upstream answers and fallback_to_uplink is off; the stack cannot resolve"
+  fi
+
+  content=$(render_servers "${mode}" "${desired[@]}")
+
+  # Compare only the server= lines: the rendered header carries a timestamp,
+  # so comparing whole files would make every run look like a change and
+  # reload the resolver every few minutes.
+  current=$(grep '^server=' "${SERVERS_FILE}" 2>/dev/null)
+  if [ "$(printf '%s\n' "${content}" | grep '^server=')" = "${current}" ]; then
+    emit_metrics "${mode}" "${working}"
+    printf '%s\n' "${mode}" > "${STATE_DIR}/mode"
+    return 0
+  fi
+
+  write_servers_in_place "${content}"
+  reload_resolver
+  log "upstreams now (${mode}): ${desired[*]}"
+  emit_metrics "${mode}" "${working}"
+  printf '%s\n' "${mode}" > "${STATE_DIR}/mode"
+}
+
+show_status() {
+  local addr
+  echo "resolver:       ${CONTAINER} ($(resolver_running && echo running || echo 'not running'))"
+  echo "probe name:     ${PROBE_NAME}"
+  echo "preferred:      ${PREFERRED[*]}"
+  echo "fallback:       ${FALLBACK_ENABLED}"
+  echo "uplink DNS:     $(uplink_resolvers | tr '\n' ' ')"
+  echo "mode now:       $(cat "${STATE_DIR}/mode" 2>/dev/null || echo unknown)"
+  echo "servers file:   ${SERVERS_FILE}"
+  if [ -r "${SERVERS_FILE}" ]; then
+    grep '^server=' "${SERVERS_FILE}" | sed 's/^/                /'
+  fi
+  if resolver_running; then
+    echo "probes:"
+    for addr in "${PREFERRED[@]}" $(uplink_resolvers); do
+      printf '  %-16s %s\n' "${addr}" "$(probe_upstream "${addr}" && echo answers || echo 'no answer')"
+    done
+  fi
+}
+
+case "${1:-apply}" in
+  apply)
+    if ! resolver_running; then
+      # Nothing to do and nothing to report: with the resolver down the stack
+      # has no DNS at all, and FreyContainerStopped already covers that.
+      log "${CONTAINER} is not running; skipping upstream selection"
+      exit 0
+    fi
+    # The dispatcher hook and the timer can overlap, and two runs rewriting
+    # the same file would race.
+    exec 9>"${STATE_DIR}/lock"
+    flock -x 9
+    select_upstreams
+    ;;
+  status) show_status ;;
+  *)
+    echo "usage: $(basename "$0") {apply|status}" >&2
+    exit 64
+    ;;
+esac

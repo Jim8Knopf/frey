@@ -40,4 +40,5 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_*.py'
           python3 -m unittest discover -s roles/network_gateway/tests -p 'test_*.py'
           python3 -m unittest discover -s roles/media_acquisition/tests -p 'test_*.py'
+          python3 -m unittest discover -s roles/monitoring/tests -p 'test_*.py'
           git-hooks/test-pre-commit.sh

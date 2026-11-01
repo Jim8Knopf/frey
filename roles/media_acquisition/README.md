@@ -24,7 +24,7 @@ Day-to-day knobs live in **`inventory/group_vars/all/media.yml`**:
 `media_vpn` (the tunnel). You should not need to edit this role to run the
 stack.
 
-Shared values come from `media` in `inventory/group_vars/all/main.yml`:
+Shared values come from `media` in `inventory/group_vars/all/media.yml`:
 `data_dir`, `appdata_dir`, `user.{name,uid,gid}`, `umask`, `languages`,
 `network.{name,subnet}`. Structure lives in `defaults/main.yml`.
 
@@ -128,6 +128,72 @@ sudo python3 -c 'import json; print(json.load(
 
 Byparr, Recyclarr and Unpackerr have no web UI and are not routed.
 
+## Cleanuparr
+
+Cleanuparr is configured over its REST API rather than by rendering a file,
+because it has neither: its settings live in its own SQLite database, and
+upstream dropped environment-variable configuration when v2 moved everything
+into the UI. `PORT`, `PUID`, `PGID`, `UMASK`, `TZ` and the database variables
+are the only environment knobs left, which is also why its `PUID` must be
+pinned explicitly — the image defaults to 1000 and then cannot create a file
+in the `media`-owned config directory.
+
+`tasks/configure/cleanuparr.yml` registers qBittorrent as its download client,
+registers Sonarr, Radarr and Lidarr with the same API keys Ansible seeded them
+with, and switches the queue cleaner on. Defaults live under
+`media_acquisition.cleanuparr_wiring`.
+
+Three things that are easy to get wrong:
+
+- **The API key is the inverse of the *arr keys.** Ansible chooses those and
+  seeds them before the container starts; Cleanuparr generates its own when
+  the first account is created. So the role reads it back out of Cleanuparr's
+  database read-only. Create the account once in the UI — until then the role
+  reports Cleanuparr as unwired and changes nothing. Set
+  `vault_media_api_keys.cleanuparr` to pin it in the repo instead.
+- **A fresh install does nothing.** Every strike counter ships at `0`, which
+  disables that category, so the container looks perfectly healthy and cleans
+  up nothing.
+- **`failed_import_pattern_mode` must be `Exclude` while the pattern list is
+  empty.** `Include` means *only* failed imports matching a pattern are
+  struck, so an empty list under `Include` is rejected outright and the whole
+  queue-cleaner section refuses to save.
+
+Chaptarr is absent on purpose: Cleanuparr has no Chaptarr application type,
+and its Readarr type is not a drop-in for it.
+
+### Single sign-on
+
+Cleanuparr is `auth: oidc`, not `forward_auth`. It keeps local accounts no
+matter what, so forward auth meant logging in twice — and the only way to stop
+that would have been its "disable auth for local addresses" switch, which also
+drops the credential requirement on `/api` for everything on FreyHub. Speaking
+OIDC itself gives one browser login while `/api` still needs the API key.
+
+**Finish it in the browser once.** Ansible configures the provider but cannot
+link it: open Cleanuparr, choose *Sign in with Frey*, and that binds your
+account to its OIDC subject (`authorizedSubject`). Only after that is
+`media_acquisition.cleanuparr_wiring.oidc.exclusive_mode: true` safe — turning
+it on with nothing linked removes local login while no OIDC identity is
+accepted yet, which leaves nobody able to sign in. The role never writes
+`exclusiveMode` or `authorizedSubject`, so it cannot undo the link.
+
+Three things cost time here and are worth knowing:
+
+- **The container has to trust the Frey CA.** Authelia derives its issuer from
+  the request and refuses a plain-HTTP one, so the back channel goes over
+  HTTPS through Traefik. Cleanuparr's own `httpCertificateValidation` setting
+  does *not* cover the OIDC library's HTTP client — discovery still failed the
+  handshake. The role assembles the Pi's public roots plus the Frey root and
+  mounts that over the image's bundle, which keeps public TLS verified rather
+  than switching verification off.
+- **Cleanuparr appends `/api/auth/oidc/callback`** to the redirect URL it is
+  configured with. So it is given the bare origin and Authelia registers the
+  full path. Get it wrong and Authelia — not Cleanuparr — reports
+  `redirect_uri does not match`.
+- **It does send PKCE** (S256), confirmed from the URL its own
+  `/api/auth/oidc/start` builds, so the Authelia client requires it.
+
 ## How The Wiring Works
 
 Ansible reaches the containers **through Traefik with an explicit `Host`
@@ -153,16 +219,23 @@ ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
 Prowlarr is registered *with* each *arr as an "application" at `fullSync`, so
 indexers added in Prowlarr propagate everywhere. Add an indexer once.
 
+The public indexer list is declarative: `media_indexers` in
+`inventory/group_vars/all/media.yml`. `tasks/configure/indexers.yml` adds any
+that Prowlarr is missing, puts the audiobook sources on their own sync
+profile, and tags the ones marked `cloudflare: true` so Byparr is actually in
+their path. It is a **floor, not a mirror** — nothing is reconfigured or
+removed, so private trackers added by hand survive every deploy.
+
 ## Spoken Language
 
 English first, German if there is no English, anything else only when there is
 neither — and the anything-else copy is replaced automatically once an English
 release turns up.
 
-Which languages is `media.languages` in `group_vars/all/main.yml`. How strict
-is one flag, `media_language_require_one` in `group_vars/all/media.yml`:
-`false` (default) keeps the last-resort grab, `true` rejects it and leaves the
-episode missing until English or German exists.
+Which languages is `media.languages`; how strict is one flag,
+`media_language_require_one`. Both are in `group_vars/all/media.yml`: `false`
+(default) keeps the last-resort grab, `true` rejects it and leaves the episode
+missing until English or German exists.
 
 `tasks/configure/languages.yml` applies it by creating one custom format per
 language ("Language: English", "Language: German") and scoring them on **every**
@@ -196,6 +269,89 @@ once it has an English release instead of churning forever.
 
 Jellyfin's *audio track* is the other half, and is not settable from here —
 see Known Gaps.
+
+## The Resolver, And Why Indexers Kept Breaking
+
+`frey-media-dns` is a dnsmasq container with one job: **delete AAAA records**.
+
+The van's uplink has no usable IPv6 — no address on the uplink interface, no
+default IPv6 route, no global IPv6 in any container. Campground resolvers
+answer AAAA for Cloudflare-fronted trackers anyway, because the record really
+does exist, and Docker's embedded resolver forwards whatever the campground
+handed the Pi over DHCP.
+
+.NET's `HttpClient` then connects to an address that cannot be reached:
+
+```
+System.Net.Http.HttpRequestException: Resource temporarily unavailable
+  (www.limetorrents.fun:443)
+```
+
+Prowlarr reports that as "Unable to connect to indexer … typically caused by
+DNS/SSL issues", backs the indexer off for hours, and Sonarr and Radarr say
+*All search-capable indexers are temporarily unavailable*.
+
+**What makes it so hard to diagnose:** `curl` against the identical URL
+succeeds, because curl falls back to IPv4 and .NET does not. Every manual
+check says the tracker is fine. Combined with Prowlarr's escalating backoff,
+the whole thing looks intermittent and unreproducible.
+
+So the stack resolves through its own dnsmasq with `filter-AAAA`, which also
+means a campground's broken or filtering DNS can no longer disable indexers —
+the reason this used to come back at every new parking spot.
+
+```bash
+# Is it up, and is it actually stripping AAAA?
+docker exec prowlarr getent ahostsv6 thepiratebay.org
+#   ::ffff:162.159.136.6  -> correct: an IPv4-mapped address, no real AAAA
+#   2606:4700:7::a29f:8906 -> the resolver is being bypassed
+```
+
+Setting `dns:` does **not** replace Docker's embedded resolver — `resolv.conf`
+keeps `127.0.0.11` and only its upstream changes — so container-name lookups
+(`prowlarr` → `sonarr`) are unaffected. Worth knowing before changing it:
+getting that wrong breaks every service-to-service call in the stack.
+
+### When we cannot reach our own upstreams
+
+Preferring public resolvers assumes we can reach them. Libraries, schools,
+hotels and corporate guest networks routinely block outbound port 53 to
+anything but their own resolver. Then every upstream times out, dnsmasq has
+nowhere to forward, and **every lookup in the stack fails at once** — all the
+*arrs, not one indexer.
+
+It hides well: NetworkManager gives the *host* the network's resolver, so
+`curl` and `ping` on the Pi work while the containers resolve nothing. It
+reads as "Prowlarr is broken", then "Lidarr too", then "all of them".
+
+`/usr/local/bin/frey-media-dns-upstream` keeps the upstream list honest. It
+prefers `dns.upstreams` and falls back to the uplink's own DHCP resolvers only
+while none of ours answers, returning the moment they do. Each candidate is
+probed **from inside the resolver container** before being written — the
+container's egress is NAT'd and firewalled differently from the host's, so the
+host reaching an address is no evidence the container can. `filter-AAAA` keeps
+working on the fallback, because it applies to the answer, not the upstream.
+
+The list lives in `servers.conf`, not in `dnsmasq.conf`, because
+`servers-file` is the one dnsmasq input re-read on **SIGHUP** — so the
+upstreams change without restarting the resolver and dropping the stack's DNS
+mid-search. Two traps in that file:
+
+- It is bind-mounted as a single **file**, so the mount follows its inode. It
+  must be rewritten in place; an atomic `mv` leaves dnsmasq reading the old
+  inode forever and the update appears to work while changing nothing.
+- Ansible deploys it with `force: false`. Re-rendering it every deploy would
+  overwrite a live fallback with upstreams the current network blocks, taking
+  DNS from the whole stack until the timer next ran.
+
+```bash
+frey-media-dns-upstream status        # mode now, and what each candidate does
+sudo frey-media-dns-upstream apply    # re-select without waiting for the timer
+scripts/test-media-dns-upstream.py    # offline tests for the selection logic
+```
+
+`frey_media_dns_upstream_mode{mode="preferred|uplink|none"}` reports which set
+is live. Set `dns.fallback_to_uplink: false` to refuse the fallback entirely.
 
 ## Download Gating
 
@@ -289,7 +445,18 @@ ansible-playbook ... --tags media_update -e media_update=true
   so it cannot be set from here. A dual-audio file plays whichever track the
   release tagged default until "Play default audio track regardless of
   language" is unticked. The deploy's closing message spells it out.
-- **Indexers** need your own tracker credentials and are added in Prowlarr.
+- **Private indexers** need your own tracker credentials, so they are added in
+  Prowlarr's UI. Public ones are declared in `media_indexers`.
+- **`media_library` still uses the campground's resolver.** Jellyfin and Seerr
+  fetch metadata over the same uplink and are also .NET, so they can hit the
+  same AAAA failure. Pointing them at `frey-media-dns` would make the library
+  depend on a container this role owns, and the library is deliberately able
+  to deploy and run with acquisition switched off entirely. Fixing it properly
+  means a resolver that belongs to neither module.
+- **Byparr's proxy test fails by design.** It implements no `sessions.*`
+  commands, which is what Prowlarr's test button calls, so it answers `502`
+  and Prowlarr logs `Proxy validation failed` on every health check while
+  solving works correctly. Judge it by `docker logs byparr`.
 - **Lidarr** depends on an upstream metadata server that has been unreliable
   through 2026; adding artists and imports break periodically. Not a
   configuration problem.

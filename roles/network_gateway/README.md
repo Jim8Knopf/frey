@@ -44,6 +44,38 @@ open networks are named `frey-open-*`.
 Disable with `network_gateway.upstream.autojoin_open.enabled: false`; see
 `docs/GATEWAY.md` for the full rationale and the security trade-off.
 
+## Captive-Portal Auto-Accept
+
+The autojoin above joins a portal network and then leaves it alone, so signing
+in stayed the one manual step in the uplink. `frey-uplink-portal.timer` closes
+it for **click-through portals only**: agree-to-terms-and-continue.
+
+Opted in by SSID (`portal.allowlist`, empty by default), because submitting a
+form to an unknown hotspot means agreeing to terms nobody read. It refuses
+rather than guesses — a password field, a voucher or room-number box, a
+required field it cannot fill, or forms that look nothing like a click-through
+all produce a journal line and no submission. It ticks a terms box but not a
+marketing opt-in, keeps the portal's hidden fields, and presses `Accept` over
+an adjacent `Decline`.
+
+It reads state and talks HTTP; it never reconfigures a radio or edits a
+profile, so the worst a bug here can do is POST a form to a hotspot. It runs on
+an interval rather than on connect because portal sessions expire mid-stay.
+
+Pages it acts on are kept in `/var/lib/frey/uplink-portal/captures/` (last
+five) — the van has usually driven away before anyone asks why a portal did not
+yield. With monitoring on it writes `frey_portal_*` into node-exporter's
+textfile directory on every run, so the file cannot go stale.
+
+```bash
+journalctl -t frey-uplink-portal     # every decision it has made
+scripts/test-portal-logic.py         # offline regression tests
+```
+
+It cannot invent the password for an undeclared WPA network; that still goes
+into `vault_uplink_networks` by hand. Disable with
+`network_gateway.upstream.portal.enabled: false`.
+
 ## USB Uplink Resilience
 
 The uplink adapter is on USB and is the most droppable part of the machine;
@@ -56,7 +88,13 @@ and a udev rule pinning runtime PM off. Module options apply on reboot.
 Recovery: `frey-uplink-usb-watchdog.timer` escalates interface bounce →
 `usbreset` → driver rebind → module reload, with a confirmation count, a
 cooldown and an hourly cap. A merely *disconnected* radio is never reset —
-that is the normal no-network-in-range state.
+that is the normal no-network-in-range state — with one exception: if it is
+disconnected *and* NetworkManager's `LastScan` clock has been frozen for
+`watchdog.scan_stall_seconds` (600), the scan engine has wedged and no amount
+of autoconnect retries can help, because there is nothing visible to connect
+to. A radio parked in real wilderness still finishes its scans and finds
+nothing, which is why the clock and not the result is the test. See
+`docs/GATEWAY.md`.
 
 Cannot affect FreyHub: the AP is brcmfmac on SDIO, the uplink is USB.
 
@@ -65,6 +103,7 @@ Cannot affect FreyHub: the AP is brcmfmac on SDIO, the uplink is USB.
 ## Tags
 
 - `uplink` — uplink profiles only. Never touches the AP radio.
+- `portal` — the captive-portal auto-accept script and units, nothing else.
 - `hub` — the AP, DHCP/DNS and NAT.
 - `network`, `gateway` — everything.
 

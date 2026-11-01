@@ -108,6 +108,22 @@
     - media
     - media_acquisition
 
+- name: Ensure Cleanuparr appdata is owned by the media user
+  # Cleanuparr's image defaults to PUID/PGID=1000, so any deploy made before
+  # the compose template pinned media's uid left databases owned by 1000.
+  # Flipping PUID without this makes those files unwritable by the app and
+  # SQLite fails on open. Recursive, but the tree is a handful of files.
+  ansible.builtin.file:
+    path: "{{ media.appdata_dir }}/cleanuparr"
+    state: directory
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    recurse: true
+  when: media_acquisition.services.cleanuparr.enabled | bool
+  tags:
+    - media
+    - media_acquisition
+
 - name: Ensure qBittorrent nested config directory exists
   # The linuxserver image stores preferences at
   # /config/qBittorrent/qBittorrent.conf, so the inner directory must exist
