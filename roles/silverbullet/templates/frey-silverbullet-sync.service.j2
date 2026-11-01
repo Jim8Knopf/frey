@@ -1,0 +1,17 @@
+[Unit]
+Description=Reconcile SilverBullet access with Frey directory groups
+After=docker.service
+Requires=docker.service
+ConditionPathExists={{ frey.base_dir }}/appdata/silverbullet-sync/admin-password
+
+[Service]
+Type=oneshot
+Environment=FREY_BASE={{ frey.base_dir }}
+Environment=FREY_SERVICE_DOMAIN={{ frey.service_domain }}
+Environment=FREY_IDENTITY_NETWORK={{ silverbullet.identity_network }}
+Environment=FREY_PROXY_NETWORK={{ frey.proxy_network }}
+Environment=FREY_NOTES_SYNC_ADMIN={{ silverbullet.sync_admin_username }}
+ExecStart=/usr/bin/python3 {{ frey.base_dir }}/silverbullet-sync/group-sync.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

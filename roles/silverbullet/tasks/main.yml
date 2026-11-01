@@ -1,0 +1,152 @@
+---
+- name: Validate SilverBullet configuration
+  ansible.builtin.assert:
+    that:
+      - silverbullet_version | length > 0
+      - silverbullet.host in identity_services.silverbullet.hosts
+      - identity_services.silverbullet.auth == 'forward_auth'
+      - identity_services.silverbullet.oidc_client | bool
+      - "'frey_admins' in identity_services.silverbullet.groups"
+      - "'notes' in identity_services.silverbullet.groups"
+      - silverbullet.host in identity_protect
+      - silverbullet.space_prefix is match('^/[a-zA-Z0-9_-]+$')
+    fail_msg: SilverBullet must use Frey SSO and restrict access to administrators and the notes group.
+
+- name: Create SilverBullet stack directory
+  ansible.builtin.file:
+    path: "{{ silverbullet.stack_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create private SilverBullet data directory
+  ansible.builtin.file:
+    path: "{{ silverbullet.data_dir }}"
+    state: directory
+    owner: "{{ silverbullet.uid }}"
+    group: "{{ silverbullet.gid }}"
+    mode: "0700"
+
+- name: Pull the pinned SilverBullet image
+  community.docker.docker_image_pull:
+    name: "{{ silverbullet.image }}"
+    pull: not_present
+  when: not ansible_check_mode
+
+- name: Deploy SilverBullet compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ silverbullet.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "docker compose -f %s config --quiet"
+
+- name: Start SilverBullet
+  community.docker.docker_compose_v2:
+    project_src: "{{ silverbullet.stack_dir }}"
+    state: present
+    pull: never
+    timeout: 180
+  when: not ansible_check_mode
+
+- name: Create SilverBullet group sync directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ frey.base_dir }}/silverbullet-sync"
+    - "{{ frey.base_dir }}/appdata/silverbullet-sync"
+
+- name: Install SilverBullet group synchronization
+  ansible.builtin.copy:
+    src: group-sync.py
+    dest: "{{ frey.base_dir }}/silverbullet-sync/group-sync.py"
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the existing notes administrator password from Vault
+  ansible.builtin.copy:
+    content: "{{ vault_silverbullet_sync_password }}"
+    dest: "{{ frey.base_dir }}/appdata/silverbullet-sync/admin-password"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - vault_silverbullet_sync_password is defined
+    - vault_silverbullet_sync_password | length > 0
+  no_log: true
+  diff: false
+  register: silverbullet_sync_password_write
+
+- name: Install SilverBullet group sync units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-silverbullet-sync.service
+    - frey-silverbullet-sync.timer
+  register: silverbullet_sync_units
+
+- name: Check for SilverBullet group sync credential
+  ansible.builtin.stat:
+    path: "{{ frey.base_dir }}/appdata/silverbullet-sync/admin-password"
+  register: silverbullet_sync_token
+
+- name: Reload systemd for SilverBullet group sync
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - silverbullet_sync_units.changed
+    - not ansible_check_mode
+
+- name: Check whether SilverBullet group synchronization is enabled
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, frey-silverbullet-sync.timer]
+  register: silverbullet_sync_timer_status
+  changed_when: false
+  failed_when: false
+  when:
+    - silverbullet_sync_token.stat.exists
+    - not ansible_check_mode
+
+- name: Stop the sync timer before validating a changed credential
+  ansible.builtin.systemd_service:
+    name: frey-silverbullet-sync.timer
+    state: stopped
+    enabled: false
+  when:
+    - silverbullet_sync_token.stat.exists
+    - silverbullet_sync_password_write.changed | default(false)
+    - silverbullet_sync_timer_status.rc | default(1) == 0
+    - not ansible_check_mode
+
+- name: Verify SilverBullet group synchronization before enabling its timer
+  ansible.builtin.command:
+    argv: [systemctl, start, frey-silverbullet-sync.service]
+  when:
+    - silverbullet_sync_token.stat.exists
+    - silverbullet_sync_password_write.changed | default(false) or silverbullet_sync_timer_status.rc | default(1) != 0
+    - not ansible_check_mode
+
+- name: Enable SilverBullet group synchronization when provisioned
+  ansible.builtin.systemd_service:
+    name: frey-silverbullet-sync.timer
+    enabled: true
+    state: started
+  when:
+    - silverbullet_sync_token.stat.exists
+    - not ansible_check_mode
+
+- name: Report unprovisioned SilverBullet group synchronization
+  ansible.builtin.debug:
+    msg: SilverBullet group synchronization is inactive until the note_admin password is supplied through Vault.
+  when: not silverbullet_sync_token.stat.exists

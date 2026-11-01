@@ -14,4 +14,4 @@ dashy:
     - name: Monitoring
       services: [grafana, prometheus, alertmanager]
     - name: Management
-      services: [dockge, wifi]
+      services: [dockge, wifi, silverbullet]

@@ -1,8 +1,9 @@
 # Campaign Knowledge and Local Assistant Plan
 
-Status: planning. No services in this document have been deployed as part of
-this plan. Check product versions, licensing, compatibility and policies again
-when implementing each phase.
+Status: phases 1 and 2 in progress. SilverBullet is deployed and the initial
+rules and campaign structure are in the Notes space. Check product
+versions, licensing, compatibility and policies again when implementing each
+phase.
 
 ## Goal and boundaries
 
@@ -73,20 +74,32 @@ Discord or the hosting provider from the workflow.
 
 ### 1. Prototype the knowledge base
 
-- [ ] Measure available memory, storage and architecture; select and test a
-  pinned ARM64 SilverBullet Server release.
+- [x] Measure available memory, storage and architecture; deploy a pinned ARM64
+  SilverBullet Server release. On 2026-11-01 Frey had 15 GiB RAM, 12 GiB
+  available and 3.4 TiB free; SilverBullet 2.12.1 started successfully.
 - [ ] Confirm suitability of the editor, links, backlinks, queries and graph
   using sample NPC, species, ship, location and session pages.
-- [ ] Integrate a new Ansible role with persistent storage, Frey HTTPS,
+- [x] Integrate a new Ansible role with persistent storage, Frey HTTPS,
   appropriate authentication and a Dashy entry. Follow `ADDING_MODULES.md`.
 - [ ] Verify authentication and sync compatibility: SilverBullet documents a
   limitation for desktop sync behind external authentication proxies. Test the
   intended browser and Android flows before choosing the final arrangement.
+  Frey registers an Authelia OIDC client while preserving group-based forward
+  auth. The provider test passed and SSO is enabled. A directory group sync is
+  active using the existing `note_admin` account and has enrolled current Frey
+  administrators; interactive sign-in and live group-change tests remain.
+  It manages enrollment and roles from `frey_admins` and `notes`. See
+  `roles/silverbullet/README.md`.
 - [ ] Install the Android PWA; test initial sync, offline access and edits,
   reconnection and conflicts, and access after a phone/browser restart.
 - [ ] Set up backups and demonstrate a restore on a separate test location.
-- [ ] Run a focused dry run, deploy the affected tag, repeat for zero changes,
-  and perform a service acceptance check on the Pi.
+- [ ] Complete the SilverBullet first-run setup; then run
+  `bash scripts/silverbullet-check.sh` and test authenticated use. The check
+  returns status 2 while first-run setup prevents testing the static PWA paths.
+- [ ] Complete service acceptance checks, including the authenticated and PWA
+  checks after first-run setup. The focused dry run and deployment succeeded,
+  and the repeat deployment reported zero changes on 2026-11-01. Anonymous
+  content access was denied; the existing identity and monitoring checks passed.
 
 **Done when:** the GM can edit linked notes from a browser and Android, use a
 previously synced copy offline, and recover the space from backup.
@@ -95,8 +108,12 @@ previously synced copy offline, and recover the space from backup.
 
 - [ ] Import supplied custom rules and story ideas, keeping originals and
   document versions. Check searchable text; evaluate OCR for scanned documents.
+  The supplied Pirate d100 Markdown draft was imported unchanged and verified
+  on 2026-11-01. No story outline has been supplied yet.
 - [ ] Create practical templates for characters, NPCs, species, places,
   factions, ships, sessions and unresolved threads.
+  Eight SilverBullet page templates and a linked Pirate campaign overview have
+  been added; check their behavior in the browser before marking this complete.
 - [ ] Test examples such as an NPC linking to its species and faction, and a
   query listing NPCs by location.
 - [ ] Separate GM-only plans from player-facing information and distinguish
@@ -109,6 +126,14 @@ pages without relying on the AI.
 
 - [ ] Benchmark suitable small quantized models against real rules questions,
   response time, RAM, CPU, temperature and existing service responsiveness.
+  The Pi has approximately 12 GiB available RAM in the current configuration.
+  A preliminary test on 2026-11-01 used llama.cpp `server-b12019` and Qwen3
+  1.7B Q8_0 with a 2-CPU, 3-GiB container limit. A short armor/evasion question
+  with its rule supplied in the prompt produced the expected answer in 4.84 s
+  (about 6.1 generated tokens/s); idle memory while loaded was 2.185 GiB. This
+  is one simple test, not a quality or retrieval evaluation. The temporary
+  container was removed; Docker retains the runtime image and model volume
+  `frey-llm-benchmark-models` for later work.
 - [ ] Choose and pin a runtime and model; arrange model downloads ahead of
   offline use. Add an authenticated dashboard interface and explicit start,
   stop and running status; define behavior after reboot and redeployment.

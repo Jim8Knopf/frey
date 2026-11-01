@@ -160,6 +160,7 @@ frey:
       # pointing at a middleware Traefik does not know about is dropped
       # entirely, and the service 404s with a perfectly healthy container.
       - identity
+      - silverbullet
       # Acquisition runs BEFORE library: it generates the shared *arr API
       # keys that the library module needs to wire Seerr to Sonarr/Radarr,
       # so a single run comes up fully connected.
@@ -237,6 +238,10 @@ frey:
         role: dashy
         tags:
           - dashy
+      silverbullet:
+        role: silverbullet
+        tags:
+          - silverbullet
       wifi_portal:
         role: wifi_portal
         tags:

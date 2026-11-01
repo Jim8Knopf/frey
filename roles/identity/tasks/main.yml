@@ -40,11 +40,14 @@
     that:
       - item.key in identity.oidc_catalog
     fail_msg: >-
-      '{{ item.key }}' is set to auth: oidc but has no entry in
+      '{{ item.key }}' requires an OIDC client but has no entry in
       identity.oidc_catalog in roles/identity/defaults/main.yml, so there is
       nothing to tell Authelia about its redirect URIs. Either add a catalog
       entry or use auth: forward_auth, which needs nothing from the app.
-  loop: "{{ identity_services | dict2items | selectattr('value.auth', 'equalto', 'oidc') | list }}"
+  loop: >-
+    {{ (identity_services | dict2items | selectattr('value.auth', 'equalto', 'oidc') | list)
+       + (identity_services | dict2items | selectattr('value.auth', 'equalto', 'forward_auth')
+          | selectattr('value.oidc_client', 'defined') | selectattr('value.oidc_client', 'equalto', true) | list) }}
   loop_control:
     label: "{{ item.key }}"
   tags: [identity, sso, identity_config]
