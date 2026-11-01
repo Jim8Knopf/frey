@@ -216,9 +216,22 @@ identity:
         - groups
         - offline_access
       redirect_uris:
-        # The trailing element is the provider name configured in the plugin.
-        # It must match identity.jellyfin.provider_name below exactly.
+        # The trailing element is the plugin provider's <Id>, NOT its <Name>.
+        #
+        # This comment used to say "name", and that was wrong: it cost a
+        # debugging session chasing Authelia when the fault was in Jellyfin.
+        # In the be-nj fork the callback path is built from <Id>, which is
+        # auto-generated on create (e.g. xmk42t0g3umvq2c4vi) and is NOT exposed
+        # anywhere in the plugin UI. <Name> is a display label and nothing else.
+        #
+        # So the provider's <Id> has to literally be `authelia`, which means
+        # editing the plugin's XML by hand - see identity.jellyfin.sso_plugin
+        # below and docs/IDENTITY.md. Recreating the provider through the UI
+        # regenerates a random Id and breaks SSO again, with Authelia showing
+        # invalid_request / "redirect_uri does not match".
         - "https://jellyfin.{{ frey.service_domain }}/sso/oidc/callback/authelia"
+      # Empty on purpose: groups stay out of the ID token, so the plugin must
+      # fetch them from userinfo (<GroupsFromUserInfo>true</GroupsFromUserInfo>).
       claims_policy: ""
 
     # ------------------------------------------------------------------------
@@ -284,6 +297,12 @@ identity:
   # either way, which is the fallback if the plugin misbehaves.
   # ----------------------------------------------------------------------------
   jellyfin:
+    # The plugin's own configuration file, which has to be edited by hand -
+    # the UI does not expose the fields that matter. Written out here so the
+    # run can print the exact path instead of making you hunt for it.
+    xml_path: >-
+      {{ media.appdata_dir }}/jellyfin/data/plugins/configurations/Jellyfin.Plugin.Sso.xml
+
     sso_plugin:
       enabled: true
       # Added to Jellyfin's plugin catalogue so the plugin can be installed
@@ -292,10 +311,25 @@ identity:
       # server if it mismatches.
       repository_name: jellyfin-sso
       repository_url: https://raw.githubusercontent.com/be-nj/jellyfin-sso/main/manifest.json
-      # Must match the last path element of the jellyfin redirect URI above.
-      provider_name: authelia
+
+      # The provider's <Id> in the plugin's XML - the last path element of the
+      # redirect URI above, and the thing Authelia matches on.
+      #
+      # Named provider_id, not provider_name, because that distinction is the
+      # whole trap: the plugin UI only lets you set <Name>, while the callback
+      # path is built from <Id>. The Id must be set by editing
+      #   /opt/frey/appdata/jellyfin/data/plugins/configurations/\
+      #     Jellyfin.Plugin.Sso.xml
+      # and restarting Jellyfin. See docs/IDENTITY.md for the whole procedure.
+      provider_id: authelia
+
       # Jellyfin group that maps to administrator. Members of this LDAP group
-      # get Jellyfin admin on first SSO login.
+      # get Jellyfin admin on login.
+      #
+      # Applied through the plugin's <GroupMappings>, which it re-applies on
+      # EVERY login - and it ships <PreserveAdminPermissions>false</...>, so
+      # permissions edited by hand on Jellyfin's user screen are wiped the next
+      # time that person signs in. Change the mapping, never the user.
       admin_group: frey_admins
 
   # Generated once on the Pi, then reused. Nothing here is ever printed, and
