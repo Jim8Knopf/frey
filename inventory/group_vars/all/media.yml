@@ -16,8 +16,14 @@ media:
 
   languages:
     # Primary drives Jellyfin metadata, *arr language profiles and Bazarr.
+    # *_arr_name is the same language spelled the way Sonarr and Radarr spell
+    # it - a custom format matches on the app's own language name, and the ids
+    # behind those names are resolved at run time by
+    # media_acquisition/tasks/configure/languages.yml, so none is pinned here.
     primary: en
+    primary_arr_name: English
     secondary: de
+    secondary_arr_name: German
     metadata_country: NZ
 
   network:
@@ -38,6 +44,17 @@ media:
 # Add the audiobook-oriented public sources below to Prowlarr. Set false to
 # leave the indexer list to whatever you add by hand in the UI.
 media_audiobook_public_indexer: true
+
+# SPOKEN LANGUAGE: which languages is media.languages above - English
+# primary, German secondary. This is the one knob about how strict that is.
+#
+# false  prefer English, then German, and grab something in another language
+#        if that is all the indexers have. It is replaced automatically when
+#        an English release shows up, so off-grid you get a copy now instead
+#        of an empty folder and a better copy in three weeks.
+# true   English or German only. Anything else is rejected outright and the
+#        episode stays missing for as long as it takes.
+media_language_require_one: false
 
 media_indexers:
 

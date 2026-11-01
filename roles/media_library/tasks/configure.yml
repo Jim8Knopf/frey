@@ -243,8 +243,10 @@
       LibraryOptions:
         PathInfos:
           - Path: "{{ item.path }}"
-        # German metadata first, English as the fallback, matching the
-        # language choice in group_vars.
+        # Metadata in the primary language, matching media.languages in
+        # group_vars. This is metadata only - which AUDIO track plays is a
+        # per-user playback setting Jellyfin does not expose server-side; see
+        # the hand-off message at the end of this file.
         PreferredMetadataLanguage: "{{ media.languages.primary }}"
         MetadataCountryCode: "{{ media.languages.metadata_country }}"
     status_code: [200, 204]
@@ -301,6 +303,14 @@
            | map('join', '  <- ')
            | map('regex_replace', '^(.*)$', '    \1')
            | list)
+        + ['  Then, per user, under Settings > Playback:']
+        + ['    Preferred audio language:    ' ~ media.languages.primary_arr_name]
+        + ['    Play default audio track regardless of language:  UNTICK']
+        + ['    Preferred subtitle language: ' ~ media.languages.primary_arr_name]
+        + ['  This is the half the *arrs cannot do. A dual-audio release plays']
+        + ['  whichever track it tagged default, so an English grab happily']
+        + ['  plays Italian until that box is unticked - and Jellyfin keeps']
+        + ['  the setting per user, not server-wide.']
         + ['']
         + ['Seerr - http://' ~ media_library.services.seerr.route_host ~ '.' ~ frey.local_domain]
         + ['  Jellyfin URL: http://' ~ media_library.services.jellyfin.hostname ~ ':' ~ media_library.services.jellyfin.port]
@@ -308,9 +318,10 @@
         + ['  Radarr:  http://radarr:7878   (same file)']
         + ['']
         + ['Bazarr - http://bazarr.' ~ frey.local_domain]
-        + ['  Pick subtitle providers and attach a '
-           ~ media.languages.primary ~ '/' ~ media.languages.secondary
-           ~ ' language profile (these live in its database, not its config file)']
+        + ['  Pick subtitle providers and attach a language profile of '
+           ~ media.languages.primary ~ ' then ' ~ media.languages.secondary
+           ~ ' (these live in its database, not its config file). This is what']
+        + ['  makes the last-resort grab in neither language watchable.']
         + ['']
         + ['Prowlarr - http://prowlarr.' ~ frey.local_domain]
         + ['  Add your indexers; they propagate to Sonarr/Radarr/Lidarr/Chaptarr automatically']

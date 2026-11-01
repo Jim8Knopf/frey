@@ -1,0 +1,340 @@
+---
+# ==============================================================================
+# One Servarr application: language custom formats + the scores that rank them
+#
+# Called per app from languages.yml with `arr` as {key: sonarr, value: {...}}.
+#
+# Four steps, read-before-write at each one so a second run reports nothing
+# changed:
+#
+#   1. read the app's own language list and resolve "English"/"German" to ids
+#   2. create one custom format per preferred language, if it is missing
+#   3. re-read the custom formats, to learn the ids of whatever was just made
+#   4. write the scores onto every quality profile that does not already carry
+#      them, together with the minimum and cutoff that make the ranking mean
+#      something
+#
+# Nothing here deletes or renames anything, so a custom format you tuned by
+# hand keeps its specifications - only the SCORE on the profile is asserted.
+# ==============================================================================
+
+- name: "{{ arr.key }}: read the language list"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/language"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_lang_list
+  failed_when: false
+  changed_when: false
+
+- name: "{{ arr.key }}: resolve the preferred languages to this application's ids"
+  # Resolved by name rather than hardcoded, for the same reason the root
+  # folder task resolves quality profiles by name: the numeric ids are an
+  # implementation detail of the application, not a contract.
+  #
+  # A name this application does not know is dropped rather than fatal, and
+  # reported at the end of the run. A typo in one language should not take
+  # the whole media deploy down.
+  ansible.builtin.set_fact:
+    arr_lang_name_to_id: >-
+      {{
+        dict(
+          (arr_lang_list.json | default([]) | map(attribute='name'))
+          | zip(arr_lang_list.json | default([]) | map(attribute='id'))
+        )
+      }}
+  when: arr_lang_list.json is defined
+
+- name: "{{ arr.key }}: build the wanted custom formats"
+  ansible.builtin.set_fact:
+    arr_lang_wanted: >-
+      {%- set out = [] -%}
+      {%- for pref in media_acquisition.languages.preferred -%}
+        {%- if pref.language in arr_lang_name_to_id -%}
+          {%- set _ = out.append({
+                'language': pref.language,
+                'language_id': arr_lang_name_to_id[pref.language],
+                'cf_name': 'Language: ' ~ pref.language,
+                'score': pref.score | int,
+              }) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    arr_lang_unknown: >-
+      {{
+        media_acquisition.languages.preferred
+        | map(attribute='language')
+        | reject('in', arr_lang_name_to_id)
+        | list
+      }}
+  when: arr_lang_name_to_id is defined
+
+- name: "{{ arr.key }}: record languages this application does not know"
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (arr_lang_unknown
+           | map('regex_replace', '^(.*)$',
+                 arr.key ~ ': unknown language \1, not scored')
+           | list)
+      }}
+  when:
+    - arr_lang_unknown is defined
+    - arr_lang_unknown | length > 0
+
+- name: "{{ arr.key }}: read existing custom formats"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/customformat"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_lang_cfs
+  failed_when: false
+  changed_when: false
+  when: arr_lang_wanted | default([]) | length > 0
+
+- name: "{{ arr.key }}: create the language custom formats"
+  # One specification, matching the release's detected language. Positive and
+  # additive on purpose: a German+English dual-audio release matches both
+  # formats and scores the sum, which is precisely the release we want most.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/customformat"
+    method: POST
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    body_format: json
+    # Built as one expression rather than YAML keys so the types survive.
+    #
+    # `fields` is a LIST of {name, value} here, not the {value: 4} mapping the
+    # TRaSH Guides use - that mapping is their own guide schema, which
+    # Recyclarr translates before it ever reaches the application, and posting
+    # it raw is rejected. And templating the id as "{{ ... }}" would send the
+    # string "1" where the API wants the number 1.
+    #
+    # includeCustomFormatWhenRenaming stays false: renaming on a language tag
+    # would rewrite every existing file the first time this lands, and
+    # Jellyfin would rescan the lot.
+    body: >-
+      {{
+        {
+          'name': lang.cf_name,
+          'specifications': [
+            {
+              'name': lang.language,
+              'implementation': 'LanguageSpecification',
+              'implementationName': 'Language',
+              'negate': false,
+              'required': true,
+              'fields': [{'name': 'value', 'value': lang.language_id | int}],
+            }
+          ],
+          'includeCustomFormatWhenRenaming': false,
+        }
+      }}
+    status_code: [200, 201]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  loop: "{{ arr_lang_wanted | default([]) }}"
+  loop_control:
+    loop_var: lang
+    label: "{{ arr.key }}:{{ lang.cf_name }}"
+  when:
+    - arr_lang_cfs.json is defined
+    - lang.cf_name not in (arr_lang_cfs.json | map(attribute='name') | list)
+  register: arr_lang_cf_add
+  failed_when: false
+
+- name: "{{ arr.key }}: record custom formats that could not be created"
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (arr_lang_cf_add.results | default([])
+           | rejectattr('skipped', 'defined')
+           | selectattr('status', 'defined')
+           | rejectattr('status', 'in', [200, 201])
+           | map(attribute='lang.cf_name')
+           | map('regex_replace', '^(.*)$', arr.key ~ ': custom format \1 not created')
+           | list)
+      }}
+  when: arr_lang_cf_add.results is defined
+
+- name: "{{ arr.key }}: re-read the custom formats"
+  # Needed even when nothing was created: the scores below are keyed by
+  # custom format id, and the ids of anything just POSTed are only knowable
+  # from a fresh read.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/customformat"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_lang_cfs_now
+  failed_when: false
+  changed_when: false
+  when: arr_lang_wanted | default([]) | length > 0
+
+- name: "{{ arr.key }}: pair each custom format id with its score"
+  ansible.builtin.set_fact:
+    arr_lang_targets: >-
+      {%- set by_name = dict(
+            (arr_lang_cfs_now.json | map(attribute='name'))
+            | zip(arr_lang_cfs_now.json | map(attribute='id'))) -%}
+      {%- set out = [] -%}
+      {%- for lang in arr_lang_wanted -%}
+        {%- if lang.cf_name in by_name -%}
+          {%- set _ = out.append({
+                'format': by_name[lang.cf_name] | int,
+                'name': lang.cf_name,
+                'score': lang.score | int,
+              }) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+  when:
+    - arr_lang_cfs_now.json is defined
+    - arr_lang_wanted | default([]) | length > 0
+
+- name: "{{ arr.key }}: read the quality profiles"
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/qualityprofile"
+    method: GET
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    return_content: true
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  register: arr_lang_profiles
+  failed_when: false
+  changed_when: false
+  when: arr_lang_targets | default([]) | length > 0
+
+- name: "{{ arr.key }}: score the languages on the quality profiles"
+  # PUT the whole profile back, as the Servarr API replaces the resource and
+  # drops any field left out - the same trap as the download client PUT in
+  # arr_instance.yml. `p` is the profile exactly as it was read, with only the
+  # language-related fields overridden.
+  #
+  # formatItems keeps every custom format the profile already lists, with only
+  # ours re-scored, so a Recyclarr-managed score is left alone.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/{{ arr.value.api_version }}/qualityprofile/{{ p.id }}"
+    method: PUT
+    headers:
+      Host: "{{ arr.key }}.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets[arr.key] }}"
+    body_format: json
+    body: "{{ arr_lang_profile_body }}"
+    status_code: [200, 202]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    arr_lang_ids: "{{ arr_lang_targets | map(attribute='format') | list }}"
+
+    # 0 lets a release in neither language through as a last resort; the
+    # lowest preferred score locks it out. See media_language_require_one.
+    arr_lang_min: >-
+      {{
+        (arr_lang_targets | map(attribute='score') | min)
+        if (media_acquisition.languages.require_one | bool)
+        else 0
+      }}
+
+    # Radarr's profile language is a hard filter, so it has to be "Any" or it
+    # vetoes releases before a score is ever considered. Sonarr 4 has no such
+    # field, the key is simply absent there, and the combine below is skipped.
+    arr_lang_profile_body: >-
+      {{
+        p
+        | combine({
+            'formatItems': (p.formatItems | default([])
+                            | rejectattr('format', 'in', arr_lang_ids)
+                            | list) + arr_lang_targets,
+            'minFormatScore': arr_lang_min | int,
+            'cutoffFormatScore': media_acquisition.languages.cutoff_score | int,
+          })
+        | combine({'upgradeAllowed': true}
+                  if media_acquisition.languages.enable_upgrades | bool else {})
+        | combine({'language': {'id': arr_lang_name_to_id['Any'] | int,
+                                'name': 'Any'}}
+                  if ('language' in p and 'Any' in arr_lang_name_to_id) else {})
+      }}
+
+    # What the profile would have to look like already for this to be a no-op.
+    # Pairs are sorted so the comparison does not depend on the order the API
+    # happens to return formatItems in.
+    arr_lang_current_pairs: >-
+      {{
+        (p.formatItems | default([]) | selectattr('format', 'in', arr_lang_ids)
+         | map(attribute='format') | map('int') | list)
+        | zip(p.formatItems | default([]) | selectattr('format', 'in', arr_lang_ids)
+              | map(attribute='score') | map('int') | list)
+        | map('list') | list | sort
+      }}
+    arr_lang_wanted_pairs: >-
+      {{
+        (arr_lang_targets | map(attribute='format') | map('int') | list)
+        | zip(arr_lang_targets | map(attribute='score') | map('int') | list)
+        | map('list') | list | sort
+      }}
+  loop: "{{ arr_lang_profiles.json | default([]) }}"
+  loop_control:
+    loop_var: p
+    label: "{{ arr.key }}:{{ p.name }}"
+  when:
+    - arr_lang_profiles.json is defined
+    # all_profiles false narrows this to the one profile named in
+    # media_acquisition.profiles, for anyone who wants the policy on a single
+    # profile. Default is every profile - see the comment on the key.
+    - >-
+      media_acquisition.languages.all_profiles | bool
+      or p.name == (media_acquisition.profiles[arr.key].quality_profile | default(''))
+    # Idempotency. Any one of these differing is enough to warrant the PUT;
+    # all matching means the profile already carries the policy.
+    - >-
+      arr_lang_current_pairs != arr_lang_wanted_pairs
+      or (p.minFormatScore | default(0) | int) != (arr_lang_min | int)
+      or (p.cutoffFormatScore | default(0) | int)
+         != (media_acquisition.languages.cutoff_score | int)
+      or (media_acquisition.languages.enable_upgrades | bool
+          and not (p.upgradeAllowed | default(false) | bool))
+      or ('language' in p and 'Any' in arr_lang_name_to_id
+          and (p.language.id | default(0) | int)
+              != (arr_lang_name_to_id['Any'] | int))
+  register: arr_lang_profile_put
+  failed_when: false
+
+- name: "{{ arr.key }}: record quality profiles that could not be scored"
+  ansible.builtin.set_fact:
+    media_wiring_failures: >-
+      {{
+        media_wiring_failures
+        + (arr_lang_profile_put.results | default([])
+           | rejectattr('skipped', 'defined')
+           | selectattr('status', 'defined')
+           | rejectattr('status', 'in', [200, 202])
+           | map(attribute='p.name')
+           | map('regex_replace', '^(.*)$',
+                 arr.key ~ ': language scores not applied to profile \1')
+           | list)
+      }}
+  when: arr_lang_profile_put.results is defined
+
+- name: "{{ arr.key }}: forget this application's language facts"
+  # These are set_fact, so they persist across loop iterations. Left in place
+  # they would leak Sonarr's custom format ids into Radarr's run, where the
+  # same numbers mean different formats.
+  ansible.builtin.set_fact:
+    arr_lang_name_to_id: {}
+    arr_lang_wanted: []
+    arr_lang_targets: []
+    arr_lang_unknown: []
