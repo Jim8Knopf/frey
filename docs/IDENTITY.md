@@ -275,10 +275,32 @@ Authelia does the translating, in three pieces:
 3. a custom scope also named `abs_role`, because Audiobookshelf appends the
    name of the claim it wants to the scope it requests, verbatim
 
-Edit the mapping in `roles/identity/defaults/main.yml` and redeploy. The
-trailing fallback is load-bearing: it guarantees the claim is never empty,
+Edit the mapping in `roles/identity/defaults/main.yml` and redeploy. So in
+practice `frey_admins` is the admin role and **`media` is the default
+media-access role** — which, for an Audiobookshelf `user`, concretely means:
+
+| | `media` → `user` | `frey_admins` → `admin` |
+| --- | --- | --- |
+| Read and listen, all libraries | yes | yes |
+| Download | yes | yes |
+| Explicit content | no | yes |
+| Edit metadata, upload, create e-reader | no | yes |
+| Delete | no | no (root only) |
+
+The trailing fallback is load-bearing: it guarantees the claim is never empty,
 which is the difference between "this person is a guest" and "this person
-cannot sign in". The role is applied **on each sign-in**, so changing someone's
+cannot sign in". It is a safety net rather than a role anyone receives —
+**who may sign in at all is decided by the client's authorization policy**,
+which is `default_policy: deny` admitting only the groups listed against
+`audiobookshelf` in `identity.yml`. Authelia turns everyone else away before
+Audiobookshelf sees them.
+
+Do not read `guest` as "restricted", though: in 2.37.2
+`getDefaultPermissionsForUserType` gives `guest` and `user` *identical*
+defaults. The difference is the label, not the rights. If you want genuinely
+narrower access — a group that reaches only some libraries — that is
+`authOpenIDAdvancedPermsClaim`, which is deliberately empty today and would be
+a second claim built the same way as `abs_role`. The role is applied **on each sign-in**, so changing someone's
 groups takes effect the next time they log in — and it overwrites a role edited
 by hand in Audiobookshelf, the same way Jellyfin's plugin does. Change the
 group, never the user.

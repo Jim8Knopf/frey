@@ -464,8 +464,18 @@ identity:
 
     # Everyone in none of the above. This is not decoration - it is what makes
     # the feature safe. Audiobookshelf denies a login whose claim carries no
-    # role it recognises, so an unmatched person has to come out as SOMETHING,
-    # and `guest` is the narrowest thing that can still sign in.
+    # role it recognises, so an unmatched person has to come out as SOMETHING.
+    #
+    # It is a safety net rather than a role anybody actually gets: the client's
+    # authorization policy is default deny and admits only the groups listed
+    # against audiobookshelf in identity.yml, so Authelia turns away anyone
+    # unmatched before Audiobookshelf ever sees them. Which is just as well -
+    # do NOT read `guest` as "restricted". In 2.37.2
+    # getDefaultPermissionsForUserType gives `guest` and `user` IDENTICAL
+    # defaults (download, accessAllLibraries and accessAllTags all true; update,
+    # delete, upload and explicit content all false). The difference is the
+    # label, not the rights. Who may get in is decided by that authorization
+    # policy, never by this fallback.
     #
     # One edge: if a directory account's email matches Audiobookshelf's local
     # root user (see match_existing_by above), a non-admin role is refused with
