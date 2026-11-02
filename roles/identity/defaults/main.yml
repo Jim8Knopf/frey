@@ -343,6 +343,131 @@ identity:
       # time that person signs in. Change the mapping, never the user.
       admin_group: frey_admins
 
+  # ----------------------------------------------------------------------------
+  # AUDIOBOOKSHELF SSO
+  #
+  # Unlike Jellyfin, this one is automatic.
+  #
+  # This repository used to say Audiobookshelf had "no API and no environment
+  # variable" for OIDC, and that it therefore had to be clicked through by hand
+  # after every rebuild. That stopped being true: it has an admin endpoint,
+  # PATCH /api/auth-settings, and it is the good kind - it compares each key
+  # against what is stored and answers {"updated": false} when nothing changed,
+  # so a second run reports no change without Ansible having to guess.
+  #
+  # What it needs that nothing else here does is the password of
+  # Audiobookshelf's OWN root account: that endpoint authenticates as that
+  # account, and there is no deploy-time token to use instead. The account is
+  # created by hand in a browser on first run, so Ansible cannot know its
+  # password unless it is told. Put it in the vault:
+  #
+  #   ansible-vault edit inventory/group_vars/all/secrets.yml
+  #
+  #   vault_identity_secrets:
+  #     audiobookshelf_admin_password: <the root account's password>
+  #
+  # Without it nothing fails: the values are printed for pasting into
+  # Settings -> Authentication, which is what used to happen on every run.
+  audiobookshelf:
+    configure: true
+
+    # Audiobookshelf's root account - its own local account, not an LLDAP user.
+    # media_admin is what this van's install was built with, the same name
+    # Jellyfin's administrator uses, and not the `frey` that role defaults
+    # elsewhere still suggest.
+    admin_user: media_admin
+
+    # Where the password is looked for in the persisted identity secrets, and
+    # therefore the key to set in vault_identity_secrets.
+    admin_password_key: audiobookshelf_admin_password
+
+    # Shown on the login page, beside the local username and password form.
+    button_text: Sign in with Frey
+
+    # Skip the local form and go straight to Authelia: OFF, deliberately.
+    # Audiobookshelf's own login is the way back in when SSO is not working,
+    # and in a van "not working" includes "Authelia is restarting". The bypass
+    # exists - ?autoLaunch=0 - but it is not a thing to have to remember while
+    # parked off-grid.
+    auto_launch: false
+
+    # Create an Audiobookshelf account on first SSO sign-in. Effectively
+    # required: with this off, the first sign-in by someone who has no
+    # Audiobookshelf account yet fails, and there is nothing they can do about
+    # it from the browser.
+    auto_register: true
+
+    # Attach an SSO login to an existing account with the same email rather
+    # than making a second one. Emails are @frey identifiers from
+    # identity_users, so this matches only accounts deliberately given the same
+    # address. `username` or null are the other choices.
+    match_existing_by: email
+
+    # DELIBERATELY EMPTY. Naming the groups claim here locks everyone out.
+    #
+    # Audiobookshelf does not map group names onto its roles. It looks for the
+    # literal strings `admin`, `user` and `guest` in the claim, and when it
+    # finds none of them it raises `No valid group found in userinfo` and
+    # DENIES the login. Frey's groups are frey_admins, media, notes and guests
+    # - `guests` is not `guest` - so every sign-in would be refused, including
+    # those of the admins it looks like it would be promoting.
+    #
+    # Empty is also what keeps the request to Authelia down to openid, profile
+    # and email: Audiobookshelf appends the claim name to the scope verbatim.
+    # Roles are set per person on Audiobookshelf's own Users screen instead.
+    #
+    # See validateGroupClaim and setUserGroup in
+    # server/auth/OidcAuthStrategy.js inside the container.
+    group_claim: ""
+    advanced_perms_claim: ""
+
+    # The mobile app's custom scheme, which must match the URI registered for
+    # the client in oidc_catalog above. Audiobookshelf already defaults to this
+    # value; it is set explicitly so a rebuild cannot inherit something else.
+    mobile_redirect_uris:
+      - "audiobookshelf://oauth"
+
+    # RS256: what Authelia signs with, and Audiobookshelf's own default. One of
+    # the eight values isOpenIDAuthSettingsValid demands, so it is spelled out
+    # rather than left to a default - see the note in tasks/audiobookshelf.yml
+    # about what Audiobookshelf does when one of the eight is missing.
+    token_signing_algorithm: RS256
+
+    # Authelia advertises no end_session_endpoint, so there is no logout URL to
+    # hand over. Empty rather than guessed: a wrong one sends people to a 404
+    # at the exact moment they are trying to sign out.
+    logout_url: ""
+
+    # EMPTY STRING, AND IT MUST ACTUALLY BE SENT AS ONE. Audiobookshelf is
+    # served at the root of its own hostname, so there is no path prefix.
+    #
+    # The reason this is here rather than just left out: Audiobookshelf builds
+    # the callback by string interpolation,
+    #
+    #   `${authOpenIDSubfolderForRedirectURLs}/auth/openid/callback`
+    #
+    # over a value that defaults to undefined and is stored verbatim. Never
+    # setting it therefore does not yield /auth/openid/callback - it yields
+    # the literal /undefined/auth/openid/callback, which Authelia rejects as
+    # an unregistered redirect_uri, in ITS log, while Audiobookshelf looks
+    # perfectly configured. Its own web UI always submits a value, so this is
+    # a trap only for configuration written over the API.
+    #
+    # Its handler special-cases this one key so that an empty string stays an
+    # empty string instead of being normalised to null - null would interpolate
+    # just as badly as undefined. See getStrategy in
+    # server/auth/OidcAuthStrategy.js.
+    redirect_url_subfolder: ""
+
+    # Audiobookshelf answers through Traefik, and identity runs BEFORE
+    # media_library on a first deploy - so on a fresh Pi it is not there yet.
+    # These are deliberately short: wait briefly, then leave the manual values
+    # printed rather than holding the whole run up. The next deploy, or
+    # `--tags identity` once media is up, configures it.
+    api_timeout: 10
+    api_retries: 3
+    api_delay: 5
+
   # Generated once on the Pi, then reused. Nothing here is ever printed, and
   # none of it is in the vault: a secret that only has to be the same tomorrow
   # as it was today does not need to be in version control.

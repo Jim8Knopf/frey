@@ -53,6 +53,7 @@ dropped **entirely**, so the service 404s with a perfectly healthy container.
 | `identity`, `sso` | Everything |
 | `identity_config` | Secrets, config, bootstrap — no image pulls |
 | `identity_jellyfin` | Just reprint the Jellyfin plugin values |
+| `identity_audiobookshelf` | Just push Audiobookshelf's OIDC settings over its API |
 
 ## How It Is Kept Declarative
 
@@ -131,6 +132,39 @@ missing one fails with an explanation rather than rendering a broken client.
 
 Clients for Immich, Grafana and Mealie are already in the catalog but not
 enabled. The day those modules land, SSO is waiting for them.
+
+## Audiobookshelf
+
+Configured, not reported — the opposite choice to Jellyfin below, because
+Audiobookshelf has a real admin endpoint for it: `PATCH /api/auth-settings`.
+`tasks/audiobookshelf.yml` drives it, and the endpoint reports whether anything
+actually changed, so the task's `changed_when` is an answer rather than an
+assumption.
+
+It needs one thing Ansible cannot derive — the password of Audiobookshelf's own
+root account (`media_admin` here, not `frey`), since that is what the endpoint
+authenticates as:
+
+```yaml
+vault_identity_secrets:
+  audiobookshelf_admin_password: <the root account's password>
+```
+
+Without it the task does nothing and the values are printed to paste in by
+hand, which is what this replaced.
+
+Four silent failures are guarded, each with a one-line reason in
+`defaults/main.yml`: the group claim denies **everyone** if it is set (it wants
+the literal `admin`/`user`/`guest`, not Frey's group names), the redirect
+subfolder must be sent as an empty string or the callback becomes
+`/undefined/auth/openid/callback`, `openid` is silently disabled again unless
+all eight required values are present, and a value of the wrong type is skipped
+with a `200` still returned. The full table is in
+[docs/IDENTITY.md](../../docs/IDENTITY.md).
+
+On a **first** deploy this finds nothing: identity runs before `media_library`,
+so Audiobookshelf is not up yet. It says so and leaves the manual values
+printed; the next deploy, or `--tags identity`, configures it.
 
 ## Jellyfin
 

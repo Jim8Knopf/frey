@@ -206,19 +206,68 @@ The result, verified:
 can delete media and has no authentication of its own — deliberately does not
 have it.
 
+## Audiobookshelf SSO — automatic, with four traps
+
+This used to be a manual step, documented here as "it has no API and no
+environment variable". That was wrong, or had stopped being true: Audiobookshelf
+has an admin endpoint for exactly this,
+
+```
+PATCH /api/auth-settings
+```
+
+and `roles/identity/tasks/audiobookshelf.yml` drives it on every deploy. The
+endpoint diffs each key it is sent and answers `{"updated": false}` when nothing
+moved, so the task's `changed_when` reads a real answer and a second run reports
+`0 changed` honestly.
+
+**One thing is needed from you, once.** The endpoint authenticates as
+Audiobookshelf's *own* root account — created by hand in a browser on first run,
+so Ansible cannot know its password. Put it in the vault:
+
+```bash
+ansible-vault edit inventory/group_vars/all/secrets.yml
+```
+
+```yaml
+vault_identity_secrets:
+  audiobookshelf_admin_password: <the root account's password>
+```
+
+On this van that account is **`media_admin`**, not `frey` — the same name
+Jellyfin's administrator uses. Without the password nothing fails: the deploy
+prints the values to paste into Settings → Authentication instead, exactly as
+before.
+
+Four things fail silently here, and all four are guarded in the role:
+
+| Trap | What you would see | Guard |
+| --- | --- | --- |
+| **The group claim denies everyone.** Audiobookshelf does not map group names onto roles — it looks for the literal strings `admin`, `user`, `guest` and raises `No valid group found in userinfo` when it finds none. Frey's groups are `frey_admins`, `media`, `notes`, `guests`; `guests` is not `guest`. | Every sign-in refused, including the admins it looks like it is promoting. | `group_claim` is empty on purpose. Roles are set per person on Audiobookshelf's own Users screen. |
+| **The redirect subfolder must be sent, empty.** The callback is built by interpolating `${authOpenIDSubfolderForRedirectURLs}` — a value that defaults to `undefined` and is stored verbatim. | A callback at `/undefined/auth/openid/callback`, which Authelia rejects as unregistered while Audiobookshelf looks perfectly configured. Its own web UI always submits a value, so this is a trap only for API-written config. | `redirect_url_subfolder: ""` is sent explicitly. |
+| **It disables the method it just accepted.** Eight values must all be present — issuer, authorization, token, userinfo and jwks URLs, client id, client secret, signing algorithm — or `openid` is spliced back out of the active methods when settings are constructed. | The login page comes back with only the local form. No error at any level anyone reads. | The role reads `/status` back and fails if `openid` is not live. |
+| **A value of the wrong type is skipped, not rejected.** The handler warns to its own log and still answers `200`. | A quoted `"false"` where a boolean belonged leaves the old value in place. | The role reads the settings back and compares them field by field. |
+
+**Sign in from the HTTPS name only** — `https://audiobookshelf.hub.frey`.
+Audiobookshelf builds its callback from the scheme the browser arrived on (it
+honours Traefik's `X-Forwarded-Proto`), so the plain-HTTP name that televisions
+use would ask Authelia to redirect back to `http://`, which is not a registered
+URI and is refused. The plain-HTTP router stays for the TVs and their local
+accounts; SSO is for browsers.
+
+Two notes on `jwks.json`: Authelia serves it at `/jwks.json`, **not** under
+`/api/oidc/`, and it advertises no `end_session_endpoint` at all, which is why
+the logout URL is deliberately empty. Both come from its live discovery
+document rather than being assumed.
+
 ## What Is Still Manual, And Why
 
-Three things. Everything else is automatic.
+Two things. Everything else is automatic.
 
 **1. The root certificate** — above. Unavoidable; trust has to be established
 out of band.
 
-**2. Audiobookshelf OIDC.** It has no API and no environment variable for OIDC
-settings; the web UI is the only way. The deploy prints the exact values. Go to
-Settings → Authentication, enable OpenID Connect, paste them in, and set
-*Match existing users by* → username.
-
-**3. Jellyfin SSO.** Jellyfin has no built-in OIDC, so it needs a community
+**2. Jellyfin SSO.** Jellyfin has no built-in OIDC, so it needs a community
 plugin, and the plugin is **not templated deliberately**. The original
 (`9p4/jellyfin-plugin-sso`) was archived in May 2026; the maintained fork is
 tested against Jellyfin 12.0–12.2 and this runs **12.3**, so it is outside its

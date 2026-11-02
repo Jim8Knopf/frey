@@ -379,6 +379,20 @@
     - identity_services.jellyfin.auth | default('none') == 'oidc'
   tags: [identity, sso, identity_jellyfin]
 
+# Audiobookshelf, unlike Jellyfin, is configured rather than reported: it has
+# an admin API for its auth settings. It answers through Traefik, which means
+# it is only reachable once media_library has run - so on a first deploy this
+# finds nothing, says so, and leaves the values printed. See audiobookshelf.yml.
+- name: Configure Audiobookshelf SSO
+  ansible.builtin.include_tasks:
+    file: audiobookshelf.yml
+    apply:
+      tags: [identity, sso, identity_audiobookshelf]
+  when:
+    - identity.audiobookshelf.configure | bool
+    - identity_services.audiobookshelf.auth | default('none') == 'oidc'
+  tags: [identity, sso, identity_audiobookshelf]
+
 - name: Report what you still have to do by hand
   ansible.builtin.include_tasks:
     file: report.yml
