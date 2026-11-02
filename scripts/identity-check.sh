@@ -8,16 +8,19 @@
 #
 # It asserts the four things that matter and are easy to break silently:
 #
-#   1. Protected services bounce an anonymous request to the login page.
-#      A 200 here means forward auth is OFF for that service - most likely a
-#      Traefik router was dropped because it named a middleware that did not
-#      exist, which 404s or serves openly rather than erroring anywhere you
-#      would notice.
+#   1. Services listed as `forward_auth` bounce an anonymous request to the
+#      login page. A 200 here means forward auth is OFF for that service -
+#      most likely a Traefik router was dropped because it named a middleware
+#      that did not exist, which 404s or serves openly rather than erroring
+#      anywhere you would notice.
 #
-#   2. Unprotected services still answer plain HTTP. This is deliberate, not an
+#   2. Everything else still answers plain HTTP. This is deliberate, not an
 #      oversight: a television cannot install a private root certificate and
 #      gives you no way to click through, so forcing HTTPS would take Jellyfin
 #      away from the TV.
+#
+#   Which service is which is read out of inventory/group_vars/all/identity.yml
+#   at run time, never copied into this file - see the note above PROTECTED.
 #
 #   3. Legacy *.frey names redirect to *.hub.frey rather than 404ing.
 #
@@ -31,6 +34,7 @@ PI_ADDR="${PI_ADDR:-10.20.0.1}"
 CA="${CA:-ca/frey-root-ca.crt}"
 DOMAIN="${DOMAIN:-hub.frey}"
 LEGACY="${LEGACY:-frey}"
+MATRIX="${MATRIX:-inventory/group_vars/all/identity.yml}"
 
 fails=0
 pass() { printf '  \033[32mok\033[0m    %-44s %s\n' "$1" "$2"; }
@@ -76,11 +80,16 @@ OPEN=(jellyfin audiobookshelf seerr)
 
 echo "Forward-auth services should send an anonymous request to the login page:"
 for svc in "${PROTECTED[@]}"; do
-    c=$(code https "${svc}.${DOMAIN}" /)
-    if [[ "$c" == "302" ]]; then
-        pass "${svc}.${DOMAIN}" "302 -> login"
-    else
+    read -r c target <<<"$(code_and_target https "${svc}.${DOMAIN}" /)"
+    if [[ "$c" != "302" ]]; then
         fail "${svc}.${DOMAIN}" "expected 302, got ${c:-no answer}"
+    elif [[ "$target" != "https://auth.${DOMAIN}/"* ]]; then
+        # A 302 somewhere else is the app's own login page answering, which
+        # means the request reached the app and forward auth is not in front
+        # of it.
+        fail "${svc}.${DOMAIN}" "302, but to ${target:-nowhere} - not the login page"
+    else
+        pass "${svc}.${DOMAIN}" "302 -> login"
     fi
 done
 
@@ -101,8 +110,12 @@ echo
 echo "Unprotected services should still answer plain HTTP (the TV path):"
 for svc in "${OPEN[@]}"; do
     c=$(code http "${svc}.${DOMAIN}" /)
-    # 2xx or an app's own redirect are both fine; a bounce to the auth host is
-    # not, and neither is nothing at all.
+    # 2xx or the app's own redirect are both fine - including an `oidc` app
+    # bouncing to Authelia to start its own login flow, which is the whole
+    # point of that mode, and a 301 from Dashy or Grafana, whose roles upgrade
+    # to HTTPS unconditionally because nothing reads them on a television.
+    # Only silence is a failure: no answer on port 80 means the TV has no
+    # way in.
     if [[ "$c" =~ ^(200|204|30[0-9])$ ]]; then
         pass "${svc}.${DOMAIN}" "$c"
     else

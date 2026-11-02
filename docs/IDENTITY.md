@@ -410,6 +410,13 @@ A `200` where a `302` is expected is the one to take seriously — it usually
 means Traefik dropped a router because it named a middleware that did not
 exist, which fails open rather than anywhere you would notice.
 
+Which service belongs in which group is read out of `identity_services` in
+`inventory/group_vars/all/identity.yml` when the script runs, so changing a
+service's `auth:` mode is the whole change — there is no list in the script to
+keep in step. Do not add one back: the copy that used to live there went stale
+when `cleanuparr` moved to `oidc`, and a stale copy of a security expectation
+invites someone to relax the expectation in order to make the check pass.
+
 By hand:
 
 ```bash
