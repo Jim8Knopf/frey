@@ -188,6 +188,15 @@ identity_services:
     hosts: [navidrome]
 
   audiobookshelf:
+    # The only `oidc` service configured end to end by the deploy: it has an
+    # admin API for its auth settings, so both sides are automatic. It needs
+    # its own root password in vault_identity_secrets to do that - see
+    # roles/identity/defaults/main.yml - and prints the values to paste in by
+    # hand when it has not been given one.
+    #
+    # Sign in at the HTTPS name. The plain-HTTP router stays for televisions,
+    # which use local accounts; a sign-in started over HTTP asks Authelia to
+    # redirect back to http:// and is refused.
     auth: oidc
     groups: [frey_admins, media]
     hosts: [audiobookshelf, books]

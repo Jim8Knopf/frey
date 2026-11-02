@@ -1,0 +1,402 @@
+---
+# ==============================================================================
+# AUDIOBOOKSHELF SSO
+#
+# The opposite choice to jellyfin.yml next door, for a concrete reason:
+# Audiobookshelf has a real admin endpoint for exactly this, so there is a
+# documented schema to write rather than a guessed one to brick.
+#
+#   PATCH /api/auth-settings
+#
+# It is also idempotent at the far end, which is unusual and worth using. The
+# handler walks the keys it already has, compares each one, and replies
+# {"updated": false} when none of them moved - so `changed_when` reads an
+# answer rather than a guess, and the second run of a deploy reports 0 changed
+# honestly.
+#
+# TWO THINGS THAT FAIL QUIETLY, BOTH GUARDED BELOW
+#
+# 1. Audiobookshelf will DISABLE the method it just accepted. Eight values
+#    have to be present for isOpenIDAuthSettingsValid - issuer, authorization,
+#    token, userinfo and jwks URLs, client id, client secret, signing
+#    algorithm - and if any one of them is missing when settings are
+#    constructed, `openid` is silently spliced out of authActiveAuthMethods
+#    and the login page comes back with only the local form. No error, no log
+#    line at the level anyone reads. So the state is read back from /status
+#    afterwards and the run fails if `openid` is not actually live.
+#
+# 2. A value of the wrong TYPE is skipped, not rejected. The handler warns to
+#    Audiobookshelf's own log and moves on - a `"false"` where a `false`
+#    belonged leaves the old value in place while the PATCH still answers 200.
+#    So the settings are read back and compared field by field.
+#
+# WHY THIS RUNS FROM THE PI OVER HTTP WITH A HOST HEADER
+#
+# Same reason media_acquisition wires the *arrs that way: nothing publishes a
+# port, the Pi does not necessarily resolve its own service names, and this
+# service is not behind forward auth - it is `oidc`, so Traefik's plain-HTTP
+# router answers it. An HTTPS call from here would need the Frey CA in the
+# control machine's trust store to mean anything.
+# ==============================================================================
+
+- name: Define the Audiobookshelf API endpoint
+  ansible.builtin.set_fact:
+    identity_abs_api: "http://{{ frey.service_address }}"
+    identity_abs_vhost: "audiobookshelf.{{ frey.service_domain }}"
+    identity_abs_configured: false
+    identity_abs_notes: []
+  tags: [identity, sso, identity_audiobookshelf]
+
+# /status is unauthenticated and reports which auth methods are live, which
+# makes it both the reachability probe and the verification at the end.
+- name: Wait for Audiobookshelf to answer
+  ansible.builtin.uri:
+    url: "{{ identity_abs_api }}/status"
+    method: GET
+    headers:
+      Host: "{{ identity_abs_vhost }}"
+    status_code: 200
+    timeout: "{{ identity.audiobookshelf.api_timeout }}"
+  register: identity_abs_status
+  retries: "{{ identity.audiobookshelf.api_retries }}"
+  delay: "{{ identity.audiobookshelf.api_delay }}"
+  until: identity_abs_status is succeeded
+  # Not a failure. On a first deploy identity runs before media_library, so
+  # Audiobookshelf genuinely does not exist yet.
+  failed_when: false
+  changed_when: false
+  when: not ansible_check_mode
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Note when Audiobookshelf is not up yet
+  ansible.builtin.set_fact:
+    identity_abs_notes: >-
+      {{
+        identity_abs_notes + [
+          'Audiobookshelf did not answer, so its OIDC settings were not written.',
+          '  On a first deploy that is expected: identity runs before media_library.',
+          '  Re-run once media is up: ansible-playbook playbooks/site.yml --tags identity'
+        ]
+      }}
+  when:
+    - not ansible_check_mode
+    - identity_abs_status is defined
+    - identity_abs_status.status | default(0) != 200
+  tags: [identity, sso, identity_audiobookshelf]
+
+# ------------------------------------------------------------------------------
+# CREDENTIALS
+#
+# The endpoint authenticates as Audiobookshelf's own root account, which was
+# created by hand in a browser. Ansible knows that password only if it has been
+# put in vault_identity_secrets - see the note in defaults/main.yml. When it has
+# not been, this does nothing at all and report.yml prints the values to paste
+# in by hand, which is the behaviour this file replaces rather than removes.
+# ------------------------------------------------------------------------------
+# identity_abs_admin_password is the one-shot way in, for trying this before
+# committing anything to the vault:
+#
+#   ansible-playbook playbooks/site.yml --tags identity_audiobookshelf \
+#     -e identity_abs_admin_password='...'
+#
+# It is not the way to keep it. A password on a command line is in the shell
+# history and in the process list of a machine that other people are on the
+# same network as; the vault is in neither.
+- name: Resolve the Audiobookshelf admin password
+  ansible.builtin.set_fact:
+    identity_abs_password: >-
+      {{
+        identity_abs_admin_password
+        | default(identity_secrets[identity.audiobookshelf.admin_password_key]
+                  | default('', true), true)
+      }}
+  no_log: true
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Note when the Audiobookshelf admin password is not known
+  ansible.builtin.set_fact:
+    identity_abs_notes: >-
+      {{
+        identity_abs_notes + [
+          'Audiobookshelf OIDC was left for you to paste in, because there is no',
+          '  ' ~ identity.audiobookshelf.admin_password_key ~ ' in vault_identity_secrets.',
+          '  It can be configured automatically instead - put the password of its own',
+          '  ' ~ identity.audiobookshelf.admin_user ~ ' account in the vault and re-run:',
+          '  ansible-vault edit inventory/group_vars/all/secrets.yml'
+        ]
+      }}
+  when:
+    - not ansible_check_mode
+    - identity_abs_status.status | default(0) == 200
+    - identity_abs_password | length == 0
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Decide whether Audiobookshelf can be configured this run
+  ansible.builtin.set_fact:
+    identity_abs_can_configure: >-
+      {{
+        (not ansible_check_mode)
+        and (identity_abs_status.status | default(0) == 200)
+        and (identity_abs_password | length > 0)
+      }}
+  tags: [identity, sso, identity_audiobookshelf]
+
+# Returns the access token in the response body rather than only as a cookie,
+# which is what makes this usable from Ansible at all.
+- name: Log in to Audiobookshelf
+  ansible.builtin.uri:
+    url: "{{ identity_abs_api }}/login"
+    method: POST
+    headers:
+      Host: "{{ identity_abs_vhost }}"
+    body_format: json
+    body:
+      username: "{{ identity.audiobookshelf.admin_user }}"
+      password: "{{ identity_abs_password }}"
+    status_code: 200
+    timeout: "{{ identity.audiobookshelf.api_timeout }}"
+  register: identity_abs_login
+  failed_when: false
+  changed_when: false
+  no_log: true
+  when: identity_abs_can_configure | bool
+  tags: [identity, sso, identity_audiobookshelf]
+
+# A wrong password is worth saying out loud rather than silently falling back
+# to the manual path: the vault says it knows the password, so it being wrong
+# is a mistake to fix, not a state to tolerate. 401 is the only thing this
+# distinguishes - everything else was already handled above.
+- name: Fail clearly when the Audiobookshelf admin password is wrong
+  ansible.builtin.fail:
+    msg: >-
+      Audiobookshelf refused the '{{ identity.audiobookshelf.admin_user }}'
+      login (HTTP {{ identity_abs_login.status | default('?') }}). The password
+      in vault_identity_secrets.{{ identity.audiobookshelf.admin_password_key }}
+      is wrong, or that is not the right account name - this is Audiobookshelf's
+      own root user, not an LLDAP one, and on this van it is media_admin rather
+      than the frey that other role defaults suggest. Check the account at
+      https://{{ identity_abs_vhost }}, then:
+      ansible-vault edit inventory/group_vars/all/secrets.yml
+  when:
+    - identity_abs_can_configure | bool
+    - identity_abs_login.status | default(0) != 200
+  tags: [identity, sso, identity_audiobookshelf]
+
+# ------------------------------------------------------------------------------
+# THE SETTINGS
+#
+# Endpoint paths are Authelia's, taken from its discovery document rather than
+# assumed. Two of them are not where a reader would guess:
+#   jwks is at /jwks.json, NOT under /api/oidc/
+#   there is no end_session_endpoint at all, hence the empty logout URL
+#
+# The one key NOT sent is authLoginCustomMessage: an omitted key is skipped
+# rather than cleared, and what the login page says is nobody's business but
+# the owner's.
+#
+# authOpenIDSubfolderForRedirectURLs, by contrast, MUST be sent even though it
+# is empty - see the note on redirect_url_subfolder in defaults/main.yml. It is
+# the difference between a callback at /auth/openid/callback and one at
+# /undefined/auth/openid/callback.
+# ------------------------------------------------------------------------------
+- name: Build the Audiobookshelf OIDC settings
+  ansible.builtin.set_fact:
+    identity_abs_settings:
+      # local stays, always. It is the way back in when Authelia is down, and
+      # Audiobookshelf's root account cannot sign in through OIDC without
+      # being demoted anyway.
+      authActiveAuthMethods: [local, openid]
+      authOpenIDIssuerURL: "{{ identity.urls.auth }}"
+      authOpenIDAuthorizationURL: "{{ identity.urls.auth }}/api/oidc/authorization"
+      authOpenIDTokenURL: "{{ identity.urls.auth }}/api/oidc/token"
+      authOpenIDUserInfoURL: "{{ identity.urls.auth }}/api/oidc/userinfo"
+      authOpenIDJwksURL: "{{ identity.urls.auth }}/jwks.json"
+      authOpenIDLogoutURL: "{{ identity.audiobookshelf.logout_url }}"
+      authOpenIDClientID: audiobookshelf
+      authOpenIDClientSecret: "{{ identity_secrets['audiobookshelf_oidc_secret'] }}"
+      authOpenIDTokenSigningAlgorithm: "{{ identity.audiobookshelf.token_signing_algorithm }}"
+      authOpenIDButtonText: "{{ identity.audiobookshelf.button_text }}"
+      authOpenIDAutoLaunch: "{{ identity.audiobookshelf.auto_launch | bool }}"
+      authOpenIDAutoRegister: "{{ identity.audiobookshelf.auto_register | bool }}"
+      authOpenIDMatchExistingBy: "{{ identity.audiobookshelf.match_existing_by }}"
+      authOpenIDMobileRedirectURIs: "{{ identity.audiobookshelf.mobile_redirect_uris }}"
+      # Derived from map_groups rather than configured separately, so that
+      # "Audiobookshelf reads a groups claim" and "Authelia substitutes a
+      # translated one" can never be true one at a time. Switch it off and
+      # this empties, which is what makes Audiobookshelf stop asking for the
+      # claim and go back to roles set on its own Users screen.
+      authOpenIDGroupClaim: >-
+        {{ identity.audiobookshelf.role_claim
+           if identity.audiobookshelf.map_groups | bool else '' }}
+      authOpenIDAdvancedPermsClaim: "{{ identity.audiobookshelf.advanced_perms_claim }}"
+      authOpenIDSubfolderForRedirectURLs: "{{ identity.audiobookshelf.redirect_url_subfolder }}"
+  no_log: true
+  when: identity_abs_can_configure | bool
+  tags: [identity, sso, identity_audiobookshelf]
+
+# The registered redirect URIs are Authelia's business and are already in
+# oidc_catalog, but a mismatch here is the single most common way this breaks,
+# and it breaks in Authelia's log rather than Audiobookshelf's. Asserting it
+# costs nothing and names the file to edit.
+# Built from the subfolder setting rather than hardcoded, because that setting
+# is exactly what decides the path Audiobookshelf asks to be redirected back
+# to. Hardcoding the unprefixed form would have let a change to the subfolder
+# sail past the one check meant to catch it.
+- name: Verify the callback URI Audiobookshelf will use is registered
+  ansible.builtin.assert:
+    that:
+      - "('https://' ~ identity_abs_vhost
+          ~ identity.audiobookshelf.redirect_url_subfolder
+          ~ '/auth/openid/callback')
+         in identity.oidc_catalog.audiobookshelf.redirect_uris"
+    fail_msg: >-
+      https://{{ identity_abs_vhost }}{{
+        identity.audiobookshelf.redirect_url_subfolder
+      }}/auth/openid/callback is not in
+      identity.oidc_catalog.audiobookshelf.redirect_uris, so Authelia will
+      reject the sign-in with invalid_request and "redirect_uri does not
+      match" - in ITS log, not Audiobookshelf's. Add it in
+      roles/identity/defaults/main.yml.
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Configure Audiobookshelf OIDC
+  ansible.builtin.uri:
+    url: "{{ identity_abs_api }}/api/auth-settings"
+    method: PATCH
+    headers:
+      Host: "{{ identity_abs_vhost }}"
+      Authorization: "Bearer {{ identity_abs_login.json.user.accessToken }}"
+    body_format: json
+    body: "{{ identity_abs_settings }}"
+    status_code: 200
+    timeout: "{{ identity.audiobookshelf.api_timeout }}"
+  register: identity_abs_patch
+  # The far end tells us whether anything actually moved, so this is a real
+  # answer rather than the usual API-task assumption that it did.
+  changed_when: identity_abs_patch.json.updated | default(false) | bool
+  no_log: true
+  when: identity_abs_can_configure | bool
+  tags: [identity, sso, identity_audiobookshelf]
+
+# ------------------------------------------------------------------------------
+# VERIFY - see trap 1 at the top of this file
+# ------------------------------------------------------------------------------
+- name: Read back which auth methods Audiobookshelf has live
+  ansible.builtin.uri:
+    url: "{{ identity_abs_api }}/status"
+    method: GET
+    headers:
+      Host: "{{ identity_abs_vhost }}"
+    status_code: 200
+    timeout: "{{ identity.audiobookshelf.api_timeout }}"
+  register: identity_abs_verify
+  changed_when: false
+  when: identity_abs_can_configure | bool
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Fail when Audiobookshelf accepted the settings but did not enable OIDC
+  ansible.builtin.fail:
+    msg: >-
+      Audiobookshelf answered 200 to the settings update but /status still
+      reports {{ identity_abs_verify.json.authMethods | default([]) | join(', ') }}.
+      That is the silent failure: it strips `openid` back out when any of the
+      eight values isOpenIDAuthSettingsValid needs is empty - issuer,
+      authorization, token, userinfo or jwks URL, client id, client secret,
+      signing algorithm. The client secret is the one that goes missing in
+      practice, so check that audiobookshelf_oidc_secret is set in
+      {{ identity.configure.key_file }} on the Pi, then read:
+      docker logs audiobookshelf --tail 50
+  when:
+    - identity_abs_can_configure | bool
+    - "'openid' not in (identity_abs_verify.json.authMethods | default([]))"
+  tags: [identity, sso, identity_audiobookshelf]
+
+# ------------------------------------------------------------------------------
+# VERIFY - see trap 2 at the top of this file
+#
+# Compared against what was sent, not against a second copy of the intent, so
+# this cannot drift from the PATCH above.
+#
+# Two keys are dropped from the loop rather than skipped with `when`, so that
+# neither can appear in a loop label at any verbosity: the client secret, which
+# Audiobookshelf does return and which proves nothing here - a wrong secret
+# surfaces as a failed sign-in in Authelia's log, not as a wrong value in this
+# response - and the active method list, which /status has already confirmed
+# above and which Audiobookshelf reorders.
+# ------------------------------------------------------------------------------
+- name: Read back the stored Audiobookshelf auth settings
+  ansible.builtin.uri:
+    url: "{{ identity_abs_api }}/api/auth-settings"
+    method: GET
+    headers:
+      Host: "{{ identity_abs_vhost }}"
+      Authorization: "Bearer {{ identity_abs_login.json.user.accessToken }}"
+    status_code: 200
+    timeout: "{{ identity.audiobookshelf.api_timeout }}"
+  register: identity_abs_stored
+  changed_when: false
+  no_log: true
+  when: identity_abs_can_configure | bool
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Verify every setting Audiobookshelf was sent actually took
+  ansible.builtin.assert:
+    that:
+      # An empty string is stored as null, which is the handler's own
+      # normalisation and not a rejected value.
+      # An empty string comes back as either null or an empty string,
+      # depending on the key: the handler normalises '' to null for every
+      # setting EXCEPT the redirect subfolder, which it deliberately keeps as
+      # ''. Both are the value that was asked for, so both pass.
+      - >-
+        (identity_abs_stored.json[item.key] | default(None)) == item.value
+        or (
+          (item.value | string | length == 0)
+          and not (identity_abs_stored.json[item.key] | default(None))
+        )
+    fail_msg: >-
+      Audiobookshelf stored {{ item.key }} as
+      {{ identity_abs_stored.json[item.key] | default('<missing>') }} rather
+      than what it was sent. It skips a value of the wrong TYPE with a warning
+      to its own log and still answers 200 - a quoted "false" where a boolean
+      belonged is the usual cause. Read: docker logs audiobookshelf --tail 50
+  loop: >-
+    {{
+      identity_abs_settings | default({}) | dict2items
+      | rejectattr('key', 'in', ['authOpenIDClientSecret', 'authActiveAuthMethods'])
+      | list
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+  when: identity_abs_can_configure | bool
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Record that Audiobookshelf OIDC is configured
+  ansible.builtin.set_fact:
+    identity_abs_configured: true
+  when:
+    - identity_abs_can_configure | bool
+    - "'openid' in (identity_abs_verify.json.authMethods | default([]))"
+  tags: [identity, sso, identity_audiobookshelf]
+
+- name: Report the Audiobookshelf SSO result
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        [
+          'AUDIOBOOKSHELF SSO - configured automatically over its own API.',
+          '  Sign-in button: ' ~ identity.audiobookshelf.button_text,
+          '  SIGN IN FROM https://' ~ identity_abs_vhost ~ ' ONLY. Audiobookshelf',
+          '  builds its callback from the scheme the browser arrived on, so the',
+          '  plain-HTTP name that TVs use would ask Authelia to redirect back to',
+          '  http://, which is not registered and is refused.',
+          '  Roles are NOT set from LLDAP groups - Audiobookshelf only',
+          '  understands admin/user/guest, so set each person on its own',
+          '  Users screen. New people are auto-registered as standard users.',
+          '  The local login stays available beside the SSO button.',
+        ]
+        if identity_abs_configured
+        else (['AUDIOBOOKSHELF SSO - not configured this run:'] + identity_abs_notes)
+      }}
+  when: not ansible_check_mode
+  tags: [identity, sso, identity_audiobookshelf]

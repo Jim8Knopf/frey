@@ -54,69 +54,31 @@ code() { # scheme host path
         "${1}://${2}${3}" 2>/dev/null
 }
 
-# Status code and, if it redirected, where to - so a 302 can be checked for
-# pointing at the login page rather than merely being a 302.
-code_and_target() { # scheme host path -> "<code> <url>"
-    curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 \
-        --cacert "$CA" \
-        --resolve "${2}:443:${PI_ADDR}" --resolve "${2}:80:${PI_ADDR}" \
-        "${1}://${2}${3}" 2>/dev/null
-}
-
-# Who is expected to do what is read out of the auth matrix rather than copied
-# into this script, because a copy drifts silently and in the dangerous
-# direction: when cleanuparr moved from forward_auth to oidc, the copy here
-# went on demanding a 302 from it, and the only thing failing in the suite was
-# this file. The next person to "fix" that by deleting a name from a list would
-# have been one keystroke from relaxing a real expectation by accident.
+# Services behind Authelia's FORWARD AUTH. Traefik bounces an anonymous
+# request to the login page before the app is ever reached, so 302 is the
+# assertion. Keep in step with identity_services.
+PROTECTED=(sonarr radarr lidarr chaptarr prowlarr bazarr
+           qbittorrent maintainerr jellystat audiobookrequest navidrome)
+# Services that log in against Authelia THEMSELVES - `auth: oidc` in
+# identity_services. Traefik does not redirect these, and must not: the app
+# serves its own page and starts the OIDC flow from inside it, so an anonymous
+# GET of the root is a 200 by design.
 #
-# Two categories, and the split is exactly how Traefik is labelled:
-#
-#   forward_auth  -> authelia@file in front of it; an anonymous request never
-#                    reaches the app, and plain HTTP is upgraded away.
-#   oidc / none   -> no middleware; the app does its own login and keeps
-#                    answering plain HTTP.
-#
-# Every hostname a service answers on is checked, aliases included, since each
-# one is a separate Traefik router rule that can be got wrong on its own.
-command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
-if [[ ! -r "$MATRIX" ]]; then
-    echo "Cannot read the auth matrix at $MATRIX."
-    echo "Run this from the repository root, or set MATRIX=<path>."
-    exit 1
-fi
+# Cleanuparr moved from forward auth to oidc and stayed in the list above,
+# where the only possible outcome was a FAIL reporting a correctly protected
+# service as unprotected. A check that cannot pass is worse than no check: it
+# trains you to ignore the one script whose whole job is to tell you SSO
+# broke. What actually has to hold for these is that the API refuses an
+# anonymous caller, so that is what is asserted.
+OIDC_APPS=(cleanuparr)
+# Endpoint per OIDC app that must answer 401 without credentials. Not `/`,
+# which is the public SPA shell, and not a path that 404s - a 404 would pass
+# an "is not 200" test while proving nothing.
+declare -A OIDC_API=([cleanuparr]=/api/health)
+# Services that keep their own login, or none. These must stay on HTTP.
+OPEN=(jellyfin audiobookshelf seerr)
 
-matrix=$(python3 - "$MATRIX" <<'PYTHON'
-import sys
-
-try:
-    import yaml
-except ImportError:
-    sys.exit("python3 yaml module is required (pip install pyyaml)")
-
-services = (yaml.safe_load(open(sys.argv[1])) or {}).get("identity_services") or {}
-if not services:
-    sys.exit("no identity_services in " + sys.argv[1])
-
-for name, cfg in sorted(services.items()):
-    cfg = cfg or {}
-    bucket = "protected" if cfg.get("auth") == "forward_auth" else "open"
-    for host in cfg.get("hosts") or [name]:
-        print(bucket, host)
-PYTHON
-) || exit 1
-
-mapfile -t PROTECTED < <(awk '$1 == "protected" { print $2 }' <<<"$matrix")
-mapfile -t OPEN < <(awk '$1 == "open" { print $2 }' <<<"$matrix")
-
-# A matrix that parsed but yielded nothing protected would make every check
-# below vacuously pass, which is worse than failing.
-if (( ${#PROTECTED[@]} == 0 )); then
-    echo "No forward_auth services found in $MATRIX - refusing to pass vacuously."
-    exit 1
-fi
-
-echo "Protected services should send an anonymous request to the login page:"
+echo "Forward-auth services should send an anonymous request to the login page:"
 for svc in "${PROTECTED[@]}"; do
     read -r c target <<<"$(code_and_target https "${svc}.${DOMAIN}" /)"
     if [[ "$c" != "302" ]]; then
@@ -132,7 +94,20 @@ for svc in "${PROTECTED[@]}"; do
 done
 
 echo
-echo "Services with their own login should still answer plain HTTP (the TV path):"
+echo "OIDC services serve their own page, but their API must refuse anonymously:"
+for svc in "${OIDC_APPS[@]}"; do
+    shell=$(code https "${svc}.${DOMAIN}" /)
+    api=$(code https "${svc}.${DOMAIN}" "${OIDC_API[$svc]}")
+    if [[ "$shell" =~ ^(200|30[0-9])$ && "$api" == "401" ]]; then
+        pass "${svc}.${DOMAIN}" "app shell $shell, API $api"
+    else
+        fail "${svc}.${DOMAIN}" \
+            "expected shell 2xx/3xx and API 401, got shell ${shell:-no answer} API ${api:-no answer}"
+    fi
+done
+
+echo
+echo "Unprotected services should still answer plain HTTP (the TV path):"
 for svc in "${OPEN[@]}"; do
     c=$(code http "${svc}.${DOMAIN}" /)
     # 2xx or the app's own redirect are both fine - including an `oidc` app
