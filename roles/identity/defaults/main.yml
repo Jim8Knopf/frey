@@ -419,22 +419,60 @@ identity:
     # address. `username` or null are the other choices.
     match_existing_by: email
 
-    # DELIBERATELY EMPTY. Naming the groups claim here locks everyone out.
+    # ROLES FROM FREY'S OWN GROUPS.
     #
-    # Audiobookshelf does not map group names onto its roles. It looks for the
-    # literal strings `admin`, `user` and `guest` in the claim, and when it
-    # finds none of them it raises `No valid group found in userinfo` and
-    # DENIES the login. Frey's groups are frey_admins, media, notes and guests
-    # - `guests` is not `guest` - so every sign-in would be refused, including
-    # those of the admins it looks like it would be promoting.
+    # Audiobookshelf understands exactly three roles - admin, user, guest - and
+    # nothing else. It does not map group names onto them: it looks for those
+    # literal strings in the claim and, finding none, raises `No valid group
+    # found in userinfo` and DENIES the login outright. So pointing it straight
+    # at Frey's groups (frey_admins, media, notes, guests - and `guests` is not
+    # `guest`) would refuse every sign-in, including those of the admins it
+    # looked like it was about to promote.
     #
-    # Empty is also what keeps the request to Authelia down to openid, profile
-    # and email: Audiobookshelf appends the claim name to the scope verbatim.
-    # Roles are set per person on Audiobookshelf's own Users screen instead.
+    # Authelia does the translating instead. A CEL attribute turns group
+    # membership into the literal role Audiobookshelf expects, and the
+    # audiobookshelf client serves it as the claim named below. Audiobookshelf
+    # reads that claim, sees ["admin"], and LLDAP still only ever knows
+    # frey_admins. One vocabulary in the directory, no ABS-shaped groups to
+    # maintain beside it.
     #
-    # See validateGroupClaim and setUserGroup in
-    # server/auth/OidcAuthStrategy.js inside the container.
-    group_claim: ""
+    # Turning this off puts roles back on Audiobookshelf's own Users screen and
+    # stops it asking for the claim at all - the task derives the claim name
+    # from this switch, so the two sides cannot drift apart.
+    map_groups: true
+
+    # The claim carrying the translated role, and - because Audiobookshelf
+    # appends the claim name to the scope it requests - also the name of a
+    # custom scope Authelia is given for it.
+    #
+    # NOT `groups`, and that is the whole lesson of this feature. A custom
+    # claim named `groups` passes `authelia validate-config` and is then
+    # silently ignored: `authelia debug oidc claims <user>` shows the hydrated
+    # claim still holding the raw directory list. Pointing Audiobookshelf at
+    # that would have denied every sign-in, because the real list holds
+    # `guests` and `frey_admins` and Audiobookshelf wants `guest` and `admin`.
+    # Standard claims cannot be overridden by a claims policy.
+    role_claim: abs_role
+
+    # Priority order, highest first: the first entry whose groups the person is
+    # in decides their role. Membership of several is not a conflict.
+    role_map:
+      - role: admin
+        groups: [frey_admins]
+      - role: user
+        groups: [media]
+
+    # Everyone in none of the above. This is not decoration - it is what makes
+    # the feature safe. Audiobookshelf denies a login whose claim carries no
+    # role it recognises, so an unmatched person has to come out as SOMETHING,
+    # and `guest` is the narrowest thing that can still sign in.
+    #
+    # One edge: if a directory account's email matches Audiobookshelf's local
+    # root user (see match_existing_by above), a non-admin role is refused with
+    # "Root user cannot be downgraded". Keep the root account's address off the
+    # directory and that cannot arise.
+    role_fallback: guest
+
     advanced_perms_claim: ""
 
     # The mobile app's custom scheme, which must match the URI registered for

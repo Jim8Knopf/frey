@@ -220,7 +220,14 @@
       authOpenIDAutoRegister: "{{ identity.audiobookshelf.auto_register | bool }}"
       authOpenIDMatchExistingBy: "{{ identity.audiobookshelf.match_existing_by }}"
       authOpenIDMobileRedirectURIs: "{{ identity.audiobookshelf.mobile_redirect_uris }}"
-      authOpenIDGroupClaim: "{{ identity.audiobookshelf.group_claim }}"
+      # Derived from map_groups rather than configured separately, so that
+      # "Audiobookshelf reads a groups claim" and "Authelia substitutes a
+      # translated one" can never be true one at a time. Switch it off and
+      # this empties, which is what makes Audiobookshelf stop asking for the
+      # claim and go back to roles set on its own Users screen.
+      authOpenIDGroupClaim: >-
+        {{ identity.audiobookshelf.role_claim
+           if identity.audiobookshelf.map_groups | bool else '' }}
       authOpenIDAdvancedPermsClaim: "{{ identity.audiobookshelf.advanced_perms_claim }}"
       authOpenIDSubfolderForRedirectURLs: "{{ identity.audiobookshelf.redirect_url_subfolder }}"
   no_log: true

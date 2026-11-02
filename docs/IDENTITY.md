@@ -254,11 +254,54 @@ Four things fail silently here, and all four are guarded in the role:
 
 | Trap | What you would see | Guard |
 | --- | --- | --- |
-| **The group claim denies everyone.** Audiobookshelf does not map group names onto roles — it looks for the literal strings `admin`, `user`, `guest` and raises `No valid group found in userinfo` when it finds none. Frey's groups are `frey_admins`, `media`, `notes`, `guests`; `guests` is not `guest`. | Every sign-in refused, including the admins it looks like it is promoting. | `group_claim` is empty on purpose. Roles are set per person on Audiobookshelf's own Users screen. |
+| **Pointing it at the real group claim denies everyone.** Audiobookshelf does not map group names onto roles — it looks for the literal strings `admin`, `user`, `guest` and raises `No valid group found in userinfo` when it finds none. Frey's groups are `frey_admins`, `media`, `notes`, `guests`; `guests` is not `guest`. | Every sign-in refused, including the admins it looks like it is promoting. | Authelia translates instead — see *Roles from your own groups* below. Audiobookshelf is never shown the real `groups` claim. |
 | **The redirect subfolder must be sent, empty.** The callback is built by interpolating `${authOpenIDSubfolderForRedirectURLs}` — a value that defaults to `undefined` and is stored verbatim. | A callback at `/undefined/auth/openid/callback`, which Authelia rejects as unregistered while Audiobookshelf looks perfectly configured. Its own web UI always submits a value, so this is a trap only for API-written config. | `redirect_url_subfolder: ""` is sent explicitly. |
 | **Audiobookshelf's own base path is not `/`.** 2.37.2 defaults `ROUTER_BASE_PATH` to `/audiobookshelf` when unset — `?? '/audiobookshelf'` in its `/app/index.js` — and logs `Serving from base path "/audiobookshelf"` at every start. It answers at the root only because its Express layer prefixes any request arriving without that path. | Which callback path it asks for depends on that upstream default, and an unregistered one is refused in Authelia's log, not its own. It also means a callback URL outside `/audiobookshelf/` is rejected with `must be same-origin` / `outside router base path` — which is what a hand-rolled `curl` test will hit, and is not a fault. | Both the prefixed and unprefixed callbacks are registered in `oidc_catalog`; a redirect URI is only ever permitted, never forced. The role's assertion is built from the subfolder setting, so changing it cannot slip past. |
 | **It disables the method it just accepted.** Eight values must all be present — issuer, authorization, token, userinfo and jwks URLs, client id, client secret, signing algorithm — or `openid` is spliced back out of the active methods when settings are constructed. | The login page comes back with only the local form. No error at any level anyone reads. | The role reads `/status` back and fails if `openid` is not live. |
 | **A value of the wrong type is skipped, not rejected.** The handler warns to its own log and still answers `200`. | A quoted `"false"` where a boolean belonged leaves the old value in place. | The role reads the settings back and compares them field by field. |
+
+### Roles from your own groups
+
+Audiobookshelf admin follows `frey_admins`, so the directory keeps one
+vocabulary and there is no second set of ABS-shaped groups to maintain.
+Authelia does the translating, in three pieces:
+
+1. `definitions.user_attributes.audiobookshelf_roles` — a CEL expression,
+   generated from `identity.audiobookshelf.role_map`, that turns group
+   membership into the word Audiobookshelf wants:
+   `("frey_admins" in groups) ? ["admin"] : (("media" in groups) ? ["user"] : (["guest"]))`
+2. the `audiobookshelf_roles` claims policy, which serves that attribute as a
+   claim named **`abs_role`**
+3. a custom scope also named `abs_role`, because Audiobookshelf appends the
+   name of the claim it wants to the scope it requests, verbatim
+
+Edit the mapping in `roles/identity/defaults/main.yml` and redeploy. The
+trailing fallback is load-bearing: it guarantees the claim is never empty,
+which is the difference between "this person is a guest" and "this person
+cannot sign in". The role is applied **on each sign-in**, so changing someone's
+groups takes effect the next time they log in — and it overwrites a role edited
+by hand in Audiobookshelf, the same way Jellyfin's plugin does. Change the
+group, never the user.
+
+> **A claims policy cannot override a standard claim, and nothing tells you.**
+> The obvious implementation is a custom claim named `groups`, so the app needs
+> no custom scope. It passes `authelia validate-config` and is then silently
+> ignored — the hydrated claim still holds the raw directory list. That is why
+> the claim has a name of its own. Check any claim before trusting it:
+>
+> ```bash
+> docker run --rm --user 3100:3100 --network identity_internal \
+>   -v /opt/frey/appdata/identity/authelia:/config:ro \
+>   -v /opt/frey/appdata/identity/secrets:/secrets:ro \
+>   -e X_AUTHELIA_CONFIG_FILTERS=template \
+>   authelia/authelia:4.39.28 authelia debug oidc claims <username> \
+>   --client-id audiobookshelf --policy audiobookshelf_roles \
+>   --scopes openid,abs_role --config /config/configuration.yml
+> ```
+>
+> It hydrates the claims exactly as a real sign-in would, needs no password and
+> changes nothing. `authelia debug expression <user> '<CEL>'` does the same for
+> one expression.
 
 **Sign in from the HTTPS name only** — `https://audiobookshelf.hub.frey`.
 Audiobookshelf builds its callback from the scheme the browser arrived on (it

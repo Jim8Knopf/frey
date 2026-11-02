@@ -246,6 +246,40 @@ access_control:
 # produced a 16-space `client_secret` under an 8-space `public`, and a YAML
 # parse error 80 lines further down. Keep commentary in this header block.
 # ------------------------------------------------------------------------------
+{% set abs_maps_groups = ('audiobookshelf' in (oidc_services | map(attribute='key') | list)) and (identity.audiobookshelf.map_groups | default(false) | bool) %}
+{% if abs_maps_groups %}
+{% set ns = namespace(expr = '["' ~ identity.audiobookshelf.role_fallback ~ '"]') %}
+{% for entry in identity.audiobookshelf.role_map | reverse %}
+{% set conds = [] %}
+{% for g in entry.groups %}
+{% set _ = conds.append('"' ~ g ~ '" in groups') %}
+{% endfor %}
+{% set ns.expr = '(' ~ (conds | join(' || ')) ~ ') ? ["' ~ entry.role ~ '"] : (' ~ ns.expr ~ ')' %}
+{% endfor %}
+# ------------------------------------------------------------------------------
+# DERIVED ATTRIBUTES
+#
+# Audiobookshelf accepts only the literal roles admin, user and guest, and
+# denies any login whose group claim holds none of them. Rather than keep a
+# second set of ABS-shaped groups in the directory beside frey_admins and
+# media, this turns the groups Frey already has into the word Audiobookshelf
+# wants. The claims policy below then serves it to that one client AS its
+# `groups` claim, so the app needs no custom scope and the directory needs no
+# extra groups.
+#
+# The trailing fallback is load-bearing: it guarantees the claim is never
+# empty, which is the difference between "this person is a guest" and "this
+# person cannot sign in".
+#
+# Edit the mapping at identity.audiobookshelf.role_map in
+# roles/identity/defaults/main.yml - this expression is generated from it.
+# ------------------------------------------------------------------------------
+definitions:
+  user_attributes:
+    audiobookshelf_roles:
+      expression: '{{ ns.expr }}'
+
+{% endif %}
 identity_providers:
   oidc:
     hmac_secret: '{{ go }} secret "/secrets/authelia_oidc_hmac_secret" {{ og }}'
@@ -260,6 +294,17 @@ identity_providers:
 
     enforce_pkce: 'public_clients_only'
     enable_client_debug_messages: false
+
+{% if abs_maps_groups %}
+    # A scope of its own, because Audiobookshelf appends the name of the claim
+    # it wants to the scope it asks for, verbatim. Without this the request
+    # names a scope Authelia does not know.
+    scopes:
+      {{ identity.audiobookshelf.role_claim }}:
+        claims:
+          - '{{ identity.audiobookshelf.role_claim }}'
+
+{% endif %}
 
 {% if 'dashy' in (oidc_services | map(attribute='key') | list) %}
     cors:
@@ -280,13 +325,30 @@ identity_providers:
 {% set _ = needs_claims.append(identity.oidc_catalog[item.key].claims_policy) %}
 {% endif %}
 {% endfor %}
+{% if abs_maps_groups %}
+{% set _ = needs_claims.append('audiobookshelf_roles') %}
+{% endif %}
 {% if needs_claims | unique | list | length > 0 %}
     # Some apps read group membership from the ID token rather than fetching it
     # from the userinfo endpoint, which the specification does not require a
     # provider to do. This is Authelia's documented escape hatch for them.
+    #
+    # audiobookshelf_roles additionally carries abs_role, the translated role
+    # from definitions above.
+    #
+    # It is a claim of its OWN NAME rather than a replacement for `groups`, and
+    # that is not a style choice. A custom claim named `groups` validates
+    # cleanly and is then silently ignored - `authelia debug oidc claims jason`
+    # showed the hydrated claim still holding the raw directory list. Standard
+    # claims cannot be overridden this way, and nothing says so at deploy time.
     claims_policies:
 {% for policy in needs_claims | unique | sort %}
       {{ policy }}:
+{% if abs_maps_groups and policy == 'audiobookshelf_roles' %}
+        custom_claims:
+          {{ identity.audiobookshelf.role_claim }}:
+            attribute: 'audiobookshelf_roles'
+{% endif %}
         id_token:
           - 'email'
           - 'email_verified'
@@ -340,12 +402,17 @@ identity_providers:
 {% for scope in cat.scopes %}
           - '{{ scope }}'
 {% endfor %}
+{% if abs_maps_groups and item.key == 'audiobookshelf' %}
+          - '{{ identity.audiobookshelf.role_claim }}'
+{% endif %}
         response_types:
           - 'code'
         grant_types:
           - 'authorization_code'
           - 'refresh_token'
-{% if cat.claims_policy | default('') | length > 0 %}
+{% if abs_maps_groups and item.key == 'audiobookshelf' %}
+        claims_policy: 'audiobookshelf_roles'
+{% elif cat.claims_policy | default('') | length > 0 %}
         claims_policy: '{{ cat.claims_policy }}'
 {% endif %}
 {% endfor %}
