@@ -203,6 +203,22 @@ identity:
       redirect_uris:
         - "https://audiobookshelf.{{ frey.service_domain }}/auth/openid/callback"
         - "https://audiobookshelf.{{ frey.service_domain }}/auth/openid/mobile-redirect"
+        # The same two under /audiobookshelf, because that is Audiobookshelf's
+        # OWN base path: 2.37.2 defaults ROUTER_BASE_PATH to `/audiobookshelf`
+        # when the variable is unset - see `?? '/audiobookshelf'` in its
+        # /app/index.js - and it logs `Serving from base path
+        # "/audiobookshelf"` on every start. The app still answers at the root
+        # only because its Express layer rewrites any request that does not
+        # already start with that prefix.
+        #
+        # So which of these two it asks Authelia to redirect back to depends on
+        # a setting of its own (redirect_url_subfolder below) and on an upstream
+        # default that could move. Registering both costs nothing - a redirect
+        # URI is only ever permitted, never forced - and removes the failure
+        # where Authelia rejects the sign-in with invalid_request and the
+        # explanation is in ITS log rather than Audiobookshelf's.
+        - "https://audiobookshelf.{{ frey.service_domain }}/audiobookshelf/auth/openid/callback"
+        - "https://audiobookshelf.{{ frey.service_domain }}/audiobookshelf/auth/openid/mobile-redirect"
         # The mobile app's own scheme. Not a URL Traefik ever sees - the phone
         # intercepts it - but Authelia still has to be told to allow it.
         - "audiobookshelf://oauth"
@@ -438,8 +454,15 @@ identity:
     # at the exact moment they are trying to sign out.
     logout_url: ""
 
-    # EMPTY STRING, AND IT MUST ACTUALLY BE SENT AS ONE. Audiobookshelf is
-    # served at the root of its own hostname, so there is no path prefix.
+    # EMPTY STRING, AND IT MUST ACTUALLY BE SENT AS ONE.
+    #
+    # Empty is right even though Audiobookshelf's own base path is NOT empty:
+    # 2.37.2 defaults ROUTER_BASE_PATH to `/audiobookshelf` and logs `Serving
+    # from base path "/audiobookshelf"` at every start. It answers at the root
+    # regardless, because its Express layer prefixes any request that arrives
+    # without that path - which is also what makes the unprefixed callback
+    # below work. Both forms are registered with Authelia either way, so
+    # changing this to "/audiobookshelf" is safe if that rewrite ever goes.
     #
     # The reason this is here rather than just left out: Audiobookshelf builds
     # the callback by string interpolation,

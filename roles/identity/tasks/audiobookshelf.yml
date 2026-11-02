@@ -231,13 +231,21 @@
 # oidc_catalog, but a mismatch here is the single most common way this breaks,
 # and it breaks in Authelia's log rather than Audiobookshelf's. Asserting it
 # costs nothing and names the file to edit.
+# Built from the subfolder setting rather than hardcoded, because that setting
+# is exactly what decides the path Audiobookshelf asks to be redirected back
+# to. Hardcoding the unprefixed form would have let a change to the subfolder
+# sail past the one check meant to catch it.
 - name: Verify the callback URI Audiobookshelf will use is registered
   ansible.builtin.assert:
     that:
-      - "('https://' ~ identity_abs_vhost ~ '/auth/openid/callback')
+      - "('https://' ~ identity_abs_vhost
+          ~ identity.audiobookshelf.redirect_url_subfolder
+          ~ '/auth/openid/callback')
          in identity.oidc_catalog.audiobookshelf.redirect_uris"
     fail_msg: >-
-      https://{{ identity_abs_vhost }}/auth/openid/callback is not in
+      https://{{ identity_abs_vhost }}{{
+        identity.audiobookshelf.redirect_url_subfolder
+      }}/auth/openid/callback is not in
       identity.oidc_catalog.audiobookshelf.redirect_uris, so Authelia will
       reject the sign-in with invalid_request and "redirect_uri does not
       match" - in ITS log, not Audiobookshelf's. Add it in
