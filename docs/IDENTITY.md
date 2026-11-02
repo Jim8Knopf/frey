@@ -239,6 +239,17 @@ Jellyfin's administrator uses. Without the password nothing fails: the deploy
 prints the values to paste into Settings → Authentication instead, exactly as
 before.
 
+To try it before committing anything to the vault, pass it for one run and use
+the narrow tag:
+
+```bash
+ansible-playbook playbooks/site.yml --tags identity_audiobookshelf \
+  -e identity_abs_admin_password='...'
+```
+
+That is for trying, not for keeping — a password on a command line is in your
+shell history and in the process list. The vault is in neither.
+
 Four things fail silently here, and all four are guarded in the role:
 
 | Trap | What you would see | Guard |

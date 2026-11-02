@@ -93,10 +93,23 @@
 # not been, this does nothing at all and report.yml prints the values to paste
 # in by hand, which is the behaviour this file replaces rather than removes.
 # ------------------------------------------------------------------------------
+# identity_abs_admin_password is the one-shot way in, for trying this before
+# committing anything to the vault:
+#
+#   ansible-playbook playbooks/site.yml --tags identity_audiobookshelf \
+#     -e identity_abs_admin_password='...'
+#
+# It is not the way to keep it. A password on a command line is in the shell
+# history and in the process list of a machine that other people are on the
+# same network as; the vault is in neither.
 - name: Resolve the Audiobookshelf admin password
   ansible.builtin.set_fact:
     identity_abs_password: >-
-      {{ identity_secrets[identity.audiobookshelf.admin_password_key] | default('', true) }}
+      {{
+        identity_abs_admin_password
+        | default(identity_secrets[identity.audiobookshelf.admin_password_key]
+                  | default('', true), true)
+      }}
   no_log: true
   tags: [identity, sso, identity_audiobookshelf]
 
