@@ -1,0 +1,15 @@
+[Unit]
+# Managed by Ansible role: monitoring
+Description=Periodically repair faults that have a known safe fix
+
+[Timer]
+# Later after boot than the collectors, the gate and the resolver check, so it
+# never "repairs" something that simply has not run for the first time yet.
+# A fresh boot has every collector stale by definition.
+OnBootSec=8min
+OnUnitActiveSec={{ monitoring_alerting.self_heal.interval }}
+AccuracySec=30s
+Unit=frey-self-heal.service
+
+[Install]
+WantedBy=timers.target

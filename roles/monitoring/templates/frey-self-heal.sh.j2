@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-self-heal - deterministic repair for faults this project has already hit
+# Managed by Ansible role: monitoring. Do not edit on the Pi.
+# =============================================================================
+#
+# THE PROBLEM THIS SOLVES
+#
+# Several faults in this stack have a known, single, safe fix, and the only
+# reason they last for hours is that nobody was there to type it. A DNS-only
+# outage leaves every *arr behind its own backoff long after the network
+# recovered. A collector whose timer missed its window stays stale until
+# someone restarts the unit. Both are already detected - there are alert rules
+# for both - and then nothing happens.
+#
+# So this closes the loop for exactly those faults, and nothing else.
+#
+# WHY IT IS ALERT-DRIVEN
+#
+# Detection already exists and is tuned: 70-odd Prometheus rules, written
+# against the real failure modes. Re-implementing detection here would mean a
+# second, worse copy that drifts. So this reads the firing alerts and maps an
+# alert name to a repair. The alert rules stay the single source of truth for
+# "something is wrong"; this file only answers "and here is the one safe fix".
+#
+# HOW IT DIFFERS FROM frey-monitor-watchdog
+#
+# The watchdog is the last line of defence and depends on nothing - not
+# Prometheus, not Alertmanager - because its job is to tell you the monitoring
+# itself is dead. This one deliberately DOES depend on the alert chain. If
+# Alertmanager is down it simply does nothing, and the watchdog is what notices
+# that. Keep the two separate for that reason; do not merge them.
+#
+# WHAT IT WILL NEVER DO
+#
+# There is no verb here for anything that could brick the van. No interface or
+# route changes, no nmcli, no firewall, no sshd, no ansible, no reboot, no
+# config.txt. The one collector written by the network_gateway role is
+# explicitly refused for the same reason. These are absences, not rules: the
+# code to do them does not exist.
+#
+# RUN IT BY HAND
+#
+#   frey-self-heal status    what is firing and what would be done
+#   frey-self-heal report    diagnose and notify, change nothing
+#   frey-self-heal heal      do it (the timer's mode)
+# =============================================================================
+set -uo pipefail
+
+NTFY_URL="{{ monitoring_alerting.ntfy.server }}/{{ monitoring_secrets.ntfy_topic }}"
+NTFY_TOKEN="{{ monitoring_alerting.ntfy.token | default('', true) }}"
+NTFY_TIMEOUT={{ monitoring_alerting.ntfy.timeout }}
+NODE="{{ frey.node_name }}"
+STATE_DIR="{{ monitoring.self_heal.state_dir }}"
+RELAY_CONTAINER="{{ monitoring.services.alert_relay.container_name }}"
+ALERTMANAGER="http://{{ monitoring.services.alertmanager.container_name }}:{{ monitoring.services.alertmanager.port }}"
+RESOLVER_CONTAINER="{{ monitoring.self_heal.resolver_container }}"
+MEDIA_GATE="{{ monitoring.self_heal.media_gate_path }}"
+TEXTFILE_DIR="{{ monitoring.textfile_dir }}"
+COOLDOWN_SECONDS={{ monitoring.self_heal.cooldown_seconds }}
+MAX_ACTIONS={{ monitoring.self_heal.max_actions_per_run }}
+PROBE_NAME="{{ monitoring.self_heal.probe_name }}"
+
+{% if not monitoring_alerting.self_heal.act | default(true) | bool %}
+# monitoring_alerting.self_heal.act is false: force report-only regardless of
+# how this was invoked.
+FORCED_REPORT_ONLY=1
+{% else %}
+FORCED_REPORT_ONLY=0
+{% endif %}
+
+MODE="${1:-heal}"
+[[ "${FORCED_REPORT_ONLY}" == "1" && "${MODE}" == "heal" ]] && MODE=report
+
+mkdir -p "${STATE_DIR}" 2>/dev/null || true
+
+healed=()
+skipped=()
+problems=()
+actions_taken=0
+
+log() { printf '%s %s\n' "$(date -Is)" "$*"; }
+
+# -----------------------------------------------------------------------------
+# Units this script must never touch, whatever an alert says.
+#
+# frey-portal.prom is written by the network_gateway role. Restarting its
+# writer is a networking action, and networking is the one thing that turns a
+# fault into a drive out to the van.
+# -----------------------------------------------------------------------------
+REFUSED_UNITS=(
+  frey-uplink-portal.service
+  frey-uplink-portal.timer
+  hostapd.service
+  dnsmasq.service
+  NetworkManager.service
+  ssh.service
+  sshd.service
+)
+
+is_refused() {
+  local candidate="$1" unit
+  for unit in "${REFUSED_UNITS[@]}"; do
+    [[ "${candidate}" == "${unit}" ]] && return 0
+  done
+  return 1
+}
+
+# -----------------------------------------------------------------------------
+# A .prom file is not named after the unit that writes it.
+#
+# frey-logrepair.prom comes from frey-log-repair.service, and media_dns.prom
+# from a timer owned by an entirely different role. A unit-name lookup derived
+# from the filename reports a healthy collector as missing, which has already
+# sent one investigation the wrong way.
+# -----------------------------------------------------------------------------
+collector_unit_for() {
+  case "$1" in
+    frey-logrepair) echo frey-log-repair.service ;;
+    media_dns)      echo frey-media-dns-upstream.service ;;
+    frey-portal)    echo frey-uplink-portal.service ;;  # refused above
+    frey-*)         echo frey-metrics.service ;;
+    *)              echo '' ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+# Rate limiting. One repair of a given kind per cooldown window, and a hard cap
+# per run. An automated fix that loops is an outage you inflicted on yourself.
+# -----------------------------------------------------------------------------
+cooldown_ok() {
+  local key="$1" stamp="${STATE_DIR}/last-$1" last now
+  [[ -r "${stamp}" ]] || return 0
+  last=$(cat "${stamp}" 2>/dev/null) || return 0
+  now=$(date +%s)
+  (( now - last >= COOLDOWN_SECONDS ))
+}
+
+mark_done() { date +%s > "${STATE_DIR}/last-$1" 2>/dev/null || true; }
+
+may_act() {
+  local key="$1"
+  if [[ "${MODE}" != "heal" ]]; then
+    skipped+=("${key}: would act, but mode is ${MODE}")
+    return 1
+  fi
+  if (( actions_taken >= MAX_ACTIONS )); then
+    skipped+=("${key}: per-run action cap of ${MAX_ACTIONS} reached")
+    return 1
+  fi
+  if ! cooldown_ok "${key}"; then
+    skipped+=("${key}: within the ${COOLDOWN_SECONDS}s cooldown")
+    return 1
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# Firing alerts.
+#
+# Alertmanager has no host port - nothing in monitoring reaches the host by
+# address - so it is queried from inside a container that can. Output goes to a
+# file first: a `docker exec` pipe truncates at around 4 KB, intermittently,
+# and a half-read JSON document looks exactly like a broken service.
+# -----------------------------------------------------------------------------
+firing_alerts() {
+  local out="${STATE_DIR}/alerts.json"
+  if ! docker exec "${RELAY_CONTAINER}" python3 -c "
+import json, urllib.request
+o = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with o.open('${ALERTMANAGER}/api/v2/alerts?active=true&silenced=false&inhibited=false', timeout=15) as r:
+    print(json.dumps(json.load(r)))
+" > "${out}" 2>/dev/null; then
+    problems+=("cannot read Alertmanager - nothing to do, the watchdog covers this")
+    return 1
+  fi
+  python3 -c "
+import json, sys
+try:
+    alerts = json.load(open('${out}'))
+except Exception:
+    sys.exit(1)
+for a in alerts:
+    labels = a.get('labels') or {}
+    print('%s\t%s\t%s' % (
+        labels.get('alertname', ''),
+        labels.get('file', ''),
+        labels.get('severity', ''),
+    ))
+" 2>/dev/null
+}
+
+# -----------------------------------------------------------------------------
+# Repairs. One function per fault, each idempotent and each individually safe.
+# -----------------------------------------------------------------------------
+
+# A collector that missed its window. Starting its unit writes a fresh .prom.
+heal_collector() {
+  local file="$1" base unit
+  base=$(basename "${file}" .prom)
+  unit=$(collector_unit_for "${base}")
+  if [[ -z "${unit}" ]]; then
+    problems+=("collector '${base}' has no known writer unit")
+    return
+  fi
+  if is_refused "${unit}"; then
+    skipped+=("${base}: writer ${unit} is refused - it is owned by networking")
+    return
+  fi
+  may_act "collector-${base}" || return
+  if systemctl start "${unit}" >/dev/null 2>&1; then
+    healed+=("collector ${base} was stale; ran ${unit}")
+    mark_done "collector-${base}"
+    (( actions_taken++ ))
+  else
+    problems+=("collector ${base}: ${unit} failed to run")
+  fi
+}
+
+# Indexers left behind their own backoff. The gate owns the API keys and the
+# revalidation call, so this asks the gate rather than duplicating either.
+heal_indexers() {
+  if [[ ! -x "${MEDIA_GATE}" ]]; then
+    skipped+=("indexers: ${MEDIA_GATE} is absent, media_acquisition may be disabled")
+    return
+  fi
+  may_act "indexers" || return
+  if "${MEDIA_GATE}" refresh >/dev/null 2>&1; then
+    healed+=("indexers revalidated via the media gate")
+    mark_done "indexers"
+    (( actions_taken++ ))
+  else
+    problems+=("indexer revalidation failed")
+  fi
+}
+
+# Container DNS is fixed at creation, so after moving networks the resolver can
+# be pinned to a departed venue's DNS. frey-media-dns-upstream does not catch
+# this: it probes a named upstream directly and so reports healthy while
+# resolution THROUGH dnsmasq fails. Confirm that specific shape before acting -
+# a recreate is not something to do on a guess.
+resolution_through_resolver_broken() {
+  docker inspect -f '{% raw %}{{ .State.Running }}{% endraw %}' "${RESOLVER_CONTAINER}" 2>/dev/null \
+    | grep -q true || return 1
+  # Ask the container's own resolver, not a specified upstream.
+  timeout 12 docker exec "${RESOLVER_CONTAINER}" \
+    timeout 8 nslookup "${PROBE_NAME}" 127.0.0.1 >/dev/null 2>&1 && return 1
+  # Only a fault if the host itself can resolve - otherwise there is simply no
+  # uplink, which is not something to repair.
+  getent hosts "${PROBE_NAME}" >/dev/null 2>&1
+}
+
+heal_resolver() {
+  if ! resolution_through_resolver_broken; then
+    skipped+=("resolver: resolution through ${RESOLVER_CONTAINER} is fine, or the host has no DNS either")
+    return
+  fi
+  may_act "resolver" || return
+  # Recreate, not restart: the stale upstream is baked into the container.
+  if docker rm -f "${RESOLVER_CONTAINER}" >/dev/null 2>&1 \
+    && systemctl start frey-media-dns-upstream.service >/dev/null 2>&1; then
+    healed+=("${RESOLVER_CONTAINER} resolved nothing while the host did; recreated it")
+    mark_done "resolver"
+    (( actions_taken++ ))
+  else
+    problems+=("could not recreate ${RESOLVER_CONTAINER}")
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Dispatch
+# -----------------------------------------------------------------------------
+seen_indexer_alert=0
+while IFS=$'\t' read -r alertname file _severity; do
+  [[ -n "${alertname}" ]] || continue
+  case "${alertname}" in
+    FreyCollectorStale|FreySlowCollectorStale|FreyCollectorFailing)
+      [[ -n "${file}" ]] && heal_collector "${file}"
+      ;;
+    FreyIndexerProblems|FreyIndexersAllUnavailable|FreyIndexerHealthUnknown)
+      (( seen_indexer_alert == 0 )) && { heal_indexers; seen_indexer_alert=1; }
+      ;;
+    FreyDnsResolutionFailing)
+      heal_resolver
+      ;;
+    *) ;;  # Every other alert is somebody else's problem, deliberately.
+  esac
+done < <(firing_alerts)
+
+# -----------------------------------------------------------------------------
+# Report
+# -----------------------------------------------------------------------------
+if [[ "${MODE}" == "status" ]]; then
+  printf 'mode:    %s\n' "${MODE}"
+  printf 'would heal / healed:\n'
+  printf '  %s\n' "${healed[@]:-(none)}"
+  printf 'skipped:\n'
+  printf '  %s\n' "${skipped[@]:-(none)}"
+  printf 'problems:\n'
+  printf '  %s\n' "${problems[@]:-(none)}"
+  exit 0
+fi
+
+for line in "${healed[@]:-}"; do [[ -n "${line}" ]] && log "healed: ${line}"; done
+for line in "${skipped[@]:-}"; do [[ -n "${line}" ]] && log "skipped: ${line}"; done
+for line in "${problems[@]:-}"; do [[ -n "${line}" ]] && log "problem: ${line}"; done
+
+# Notify only when something actually happened or could not be done. A quiet
+# run is the normal case and must stay silent - this shares a 250-message daily
+# budget with real alerts.
+# NOTE the raw wrappers below, and do not remove them. Bash array length is
+# written brace-hash-name, and that brace-hash pair is exactly how Jinja
+# opens a comment - so an unwrapped array length fails the template with
+# "Missing end of comment tag", or worse, silently swallows the rest of the
+# script. Same family of trap as a Jinja comment eating the next YAML list
+# entry. This comment deliberately spells it out in words for that reason.
+if (( {% raw %}${#healed[@]}{% endraw %} == 0 && {% raw %}${#problems[@]}{% endraw %} == 0 )); then
+  exit 0
+fi
+
+body="frey-self-heal on ${NODE}"$'\n'
+for line in "${healed[@]:-}"; do [[ -n "${line}" ]] && body+=$'\n'"fixed:   ${line}"; done
+for line in "${problems[@]:-}"; do [[ -n "${line}" ]] && body+=$'\n'"problem: ${line}"; done
+
+title="Frey repaired itself"
+priority=default
+if (( {% raw %}${#problems[@]}{% endraw %} > 0 )); then
+  title="Frey self-repair incomplete"
+  priority=high
+fi
+
+auth=()
+[[ -n "${NTFY_TOKEN}" ]] && auth=(-H "Authorization: Bearer ${NTFY_TOKEN}")
+curl -fsS --max-time "${NTFY_TIMEOUT}" \
+  "${auth[@]}" \
+  -H "Title: ${title}" \
+  -H "Priority: ${priority}" \
+  -H "Tags: wrench" \
+  -d "${body}" \
+  "${NTFY_URL}" >/dev/null 2>&1 || log "problem: could not reach ntfy"
+
+exit 0

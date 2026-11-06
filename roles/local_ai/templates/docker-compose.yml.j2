@@ -78,8 +78,11 @@ services:
       - "--presence-penalty"
       - "{{ m.presence_penalty }}"
       - "--jinja"
-      - "--chat-template-kwargs"
-      - '{"enable_thinking":{{ m.enable_thinking | lower }}}'
+      # --reasoning, not --chat-template-kwargs: b12019 warns at startup that
+      # setting enable_thinking through chat-template-kwargs is deprecated.
+      # This flag sets the same template variable internally.
+      - "--reasoning"
+      - "{{ 'on' if m.enable_thinking | bool else 'off' }}"
     volumes:
       - "{{ local_ai.model_dir }}:/models:ro"
     networks:

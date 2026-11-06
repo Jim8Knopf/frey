@@ -230,6 +230,20 @@ separate and worse.
 | **Qwen3.5-4B** | **~3 GB** | **~3.5 tok/s** | yes | **recommended default** |
 | Qwen3.5-9B | ~6.5 GB | ~1.6 tok/s | tight | batch-only; starves other services |
 
+> **Corrected by measurement, 2026-11-07.** The table above was built by
+> scaling this repo's old 1.7B figures, which assumed ~10.5 GB/s of effective
+> weight-read bandwidth. Qwen3.5-4B UD-Q4_K_XL, once deployed, measured
+> **2.70 tokens/s** (260 tokens in 96.2 s) — about 25% below the 3.5 predicted.
+> Effective bandwidth for this model is nearer **7.9 GB/s**, so a larger model
+> reads more per token than scaling a small one predicts. Project from 7.9:
+> the 9B row is closer to **1.2 tok/s** than 1.6, and the 2B nearer 5.3 than 7.
+> Also note the host reported **8 GiB available**, not the 12 GiB recorded
+> earlier in `CAMPAIGN_ASSISTANT_PLAN.md`.
+>
+> Vision was verified on the same day: a generated solid-colour image was
+> identified correctly in 5.8 s at 37 prompt tokens. A real photograph carries
+> far more vision tokens and will be much slower.
+
 **Recommended default: Qwen3.5-4B at UD-Q4_K_XL.** It is the point where
 quality crosses into "worth reviewing" while generation stays tolerable for
 drafting, and it brings vision at no extra model. Raise `mem_limit` from 3 GiB

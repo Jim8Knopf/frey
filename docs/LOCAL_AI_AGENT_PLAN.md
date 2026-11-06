@@ -255,6 +255,82 @@ what makes that tolerable — the worst case is a *wrong but safe* choice from a
 safe menu, caught by the deadman and the breaker. Do not relax the menu because
 the model seems to be doing well.
 
+## 6a. Hermes Agent, evaluated 2026-11-07
+
+**Verdict: do not deploy on Frey. Disqualified by hardware arithmetic, not by
+design.** This supersedes the open question in
+`docs/CAMPAIGN_AGENT_EVALUATION.md`, which recorded two timed-out image pulls
+and never reached a conclusion.
+
+What changed since that note: the current release is **v0.23.0 (2026-11-05)**,
+not the v0.22.5 recorded there. **ARM64 is confirmed**, so the architecture
+doubt in that document is settled — `nousresearch/hermes-agent:v0.23.0` ships
+`arm64/linux` at about 1120 MB compressed, with a `-desktop` variant at
+1355 MB. The two earlier pull timeouts were a slow uplink, not a missing image.
+
+### What is genuinely good about it
+
+- **It runs fully offline against an OpenAI-compatible endpoint** — the docs
+  name vLLM, SGLang, Ollama "or any OpenAI-compatible API", with a custom base
+  URL. Phase 0 just gave Frey exactly such an endpoint, so the integration
+  point already exists.
+- **It can be fully contained.** Alongside terminal-backend isolation it
+  supports **whole-process wrapping**, running the entire agent process tree
+  in a Docker container under declarative filesystem, network, process and
+  inference policy. That is precisely what §3 requires.
+- **Its security documentation is unusually honest**, and worth quoting
+  because it states the thesis of this whole plan better than this document
+  does: *"The only security boundary against an adversarial LLM is the
+  operating system. Nothing inside the agent process constitutes
+  containment."* It also says in-process approval gates and redaction are
+  *"not security boundaries"* but heuristics. Any vendor willing to write that
+  down is being straight with you.
+
+### Why it still cannot run here
+
+**The context requirement.** The documentation states a hard minimum:
+*"Hermes Agent requires a model with at least 64,000 tokens of context."*
+Frey serves 8192. The cost of 64K on this hardware is arithmetic, not opinion.
+
+Qwen3.5-4B is 32 layers with 4 key/value heads and head_dim 256, so each token
+costs `2 x 32 x 4 x 256` values of KV cache — **128 KiB per token at fp16**:
+
+| Context | KV cache fp16 | KV cache q8_0 | Plus 2.71 GiB weights |
+| --- | --- | --- | --- |
+| 8192 (deployed) | 1.0 GiB | 0.5 GiB | 3.7 / 3.2 GiB |
+| **64000 (Hermes minimum)** | **7.8 GiB** | **~3.9 GiB** | **10.5 / 6.6 GiB** |
+
+The host reported **8 GiB available** on 2026-11-07. The fp16 column is
+impossible. The q8_0 column technically fits and then leaves about 1.4 GiB for
+Jellyfin, the *arrs, Authelia, LLDAP and monitoring — which is the same
+CPU-and-RAM contention argument `CLAUDE.md` already makes about software
+transcoding, except worse, because it is resident rather than occasional.
+
+**And the arithmetic that actually settles it is prompt processing.** Context
+is not free to *fill*. Prompt processing is compute-bound and the Pi 5's A76
+cores have no i8mm. At a generous 20 tokens/s, a 64K-token agent turn spends
+**roughly 53 minutes before the first output token**. Even a modest 10K-token
+turn is about eight minutes. An agent that takes tens of minutes per step
+cannot keep a system healthy; the fault it was reasoning about has moved on.
+
+A secondary problem: *"Any component running inside the agent process (skills,
+plugins, hook handlers) can read whatever the agent itself can read, including
+in-memory credentials."* That is fine under whole-process wrapping with no
+credentials present, but it means the boundary must be the container, and
+every skill and plugin must be treated as having the agent's full access.
+
+### What to do instead
+
+- **Keep the broker design in §3.** It exists because the model must not hold
+  a shell. Hermes's own security page agrees with that reasoning.
+- **Keep the `/v1` endpoint as the integration seam.** If Hermes is ever
+  wanted, it belongs on the ThinkPad — a machine with real compute — pointed
+  at a real model, not on the Pi. The endpoint makes that possible with no
+  further work.
+- **Re-evaluate only if** the context minimum drops substantially, or Frey
+  gains hardware with the memory bandwidth and compute to fill 64K in seconds
+  rather than minutes. Neither is foreseeable on a Pi 5.
+
 ## 7. Phases
 
 Each phase is independently useful and independently abandonable.
@@ -270,8 +346,45 @@ into `/drafts`. No broker, no verbs, no actions. This alone solves the real
 problem of having to diagnose Frey from a phone, and it is the honest test of
 whether a 4B is good enough at correlation before anything can act.
 
-**Phase 2 — deterministic self-healing, no LLM.** Turn the known faults in §5
-into scripts and timers. Independently valuable; this is the catalogue.
+**Phase 2 — deterministic self-healing, no LLM. DONE 2026-11-07.** Turn the
+known faults in §5 into scripts and timers. Independently valuable; this is
+the catalogue.
+
+Shipped as `frey-self-heal`, a sibling of the existing `frey-monitor-watchdog`
+in `roles/monitoring`, so it keeps working with `local_ai` switched off
+entirely. Three findings reshaped it, and two of them removed work:
+
+- **It is alert-driven, not a second detector.** 70-odd Prometheus rules
+  already detect these faults and are tuned against the real failure modes.
+  Re-implementing detection would have meant a worse second copy that drifts,
+  so the script maps an **alert name** to one repair. The rules stay the single
+  source of truth for "something is wrong".
+- **Two of the four chosen faults were already handled.** DNS upstream
+  re-evaluation self-heals already — `frey-media-dns-upstream.timer` runs every
+  10 minutes with a NetworkManager dispatcher hook — so nothing was built for
+  it. And indexer revalidation already existed inside `frey-media-gate`, but
+  only on the offline-to-online transition, which a DNS-only outage never
+  produces. That became one new `refresh` verb on the gate rather than a
+  reimplementation, reusing its API keys and its revalidation call.
+- **`frey-media-dns-upstream` cannot see the fault it looks closest to.** It
+  probes a *named upstream* directly from inside the container, so it reports
+  healthy while resolution *through* dnsmasq fails. (The note in memory that it
+  "probes the host" is wrong — it uses `docker exec`; the real gap is that it
+  bypasses dnsmasq's own forwarders.) `frey-self-heal` therefore resolves
+  through the container's own resolver and compares against the host before
+  recreating anything.
+
+It is deliberately separate from the watchdog, which depends on nothing —
+not Prometheus, not Alertmanager — because its job is to tell you the
+monitoring itself is dead. `frey-self-heal` *does* depend on the alert chain;
+if Alertmanager is down it does nothing, and the watchdog is what notices.
+**Do not merge them.**
+
+Limits: a hardcoded refusal list (networking units, sshd, hostapd, dnsmasq,
+NetworkManager, and the one collector owned by `network_gateway`), a per-fault
+cooldown, a hard per-run action cap, and `monitoring_alerting.self_heal.act`
+to drop back to diagnose-and-notify. Verbs for anything that could brick the
+van do not exist in the file.
 
 **Phase 3 — broker with read verbs only, plus the denial test suite.** Build
 the broker, expose only reads, and prove every limit in §3 holds before a

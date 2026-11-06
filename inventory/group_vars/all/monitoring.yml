@@ -95,6 +95,20 @@ monitoring_alerting:
     # Do not repeat the same "monitoring is broken" message more often
     # than this.
     repeat_hours: 6
+
+  # Deterministic repair for the handful of faults that have one known safe
+  # fix. Alert-driven: the existing Prometheus rules stay the single source of
+  # truth for "something is wrong", and frey-self-heal only answers "and here
+  # is the fix". Phase 2 of docs/LOCAL_AI_AGENT_PLAN.md - no model involved.
+  self_heal:
+    enabled: true
+    # Act, rather than only reporting what it would do. Same reasoning the
+    # watchdog's restart_stopped carries: the report needs an uplink the van
+    # often does not have, and the fix does not. Set false to go back to
+    # diagnose-and-notify, which still removes the hard part of knowing which
+    # of several causes it is from a phone.
+    act: true
+    interval: 15min
     extra_required:
       - "{{ service_proxy.traefik.container_name }}"
 

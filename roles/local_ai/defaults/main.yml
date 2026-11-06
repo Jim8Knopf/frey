@@ -40,12 +40,15 @@ local_ai:
       mmproj_size_bytes: 672423616
 
       # Generation on this Pi is memory-bandwidth-bound, so speed is set by
-      # file size, not by thread count: ~2.7 GiB of weights at the ~10.5 GB/s
-      # this machine achieves is roughly 3.5 tokens/s. Threads buy prompt
-      # processing, which is compute-bound - and the Pi 5's A76 cores have no
-      # i8mm, so that is the weak axis. Two threads deliberately leaves cores
-      # for the gateway: on a Pi with no Ethernet and no console, gateway
-      # responsiveness outranks inference speed every time.
+      # file size, not by thread count. MEASURED 2026-11-07: 2.70 tokens/s
+      # (260 tokens in 96.2 s) - about 25% below the 3.5 first estimated by
+      # scaling the old 1.7B numbers, because this model achieves ~7.9 GB/s of
+      # effective weight-read bandwidth rather than the 10.5 assumed. Project
+      # from 7.9. Threads buy prompt processing, which is compute-bound - and
+      # the Pi 5's A76 cores have no i8mm, so that is the weak axis. Two
+      # threads deliberately leaves cores for the gateway: on a Pi with no
+      # Ethernet and no console, gateway responsiveness outranks inference
+      # speed every time.
       threads: 2
       cpus: 2.0
 

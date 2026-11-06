@@ -180,6 +180,26 @@ monitoring:
     service_name: frey-monitor-watchdog
     state_dir: /run/frey-monitor-watchdog
 
+  self_heal:
+    service_name: frey-self-heal
+    # /run, not /var/lib: the cooldown stamps exist to stop a repair looping
+    # within one uptime. After a reboot every fault should be re-evaluated
+    # fresh, because the reboot may well have fixed it.
+    state_dir: /run/frey-self-heal
+    cooldown_seconds: 1800
+    # A hard cap per run. An automated fix that loops is an outage you
+    # inflicted on yourself, and this is the backstop for that.
+    max_actions_per_run: 3
+    # Resolved through the media resolver's own dnsmasq to prove the container
+    # can actually resolve, rather than that some upstream is reachable.
+    probe_name: github.com
+    # Both belong to media_acquisition. Named here rather than read from that
+    # role, because a role's defaults are only in scope while it runs - and
+    # this script must degrade gracefully when that module is disabled, which
+    # it does by checking the path exists.
+    resolver_container: frey-media-dns
+    media_gate_path: /usr/local/bin/frey-media-gate
+
   log_repair:
     service_name: frey-log-repair
     # /var/lib rather than /run: the cumulative repair count has to survive the

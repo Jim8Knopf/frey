@@ -37,11 +37,20 @@ Qwen3.5 reuses Qwen3-VL's merger, which is why vision works on a build whose
 `local_ai_llama_version`, check both again.
 
 Speed on this hardware is set by file size, not thread count: generation is
-memory-bandwidth-bound, so ~2.7 GiB of weights at the ~10.5 GB/s this Pi
-achieves is roughly 3.5 tokens/s. Threads buy *prompt* processing, which is
-compute-bound and the Pi 5's weak axis — its A76 cores have no i8mm. The role
-uses two threads on purpose, leaving cores for the gateway: on a Pi with no
-Ethernet and no console, gateway responsiveness outranks inference speed.
+memory-bandwidth-bound. **Measured on 2026-11-07: 2.70 tokens/s** — 260 tokens
+in 96.2 s from a 29-token prompt, with two threads.
+
+That is ~25% slower than the 3.5 tokens/s first estimated from the old 1.7B
+figures. The estimate assumed ~10.5 GB/s of effective weight-read bandwidth;
+this model actually achieves about **7.9 GB/s**. Larger models read more per
+token than a simple scaling of a 1.7B measurement predicts, so treat 7.9 GB/s
+as the number to project from — a 9B at 4 bits would be nearer 1.2 tokens/s
+than the 1.6 originally guessed.
+
+Threads buy *prompt* processing, which is compute-bound and the Pi 5's weak
+axis — its A76 cores have no i8mm. The role uses two threads on purpose,
+leaving cores for the gateway: on a Pi with no Ethernet and no console,
+gateway responsiveness outranks inference speed.
 
 Vision is correspondingly slow. An image becomes hundreds to low-thousands of
 prompt tokens plus an encoder pass, so expect tens of seconds to a few minutes

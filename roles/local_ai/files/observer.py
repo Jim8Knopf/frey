@@ -50,11 +50,20 @@ NOTES_DIR = pathlib.Path(os.environ.get("NOTES_DIR", "/notes"))
 
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "300"))
 DAILY_HOUR = int(os.environ.get("DAILY_HOUR", "7"))
-# Generation runs at roughly 3.5 tokens/s on this hardware, so a token budget
-# is a time budget: 500 tokens is about two and a half minutes.
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "500"))
 MODEL_TIMEOUT = int(os.environ.get("MODEL_TIMEOUT", "900"))
 NOTIFY_SEVERITY = os.environ.get("NOTIFY_SEVERITY", "critical")
+
+# A character budget on the evidence, because prompt processing is the real
+# cost here and it is far slower than first assumed.
+#
+# Measured 2026-11-07 on this Pi: prompt processing runs at 9.25 tokens/s, not
+# the ~20 estimated. An untrimmed evidence block came to roughly 5600 tokens,
+# which is about TEN MINUTES of prompt processing before a single output token
+# - and a report that arrives a quarter of an hour after the alert is close to
+# useless. Roughly four characters per token, so this keeps the prompt near
+# 1500 tokens and a whole report inside about four minutes.
+EVIDENCE_BUDGET_CHARS = int(os.environ.get("EVIDENCE_BUDGET_CHARS", "6000"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "400"))
 
 STATE_PATH = DRAFTS_DIR / ".observer-state.json"
 
@@ -326,7 +335,32 @@ def build_evidence(alerts):
     if logs:
         parts.append("\n## Recent log lines")
         parts.extend(f"- {line}" for line in logs)
+
     return "\n".join(parts)
+
+
+def trim_for_model(text):
+    """Cut the evidence down to what the model can read in reasonable time.
+
+    Only the model's copy is trimmed. The report records the full set, so
+    nothing is lost - which is what makes the note below honest rather than a
+    silent truncation that makes a report look more complete than it is.
+
+    Trimmed from the end because that costs least: alerts and metrics come
+    first and are what the assessment turns on, while log lines are the long
+    tail.
+    """
+    if len(text) <= EVIDENCE_BUDGET_CHARS:
+        return text
+    kept = text[:EVIDENCE_BUDGET_CHARS].rsplit("\n", 1)[0]
+    dropped = len(text) - len(kept)
+    log.info("evidence trimmed by %d characters for the model", dropped)
+    return (
+        kept
+        + f"\n\n[evidence trimmed: {dropped} characters dropped so prompt "
+        "processing stays within a few minutes. The full set is recorded in "
+        "the report under this assessment.]"
+    )
 
 
 def write_report(kind, title, evidence_text, answer):
@@ -407,7 +441,7 @@ def run_once(state):
         evidence = build_evidence(alerts)
         names = ", ".join(sorted({a["alertname"] for a in alerts}))
         title = f"Incident report: {names}"
-        answer = ask_model(title, evidence)
+        answer = ask_model(title, trim_for_model(evidence))
         path = write_report("incident", title, evidence, answer)
         if any(a["severity"] == NOTIFY_SEVERITY for a in alerts):
             notify(title, path, NOTIFY_SEVERITY)
@@ -423,7 +457,7 @@ def run_once(state):
         log.info("writing daily summary")
         evidence = build_evidence(alerts)
         title = f"Daily health summary for {today}"
-        answer = ask_model(title, evidence)
+        answer = ask_model(title, trim_for_model(evidence))
         write_report("daily", title, evidence, answer)
         state["last_daily"] = today
         save_state(state)

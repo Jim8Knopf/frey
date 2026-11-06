@@ -1,0 +1,13 @@
+[Unit]
+# Managed by Ansible role: monitoring
+Description=Repair faults that have a known safe fix
+Documentation=file:///usr/local/bin/frey-self-heal
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-self-heal heal
+# Bounded on purpose. Every repair here is quick; a run that hangs is a bug,
+# and a hung repair loop must not overlap with the next timer firing.
+TimeoutStartSec=180
