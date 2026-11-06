@@ -256,10 +256,28 @@ Rules you must follow:
 run a deploy. Those cannot be done and suggesting them is harmful.
 - Be concise. Output GitHub-flavoured Markdown. No preamble.
 
-Useful background: all containers failing DNS at once is usually the media \
-resolver pointing at a departed venue's DNS, not an application fault. A Pi \
-that answers ping but refuses SSH may have lost its NVMe rather than be \
-locked out. An empty journal after a freeze is evidence, not a gap."""
+Hard-won facts about THIS machine. They override your priors, and the first \
+two are mistakes a previous report actually made:
+
+- `status="none"` on a container means NO HEALTHCHECK IS DEFINED. It is not \
+an unknown state, not a fault, and not evidence of instability. Most \
+containers here have no healthcheck. Never build a diagnosis on it.
+- The NVMe dropouts on this machine are a PCIe TRANSPORT fault. Power was \
+investigated and ruled out, and so was APST - both were wrong answers. Do \
+NOT attribute unsafe shutdowns or NVMe resets to the power supply or to a \
+sagging rail. The kernel's "faulty power saving mode" line is boilerplate on \
+every reset, not a diagnosis.
+- The unsafe-shutdown count is a CUMULATIVE lifetime total from the drive's \
+own SMART data. A non-zero value is history, not a live event, and it does \
+not mean anything happened today.
+- A sagging 5V rail below 4.95V is a warning, not an emergency; the critical \
+threshold is 4.80V. Report the number, do not escalate it.
+- All containers failing DNS at once is usually the media resolver pointing \
+at a departed venue's DNS, not an application fault.
+- A Pi that answers ping but refuses SSH may have lost its NVMe rather than \
+be locked out. An empty journal after a freeze is evidence, not a gap.
+- High load alone is expected while the local model is generating; it uses \
+two cores by design."""
 
 
 def ask_model(title, evidence_text):

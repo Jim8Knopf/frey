@@ -175,12 +175,44 @@ should not be.
 Capital `X` grants execute only on directories, so note files do not pick up a
 pointless execute bit.
 
+### How long a report takes, and why the evidence is trimmed
+
+Measured 2026-11-07: an incident report took **9.5 minutes** end to end. Prompt
+processing is the cost, not generation — it runs at **8.4–9.25 tokens/s** on
+this Pi, and the untrimmed evidence came to about **5500 tokens**, which is ten
+minutes before a single output token.
+
+So the model's copy of the evidence is capped by a character budget
+(`EVIDENCE_BUDGET_CHARS`, default 6000 ≈ 1500 tokens) and trimmed from the end,
+where the long tail of log lines sits. **The report still records the full
+evidence** — only the model's copy is cut, and the trim is stated in the
+report rather than left silent.
+
+One practical consequence: **restarting the observer cancels an in-flight
+request.** `llama-server` logs `cancel task` and the report is lost. Redeploying
+the role restarts it, so avoid redeploying while a report is generating.
+
 ### Caveats
 
 Every report is written by a 4B model. Verify every claim before acting on one;
 the model is given evidence and asked to classify it, never to invent a fix,
 and the system prompt forbids suggesting changes to networking, SSH, the
 firewall or a deploy — none of which it could perform anyway.
+
+**The first real report got the diagnosis wrong in an instructive way**, and the
+system prompt now carries the corrections. It read `status="none"` — which
+simply means *no healthcheck is defined* — as containers being in an unknown
+state, then built a causal chain on it and concluded the 5V rail sag was
+causing NVMe corruption. That is precisely the wrong answer `CLAUDE.md`
+records: the NVMe dropouts are a **PCIe transport fault**, and power and APST
+were both investigated and ruled out.
+
+The lesson generalises. A 4B will assemble a confident, well-structured,
+plausible story out of a misread label. What fixes it is not a bigger model but
+**grounding** — the system prompt now states the hard-won facts about this
+machine explicitly, including that unsafe-shutdown counts are cumulative
+lifetime totals rather than live events. When a report is wrong, add the fact
+it lacked rather than arguing with the model.
 
 With no model downloaded the observer still runs and still records evidence;
 the assessment section simply says the model did not answer. That is
