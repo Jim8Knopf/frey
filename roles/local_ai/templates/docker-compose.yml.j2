@@ -90,8 +90,63 @@ services:
     cap_drop: [ALL]
     read_only: true
     tmpfs: [/tmp]
+{% if local_ai.observer.enabled | bool %}
+{% set o = local_ai.observer %}
+  observer:
+    profiles: [observer]
+    image: {{ o.image }}
+    container_name: {{ o.container_name }}
+    restart: unless-stopped
+    user: "{{ o.uid }}:{{ o.gid }}"
+    command: ["python3", "-u", "{{ o.script_path }}"]
+    environment:
+      - TZ={{ frey.timezone }}
+      - PYTHONDONTWRITEBYTECODE=1
+      - FREY_NODE={{ frey.node_name }}
+      - OBSERVER_LOG_LEVEL={{ o.log_level }}
+      - PROM_URL=http://prometheus:9090
+      - LOKI_URL=http://loki:3100
+      - ALERTMANAGER_URL=http://alertmanager:9093
+      - RELAY_URL=http://alert-relay:8080
+      - MODEL_URL=http://model:8080
+      - DRAFTS_DIR=/drafts
+      - TEXTFILE_DIR=/textfile
+      - NOTES_DIR=/notes
+      - POLL_SECONDS={{ o.poll_seconds }}
+      - DAILY_HOUR={{ o.daily_hour }}
+      - MAX_TOKENS={{ o.max_tokens }}
+      - MODEL_TIMEOUT={{ o.model_timeout }}
+      - NOTIFY_SEVERITY={{ o.notify_severity }}
+      - RUNBOOK_PAGE={{ o.runbook_page }}
+    volumes:
+      # Exactly one read-write mount. Everything else is read-only, and
+      # anything forbidden is simply absent: no photos, no secrets, no PKI,
+      # no stacks directory, no Docker socket, no host root. A path that was
+      # never mapped in cannot be reached by traversal, symlink or bug - the
+      # denial is ENOENT rather than EACCES.
+      - "{{ o.drafts_dir }}:/drafts"
+      - "{{ frey.metrics_textfile_dir }}:/textfile:ro"
+      - "{{ frey.notes_data_dir }}:/notes:ro"
+      - "{{ local_ai.stack_dir }}/observer.py:{{ o.script_path }}:ro"
+    networks:
+      # Both internal. The observer therefore has no route to the internet,
+      # which is what makes its broad read access safe: there is nowhere to
+      # send anything, and its only output is a file you read.
+      - ai_private
+      - {{ frey.ai_observe_network }}
+    cpus: {{ o.cpus }}
+    mem_limit: {{ o.mem_limit }}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+{% endif %}
 networks:
   {{ frey.proxy_network }}:
     external: true
   ai_private:
     internal: true
+{% if local_ai.observer.enabled | bool %}
+  {{ frey.ai_observe_network }}:
+    external: true
+{% endif %}

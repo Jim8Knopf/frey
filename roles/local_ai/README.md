@@ -108,14 +108,91 @@ purpose** in Dockge. Retry immediately with:
 sudo systemctl start 'frey-local-ai-download@qwen35-4b.service'
 ```
 
+## The observer
+
+Phase 1 of `docs/LOCAL_AI_AGENT_PLAN.md`: a component that **reads and
+explains, and cannot act**. There is no broker, no Docker socket, no shell and
+no action verb anywhere in it. The limits are a property of what is mounted and
+which networks it is on, not of the prompt.
+
+It polls Alertmanager every five minutes. When an alert it has not seen before
+is firing, it gathers evidence from Prometheus, Loki and the textfile
+collectors, asks the local model to explain it, and writes a Markdown report
+into its drafts directory. It also writes one daily summary. A report about a
+**critical** alert is pushed to your phone; a warning is written silently,
+matching Frey's two-severity convention.
+
+Alertmanager is **polled, not configured to push here.** Adding a receiver
+would put this component in the path of the notifications Frey already depends
+on, and polling cannot break them.
+
+### Its boundaries
+
+| | |
+| --- | --- |
+| writes | `/opt/frey/appdata/local-ai/drafts` only, as uid 10002 |
+| reads | notes, media metadata, textfile collectors, Prometheus, Loki |
+| networks | `ai_private` and `ai_observe`, **both internal** |
+| never mounted | photos, Immich, `/opt/frey/pki`, `.vault_pass`, `/opt/frey/stacks`, `docker.sock`, host `/etc` |
+
+It has **no internet egress at all**, which is what makes broad read access
+safe: there is nowhere to send anything, and its only output is a file you
+read. Notifications therefore go through the existing alert relay, which
+already owns ntfy delivery and queues messages on disk until an uplink
+appears — rather than punching a hole in the network boundary.
+
+`monitoring_internal` is **not** internal despite its name, which is why
+`ai_observe` exists: Prometheus, Loki, Alertmanager and the relay join it as a
+second network so the observer can reach them without inheriting their egress.
+`local_ai` creates it and runs earlier in `frey.modules.enabled`; monitoring
+joins it as external, guarded on `local_ai` being enabled so monitoring still
+deploys with the module switched off.
+
+Reports are deliberately **not** written into the notes space. The write
+boundary is enforced by the read-only mount rather than by a path check, and
+the observer has its own uid so a future read-write mount cannot silently
+grant it notes access. Promote a report by hand when you want it in Notes.
+
+### Reading the notes needs an ACL
+
+The notes directory is mode 0700 owned by SilverBullet (uid 10001) and the note
+files are 0600, so a read-only mount alone is not enough — the inode
+permissions block it regardless of the mount. The role installs the `acl`
+package and grants `u:10002:rX` recursively, plus a **default** ACL on
+directories so notes created later inherit the grant. An ACL is used rather
+than widening the mode because the mode is shared with everyone and the grant
+should not be.
+
+Capital `X` grants execute only on directories, so note files do not pick up a
+pointless execute bit.
+
+### Caveats
+
+Every report is written by a 4B model. Verify every claim before acting on one;
+the model is given evidence and asked to classify it, never to invent a fix,
+and the system prompt forbids suggesting changes to networking, SSH, the
+firewall or a deploy — none of which it could perform anyway.
+
+With no model downloaded the observer still runs and still records evidence;
+the assessment section simply says the model did not answer. That is
+deliberate: a monitoring component that refuses to run until everything else is
+healthy is useless in exactly the situation it exists for.
+
 ## Verifying
 
 From the Frey project directory on the admin computer:
 
 ```sh
-bash scripts/local-ai-ready-check.sh   # download, readiness and isolation; exit 2 = still downloading
-bash scripts/local-ai-check.sh         # anonymous access is redirected
+bash scripts/local-ai-ready-check.sh     # download, readiness and isolation; exit 2 = still downloading
+bash scripts/local-ai-check.sh           # anonymous access is redirected
+bash scripts/local-ai-observer-check.sh  # tries to break every observer boundary
 ```
+
+`local-ai-observer-check.sh` is the important one. It attempts egress, attempts
+to write outside `/drafts`, attempts a traversal out of the notes mount and
+stats every forbidden path — and requires each attempt to fail. Forbidden paths
+must report **ENOENT, not EACCES**: that is the difference between "not
+mounted" and "mounted but denied", and only the first is a real boundary.
 
 Neither tests sign-in, vision, or the quality of an answer. The real
 acceptance test is a second deploy reporting **0 changed**, then these scripts,

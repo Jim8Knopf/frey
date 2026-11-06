@@ -1,0 +1,51 @@
+#!/bin/sh
+# Managed by Ansible. Do not edit on the Pi.
+#
+# Grant the observer's uid read access to the notes space without changing its
+# mode or its ownership. The notes directory is 0700 owned by SilverBullet and
+# the note files are 0600, so a read-only bind mount alone is not enough - the
+# inode permissions block it regardless of the mount.
+#
+# An ACL is used rather than widening the mode because the mode is shared with
+# everyone and the grant should not be. The observer keeps its own uid, so its
+# write boundary stays enforced by the read-only mount rather than by identity.
+#
+# Two grants are needed:
+#   access  ACL  so existing notes are readable
+#   default ACL  on directories, so notes created later inherit the grant
+#
+# rX, not rx: capital X grants execute only on directories, so note files do
+# not pick up a pointless execute bit.
+#
+# Prints CHANGED or OK so Ansible can report idempotence honestly. Both find
+# tests use -exec rather than shell word-splitting, because campaign note
+# filenames contain spaces.
+set -eu
+
+uid='{{ local_ai.observer.uid }}'
+dir='{{ frey.notes_data_dir }}'
+
+if [ ! -d "$dir" ]; then
+  echo "OK notes directory does not exist yet"
+  exit 0
+fi
+
+missing_access=$(
+  find "$dir" \( -type f -o -type d \) \
+    ! -exec sh -c 'getfacl -p -- "$1" 2>/dev/null | grep -q "^user:'"$uid"':"' _ {} \; \
+    -print 2>/dev/null | head -n 1
+)
+
+missing_default=$(
+  find "$dir" -type d \
+    ! -exec sh -c 'getfacl -p -- "$1" 2>/dev/null | grep -q "^default:user:'"$uid"':"' _ {} \; \
+    -print 2>/dev/null | head -n 1
+)
+
+if [ -n "$missing_access" ] || [ -n "$missing_default" ]; then
+  setfacl -R -m "u:${uid}:rX" -- "$dir"
+  find "$dir" -type d -exec setfacl -d -m "u:${uid}:rX" -- {} +
+  echo CHANGED
+else
+  echo OK
+fi

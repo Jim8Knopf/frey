@@ -1,0 +1,13 @@
+---
+# The observer program is bind-mounted read-only into the container, so a new
+# version on disk is not picked up until the process restarts.
+- name: Restart local AI observer
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [observer]
+    services: [observer]
+    state: restarted
+    pull: never
+  when:
+    - local_ai.observer.enabled | bool
+    - not ansible_check_mode

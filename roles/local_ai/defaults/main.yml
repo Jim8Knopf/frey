@@ -82,6 +82,57 @@ local_ai:
   image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
   gateway_image: "traefik:{{ traefik_version }}"
 
+  # Phase 1 of docs/LOCAL_AI_AGENT_PLAN.md: an observer that reads and
+  # explains, and cannot act. There is no broker, no Docker socket and no
+  # action verb - the limits are a property of what is mounted and what
+  # network it is on, not of the prompt.
+  observer:
+    enabled: true
+    container_name: frey-local-ai-observer
+    # Reuses the pinned Python image the alert relay already runs, so this
+    # adds no new image to track. The observer is stdlib-only for the same
+    # reason: no pip, no wheels, nothing to fetch at runtime.
+    image: "python:{{ monitoring_versions.relay_base }}"
+    script_path: /opt/frey-local-ai-observer/observer.py
+
+    # Its own identity, owning exactly one directory. Not SilverBullet's uid:
+    # sharing that would mean a future read-write mount silently granted it
+    # notes write access.
+    uid: 10002
+    gid: 10002
+    user_name: frey_local_ai
+
+    # The only read-write mount it has. Reports land here for you to promote
+    # by hand; nothing in the notes space is writable by the observer.
+    drafts_dir: "{{ frey.base_dir }}/appdata/local-ai/drafts"
+
+    mem_limit: 256m
+    cpus: 0.5
+
+    # Alertmanager is polled rather than configured to push here, so this
+    # component can never break the notification path Frey depends on. Five
+    # minutes is well inside the time it takes anyone to react from a phone.
+    poll_seconds: 300
+    # Local hour after which the daily summary is written, once per day.
+    daily_hour: 7
+    # A token budget is a time budget at ~3.5 tokens/s: 500 is about 2.5 min.
+    max_tokens: 500
+    model_timeout: 900
+    # Matches Frey's two severities: critical buzzes, warning stays silent.
+    notify_severity: critical
+    log_level: INFO
+
+    # A page in the notes space, relative to the notes root, holding your own
+    # "what to check first" guidance. Handed to the model as instructions from
+    # you, which beats anything a 4B knows about Frey - and the advice improves
+    # when you write, not when the model changes.
+    #
+    # This is the one use of the read-only notes mount that earns its place in
+    # a health reporter. An absent file is normal and silent, so this can be
+    # set before the page exists. Set to "" to not read the notes at all.
+    # The deployed space is spaces/notes (lowercase), holding index.md.
+    runbook_page: "spaces/notes/Frey/Runbook.md"
+
   # Units the role must remove, because renaming a template does not delete
   # what a previous deploy already installed on the Pi.
   legacy_units:

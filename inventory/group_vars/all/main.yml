@@ -16,6 +16,25 @@ frey:
     traefik_ip: 172.31.250.2
     navidrome_ip: 172.31.250.3
   pki_public_dir: '{{ frey.base_dir }}/pki-public'
+  # The observer reads Prometheus, Loki and Alertmanager, and hands
+  # notifications to the alert relay - but it must not gain internet egress,
+  # because broad read access is only safe while there is nowhere to send
+  # anything. monitoring_internal is NOT internal despite the name, so the
+  # two modules meet on this separate internal-only network instead.
+  #
+  # Declared here, not read out of roles/local_ai, because monitoring attaches
+  # containers to it and a role's defaults are only in scope while it runs.
+  # local_ai creates it and runs first; monitoring joins it as external.
+  ai_observe_network: ai_observe
+  # The notes space, which the observer mounts read-only. Owned by
+  # silverbullet (uid 10001, mode 700), so the observer's own uid is granted
+  # read access by ACL rather than by widening the mode for everyone.
+  notes_data_dir: '{{ frey.base_dir }}/appdata/silverbullet'
+  # node-exporter's textfile directory: the documented seam for everything the
+  # Pi knows about itself that no exporter reports. monitoring writes it and
+  # the observer reads it, so it is declared here rather than read out of
+  # roles/monitoring, whose defaults are not in scope while local_ai runs.
+  metrics_textfile_dir: '{{ frey.base_dir }}/metrics/textfile'
   # Debian 13 reads sysctl.d at boot, not /etc/sysctl.conf.
   sysctl_file: /etc/sysctl.d/99-frey.conf
   # Fixed leases outside the DHCP pool; exempt from SSH bans. See docs/SSH_ACCESS.md.

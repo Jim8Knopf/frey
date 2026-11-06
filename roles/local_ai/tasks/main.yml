@@ -38,6 +38,60 @@
     - "{{ local_ai.stack_dir }}/models.d"
     - "{{ local_ai.model_dir }}"
 
+# --- Observer identity and boundaries --------------------------------------
+
+- name: Install ACL tooling for the observer's notes access
+  ansible.builtin.apt:
+    name: acl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: local_ai.observer.enabled | bool
+
+- name: Create the observer group
+  ansible.builtin.group:
+    name: "{{ local_ai.observer.user_name }}"
+    gid: "{{ local_ai.observer.gid }}"
+    system: true
+  when: local_ai.observer.enabled | bool
+
+# Its own identity, owning exactly one directory. Deliberately not
+# SilverBullet's uid: sharing that would mean a future read-write mount
+# silently granted the observer write access to the notes.
+- name: Create the observer user
+  ansible.builtin.user:
+    name: "{{ local_ai.observer.user_name }}"
+    uid: "{{ local_ai.observer.uid }}"
+    group: "{{ local_ai.observer.user_name }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    home: "{{ local_ai.observer.drafts_dir }}"
+  when: local_ai.observer.enabled | bool
+
+- name: Create the observer drafts directory
+  ansible.builtin.file:
+    path: "{{ local_ai.observer.drafts_dir }}"
+    state: directory
+    owner: "{{ local_ai.observer.uid }}"
+    group: "{{ local_ai.observer.gid }}"
+    mode: "0750"
+  when: local_ai.observer.enabled | bool
+
+# Internal-only, so the observer can reach Prometheus, Loki, Alertmanager and
+# the alert relay without gaining egress. monitoring_internal is NOT internal
+# despite its name, which is why this network exists at all. local_ai runs
+# before monitoring, so creating it here means monitoring can join it as an
+# external network.
+- name: Create the internal observation network
+  community.docker.docker_network:
+    name: "{{ frey.ai_observe_network }}"
+    internal: true
+    state: present
+  when:
+    - local_ai.observer.enabled | bool
+    - not ansible_check_mode
+
 # --- Retire the campaign_ai deployment -------------------------------------
 #
 # Renaming a template does not remove what a previous deploy installed. The
@@ -121,6 +175,38 @@
     - {src: download-model.sh.j2, dest: download-model.sh, mode: "0755"}
   when: not ansible_check_mode or local_ai_stack_stat.stat.exists
 
+- name: Install the observer program
+  ansible.builtin.copy:
+    src: observer.py
+    dest: "{{ local_ai.stack_dir }}/observer.py"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - local_ai.observer.enabled | bool
+    - not ansible_check_mode or local_ai_stack_stat.stat.exists
+  notify: Restart local AI observer
+
+- name: Install the notes ACL helper
+  ansible.builtin.template:
+    src: grant-notes-acl.sh.j2
+    dest: "{{ local_ai.stack_dir }}/grant-notes-acl.sh"
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - local_ai.observer.enabled | bool
+    - not ansible_check_mode or local_ai_stack_stat.stat.exists
+
+- name: Grant the observer read access to the notes space
+  ansible.builtin.command:
+    cmd: "{{ local_ai.stack_dir }}/grant-notes-acl.sh"
+  register: local_ai_notes_acl
+  changed_when: "'CHANGED' in local_ai_notes_acl.stdout"
+  when:
+    - local_ai.observer.enabled | bool
+    - not ansible_check_mode
+
 - name: Install a download manifest for every registered model
   ansible.builtin.template:
     src: model.manifest.j2
@@ -162,6 +248,22 @@
     state: present
     pull: never
   when: not ansible_check_mode
+
+# Started regardless of whether the model has finished downloading. With no
+# model it still gathers and records evidence; the assessment section simply
+# says the model did not answer. A monitoring component that refuses to run
+# until everything else is perfect is useless in exactly the situation it
+# exists for.
+- name: Start the read-only observer
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [observer]
+    services: [observer]
+    state: present
+    pull: never
+  when:
+    - local_ai.observer.enabled | bool
+    - not ansible_check_mode
 
 # --- Models ----------------------------------------------------------------
 

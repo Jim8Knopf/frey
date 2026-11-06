@@ -128,6 +128,14 @@ networks:
     external: true
   {{ m.network.name }}:
     external: true
+{% if 'local_ai' in frey.modules.enabled %}
+  # Created by local_ai, which runs earlier in frey.modules.enabled. Joined
+  # here so the read-only observer can query Prometheus, Loki and Alertmanager
+  # and hand notifications to the relay. It is internal: true, unlike
+  # monitoring's own network, so the observer gains no internet egress.
+  {{ frey.ai_observe_network }}:
+    external: true
+{% endif %}
 
 services:
 {% if svc.dockge.enabled | bool %}
@@ -192,6 +200,11 @@ services:
       # Needed to scrape Traefik's own metrics endpoint, which only exists on
       # the proxy network, and for Traefik to serve this UI.
       - {{ frey.proxy_network }}
+{% if 'local_ai' in frey.modules.enabled %}
+      # Lets the read-only observer reach this service on an
+      # internal-only network, so it gains no egress of its own.
+      - {{ frey.ai_observe_network }}
+{% endif %}
     mem_limit: {{ svc.prometheus.mem_limit }}
     security_opt:
       - no-new-privileges:true
@@ -232,6 +245,11 @@ services:
     networks:
       - {{ m.network.name }}
       - {{ frey.proxy_network }}
+{% if 'local_ai' in frey.modules.enabled %}
+      # Lets the read-only observer reach this service on an
+      # internal-only network, so it gains no egress of its own.
+      - {{ frey.ai_observe_network }}
+{% endif %}
     mem_limit: {{ svc.alertmanager.mem_limit }}
     security_opt:
       - no-new-privileges:true
@@ -298,6 +316,11 @@ services:
       - "{{ m.relay.data_dir }}:/data"
     networks:
       - {{ m.network.name }}
+{% if 'local_ai' in frey.modules.enabled %}
+      # Lets the read-only observer reach this service on an
+      # internal-only network, so it gains no egress of its own.
+      - {{ frey.ai_observe_network }}
+{% endif %}
     mem_limit: {{ svc.alert_relay.mem_limit }}
     security_opt:
       - no-new-privileges:true
@@ -510,6 +533,11 @@ services:
       - "{{ m.appdata_dir }}/loki:/loki"
     networks:
       - {{ m.network.name }}
+{% if 'local_ai' in frey.modules.enabled %}
+      # Lets the read-only observer reach this service on an
+      # internal-only network, so it gains no egress of its own.
+      - {{ frey.ai_observe_network }}
+{% endif %}
     mem_limit: {{ svc.loki.mem_limit }}
     security_opt:
       - no-new-privileges:true
