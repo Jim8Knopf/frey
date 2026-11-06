@@ -335,4 +335,6 @@ whitelist · `docs/SECURITY.md` · `docs/NVME_MIGRATION.md` ·
 `docs/ADDING_MODULES.md` · `docs/ARCHITECTURE.md` · `docs/IMPROVEMENTS.md` roadmap ·
 `docs/LOCAL_AI_EVALUATION.md` the case for generalising and renaming
 `campaign_ai`, and the model/runtime verdicts behind it ·
+`docs/LOCAL_AI_AGENT_PLAN.md` the self-healing agent, its broker, and the
+six mechanisms that hard-limit it ·
 plus a `README.md` in every role.
