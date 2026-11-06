@@ -127,12 +127,33 @@ readonly = sorted(m['Destination'] for m in c['Mounts'] if not m.get('RW'))
 if readonly:
     ok(f'read-only mounts: {readonly}')
 
-sources = ' '.join(m['Source'] for m in c['Mounts'])
-for forbidden in ('docker.sock', '/opt/frey/pki', '/opt/frey/stacks', 'photo', 'immich'):
-    if forbidden in sources:
-        fail(f'forbidden path is mounted: {forbidden}')
-    else:
-        ok(f'not mounted: {forbidden}')
+# An allowlist of destinations, not a substring search for forbidden ones.
+# Substring matching gives a false positive here: the observer's own program
+# is a single file mounted from inside /opt/frey/stacks, which does not expose
+# that directory - as the in-container probe below proves by getting ENOENT
+# for the directory itself. An exact allowlist also catches a mount nobody
+# thought to forbid, which a denylist never can.
+allowed_destinations = {
+    '/drafts',
+    '/notes',
+    '/textfile',
+    '/opt/frey-local-ai-observer/observer.py',
+}
+actual_destinations = {m['Destination'] for m in c['Mounts']}
+unexpected = actual_destinations - allowed_destinations
+if unexpected:
+    fail(f'unexpected mounts present: {sorted(unexpected)}')
+else:
+    ok(f'mounts are exactly the {len(allowed_destinations)} expected destinations')
+
+# The program file must be a single regular file, not a directory handed in
+# from the stacks tree.
+for mount in c['Mounts']:
+    if mount['Destination'] == '/opt/frey-local-ai-observer/observer.py':
+        if mount['Source'].endswith('/observer.py') and not mount.get('RW'):
+            ok('program is mounted as a single read-only file')
+        else:
+            fail(f"program mount looks wrong: {mount['Source']}")
 
 # --- Attempt to reach what must be unreachable -----------------------------
 

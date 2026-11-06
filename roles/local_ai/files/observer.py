@@ -62,15 +62,38 @@ STATE_PATH = DRAFTS_DIR / ".observer-state.json"
 # query: it is handed evidence and asked to explain it. That keeps this a
 # classification problem, which a 4B can do, rather than an invention problem,
 # which it cannot.
+#
+# Metric names below were checked against the live Prometheus label API before
+# being written here. That matters more than it sounds: a query naming a
+# metric that does not exist returns an empty result and raises no error
+# anywhere, so a typo becomes a permanent blind spot that looks like good
+# news. `frey_nvme_unsafe_shutdowns` and `frey_throttled` were both wrong -
+# the real names carry suffixes - and nothing would ever have reported it.
+# audit_queries() re-checks them at startup for the same reason.
 PROM_QUERIES = {
     "targets_down": 'up == 0',
-    "containers_restarting": 'increase(container_start_time_seconds[1h]) > 0',
+    # changes(), not increase(): start time is a gauge that steps when a
+    # container is recreated, and increase() is for counters.
+    "containers_restarting": 'changes(container_start_time_seconds[1h]) > 0',
     "root_fs_avail_bytes": 'node_filesystem_avail_bytes{mountpoint="/"}',
     "load1": 'node_load1',
     "cpu_temp_celsius": 'node_hwmon_temp_celsius',
-    "unsafe_shutdowns": 'frey_nvme_unsafe_shutdowns',
-    "throttled": 'frey_throttled',
+    "unsafe_shutdowns": 'frey_nvme_unsafe_shutdowns_total',
+    "throttled_now": 'frey_throttled_now',
+    "throttled_ever": 'frey_throttled_occurred',
 }
+
+# Metric names referenced above, for the startup audit.
+AUDITED_METRICS = (
+    "up",
+    "container_start_time_seconds",
+    "node_filesystem_avail_bytes",
+    "node_load1",
+    "node_hwmon_temp_celsius",
+    "frey_nvme_unsafe_shutdowns_total",
+    "frey_throttled_now",
+    "frey_throttled_occurred",
+)
 
 
 def _get_json(url, timeout=15):
@@ -406,6 +429,29 @@ def run_once(state):
         save_state(state)
 
 
+def audit_queries():
+    """Warn about metric names Prometheus does not know.
+
+    An absent metric returns an empty result and raises no error, so a rename
+    upstream turns a check into a permanent blind spot that reads as good news.
+    This cannot distinguish "empty because healthy" from "empty because gone",
+    which is exactly why the names are audited directly instead.
+    """
+    try:
+        data = _get_json(f"{PROM_URL}/api/v1/label/__name__/values", timeout=20)
+        known = set(data.get("data") or [])
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log.warning("cannot audit metric names: %s", exc)
+        return
+    if not known:
+        return
+    missing = [m for m in AUDITED_METRICS if m not in known]
+    if missing:
+        log.warning("metrics absent from Prometheus, checks are blind: %s", missing)
+    else:
+        log.info("all %d audited metric names exist", len(AUDITED_METRICS))
+
+
 def main():
     log.info(
         "observer starting: poll=%ss daily_hour=%s drafts=%s",
@@ -413,6 +459,7 @@ def main():
         DAILY_HOUR,
         DRAFTS_DIR,
     )
+    audit_queries()
     state = load_state()
     while True:
         try:
