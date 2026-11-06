@@ -32,7 +32,7 @@ sections:
     items:
 {% for name in visible %}
 {% set service = identity_services[name] %}
-      - title: {{ ('Wi-Fi' if name == 'wifi' else ('Campaign assistant' if name == 'campaign_ai' else name | title)) | to_json }}
+      - title: {{ ('Wi-Fi' if name == 'wifi' else ('Assistant' if name == 'local_ai' else name | title)) | to_json }}
         url: {{ ('https://' ~ service.hosts[0] ~ '.' ~ frey.service_domain) | to_json }}
         displayData:
           showForGroups: {{ (service.groups if service.groups | length > 0 else (['frey_admins', 'media'] if name == 'seerr' else ['frey_admins'])) | to_json }}

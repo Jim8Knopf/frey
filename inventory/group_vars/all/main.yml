@@ -40,7 +40,7 @@ frey:
       - frey_pki
       - identity
       - silverbullet
-      - campaign_ai
+      - local_ai
       - media_acquisition
       - media_library
       - wifi_portal
@@ -101,10 +101,10 @@ frey:
         role: silverbullet
         tags:
           - silverbullet
-      campaign_ai:
-        role: campaign_ai
+      local_ai:
+        role: local_ai
         tags:
-          - campaign_ai
+          - local_ai
       wifi_portal:
         role: wifi_portal
         tags:

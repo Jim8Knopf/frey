@@ -109,6 +109,9 @@ network_gateway → rpi_nvme → service_proxy → security_baseline
   → identity        (creates authelia@file; a router naming an unknown
                      middleware is DROPPED, so the service 404s with a
                      perfectly healthy container)
+  → silverbullet → local_ai   (local_ai asserts its own entry in
+                               identity_services, so the identity key and the
+                               role name must be renamed together)
   → media_acquisition → media_library   (acquisition generates the *arr API
                                          keys library wires Seerr to)
   → wifi_portal → dashy

@@ -1,0 +1,7 @@
+# Managed by Ansible. Do not edit on the Pi.
+# Artifacts for model '{{ key }}': sha256, filename, url.
+# Plain # comments only - a Jinja {# #} comment would eat the next line.
+{{ m.sha256 }} {{ m.file }} {{ m.url }}
+{% if m.mmproj_file is defined %}
+{{ m.mmproj_sha256 }} {{ m.mmproj_file }} {{ m.mmproj_url }}
+{% endif %}

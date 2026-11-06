@@ -1,0 +1,10 @@
+[Unit]
+Description=Retry the local AI model %i download when needed
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=frey-local-ai-download@%i.service
+
+[Install]
+WantedBy=timers.target

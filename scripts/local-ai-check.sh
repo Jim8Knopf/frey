@@ -3,7 +3,7 @@
 set -uo pipefail
 PI_ADDR="${PI_ADDR:-10.20.0.1}"
 CA="${CA:-ca/frey-root-ca.crt}"
-HOST="${HOSTNAME_CAMPAIGN_AI:-campaign-ai.hub.frey}"
+HOST="${HOSTNAME_LOCAL_AI:-ai.hub.frey}"
 failures=0
 
 if [[ ! -r "$CA" ]]; then

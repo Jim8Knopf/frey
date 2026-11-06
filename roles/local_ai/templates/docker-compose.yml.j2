@@ -1,0 +1,97 @@
+# Managed by Ansible. Do not edit on the Pi.
+#
+# Two containers on purpose. The gateway speaks to Frey's authenticated proxy;
+# the model sits on an internal-only network with no egress, no Docker socket,
+# no credentials and nothing mounted but its own weights, read-only. Widening
+# what the assistant can answer must never widen what it can reach.
+{% set m = local_ai.models[local_ai.default_model] %}
+services:
+  gateway:
+    image: {{ local_ai.gateway_image }}
+    container_name: frey-local-ai-gateway
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - --entrypoints.web.address=:8080
+      - --providers.file.filename=/etc/traefik/route.yml
+      - --accesslog=false
+    volumes:
+      - "{{ local_ai.stack_dir }}/route.yml:/etc/traefik/route.yml:ro"
+    networks:
+      - {{ frey.proxy_network }}
+      - ai_private
+    mem_limit: 128m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.local-ai.loadbalancer.server.port=8080"
+      - "traefik.http.routers.local-ai.rule=Host(`{{ local_ai.host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.local-ai.entrypoints=websecure"
+      - "traefik.http.routers.local-ai.tls=true"
+      - "traefik.http.routers.local-ai.middlewares=secure-headers@file,authelia@file"
+      - "traefik.http.routers.local-ai-legacy.rule=Host(`{{ local_ai.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.local-ai-legacy.entrypoints=websecure"
+      - "traefik.http.routers.local-ai-legacy.tls=true"
+      - "traefik.http.routers.local-ai-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.local-ai-legacy.service=local-ai"
+      - "traefik.http.routers.local-ai-http.rule=Host(`{{ local_ai.host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.local-ai-http.entrypoints=web"
+      - "traefik.http.routers.local-ai-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.local-ai-http.service=local-ai"
+  model:
+    profiles: [model]
+    image: {{ local_ai.image }}
+    container_name: frey-local-ai-model
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - "-m"
+      - "/models/{{ m.file }}"
+{% if m.mmproj_file is defined %}
+      - "--mmproj"
+      - "/models/{{ m.mmproj_file }}"
+{% endif %}
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--threads"
+      - "{{ m.threads }}"
+      - "--ctx-size"
+      - "{{ m.ctx }}"
+      - "--cache-reuse"
+      - "{{ m.cache_reuse }}"
+      - "-fa"
+      - "{{ m.flash_attn }}"
+      - "--temp"
+      - "{{ m.temperature }}"
+      - "--top-p"
+      - "{{ m.top_p }}"
+      - "--top-k"
+      - "{{ m.top_k }}"
+      - "--min-p"
+      - "{{ m.min_p }}"
+      - "--presence-penalty"
+      - "{{ m.presence_penalty }}"
+      - "--jinja"
+      - "--chat-template-kwargs"
+      - '{"enable_thinking":{{ m.enable_thinking | lower }}}'
+    volumes:
+      - "{{ local_ai.model_dir }}:/models:ro"
+    networks:
+      - ai_private
+    cpus: {{ m.cpus }}
+    mem_limit: {{ m.mem_limit }}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+networks:
+  {{ frey.proxy_network }}:
+    external: true
+  ai_private:
+    internal: true

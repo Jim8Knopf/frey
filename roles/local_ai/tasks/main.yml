@@ -1,0 +1,211 @@
+---
+# Fail before touching anything if the access policy is not what this role
+# expects. The identity key and the role name must be renamed together, which
+# this assert enforces.
+- name: Validate local AI access policy
+  ansible.builtin.assert:
+    that:
+      - local_ai.host in identity_services.local_ai.hosts
+      - identity_services.local_ai.auth == 'forward_auth'
+      - identity_services.local_ai.groups | sort == ['frey_admins', 'notes'] | sort
+      - local_ai.default_model in local_ai.models
+    fail_msg: >-
+      local_ai is not registered correctly in identity_services, or
+      default_model names a model that is not in the registry.
+
+# Every artifact must be pinned by checksum. A model file is executable input
+# to a process: an unverified download is an unreviewed dependency.
+- name: Validate model registry checksums
+  ansible.builtin.assert:
+    that:
+      - item.value.sha256 is match('^[a-f0-9]{64}$')
+      - item.value.mmproj_file is not defined or item.value.mmproj_sha256 is match('^[a-f0-9]{64}$')
+    fail_msg: "model '{{ item.key }}' has a missing or malformed SHA-256"
+    quiet: true
+  loop: "{{ local_ai.models | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Create local AI directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ local_ai.stack_dir }}"
+    - "{{ local_ai.stack_dir }}/models.d"
+    - "{{ local_ai.model_dir }}"
+
+# --- Retire the campaign_ai deployment -------------------------------------
+#
+# Renaming a template does not remove what a previous deploy installed. The
+# old containers would otherwise keep running and claim the same Traefik
+# router names as the new ones, and the old timer would keep firing a unit
+# whose script no longer exists.
+
+- name: Stop and remove the retired campaign assistant containers
+  community.docker.docker_container:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ local_ai.legacy_containers }}"
+  when: not ansible_check_mode
+
+- name: Remove the retired campaign assistant network
+  community.docker.docker_network:
+    name: "{{ local_ai.legacy_network }}"
+    state: absent
+  when: not ansible_check_mode
+
+- name: Remove the retired campaign assistant stack directory
+  ansible.builtin.file:
+    path: "{{ local_ai.legacy_stack_dir }}"
+    state: absent
+  when: not ansible_check_mode
+
+# The retired model file is deliberately left on disk. It is 1.2 GiB of
+# working fallback that cost a slow uplink to fetch, and deleting it is a
+# judgement call for an administrator, not a side effect of a rename.
+
+- name: Disable the retired download timer
+  ansible.builtin.systemd_service:
+    name: frey-campaign-ai-download.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Remove the retired download units
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}"
+    state: absent
+  loop: "{{ local_ai.legacy_units }}"
+  register: local_ai_legacy_removed
+
+# --- Install the local AI stack --------------------------------------------
+
+- name: Check whether the local AI stack directory exists
+  ansible.builtin.stat:
+    path: "{{ local_ai.stack_dir }}"
+  register: local_ai_stack_stat
+
+- name: Pull pinned local AI images
+  community.docker.docker_image_pull:
+    name: "{{ item }}"
+    pull: not_present
+  loop:
+    - "{{ local_ai.image }}"
+    - "{{ local_ai.gateway_image }}"
+  when: not ansible_check_mode
+
+- name: Install and validate the local AI compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ local_ai.stack_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "docker compose -f %s --profile model config --quiet"
+  when: not ansible_check_mode or local_ai_stack_stat.stat.exists
+
+- name: Install local AI configuration
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ local_ai.stack_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {src: route.yml.j2, dest: route.yml, mode: "0644"}
+    - {src: download-model.sh.j2, dest: download-model.sh, mode: "0755"}
+  when: not ansible_check_mode or local_ai_stack_stat.stat.exists
+
+- name: Install a download manifest for every registered model
+  ansible.builtin.template:
+    src: model.manifest.j2
+    dest: "{{ local_ai.stack_dir }}/models.d/{{ item.key }}.manifest"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ local_ai.models | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    key: "{{ item.key }}"
+    m: "{{ item.value }}"
+  when: not ansible_check_mode or local_ai_stack_stat.stat.exists
+
+- name: Install the model download service and retry timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-local-ai-download@.service
+    - frey-local-ai-download@.timer
+  register: local_ai_download_unit
+
+- name: Reload systemd after changing download units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - local_ai_download_unit.changed or local_ai_legacy_removed.changed
+    - not ansible_check_mode
+
+- name: Start the authenticated local AI gateway
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    services: [gateway]
+    state: present
+    pull: never
+  when: not ansible_check_mode
+
+# --- Models ----------------------------------------------------------------
+
+- name: Check which registered models have completed downloading
+  ansible.builtin.stat:
+    path: "{{ local_ai.model_dir }}/.{{ item.key }}.complete"
+  loop: "{{ local_ai.models | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: local_ai_model_markers
+
+- name: Start the served model when it is available
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [model]
+    services: [model]
+    state: present
+    pull: never
+  when:
+    - not ansible_check_mode
+    - (local_ai_model_markers.results
+       | selectattr('item.key', 'equalto', local_ai.default_model)
+       | map(attribute='stat.exists') | first | default(false))
+
+# A template timer must be enabled per instance. Enabling it for every
+# registered model is what makes adding a model a one-entry change.
+- name: Enable download retries for every registered model
+  ansible.builtin.systemd_service:
+    name: "frey-local-ai-download@{{ item.key }}.timer"
+    enabled: true
+    state: started
+  loop: "{{ local_ai.models | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: not ansible_check_mode
+
+- name: Begin downloads in the background for models not yet complete
+  ansible.builtin.systemd_service:
+    name: "frey-local-ai-download@{{ item.item.key }}.service"
+    state: started
+    no_block: true
+  loop: "{{ local_ai_model_markers.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when:
+    - not ansible_check_mode
+    - not item.stat.exists

@@ -1,0 +1,101 @@
+---
+# Local inference as a shared service, not a single-purpose chat.
+#
+# `models` is a registry: every entry is downloadable and verified, and
+# `default_model` names the one llama-server actually loads. Adding a model is
+# an entry here plus a `systemctl enable frey-local-ai-download@<key>.timer`,
+# which the role does for every registered model.
+#
+# Download sizes and checksums below were read from the Hugging Face API on
+# 2026-11-07 (lfs.oid is the SHA-256). The revision is pinned in the URL for
+# the same reason images are pinned: an unattended pull on campground WiFi can
+# hand you a broken file with no internet left to fix it.
+local_ai:
+  stack_dir: "{{ frey.base_dir }}/stacks/local-ai"
+  model_dir: "{{ frey.base_dir }}/appdata/local-ai/models"
+  host: ai
+
+  # Which registered model llama-server loads. Changing this and redeploying
+  # switches the served model, provided it has finished downloading.
+  default_model: qwen35-4b
+
+  models:
+    # Qwen3.5-4B, Unsloth Dynamic 2.0 4-bit. Natively multimodal: the mmproj
+    # file is what gives llama-server vision, and it is the same server
+    # binary either way. Apache 2.0, 262144 context (we serve far less).
+    #
+    # Verified against llama.cpp b12019 before pinning:
+    #   model architecture  "qwen35"          src/llama-arch.cpp
+    #   mmproj projector    "qwen3vl_merger"  tools/mtmd/clip-impl.h
+    # Qwen3.5 reuses Qwen3-VL's merger, which is why vision works on a build
+    # that contains no string "qwen35" in clip.cpp.
+    qwen35-4b:
+      file: Qwen3.5-4B-UD-Q4_K_XL.gguf
+      url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-UD-Q4_K_XL.gguf
+      sha256: b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7
+      size_bytes: 2912109728
+      mmproj_file: mmproj-F16.gguf
+      mmproj_url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-F16.gguf
+      mmproj_sha256: cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864
+      mmproj_size_bytes: 672423616
+
+      # Generation on this Pi is memory-bandwidth-bound, so speed is set by
+      # file size, not by thread count: ~2.7 GiB of weights at the ~10.5 GB/s
+      # this machine achieves is roughly 3.5 tokens/s. Threads buy prompt
+      # processing, which is compute-bound - and the Pi 5's A76 cores have no
+      # i8mm, so that is the weak axis. Two threads deliberately leaves cores
+      # for the gateway: on a Pi with no Ethernet and no console, gateway
+      # responsiveness outranks inference speed every time.
+      threads: 2
+      cpus: 2.0
+
+      # 2.7 GiB of weights plus the KV cache plus the vision encoder. The host
+      # reported 8 GiB available on 2026-11-07, so this leaves about 3 GiB of
+      # headroom; raise ctx only after re-checking `free -g`.
+      mem_limit: 5g
+      ctx: 8192
+
+      # Reuse cached prompt prefixes via KV shifting instead of reprocessing a
+      # long system prompt on every request. Prompt processing is this
+      # machine's bottleneck, so this is the single largest latency win
+      # available and it costs nothing.
+      cache_reuse: 256
+
+      # Flash attention takes on|off|auto in llama.cpp b12019 - a bare -fa
+      # would swallow the next argument.
+      flash_attn: "on"
+
+      # Sampler defaults published for Qwen3.5 non-thinking general tasks.
+      # The rules benchmark deliberately overrides these with temperature 0;
+      # that is right for benchmarking and wrong for drafting.
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      min_p: 0.0
+      presence_penalty: 1.5
+
+      # The small Qwen3.5 series ships with reasoning disabled by default and
+      # the role keeps it that way: thinking tokens are generated at the same
+      # ~3.5 tokens/s as answer tokens.
+      enable_thinking: false
+
+  image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
+  gateway_image: "traefik:{{ traefik_version }}"
+
+  # Units the role must remove, because renaming a template does not delete
+  # what a previous deploy already installed on the Pi.
+  legacy_units:
+    - frey-campaign-ai-download.service
+    - frey-campaign-ai-download.timer
+  legacy_stack_dir: "{{ frey.base_dir }}/stacks/campaign-ai"
+  legacy_model_dir: "{{ frey.base_dir }}/appdata/campaign-ai/models"
+
+  # Removed by name rather than with `docker compose down`, which skips any
+  # service gated behind a profile - the old model was `profiles: [model]`, so
+  # a compose teardown removed the gateway, left the model running and then
+  # could not delete the network it still held. Removal by name is also the
+  # only thing that still works once the old stack directory is gone.
+  legacy_containers:
+    - frey-campaign-ai-model
+    - frey-campaign-ai-gateway
+  legacy_network: campaign-ai_ai_private

@@ -161,10 +161,20 @@ identity_services:
     groups: [frey_admins, notes]
     hosts: [silverbullet]
 
-  campaign_ai:
+  # Local inference, shared rather than campaign-specific. Access is unchanged
+  # from the campaign assistant it replaces: forward auth, frey_admins and
+  # notes. Widening it is a separate decision from renaming it.
+  #
+  # Forward auth answers an unauthenticated request with a 302 to the login
+  # page, so browser clients work and non-browser clients (a script, an editor
+  # plugin, another host) get HTML instead of JSON from /v1/. Container-to-
+  # container consumers on frey_proxy bypass Authelia the way the rest of Frey
+  # does; an off-Pi API client needs a deliberate bypass that does not exist
+  # yet, and must not be added without a decision.
+  local_ai:
     auth: forward_auth
     groups: [frey_admins, notes]
-    hosts: [campaign-ai]
+    hosts: [ai]
 
   # --- Library ---------------------------------------------------------------
   jellyfin:
