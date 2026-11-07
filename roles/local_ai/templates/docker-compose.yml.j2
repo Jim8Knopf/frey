@@ -60,6 +60,30 @@ services:
       - "traefik.http.routers.campaign-http.middlewares=to-canonical@file"
       - "traefik.http.routers.campaign-http.service=local-ai"
 {% endif %}
+{% if local_ai.hermes.enabled | bool %}
+      # Hermes's hostname, same gateway, and DELIBERATELY WITHOUT
+      # authelia@file. Hermes is an OIDC relying party that runs its own login
+      # against Authelia, so forward auth here would mean authenticating twice
+      # for one service. Access is still restricted to
+      # identity_services.hermes.groups, which Authelia applies before it
+      # issues a token - taking the middleware off does not widen who gets in.
+      #
+      # secure-headers stays: that is transport hardening, not authentication.
+      - "traefik.http.routers.hermes.rule=Host(`{{ local_ai.hermes_host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.hermes.entrypoints=websecure"
+      - "traefik.http.routers.hermes.tls=true"
+      - "traefik.http.routers.hermes.middlewares=secure-headers@file"
+      - "traefik.http.routers.hermes.service=local-ai"
+      - "traefik.http.routers.hermes-legacy.rule=Host(`{{ local_ai.hermes_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.hermes-legacy.entrypoints=websecure"
+      - "traefik.http.routers.hermes-legacy.tls=true"
+      - "traefik.http.routers.hermes-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.hermes-legacy.service=local-ai"
+      - "traefik.http.routers.hermes-http.rule=Host(`{{ local_ai.hermes_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.hermes_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.hermes-http.entrypoints=web"
+      - "traefik.http.routers.hermes-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.hermes-http.service=local-ai"
+{% endif %}
   model:
     profiles: [model]
     image: {{ local_ai.image }}
@@ -246,6 +270,97 @@ services:
     cap_drop: [ALL]
     read_only: true
     tmpfs: [/tmp]
+{% endif %}
+{% if local_ai.hermes.enabled | bool %}
+{% set h = local_ai.hermes %}
+  hermes:
+    profiles: [hermes]
+    image: {{ h.image }}
+    container_name: {{ h.container_name }}
+    restart: unless-stopped
+    # NO `user:` here, and no `init: true` either - both were tried and both
+    # are wrong, in ways the image tells you about only after it fails:
+    #
+    #   `user:` makes s6-overlay's preinit die in a restart loop, because it
+    #   refuses to continue unless /run belongs to the container uid and it
+    #   has no privileges left to fix it ("/run belongs to uid 0 instead of
+    #   10003 ... and we're lacking the privileges to fix it", exit 100). The
+    #   image's own message is explicit: "DON'T use --user", pass HERMES_UID
+    #   and HERMES_GID instead and it remaps its user at boot.
+    #
+    #   `init: true` hides that crash rather than fixing it: with an init
+    #   process as PID 1, s6 notices it is not PID 1 and skips itself - so
+    #   nothing drops privileges and the agent runs as ROOT. That is how the
+    #   one-shot measurements were taken, which is fine for a measurement and
+    #   not fine for a service.
+    #
+    # So: start as root, let s6 fix /run and drop to the uid below.
+    # `dashboard`, not `chat`: this is the long-running web UI. --skip-build
+    # is required and safe - the image ships a prebuilt bundle at
+    # hermes_cli/web_dist, so nothing calls npm at runtime and nothing needs
+    # an uplink. --no-open because there is no browser on the Pi.
+    #
+    # 0.0.0.0 inside the container is what lets Traefik reach it. Hermes
+    # DEMANDS an auth provider for any non-loopback bind - its --insecure flag
+    # became a no-op in the June 2026 hardening - which is satisfied by the
+    # OIDC block in config.yaml, not by a password.
+    command:
+      - dashboard
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "{{ h.port }}"
+      - "--skip-build"
+      - "--no-open"
+    environment:
+      - TZ={{ frey.timezone }}
+      # The supported way to own the data volume as a non-root uid: the image
+      # remaps its `hermes` user to these at boot and chowns /opt/data to
+      # match. PUID/PGID are accepted aliases.
+      - HERMES_UID={{ h.uid }}
+      - HERMES_GID={{ h.gid }}
+      # httpx 0.28.1 builds its SSL context with ssl.create_default_context(),
+      # which reads this - verified in the image against
+      # https://{{ identity_hosts.auth }}.{{ frey.service_domain }}, where OIDC discovery
+      # returned 200 and the expected issuer. Without it the back channel
+      # fails inside the OIDC library, which an app-level "trust everything"
+      # switch would not cover even if one existed.
+      - SSL_CERT_FILE=/frey-ca.crt
+      - REQUESTS_CA_BUNDLE=/frey-ca.crt
+      # Hermes's own watchdogs assume a fast provider. The default
+      # non-streaming cutoff is 240 s, and prefill of its prompt here is
+      # minutes, which is what made a healthy endpoint look broken.
+      - HERMES_LOCAL_STREAM_STALE_TIMEOUT={{ h.stale_timeout }}
+      - HERMES_STREAM_STALE_TIMEOUT={{ h.stale_timeout }}
+      - HERMES_CODEX_TTFB_TIMEOUT_SECONDS={{ h.stale_timeout }}
+      - HERMES_API_TIMEOUT={{ h.api_timeout }}
+      # The llama-server endpoint is declared in config.yaml as provider
+      # `custom`; this is the key that pairs with it. Deliberately NOT
+      # OPENAI_BASE_URL/OPENAI_API_KEY: their presence is what makes provider
+      # `auto` resolve to openai-api and talk the Responses API to a server
+      # that does not implement it.
+      - CUSTOM_API_KEY=local
+    volumes:
+      # HERMES_HOME. Holds sessions, skills and its OIDC session state, so it
+      # is persistent and NOT read-only.
+      - "{{ h.home_dir }}:/opt/data"
+      - "{{ local_ai.stack_dir }}/hermes-config.yaml:/opt/data/config.yaml:ro"
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+    networks:
+      # Both, and each for one reason:
+      #   ai_private   reaches the model, and is internal so it has no egress
+      #   proxy        lets Traefik route hermes.{{ frey.service_domain }} here, and lets the
+      #                OIDC back channel reach Authelia by the HTTPS name on
+      #                the Frey certificate. Traefik carries a network alias
+      #                for every identity_hostnames entry, which is why that
+      #                name resolves at all on a Docker bridge - the host's
+      #                dnsmasq is bound to the AP radio and ignores queries
+      #                arriving over one.
+      - ai_private
+      - {{ frey.proxy_network }}
+    cpus: {{ h.cpus }}
+    mem_limit: {{ h.mem_limit }}
+    security_opt: [no-new-privileges:true]
 {% endif %}
 networks:
   {{ frey.proxy_network }}:

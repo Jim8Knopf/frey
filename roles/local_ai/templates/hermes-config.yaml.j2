@@ -1,0 +1,94 @@
+# Managed by Ansible. Do not edit on the Pi - it will be reverted.
+#
+# Hermes Agent reads this from HERMES_HOME. It replaces the ~1,800-line sample
+# the image ships: everything omitted here keeps the image's own default, and
+# only the settings Frey actually depends on are stated.
+#
+# WHY THIS FILE EXISTS AT ALL, rather than environment variables: the provider
+# is NOT settable by env. HERMES_PROVIDER is not read; `model.provider` below
+# is the only thing that selects a transport. Getting this wrong does not
+# produce a clear error - see the block above `provider` for what it produces
+# instead.
+{# Same derivation as docker-compose.yml.j2: the registry entry that
+   default_model names. Defined here too because a Jinja `set` is local to
+   its own template. #}
+{% set m = local_ai.models[local_ai.default_model] %}
+model:
+  # The served model's id exactly as llama-server reports it in /v1/models.
+  # Hermes sends this string through verbatim; llama.cpp ignores the value and
+  # serves whatever it loaded, but Hermes puts it in its own logs and uses it
+  # to look up a context length, so a placeholder here is actively harmful.
+  default: "/models/{{ m.file }}"
+
+  # `custom`, and not the two values that look more correct:
+  #
+  #   `auto`      resolves to provider `openai-api` as soon as an OPENAI_*
+  #               variable is present, and openai-api's transport is the Codex
+  #               RESPONSES API - POSTs to /v1/responses, which llama.cpp does
+  #               not implement. It does not 404 in any way Hermes reports:
+  #               the call simply produces no events and dies as
+  #               "Non-streaming API call timed out after 240s with no
+  #               response", three times, then trips a stale-attempt breaker.
+  #               Every early failure here was this, and nothing named it.
+  #
+  #   `llamacpp`  is reserved for a llama-server that HERMES supervises and
+  #               resolves through its own state file. Pointed at an external
+  #               one it raises LocalRuntimeUnavailableError, "The local model
+  #               server is turned off", while the server is plainly running.
+  #
+  # `custom` selects chat_completion_stream_request, which is the streaming
+  # chat-completions path llama.cpp actually speaks.
+  provider: "custom"
+  base_url: "http://model:8080/v1"
+
+dashboard:
+  # The scheme and host Hermes must believe it is reached on. WITHOUT THIS the
+  # login bounce asks Authelia for
+  # redirect_uri=http://hermes.{{ frey.service_domain }}/auth/callback - plain HTTP, because
+  # Traefik's hop to the container is plain HTTP and uvicorn only trusts
+  # X-Forwarded-Proto from a proxy listed in dashboard.trusted_proxies
+  # (loopback by default, and Traefik is not loopback).
+  #
+  # Authelia then rejects the request as a redirect_uri mismatch against the
+  # https URI registered in identity.oidc_catalog.hermes, and reports it in
+  # ITS OWN log rather than Hermes's. Setting the public URL fixes the cause
+  # rather than registering an http callback, which would put the
+  # authorization code on the wire unencrypted.
+  #
+  # Stated explicitly rather than trusting a forwarded header, because the
+  # alternative needs Traefik's container IP or its Docker subnet, and both
+  # change when Traefik is recreated.
+  public_url: "https://{{ local_ai.hermes_host }}.{{ frey.service_domain }}"
+
+  oauth:
+    self_hosted:
+      # Authelia. Hermes discovers everything else from
+      # {issuer}/.well-known/openid-configuration, so the issuer must be the
+      # HTTPS name on the Frey certificate rather than a container address -
+      # the issuer is pinned into the ID token's `iss` claim and compared, so
+      # http://authelia:9091 would verify against the wrong value even though
+      # it is reachable.
+      issuer: "https://{{ identity_hosts.auth }}.{{ frey.service_domain }}"
+      client_id: hermes
+      scopes: "{{ local_ai.hermes.oidc_scopes }}"
+      client_secret: "{{ local_ai_hermes_oidc_secret }}"
+
+# THE SETTING THAT DECIDES WHETHER THIS IS USABLE, and the reason this file is
+# templated rather than left to the image's defaults.
+#
+# `-t/--toolsets` is a per-invocation CLI flag, so it does nothing for a
+# long-running `hermes dashboard`. The persistent equivalent is this key, and
+# `hermes tools --summary` reports exactly one platform on this deployment -
+# CLI - which is also the platform the dashboard's own turns run as
+# (`turn_context: ... platform=cli`).
+#
+# A saved list is authoritative even when empty; an ABSENT key means "no
+# restriction" and gives all 21 tools, i.e. a ~12,800-token prompt and about
+# an hour to first token. The loader wants a YAML list of toolset keys and
+# warns loudly if given anything else, so a typo here is visible in the log
+# rather than silent.
+platform_toolsets:
+  cli:
+{% for ts in local_ai.hermes.toolsets %}
+    - {{ ts }}
+{% endfor %}

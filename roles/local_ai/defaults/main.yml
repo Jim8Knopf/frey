@@ -19,6 +19,11 @@ local_ai:
   # identity_services.local_ai.hosts, or it has no certificate and no
   # Authelia rule.
   campaign_host: campaign
+  # Hermes Agent's own hostname. Must also appear in
+  # identity_services.hermes.hosts, or it has no certificate and no OIDC
+  # client - and its redirect_uri in identity.oidc_catalog.hermes is built
+  # from this same name, so the two cannot drift apart silently.
+  hermes_host: hermes
 
   # Which registered model llama-server loads. Changing this and redeploying
   # switches the served model, provided it has finished downloading.
@@ -187,6 +192,76 @@ local_ai:
     # The chat window. Reached only through the authenticated gateway on
     # ai_private - no published port, no egress.
     port: 8080
+
+  # Hermes Agent at hermes.hub.frey. A third interface beside the model's own
+  # UI and the assistant, not a replacement for either: all three share one
+  # llama-server slot, and the measurements in
+  # docs/LOCAL_AI_AGENT_PLAN.md 6a are what this configuration is built on.
+  hermes:
+    enabled: true
+    container_name: frey-hermes
+    image: "nousresearch/hermes-agent:{{ local_ai_hermes_version }}"
+
+    # Its own uid, like the observer's: Hermes must not be able to write the
+    # notes through the filesystem. Anything it should be able to change goes
+    # through a tool with its own scope, never through a bind mount.
+    uid: 10003
+    gid: 10003
+
+    # HERMES_HOME. Hermes refuses to start if this is group- or
+    # world-writable - it exits with `unsafe_control_permissions` - so the
+    # role creates it 0700 and owned by the uid above. Do not relax this to
+    # make a mount convenient.
+    home_dir: "{{ frey.base_dir }}/appdata/local-ai/hermes"
+
+    # `hermes dashboard` serves the prebuilt web UI. 9119 is its own default.
+    port: 9119
+
+    # THE SETTING THAT DECIDES WHETHER THIS IS USABLE AT ALL.
+    #
+    # Hermes's prompt is dominated by tool-schema JSON, not by its 44 bundled
+    # skills: `hermes prompt-size` reports 39,999 B of schemas for 21 tools
+    # against 12,177 B of identity and guidance, and each skill costs only
+    # 70-88 B of always-on index because its body is read lazily.
+    #
+    # Restricting the toolset took the prompt from 12,800 to 4,096 tokens,
+    # measured server-side, which is the difference between about an hour to
+    # first token and about 11.5 minutes on a cold slot. Every toolset added
+    # here is paid for twice: once in that cold prefill, and again in every
+    # warm turn, because the re-evaluated tail starts at the first byte that
+    # differs from the cached prefix.
+    toolsets: [file]
+
+    # Hermes enforces a 64,000-token floor in its own code
+    # (_enforce_minimum_context raises below it), which is why
+    # serve.ctx above is 65536 and cannot be lowered while this is enabled.
+    min_context: 64000
+
+    # Generous on purpose. Prefill of Hermes's own prompt is minutes, and the
+    # default watchdogs assume a fast provider: a 240 s non-streaming timeout
+    # is what made the first six attempts here look like a broken endpoint.
+    stale_timeout: 7200
+    api_timeout: 7200
+
+    cpus: 2.0
+    # The model holds the RAM; this is the agent process, measured at ~290 MB
+    # RSS with 26 threads while idle-waiting on a turn.
+    mem_limit: 1g
+
+    # Must match identity.oidc_catalog.hermes.scopes in
+    # roles/identity/defaults/main.yml. Spelled out again here for the reason
+    # CLAUDE.md gives: a role's defaults are only in scope while that role
+    # runs, so this template cannot read the catalog. roles/monitoring does
+    # the same for Grafana's scopes. If the two ever disagree, Authelia
+    # rejects the authorization request and the error surfaces in Authelia's
+    # log, not in Hermes's.
+    oidc_scopes: "openid profile email offline_access"
+
+    # Written by the identity role on its first run and reused forever after.
+    # Declared here as well as in roles/identity/ because a role's defaults
+    # are only in scope while that role runs - see CLAUDE.md. The plaintext
+    # client secret for `hermes` lives in this file under `hermes_oidc_secret`.
+    identity_key_file: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
 
   # Phase 1 of docs/LOCAL_AI_AGENT_PLAN.md: an observer that reads and
   # explains, and cannot act. There is no broker, no Docker socket and no

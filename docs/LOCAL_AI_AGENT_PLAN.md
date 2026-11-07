@@ -452,15 +452,59 @@ every warm turn that follows the divergence point.
   back to 20480 while Hermes is kept. That is why `mem_limit` stays at 9g:
   measured 5.15-5.37 GiB resident, 6.3-7.0 GiB still available on the host.
 
-#### Not yet done
+#### Deployed as a module, 2026-11-08
 
-The working configuration currently lives as a **hand-patched
-`config.yaml` on the Pi** at `/opt/frey/appdata/hermes-trial/`, which is
-exactly what `CLAUDE.md` forbids — Ansible does not manage it and a deploy
-will not reproduce it. Making Hermes a real module means templating that file
-(`model.provider: custom`, `model.base_url`, `model.default`), pinning the
-image, fixing `HERMES_HOME` to `700`, setting the toolset, and deciding the
-slot question above. None of that is done.
+`hermes.hub.frey`, Ansible-managed, idempotent at 0 changed. The earlier
+hand-patched `config.yaml` under `/opt/frey/appdata/hermes-trial/` is no longer
+what runs; `roles/local_ai/templates/hermes-config.yaml.j2` is.
+
+The deployed prompt is **smaller** than the figures above — `hermes
+prompt-size` against the live config reports **~17.4 KB (~3,900 tokens)**
+versus ~57.9 KB for a default install, with tool schemas down from 39,999 B
+(21 tools) to 5,480 B (4), and the volatile block down from 5,112 B to 781 B.
+So the table above is the pessimistic end.
+
+Verified end to end, short of a browser login: `hermes.hub.frey` redirects to
+its own `/auth/login?provider=self-hosted`, which bounces to Authelia's
+authorization endpoint with `client_id=hermes`, an **https** redirect URI
+matching the registered one, `scope=openid profile email offline_access` and
+S256 PKCE — and Authelia accepts it, answering with its login flow rather than
+`invalid_client`. The agent process runs as uid 10003 (confirmed with `docker
+top`, since `docker exec id` reports the image's own user here).
+
+Five things only deploying could have found, all now recorded in
+`roles/local_ai/README.md`:
+
+- **`identity` is not in scope outside its own role.** The config template
+  read `identity.oidc_catalog.hermes.scopes` and failed with `'identity' is
+  undefined` - the trap `CLAUDE.md` names. The scope list is now spelled out
+  in `local_ai` defaults with a comment, as `roles/monitoring` does for
+  Grafana.
+- **`user:` on the container makes s6-overlay die in a restart loop**
+  (`/run belongs to uid 0 instead of 10003`), and `init: true` only hides it
+  by making s6 skip itself - which leaves the agent running as root. The
+  image's own message says to pass `HERMES_UID`/`HERMES_GID`.
+- **Behind Traefik, `dashboard.public_url` is required.** Without it Hermes
+  derives `http://` from the proxy's plain-HTTP hop and Authelia rejects the
+  redirect URI as a mismatch - in Authelia's log, not Hermes's. Registering an
+  `http://` callback would have "fixed" it by putting the authorization code
+  on the wire unencrypted.
+- **A failed play discards queued handlers.** The first deploy wrote the
+  Authelia client and then failed on the template above, so `Restart authelia`
+  never ran; every later run saw the config unchanged, never re-notified, and
+  Authelia served an 11-hour-old config while reporting
+  `invalid_client` / "The requested OAuth 2.0 Client does not exist". This is
+  the `config.txt` trap again: correct on disk is not correct in the process.
+- **Authelia warns when `grant_types` includes `refresh_token` without the
+  `offline_access` scope**, and says the warning will become an error. Fixed
+  by granting the scope, which the Hermes plugin genuinely uses, rather than
+  by removing the grant. Grafana still carries the same warning.
+
+Still open, and deliberately not decided here: the single slot. `ai.hub.frey`,
+`campaign.hub.frey` and `hermes.hub.frey` evict each other's cached prompt, so
+alternating between them re-pays Hermes's cold start. Raising
+`parallel_slots` is not the answer - two slots split two threads and measured
+0.59 tok/s.
 
 ### What is genuinely good about it
 

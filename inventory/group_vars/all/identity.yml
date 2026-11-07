@@ -185,6 +185,28 @@ identity_services:
     #   campaign.hub.frey  the assistant that can read and write the notes
     hosts: [ai, campaign]
 
+  # Hermes Agent, and NOT forward_auth like its neighbour above: Hermes is a
+  # real OIDC relying party and insists on its own auth provider as soon as it
+  # binds anything but loopback (its --insecure flag became a no-op in the
+  # June 2026 hardening). So it logs in against Authelia itself, which is one
+  # login rather than two - forward_auth in front of it would mean signing in
+  # at Authelia and then again at Hermes.
+  #
+  # Verified against the image's own code rather than its docs
+  # (plugins/dashboard_auth/self_hosted), because a wrong redirect_uri fails
+  # inside Authelia and not in the app:
+  #
+  #   redirect path  MUST end /auth/callback   validate_redirect_uri()
+  #   PKCE           always, S256              pkce_login_start()
+  #   client secret  layered ON TOP of PKCE    never replaces it
+  #   token auth     Basic unless the IDP      _token_endpoint_auth()
+  #                  omits client_secret_basic
+  #   scopes         openid profile email      _DEFAULT_SCOPES
+  hermes:
+    auth: oidc
+    groups: [frey_admins]
+    hosts: [hermes]
+
   # --- Library ---------------------------------------------------------------
   jellyfin:
     # OIDC through the jellyfin-sso community plugin. Jellyfin's local accounts

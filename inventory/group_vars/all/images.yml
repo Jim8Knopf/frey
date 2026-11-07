@@ -4,6 +4,12 @@ silverbullet_version: "2.12.1"
 # model: it maps architecture "qwen35" and the "qwen3vl_merger" projector that
 # Qwen3.5's mmproj declares. Check both before moving this tag.
 local_ai_llama_version: "server-b12019"
+# Hermes Agent. arm64/linux confirmed; 3.21 GB on disk, digest
+# sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002.
+# Measured on this Pi 2026-11-08: usable only with a trimmed toolset - see
+# docs/LOCAL_AI_AGENT_PLAN.md 6a before changing this tag, because the prompt
+# size that decides whether it is usable at all is a property of the release.
+local_ai_hermes_version: "v0.23.0"
 # Container image tags for every active Frey service.
 # Edit the tag here, then deploy the affected role (see docs/IMAGES.md).
 # Quote new tags, especially tags that resemble numbers.

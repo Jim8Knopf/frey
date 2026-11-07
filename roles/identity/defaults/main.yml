@@ -314,6 +314,47 @@ identity:
         - "https://mealie.{{ frey.service_domain }}/login"
       claims_policy: frey_groups
 
+    # Hermes Agent's dashboard. Every value below was read out of the image's
+    # own source (plugins/dashboard_auth/self_hosted/__init__.py and
+    # plugins/dashboard_auth/_shared.py), not from its documentation, because
+    # a wrong redirect_uri is rejected by Authelia rather than by the app and
+    # therefore shows up in the wrong log.
+    #
+    #   - the redirect path MUST end in /auth/callback: validate_redirect_uri()
+    #     fast-fails anything else before the browser is ever bounced.
+    #   - PKCE S256 is unconditional, and a client_secret is layered on top of
+    #     it rather than replacing it, so this is a confidential client that
+    #     still sends a code challenge - require_pkce, not merely allow.
+    #   - _token_endpoint_auth() sends the secret as HTTP Basic unless the IDP
+    #     advertises client_secret_post WITHOUT client_secret_basic. Authelia
+    #     advertises both, so Basic is what will actually be used.
+    #   - scopes are the plugin's own _DEFAULT_SCOPES. No `groups`: Hermes
+    #     verifies the ID token and reads identity from it, and access control
+    #     is the `groups` list in identity_services, enforced by Authelia
+    #     before it ever issues a token. A groups claim here would buy nothing
+    #     and claims_policy is left empty for the same reason.
+    hermes:
+      client_name: Hermes Agent
+      public: false
+      token_endpoint_auth_method: client_secret_basic
+      require_pkce: true
+      pkce_challenge_method: S256
+      # offline_access is here because the client template grants
+      # `refresh_token`, and Authelia warns that the two must agree:
+      # "option 'grant_types' should only have the 'refresh_token' value if
+      # the client is also configured with the 'offline_access' scope" -
+      # a deprecation that it says will become an error. The Hermes plugin
+      # does refresh (plugins/dashboard_auth/_shared.refresh_token_from), so
+      # granting it is correct rather than merely quiet.
+      scopes:
+        - openid
+        - profile
+        - email
+        - offline_access
+      redirect_uris:
+        - "https://hermes.{{ frey.service_domain }}/auth/callback"
+      claims_policy: ""
+
   # ----------------------------------------------------------------------------
   # JELLYFIN SSO PLUGIN
   #
