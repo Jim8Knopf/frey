@@ -79,3 +79,4 @@ Move storage before deploying services: [NVME_MIGRATION](docs/NVME_MIGRATION.md)
 See [IDENTITY](docs/IDENTITY.md), [MEDIA](docs/MEDIA.md),
 [MONITORING](docs/MONITORING.md) and [ADDING_MODULES](docs/ADDING_MODULES.md).
 CI runs syntax, shell, YAML/JSON and focused regression checks without the Pi.
+
