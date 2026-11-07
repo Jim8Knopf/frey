@@ -63,8 +63,20 @@ services:
       - "{{ m.threads }}"
       - "--ctx-size"
       - "{{ m.ctx }}"
+{% if m.parallel_slots is defined %}
+      - "--parallel"
+      - "{{ m.parallel_slots }}"
+{% endif %}
       - "--cache-reuse"
       - "{{ m.cache_reuse }}"
+{% if m.cache_type_k is defined %}
+      - "--cache-type-k"
+      - "{{ m.cache_type_k }}"
+{% endif %}
+{% if m.cache_type_v is defined %}
+      - "--cache-type-v"
+      - "{{ m.cache_type_v }}"
+{% endif %}
       - "-fa"
       - "{{ m.flash_attn }}"
       - "--temp"
@@ -147,6 +159,54 @@ services:
       - {{ frey.ai_observe_network }}
     cpus: {{ o.cpus }}
     mem_limit: {{ o.mem_limit }}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+{% endif %}
+{% if local_ai.campaign.enabled | bool %}
+{% set c = local_ai.campaign %}
+  campaign:
+    profiles: [campaign]
+    image: {{ c.image }}
+    container_name: {{ c.container_name }}
+    restart: unless-stopped
+    user: "{{ c.uid }}:{{ c.gid }}"
+    command: ["python3", "-u", "{{ c.script_path }}"]
+    environment:
+      - TZ={{ frey.timezone }}
+      - PYTHONDONTWRITEBYTECODE=1
+      - CAMPAIGN_LOG_LEVEL={{ c.log_level }}
+      - MODEL_URL=http://model:8080
+      - MODEL_NAME=/models/{{ m.file }}
+      - CAMPAIGN_SPACE=/notes
+      - CAMPAIGN_ROOT={{ c.root }}
+      - CAMPAIGN_CHAT_PAGE={{ c.chat_page }}
+      - CAMPAIGN_READONLY={{ c.readonly_subdirs | join(',') }}
+      - CAMPAIGN_POLL_SECONDS={{ c.poll_seconds }}
+      - CAMPAIGN_MODEL_TIMEOUT={{ c.model_timeout }}
+      - CAMPAIGN_MAX_TOKENS={{ c.max_tokens }}
+      - CAMPAIGN_MAX_STEPS={{ c.max_steps }}
+      - CAMPAIGN_TOOL_RESULT_BUDGET={{ c.tool_result_budget }}
+      - CAMPAIGN_PORT={{ c.port }}
+    volumes:
+      # Nested mounts on purpose, so the WRITE scope is enforced by the mount
+      # table rather than only by the agent's own path checks:
+      #   the space itself is read-only,
+      #   the campaign subtree is read-write,
+      #   .git is read-write because committing needs it and it lives at the
+      #   space root - without this nesting, enabling commits would have meant
+      #   mounting the entire space read-write.
+      - "{{ frey.notes_data_dir }}/spaces/notes:/notes:ro"
+      - "{{ frey.notes_data_dir }}/spaces/notes/{{ c.root }}:/notes/{{ c.root }}"
+      - "{{ frey.notes_data_dir }}/spaces/notes/.git:/notes/.git"
+      - "{{ local_ai.stack_dir }}/campaign.py:{{ c.script_path }}:ro"
+    networks:
+      # ai_private only: it needs the model and nothing else. internal, so no
+      # egress - and it has no broker access and no system verbs at all.
+      - ai_private
+    cpus: {{ c.cpus }}
+    mem_limit: {{ c.mem_limit }}
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     read_only: true

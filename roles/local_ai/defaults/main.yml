@@ -52,11 +52,49 @@ local_ai:
       threads: 2
       cpus: 2.0
 
-      # 2.7 GiB of weights plus the KV cache plus the vision encoder. The host
-      # reported 8 GiB available on 2026-11-07, so this leaves about 3 GiB of
-      # headroom; raise ctx only after re-checking `free -g`.
-      mem_limit: 5g
-      ctx: 8192
+      # 2.7 GiB of weights, 0.64 GiB of vision projector, the KV cache, and
+      # compute buffers.
+      #
+      # Raised from 5g/8192 to host a 64K context, which is the floor an agent
+      # framework like Hermes requires. The KV arithmetic for this model:
+      # 32 layers x 4 kv_heads x 256 head_dim = 65536 elements per token, so
+      # at q8_0 (~1.06 bytes/element) that is 68 KiB/token.
+      #
+      #   8192 ctx  @ fp16 = 1.0 GiB    64K @ fp16 = 8.5 GiB  (will not fit)
+      #   8192 ctx  @ q8_0 = 0.5 GiB    64K @ q8_0 = 4.25 GiB (fits)
+      #
+      # So 8g covers the worst case of a completely full context. llama.cpp
+      # allocates the cache lazily, so steady state at 5-20K tokens is nearer
+      # 5-6 GiB. Measured on 2026-11-07: other containers total ~4.5 GiB of
+      # the host's 15.8 GiB, leaving room - but the host was ALREADY using
+      # 822 MiB of swap beforehand, so check `free -m` before going further.
+      # 20480, not 65536. A 64K window is affordable in RAM (4.25 GiB of
+      # q8_0 KV) and unaffordable in TIME: prefill cost is superlinear on this
+      # Pi, so a context you cannot afford to fill buys nothing. 20K still
+      # holds the whole d100 rules draft plus a couple of campaign pages,
+      # which is the real use, and reclaims about 3 GiB.
+      mem_limit: 6g
+      ctx: 20480
+
+      # ONE slot, not the default four. llama-server happily accepts parallel
+      # requests and splits two threads between them: measured 2026-11-07, a
+      # request sharing the model with a concurrent observer report fell to
+      # 0.59 tokens/s against 3.7-7.6 running alone. Queueing is strictly
+      # better here than competing - total throughput is higher and latency
+      # becomes predictable instead of depending on what else happens to be
+      # running.
+      parallel_slots: 1
+
+      # Quantising the KV cache is what makes 64K affordable at all, and it
+      # needs flash attention (below) to work.
+      #
+      # Worth knowing: Unsloth's own Qwen3.5 notes suggest
+      # `--cache-type-k bf16 --cache-type-v bf16` for context problems, which
+      # is the OPPOSITE of this. So this is the one setting here that trades
+      # against vendor advice, and answer quality must be re-checked with
+      # scripts/campaign-rules-benchmark.py after changing it.
+      cache_type_k: q8_0
+      cache_type_v: q8_0
 
       # Reuse cached prompt prefixes via KV shifting instead of reprocessing a
       # long system prompt on every request. Prompt processing is this
@@ -84,6 +122,56 @@ local_ai:
 
   image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
   gateway_image: "traefik:{{ traefik_version }}"
+
+  # The campaign assistant: a tool-using loop that maintains the wiki.
+  #
+  # You talk to it inside SilverBullet. It is deliberately separate from the
+  # observer - different job, different mounts, different identity - and it
+  # has no broker access and no system verbs at all.
+  campaign:
+    enabled: true
+    container_name: frey-campaign-agent
+    # Reuses the pinned Python image the relay and observer already run, and
+    # is stdlib-only, so there is nothing to fetch at runtime.
+    image: "python:{{ monitoring_versions.relay_base }}"
+    script_path: /opt/frey-campaign/campaign.py
+
+    # SilverBullet's OWN uid, deliberately. The observer gets its own uid
+    # because it must never write the notes; this one must, and sharing the
+    # uid means pages it creates are owned by SilverBullet and readable by it,
+    # with no permission juggling and no ACL for writes.
+    uid: 10001
+    gid: 10001
+
+    root: Campaigns/Pirate
+    chat_page: Campaigns/Pirate/Chat.md
+    # Refused by the agent's own code. The templates define the structure of
+    # every page made from them, and the rules draft is where this model has
+    # been measured contradicting itself. This pair is the one boundary here
+    # enforced by code rather than by a mount, with git as the backstop.
+    readonly_subdirs: [Templates, Rules]
+
+    poll_seconds: 20
+    # A turn can legitimately take many minutes on this hardware.
+    model_timeout: 1800
+    max_tokens: 500
+    # Each step is a full model round-trip, so this is a time budget.
+    max_steps: 4
+    # Every character of a tool result is prefill latency. See the measured
+    # curve in files/campaign.py - time doubles as tokens double.
+    tool_result_budget: 2500
+
+    mem_limit: 256m
+    cpus: 0.5
+    log_level: INFO
+
+    # How often the host commits the notes space. This interval IS the
+    # granularity of your undo, and a turn takes minutes, so keep it short.
+    commit_interval: 2min
+
+    # The chat window. Reached only through the authenticated gateway on
+    # ai_private - no published port, no egress.
+    port: 8080
 
   # Phase 1 of docs/LOCAL_AI_AGENT_PLAN.md: an observer that reads and
   # explains, and cannot act. There is no broker, no Docker socket and no

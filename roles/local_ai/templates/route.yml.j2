@@ -1,10 +1,38 @@
+# Managed by Ansible. Do not edit on the Pi.
+#
+# Two back ends behind one authenticated hostname.
+#
+# llama-server's image serves NO web UI - verified 2026-11-07, both / and
+# /index.html answer 415 even with an HTML Accept header. So the root path
+# goes to the campaign assistant, which provides the chat window AND can edit
+# the wiki, and the raw API stays available under /v1 for scripts and for an
+# SSH tunnel.
 http:
   routers:
+{% if local_ai.campaign.enabled | bool %}
+    # No explicit priority: Traefik orders routers by rule LENGTH, so the
+    # specific API prefixes already beat the catch-all. Setting priority: 1 on
+    # the catch-all actively broke it - `/` and `/v1` matched but any deeper
+    # path 404'd.
+    api:
+      rule: PathPrefix(`/v1`) || PathPrefix(`/props`) || PathPrefix(`/health`)
+      service: model
+    chat:
+      rule: PathPrefix(`/`)
+      service: campaign
+{% else %}
     model:
       rule: PathPrefix(`/`)
       service: model
+{% endif %}
   services:
     model:
       loadBalancer:
         servers:
           - url: http://model:8080
+{% if local_ai.campaign.enabled | bool %}
+    campaign:
+      loadBalancer:
+        servers:
+          - url: http://campaign:{{ local_ai.campaign.port }}
+{% endif %}

@@ -325,6 +325,7 @@
     - {src: route.yml.j2, dest: route.yml, mode: "0644"}
     - {src: download-model.sh.j2, dest: download-model.sh, mode: "0755"}
   when: not ansible_check_mode or local_ai_stack_stat.stat.exists
+  notify: Restart local AI gateway
 
 - name: Install the observer program
   ansible.builtin.copy:
@@ -337,6 +338,61 @@
     - local_ai.observer.enabled | bool
     - not ansible_check_mode or local_ai_stack_stat.stat.exists
   notify: Restart local AI observer
+
+- name: Install the notes committer
+  # On the host because the agent's image has no git binary and its rootfs is
+  # read-only, so it cannot commit its own writes. This also captures edits
+  # made by hand in SilverBullet.
+  ansible.builtin.template:
+    src: frey-notes-commit.sh.j2
+    dest: /usr/local/bin/frey-notes-commit
+    owner: root
+    group: root
+    mode: "0750"
+    validate: "bash -n %s"
+  when: local_ai.campaign.enabled | bool
+
+- name: Install the notes committer units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-notes-commit.service
+    - frey-notes-commit.timer
+  register: local_ai_commit_units
+  when: local_ai.campaign.enabled | bool
+
+- name: Reload systemd after changing the notes committer
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - local_ai.campaign.enabled | bool
+    - local_ai_commit_units.changed
+    - not ansible_check_mode
+
+- name: Enable the notes committer timer
+  ansible.builtin.systemd_service:
+    name: frey-notes-commit.timer
+    enabled: true
+    state: started
+  when:
+    - local_ai.campaign.enabled | bool
+    - not ansible_check_mode
+
+- name: Install the campaign assistant program
+  ansible.builtin.copy:
+    src: campaign.py
+    dest: "{{ local_ai.stack_dir }}/campaign.py"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - local_ai.campaign.enabled | bool
+    - not ansible_check_mode or local_ai_stack_stat.stat.exists
+  notify: Restart campaign assistant
 
 - name: Install the notes ACL helper
   ansible.builtin.template:
@@ -405,6 +461,19 @@
 # says the model did not answer. A monitoring component that refuses to run
 # until everything else is perfect is useless in exactly the situation it
 # exists for.
+- name: Start the campaign assistant
+  # Needs the model to answer, but starting without it is harmless: the chat
+  # page simply reports that the model could not be reached.
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [campaign]
+    services: [campaign]
+    state: present
+    pull: never
+  when:
+    - local_ai.campaign.enabled | bool
+    - not ansible_check_mode
+
 - name: Start the read-only observer
   community.docker.docker_compose_v2:
     project_src: "{{ local_ai.stack_dir }}"
