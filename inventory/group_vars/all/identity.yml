@@ -174,7 +174,16 @@ identity_services:
   local_ai:
     auth: forward_auth
     groups: [frey_admins, notes]
-    hosts: [ai]
+    # TWO hostnames on purpose, and the second one exists for a browser
+    # reason rather than an architectural one: llama.cpp's web UI registers a
+    # service worker, which intercepts every request to its origin and kept
+    # serving the cached model-only chat even after a hard reload. A separate
+    # origin has no service worker and no cache, so campaign.hub.frey is
+    # guaranteed to load the assistant.
+    #
+    #   ai.hub.frey        the model and its own UI, plus the /v1 API
+    #   campaign.hub.frey  the assistant that can read and write the notes
+    hosts: [ai, campaign]
 
   # --- Library ---------------------------------------------------------------
   jellyfin:

@@ -42,6 +42,24 @@ services:
       - "traefik.http.routers.local-ai-http.entrypoints=web"
       - "traefik.http.routers.local-ai-http.middlewares=to-canonical@file"
       - "traefik.http.routers.local-ai-http.service=local-ai"
+{% if local_ai.campaign.enabled | bool %}
+      # The assistant's own hostname, same gateway, same auth. route.yml
+      # dispatches on Host so this reaches the assistant rather than the model.
+      - "traefik.http.routers.campaign.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.campaign.entrypoints=websecure"
+      - "traefik.http.routers.campaign.tls=true"
+      - "traefik.http.routers.campaign.middlewares=secure-headers@file,authelia@file"
+      - "traefik.http.routers.campaign.service=local-ai"
+      - "traefik.http.routers.campaign-legacy.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.campaign-legacy.entrypoints=websecure"
+      - "traefik.http.routers.campaign-legacy.tls=true"
+      - "traefik.http.routers.campaign-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.campaign-legacy.service=local-ai"
+      - "traefik.http.routers.campaign-http.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.campaign-http.entrypoints=web"
+      - "traefik.http.routers.campaign-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.campaign-http.service=local-ai"
+{% endif %}
   model:
     profiles: [model]
     image: {{ local_ai.image }}

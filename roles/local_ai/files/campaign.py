@@ -320,6 +320,50 @@ So:
 - Prefer one or two tool calls. Every call costs minutes on this hardware."""
 
 
+# --- page index -------------------------------------------------------------
+#
+# The model wasted a whole step guessing "Campaigns/Pirate/NPC" before finding
+# "NPCs", and a step costs about a minute here. Handing it the real page names
+# removes that class of mistake entirely, and also makes it far less likely to
+# invent a path or link to a page that does not exist.
+#
+# But it is NOT free: every name is prompt tokens on a machine where prefill
+# time grows superlinearly. So it goes in only when the question is actually
+# about the wiki. A greeting or a general question pays nothing.
+
+CAMPAIGN_WORDS = (
+    "page", "note", "npc", "character", "faction", "ship", "species", "place",
+    "session", "thread", "rule", "campaign", "world", "pirate", "harbour",
+    "harbor", "crew", "quest", "link", "wiki", "add", "create", "update",
+    "rename", "list", "who", "where", "what", "summar", "recap", "template",
+)
+
+
+def page_index():
+    """Page paths relative to the campaign root, cheapest useful form."""
+    try:
+        base = SPACE / ROOT
+        names = sorted(
+            str(p.relative_to(base)) for p in base.rglob("*.md")
+        )
+    except OSError:
+        return []
+    return names
+
+
+def wants_index(message, names):
+    """Is this question about the wiki at all?
+
+    Deliberately generous - a false positive costs a few hundred tokens, while
+    a false negative costs a wasted tool step, which is far more expensive.
+    """
+    low = message.lower()
+    if any(word in low for word in CAMPAIGN_WORDS):
+        return True
+    # Any mention of a real page name counts, however the question is phrased.
+    return any(n.rsplit("/", 1)[-1][:-3].lower() in low for n in names if len(n) > 4)
+
+
 # --- model ------------------------------------------------------------------
 
 
@@ -345,8 +389,22 @@ def call_model(messages):
 
 def run_turn(user_text):
     """One exchange, bounded by MAX_STEPS tool calls."""
+    system = SYSTEM_PROMPT
+    names = page_index()
+    if names and wants_index(user_text, names):
+        listing = "\n".join(f"- {n}" for n in names[:150])
+        system += (
+            f"\n\nThese pages exist right now under {ROOT} (paths are relative "
+            f"to it). Use these exact names; do not guess a path, and do not "
+            f"link to anything not listed here unless you create it in this "
+            f"turn:\n{listing}"
+        )
+        log.info("included the page index (%d pages)", len(names))
+    else:
+        log.info("skipped the page index for this question")
+
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": user_text},
     ]
     touched = []

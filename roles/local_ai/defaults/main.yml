@@ -14,6 +14,11 @@ local_ai:
   stack_dir: "{{ frey.base_dir }}/stacks/local-ai"
   model_dir: "{{ frey.base_dir }}/appdata/local-ai/models"
   host: ai
+  # The assistant gets its own hostname so a service worker on the
+  # model's origin cannot shadow it. Must also appear in
+  # identity_services.local_ai.hosts, or it has no certificate and no
+  # Authelia rule.
+  campaign_host: campaign
 
   # Which registered model llama-server loads. Changing this and redeploying
   # switches the served model, provided it has finished downloading.
