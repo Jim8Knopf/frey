@@ -13,6 +13,13 @@
    default_model names. Defined here too because a Jinja `set` is local to
    its own template. #}
 {% set m = local_ai.models[local_ai.default_model] %}
+# Hermes migrates its config by version and warns when it cannot: "This config
+# predates version 12 (~2 years old) and can no longer be auto-migrated ... or
+# manually set _config_version: 12". This file is generated against the
+# current release, so it is current by construction - stating the version
+# stops Hermes trying to migrate a file that was never old.
+_config_version: 12
+
 model:
   # The served model's id exactly as llama-server reports it in /v1/models.
   # Hermes sends this string through verbatim; llama.cpp ignores the value and
@@ -40,6 +47,20 @@ model:
   # chat-completions path llama.cpp actually speaks.
   provider: "custom"
   base_url: "http://model:8080/v1"
+
+  # MUST match the -c the model is served with, and it is NOT detected
+  # correctly. llama-server's /v1/models does report n_ctx, but Hermes's probe
+  # did not read it ("Could not detect context length ... defaulting to
+  # 256,000 tokens (probe-down)") and then fell back to a catalogue guess from
+  # the word "qwen" in the filename: "Using hardcoded context length
+  # 131,072".
+  #
+  # That guess is exactly twice what is served. Left alone, Hermes budgets a
+  # 131k window against a 65,536-token server, and the overflow is not
+  # refused: llama-server truncates the prompt, so the OLDEST part of a long
+  # conversation disappears with nothing reported at either end. Stating the
+  # real number is what keeps Hermes's own trimming honest.
+  context_length: {{ m.ctx }}
 
 dashboard:
   # The scheme and host Hermes must believe it is reached on. WITHOUT THIS the
