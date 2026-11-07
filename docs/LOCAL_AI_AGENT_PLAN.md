@@ -307,7 +307,8 @@ the model seems to be doing well.
 
 ## 6a. Hermes Agent, evaluated 2026-11-07, re-tested 2026-11-08
 
-**It runs. The blocker is prompt size against this CPU, and nothing else.**
+**It runs, and with a trimmed toolset it is usable: ~11.5 minutes to warm a
+slot, then about 2 minutes per turn. It is KEPT on that basis.**
 
 This section was rewritten after actually running it. The first version
 disqualified Hermes on RAM arithmetic and a context minimum, and **both of
@@ -410,6 +411,56 @@ because two slots split two threads and collapsed to 0.59 tok/s). A warm prefix
 cache is therefore the only thing that could make repeat turns cheap, and it is
 evicted by any other use of `ai.hub.frey` — which is precisely the "one
 interface for everything" this plan is built around.
+
+### Verdict: usable, and kept — with the trim and the caveats
+
+Measured end to end on 2026-11-08, `provider: custom`, `-t file`, two
+consecutive turns, both answering correctly:
+
+| | prefill tokens | prefill time | rate | wall clock |
+| --- | --- | --- | --- | --- |
+| turn 1, cold slot | 4,070 | **692.8 s (11.5 min)** | 5.87 tok/s | 16 min 9 s |
+| turn 2, warm slot | **489** | **106.5 s (1.8 min)** | 4.59 tok/s | 2 min 21 s |
+
+**The prefix cache is what makes it viable.** Turn 2 re-evaluated only 489 of
+4,044 tokens — the volatile block (timestamp, session id, the new message) and
+everything after the first divergence. That 489-token re-evaluation is the
+floor for every warm turn, so **~2 minutes per turn** is the realistic steady
+state, with a **~11.5 minute** cost once per cold slot.
+
+**`-t file` is not optional.** It cuts the prompt from 12,800 to 4,096 tokens
+by dropping 17 of 21 tool schemas. Without it the cold turn is ~1 hour. Any
+toolset added here is paid for twice: once in the cold prefill and again in
+every warm turn that follows the divergence point.
+
+#### What this costs, and what to watch
+
+- **The cold start returns whenever the slot is lost.** `parallel_slots: 1`
+  means any other use of `ai.hub.frey` evicts Hermes's 4,096-token prefix, and
+  the next Hermes turn pays 11.5 minutes again. This is in direct tension with
+  the "one interface for everything" goal in §5 — the two uses evict each
+  other. Unresolved; see the open decision below.
+- **A cancelled request does not free the slot.** An abandoned turn was
+  observed still grinding **4.6 minutes** after its cancel, during which every
+  other request queued behind it. Hermes's own source states the cause: *"a
+  non-streamed request can't be cancelled through the router, so it would keep
+  the server busy after Hermes gives up on it."*
+- **It is not free while idle.** The gateway runs 26 threads at ~290 MB RSS,
+  and load average reached **10.28 on four cores** during a turn.
+- **`ctx: 65536` is now mandatory, not a trial setting.** Hermes enforces a
+  64K minimum in code (`_enforce_minimum_context`), so the context cannot go
+  back to 20480 while Hermes is kept. That is why `mem_limit` stays at 9g:
+  measured 5.15-5.37 GiB resident, 6.3-7.0 GiB still available on the host.
+
+#### Not yet done
+
+The working configuration currently lives as a **hand-patched
+`config.yaml` on the Pi** at `/opt/frey/appdata/hermes-trial/`, which is
+exactly what `CLAUDE.md` forbids — Ansible does not manage it and a deploy
+will not reproduce it. Making Hermes a real module means templating that file
+(`model.provider: custom`, `model.base_url`, `model.default`), pinning the
+image, fixing `HERMES_HOME` to `700`, setting the toolset, and deciding the
+slot question above. None of that is done.
 
 ### What is genuinely good about it
 

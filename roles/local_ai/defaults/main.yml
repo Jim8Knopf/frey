@@ -73,13 +73,23 @@ local_ai:
       # 5-6 GiB. Measured on 2026-11-07: other containers total ~4.5 GiB of
       # the host's 15.8 GiB, leaving room - but the host was ALREADY using
       # 822 MiB of swap beforehand, so check `free -m` before going further.
-      # 20480, not 65536. A 64K window is affordable in RAM (4.25 GiB of
-      # q8_0 KV) and unaffordable in TIME: prefill cost is superlinear on this
-      # Pi, so a context you cannot afford to fill buys nothing. 20K still
-      # holds the whole d100 rules draft plus a couple of campaign pages,
-      # which is the real use, and reclaims about 3 GiB.
-      mem_limit: 6g
-      ctx: 20480
+      # 65536, and it is NOT a free choice: Hermes Agent enforces a 64,000
+      # minimum in its own code (`_enforce_minimum_context` raises), so this
+      # is the floor for as long as Hermes is kept. See
+      # `docs/LOCAL_AI_AGENT_PLAN.md` 6a.
+      #
+      # The earlier comment here argued for 20480 on the grounds that a window
+      # you cannot afford to FILL buys nothing. That reasoning is still sound
+      # and still applies to the prompt budget - but it was paired with RAM
+      # arithmetic that measurement contradicted. Measured 2026-11-08 at 64K:
+      # the container sits at 5.15-5.37 GiB of this 9g limit with 6.3-7.0 GiB
+      # still available on the host. The predicted 10.5 GiB fp16 / 6.6 GiB
+      # q8_0 was pessimistic.
+      #
+      # Dropping Hermes means this can go back to 20480 / 6g and reclaim
+      # about 2 GiB. Nothing else here needs 64K.
+      mem_limit: 9g
+      ctx: 65536
 
       # ONE slot, not the default four. llama-server happily accepts parallel
       # requests and splits two threads between them: measured 2026-11-07, a
