@@ -305,81 +305,159 @@ what makes that tolerable — the worst case is a *wrong but safe* choice from a
 safe menu, caught by the deadman and the breaker. Do not relax the menu because
 the model seems to be doing well.
 
-## 6a. Hermes Agent, evaluated 2026-11-07
+## 6a. Hermes Agent, evaluated 2026-11-07, re-tested 2026-11-08
 
-**Verdict: do not deploy on Frey. Disqualified by hardware arithmetic, not by
-design.** This supersedes the open question in
-`docs/CAMPAIGN_AGENT_EVALUATION.md`, which recorded two timed-out image pulls
-and never reached a conclusion.
+**It runs. The blocker is prompt size against this CPU, and nothing else.**
 
-What changed since that note: the current release is **v0.23.0 (2026-11-05)**,
-not the v0.22.5 recorded there. **ARM64 is confirmed**, so the architecture
-doubt in that document is settled — `nousresearch/hermes-agent:v0.23.0` ships
-`arm64/linux` at about 1120 MB compressed, with a `-desktop` variant at
-1355 MB. The two earlier pull timeouts were a slow uplink, not a missing image.
+This section was rewritten after actually running it. The first version
+disqualified Hermes on RAM arithmetic and a context minimum, and **both of
+those arguments were wrong**. They are kept below only as a record of how the
+prediction failed, because the failure mode is instructive: every number that
+mattered turned out to be measurable, and the measured ones disagreed with the
+predicted ones in both directions.
+
+Release tested: **v0.23.0**, digest
+`sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002`,
+3.21 GB on disk, `arm64/linux`.
+
+### What was proven to work
+
+- **It runs on the Pi 5.** Bootstraps 44 bundled skills and a pinned Chromium,
+  reaches `Setup complete`, and serves a local gateway. Gateway RSS is about
+  **290 MB** — trivial next to the model.
+- **64K context fits.** The old table below predicted 6.6 GiB at q8_0 and
+  called the fp16 case impossible. Measured with `ctx: 65536`: the model
+  container sits at **5.15-5.37 GiB of a 9 GiB limit** with **6.3-7.0 GiB still
+  available on the host**. The "no room" argument does not hold.
+- **It is built for slow local servers.** It detects a local `base_url` and
+  says so: *"Local provider detected — no-event TTFB watchdog raised from 120s
+  to 1800s (agent.local_stream_stale_timeout)"*, and ships a **900 s** local
+  prefill grace. This is not a framework that assumes a fast provider.
+- **Its filesystem hygiene is real.** It refuses a world-writable
+  `HERMES_HOME` outright (`unsafe_control_permissions`); the home needs `700`.
+
+### The configuration traps, in the order they bite
+
+These cost most of the evaluation and none of them are in the docs.
+
+1. **`HERMES_PROVIDER` is not a knob.** Provider comes from `config.yaml`
+   (`model.provider`). The stock file ships `provider: "auto"`,
+   `default: "anthropic/claude-opus-4.6"` and
+   `base_url: "https://openrouter.ai/api/v1"`.
+2. **`auto` + `OPENAI_BASE_URL` resolves to `openai-api`, whose transport is
+   the Codex Responses API** — `/v1/responses`, which llama.cpp does not
+   implement. The symptom is not a 404 but
+   *"Non-streaming API call timed out after 240s with no response"*, three
+   attempts, then *"unresponsive for 5 consecutive stale attempts"*. Nothing
+   names the real cause.
+3. **That stale model name also produces a fake diagnosis.** The
+   `ValueError: Model anthropic/claude-opus-4.6 has a context window of 20,480
+   tokens, which is below the minimum 64,000` was describing the *stored
+   placeholder*, not the served model. The 64K floor is a genuine enforced
+   check (`_enforce_minimum_context`), but that message was not about us.
+4. **`provider: "llamacpp"` is reserved for Hermes's own supervised server.**
+   Pointing it at an external one raises
+   `LocalRuntimeUnavailableError: The local model server is turned off`.
+5. **`provider: "custom"` is the correct setting** for an external
+   OpenAI-compatible endpoint. It selects `chat_completion_stream_request`,
+   which is what finally worked.
+
+A sixth, worth keeping because it explains confusing server logs: Hermes's own
+source notes that *"a non-streamed request can't be cancelled through the
+router, so it would keep the server busy after Hermes gives up on it."* That is
+exactly what was observed — llama-server kept grinding 2048-token batches for
+minutes after each abandoned attempt, which made the first runs look far worse
+than they were.
+
+### Where the prompt actually goes
+
+`hermes prompt-size` gives a byte breakdown, and it contradicts the obvious
+guess. **The 44 skills are not the cost.**
+
+| component | bytes |
+| --- | --- |
+| **tool schemas (21 tools)** | **39,999** |
+| system prompt, stable (identity / guidance / skills index) | 12,177 |
+| system prompt, volatile (memory / profile / timestamp) | 5,112 |
+| context (`AGENTS.md`, cwd files) | 644 |
+| **total** | **~57,900 (~12,900 tokens)** |
+
+Each skill contributes only **70-88 bytes** of always-on index cost; its
+`SKILL.md` is read lazily when used. So **tool schemas are 69% of the prompt**,
+and they are the only large trimmable part (`-t/--toolsets`).
+
+The floor matters as much as the total: stable + volatile is **17.3 KB
+(~3,850 tokens) with zero tools enabled**, and the 5,112-byte volatile block
+(memory, profile, timestamp) is by definition different every turn.
+
+### What it costs on this hardware
+
+Server-side measurement, cold slot, full default toolset:
+
+| prefill reached | cumulative | average rate | that batch alone |
+| --- | --- | --- | --- |
+| 2,048 tok | 278 s | 7.36 tok/s | 7.36 tok/s |
+| 4,096 tok | 702 s | 5.84 tok/s | **4.83 tok/s** |
+
+`progress = 0.16` at 2,048 tokens independently confirms the ~12,800-token
+total. The rate **degrades as context grows**, matching the superlinear
+prefill already recorded in `LOCAL_AI_EVALUATION.md`, so the full prompt
+extrapolates to **roughly an hour to first token** — for the message
+"Reply with exactly: ok". Generation then runs at 2.70 tok/s.
+
+**And llama-server is configured with one slot** (`parallel_slots: 1`, chosen
+because two slots split two threads and collapsed to 0.59 tok/s). A warm prefix
+cache is therefore the only thing that could make repeat turns cheap, and it is
+evicted by any other use of `ai.hub.frey` — which is precisely the "one
+interface for everything" this plan is built around.
 
 ### What is genuinely good about it
 
-- **It runs fully offline against an OpenAI-compatible endpoint** — the docs
-  name vLLM, SGLang, Ollama "or any OpenAI-compatible API", with a custom base
-  URL. Phase 0 just gave Frey exactly such an endpoint, so the integration
-  point already exists.
-- **It can be fully contained.** Alongside terminal-backend isolation it
-  supports **whole-process wrapping**, running the entire agent process tree
-  in a Docker container under declarative filesystem, network, process and
-  inference policy. That is precisely what §3 requires.
-- **Its security documentation is unusually honest**, and worth quoting
-  because it states the thesis of this whole plan better than this document
-  does: *"The only security boundary against an adversarial LLM is the
-  operating system. Nothing inside the agent process constitutes
-  containment."* It also says in-process approval gates and redaction are
-  *"not security boundaries"* but heuristics. Any vendor willing to write that
-  down is being straight with you.
+Unchanged from the first evaluation, and still true:
 
-### Why it still cannot run here
+- **It runs fully offline against an OpenAI-compatible endpoint**, which
+  phase 0 already provides.
+- **It can be fully contained** — whole-process wrapping under declarative
+  filesystem, network, process and inference policy, which is what §3 wants.
+- **Its security documentation is unusually honest**, and states the thesis of
+  this plan better than this document does: *"The only security boundary
+  against an adversarial LLM is the operating system. Nothing inside the agent
+  process constitutes containment."* It also says in-process approval gates and
+  redaction are *"not security boundaries"* but heuristics. A vendor willing to
+  write that down is being straight with you.
 
-**The context requirement.** The documentation states a hard minimum:
-*"Hermes Agent requires a model with at least 64,000 tokens of context."*
-Frey serves 8192. The cost of 64K on this hardware is arithmetic, not opinion.
+### The prediction that failed, kept as a record
 
-Qwen3.5-4B is 32 layers with 4 key/value heads and head_dim 256, so each token
-costs `2 x 32 x 4 x 256` values of KV cache — **128 KiB per token at fp16**:
+The first evaluation disqualified Hermes with this table and the claim that the
+fp16 column was impossible and the q8_0 column would leave ~1.4 GiB for
+everything else:
 
 | Context | KV cache fp16 | KV cache q8_0 | Plus 2.71 GiB weights |
 | --- | --- | --- | --- |
 | 8192 (deployed) | 1.0 GiB | 0.5 GiB | 3.7 / 3.2 GiB |
 | **64000 (Hermes minimum)** | **7.8 GiB** | **~3.9 GiB** | **10.5 / 6.6 GiB** |
 
-The host reported **8 GiB available** on 2026-11-07. The fp16 column is
-impossible. The q8_0 column technically fits and then leaves about 1.4 GiB for
-Jellyfin, the *arrs, Authelia, LLDAP and monitoring — which is the same
-CPU-and-RAM contention argument `CLAUDE.md` already makes about software
-transcoding, except worse, because it is resident rather than occasional.
+Measured, 64K cost **5.15-5.37 GiB total** and left **6.3-7.0 GiB available**.
+It also predicted "roughly 53 minutes before the first output token" from an
+assumed 20 tok/s against a *full* 64K window — a number that was wrong in
+method (nothing fills the window; the prompt is ~12.9K) yet landed near the
+right order of magnitude for the wrong reason.
 
-**And the arithmetic that actually settles it is prompt processing.** Context
-is not free to *fill*. Prompt processing is compute-bound and the Pi 5's A76
-cores have no i8mm. At a generous 20 tokens/s, a 64K-token agent turn spends
-**roughly 53 minutes before the first output token**. Even a modest 10K-token
-turn is about eight minutes. An agent that takes tens of minutes per step
-cannot keep a system healthy; the fault it was reasoning about has moved on.
-
-A secondary problem: *"Any component running inside the agent process (skills,
-plugins, hook handlers) can read whatever the agent itself can read, including
-in-memory credentials."* That is fine under whole-process wrapping with no
-credentials present, but it means the boundary must be the container, and
-every skill and plugin must be treated as having the agent's full access.
+**The lesson is the one `CLAUDE.md` already teaches about `config.txt`: a
+number correct on paper is not a number the machine is running.** Two hours of
+measurement replaced both estimates, and the thing that actually decided it —
+the size of Hermes's own prompt — appeared in neither prediction.
 
 ### What to do instead
 
 - **Keep the broker design in §3.** It exists because the model must not hold
-  a shell. Hermes's own security page agrees with that reasoning.
-- **Keep the `/v1` endpoint as the integration seam.** If Hermes is ever
-  wanted, it belongs on the ThinkPad — a machine with real compute — pointed
-  at a real model, not on the Pi. The endpoint makes that possible with no
-  further work.
-- **Re-evaluate only if** the context minimum drops substantially, or Frey
-  gains hardware with the memory bandwidth and compute to fill 64K in seconds
-  rather than minutes. Neither is foreseeable on a Pi 5.
+  a shell, and Hermes's own security page argues the same.
+- **Keep the `/v1` endpoint as the integration seam.** It is what let this
+  evaluation happen at all, and it is what makes Hermes-on-the-ThinkPad
+  possible later with no further work.
+- **Re-evaluate if** Hermes gains a way to shrink its always-on tool schemas,
+  or Frey gains hardware that prefills ~13K tokens in seconds.
+
 
 ## 7. Phases
 

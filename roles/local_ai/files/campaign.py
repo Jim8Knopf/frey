@@ -448,10 +448,19 @@ So:
 
 # Deliberately NOT generic question words. An earlier version included
 # "what", "who", "where", "list" and "add", so almost any sentence matched
-# and a pure system question loaded the wiki tools too. With nine tool
-# definitions in the prompt the model got slower and called NO tool at all -
-# too much choice is its own failure mode. These are nouns from the campaign
-# domain only.
+# and a pure system question loaded the wiki tools too.
+#
+# CORRECTION: an earlier comment here - and the commit message that shipped
+# it - claimed that carrying all nine tool definitions made the model take
+# ten minutes and call no tool at all. That measurement was invalid: the
+# model container had restarted mid-request, so the time was a model reload
+# and the missing tool call was a dropped connection. Do not cite it.
+#
+# What IS measured is narrower and still sufficient: every tool definition is
+# prompt tokens, and prefill here runs at ~9 tok/s. Keeping one domain's
+# tools out of the other domain's prompt is worth it for that reason alone.
+# Whether tool COUNT also degrades tool CHOICE on this model is untested.
+# These are nouns from the campaign domain only.
 CAMPAIGN_WORDS = (
     "npc", "character", "faction", "ship", "species", "place", "session",
     "thread", "campaign", "world", "pirate", "harbour", "harbor", "crew",
