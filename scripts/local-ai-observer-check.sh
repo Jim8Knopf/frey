@@ -117,11 +117,24 @@ for name in nets:
 
 # --- Mounts: exactly one writable, nothing forbidden -----------------------
 
-writable = [m['Destination'] for m in c['Mounts'] if m.get('RW')]
-if writable == ['/drafts']:
-    ok('exactly one read-write mount: /drafts')
+# The write allowlist, asserted exactly. Read is broad by design; write is
+# these two and nothing else - /drafts for reports, and the broker request
+# queue, which is the only channel to anything privileged.
+writable = sorted(m['Destination'] for m in c['Mounts'] if m.get('RW'))
+expected_writable = ['/broker/req', '/drafts']
+if writable == expected_writable:
+    ok(f'write allowlist is exactly {expected_writable}')
 else:
     fail(f'unexpected writable mounts: {writable}')
+
+# The agent must not be able to forge an answer to its own request.
+res = [m for m in c['Mounts'] if m['Destination'] == '/broker/res']
+if res and not res[0].get('RW'):
+    ok('broker response directory is mounted read-only')
+elif res:
+    fail('broker response directory is WRITABLE - the agent could forge a reply')
+else:
+    fail('broker response directory is not mounted')
 
 readonly = sorted(m['Destination'] for m in c['Mounts'] if not m.get('RW'))
 if readonly:
@@ -135,8 +148,13 @@ if readonly:
 # thought to forbid, which a denylist never can.
 allowed_destinations = {
     '/drafts',
+    '/broker/req',
+    '/broker/res',
     '/notes',
     '/textfile',
+    '/media',
+    '/stacks',
+    '/photos',
     '/opt/frey-local-ai-observer/observer.py',
 }
 actual_destinations = {m['Destination'] for m in c['Mounts']}
@@ -144,7 +162,7 @@ unexpected = actual_destinations - allowed_destinations
 if unexpected:
     fail(f'unexpected mounts present: {sorted(unexpected)}')
 else:
-    ok(f'mounts are exactly the {len(allowed_destinations)} expected destinations')
+    ok(f'every mount is on the expected list ({len(actual_destinations)} present)')
 
 # The program file must be a single regular file, not a directory handed in
 # from the stacks tree.

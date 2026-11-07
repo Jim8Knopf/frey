@@ -1,6 +1,15 @@
 ---
 # The observer program is bind-mounted read-only into the container, so a new
 # version on disk is not picked up until the process restarts.
+- name: Restart local AI broker
+  ansible.builtin.systemd_service:
+    name: "{{ local_ai.broker.service_name }}.service"
+    state: restarted
+    daemon_reload: true
+  when:
+    - local_ai.broker.enabled | bool
+    - not ansible_check_mode
+
 - name: Restart local AI observer
   community.docker.docker_compose_v2:
     project_src: "{{ local_ai.stack_dir }}"

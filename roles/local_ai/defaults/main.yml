@@ -136,6 +136,118 @@ local_ai:
     # The deployed space is spaces/notes (lowercase), holding index.md.
     runbook_page: "spaces/notes/Frey/Runbook.md"
 
+    # Read broadly, write narrowly. Each entry is mounted READ-ONLY, and a
+    # path that does not exist yet is skipped rather than mounted - otherwise
+    # Docker would helpfully create an empty directory for it.
+    #
+    # The write surface is unaffected by anything here: only the drafts
+    # directory and the broker's request queue are read-write, and they are
+    # named explicitly in the compose file rather than coming from this list.
+    #
+    # Worth knowing about the stacks entry: the rendered compose files under
+    # it DO contain *arr API keys, Authelia secrets and the LLDAP admin
+    # password. There is no egress, so nothing can be exfiltrated - but the
+    # model could quote one into a draft, and drafts are read on a phone.
+    # Remove that single line to close it; nothing else depends on it.
+    read_paths:
+      - {src: "{{ frey.metrics_textfile_dir }}", dest: /textfile}
+      - {src: "{{ frey.notes_data_dir }}", dest: /notes}
+      - {src: "{{ frey.base_dir }}/data", dest: /media}
+      - {src: "{{ frey.base_dir }}/stacks", dest: /stacks}
+      # Immich is not deployed yet - only its OIDC client exists. Listed so
+      # the boundary precedes the thing it guards: readable, never writable.
+      - {src: "{{ frey.base_dir }}/data/photos", dest: /photos}
+
+  # Phase 3 of docs/LOCAL_AI_AGENT_PLAN.md: the only privileged thing the
+  # assistant can reach. Read verbs only - there is no write verb yet.
+  #
+  # It runs on the HOST, and its channel is a directory rather than a socket
+  # or a port. Verified 2026-11-07: the agent container has no default route
+  # and cannot reach the host on any port, which is deliberate and is what
+  # makes its broad read access safe. So a host-side listener is unreachable
+  # by construction, and mounting docker.sock into the agent would hand it the
+  # very thing this design withholds.
+  broker:
+    enabled: true
+    service_name: frey-broker
+    script_path: /usr/local/lib/frey/broker.py
+    base_dir: "{{ frey.base_dir }}/appdata/local-ai/broker"
+    req_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/req"
+    res_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/res"
+    state_dir: /run/frey-broker
+    # `touch` this and every verb refuses. One file, no deploy needed.
+    kill_switch: /etc/frey/broker-disabled
+    poll_seconds: 2
+    max_per_minute: 30
+    max_log_lines: 200
+    log_level: INFO
+
+    # NOT /var/lib/docker/containers. The NVMe migration moved Docker's
+    # data-root onto the NVMe, so `docker info --format '{{.DockerRootDir}}'`
+    # reports /opt/frey/docker. The old path still EXISTS and is empty, which
+    # is the worst case: reading it finds no containers and looks exactly like
+    # a container that is not running.
+    docker_containers_dir: "{{ frey.base_dir }}/docker/containers"
+
+    # systemd units the agent may ask the STATE of. Read-only: there is no
+    # verb that starts or stops anything. Deliberately excludes every
+    # networking unit - not because asking is dangerous, but because the
+    # allowlist is the place that habit is set.
+    units:
+      - frey-metrics.service
+      - frey-metrics.timer
+      - frey-self-heal.service
+      - frey-self-heal.timer
+      - frey-monitor-watchdog.timer
+      - frey-log-repair.timer
+      - frey-media-gate.timer
+      - frey-media-dns-upstream.timer
+      - frey-local-ai-download@qwen35-4b.timer
+      - docker.service
+
+    # Read-only diagnostics that already exist and already have a `status`
+    # verb. The command line comes from here, never from the request, so a
+    # request cannot smuggle an argument.
+    diagnostics:
+      - [self_heal, /usr/local/bin/frey-self-heal status]
+      - [media_dns, /usr/local/bin/frey-media-dns-upstream status]
+      - [media_gate, /usr/local/bin/frey-media-gate status]
+
+    # Containers whose logs the agent may tail. Read off disk, with no Docker
+    # socket and no Docker CLI, so this grants no ability to start or exec
+    # anything - and it still works when Loki is the thing that broke.
+    containers:
+      - frey-media-dns
+      - prowlarr
+      - sonarr
+      - radarr
+      - lidarr
+      - bazarr
+      - qbittorrent
+      - byparr
+      - alert-relay
+      - prometheus
+      - loki
+      - frey-traefik
+
+    # Absent, not denied: InaccessiblePaths makes these ENOENT even for root,
+    # so no code of ours has to be correct for the limit to hold.
+    #
+    # More credential files exist than the obvious four. The per-service key
+    # files under appdata are generated secrets, and a report that quoted one
+    # would sync to a phone - which is the actual risk here, since the agent
+    # has no egress and cannot exfiltrate anything.
+    inaccessible_paths:
+      - "{{ frey.base_dir }}/pki"
+      - "{{ frey.base_dir }}/appdata/identity/secrets"
+      - "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+      - "{{ frey.base_dir }}/appdata/monitoring/.monitoring-keys.json"
+      - "{{ frey.base_dir }}/appdata/.media-keys.json"
+      - "{{ frey.base_dir }}/appdata/cleanuparr/jwt-key.bin"
+      - /etc/shadow
+      - /etc/gshadow
+      - /root
+
   # Units the role must remove, because renaming a template does not delete
   # what a previous deploy already installed on the Pi.
   legacy_units:

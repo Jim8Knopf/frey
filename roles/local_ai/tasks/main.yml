@@ -78,6 +78,116 @@
     mode: "0750"
   when: local_ai.observer.enabled | bool
 
+# --- Broker -----------------------------------------------------------------
+
+- name: Create the broker directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ local_ai.broker.base_dir }}", owner: root, group: root, mode: "0755"}
+    # Owned by root, group-writable by the agent. NOT owned by the agent:
+    # the broker runs with CapabilityBoundingSet= empty, so its root has no
+    # CAP_DAC_OVERRIDE and is subject to ordinary permission checks. Against
+    # a 0750 directory owned by uid 10002 root falls in "other" and cannot
+    # even traverse it - and Python's glob() swallows that PermissionError
+    # and yields nothing, so the broker sat there finding no requests and
+    # logging nothing at all. Group ownership fixes it without handing the
+    # capability back.
+    - {path: "{{ local_ai.broker.req_dir }}",
+       owner: root,
+       group: "{{ local_ai.observer.gid }}", mode: "0770"}
+    # Responses are written by root and only read by the agent, which also
+    # mounts this read-only - so the agent cannot forge an answer to its own
+    # request.
+    - {path: "{{ local_ai.broker.res_dir }}", owner: root, group: root, mode: "0755"}
+  when: local_ai.broker.enabled | bool
+
+- name: Create the broker program directory
+  ansible.builtin.file:
+    path: "{{ local_ai.broker.script_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: local_ai.broker.enabled | bool
+
+- name: Install the broker program
+  ansible.builtin.copy:
+    src: broker.py
+    dest: "{{ local_ai.broker.script_path }}"
+    owner: root
+    group: root
+    mode: "0750"
+  when: local_ai.broker.enabled | bool
+  notify: Restart local AI broker
+
+- name: Create the directory holding the broker kill switch
+  ansible.builtin.file:
+    path: "{{ local_ai.broker.kill_switch | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: local_ai.broker.enabled | bool
+
+- name: Install the broker unit
+  ansible.builtin.template:
+    src: frey-broker.service.j2
+    dest: "/etc/systemd/system/{{ local_ai.broker.service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  register: local_ai_broker_unit
+  when: local_ai.broker.enabled | bool
+  notify: Restart local AI broker
+
+- name: Reload systemd after changing the broker unit
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - local_ai.broker.enabled | bool
+    - local_ai_broker_unit.changed
+    - not ansible_check_mode
+
+- name: Enable and start the broker
+  ansible.builtin.systemd_service:
+    name: "{{ local_ai.broker.service_name }}.service"
+    enabled: true
+    state: started
+  when:
+    - local_ai.broker.enabled | bool
+    - not ansible_check_mode
+
+# --- Observer read surface --------------------------------------------------
+#
+# Mount only the paths that actually exist. Docker creates a missing bind
+# source as an empty directory, which would litter /opt/frey with stubs for
+# services that are not deployed yet - Immich being the current example.
+- name: Check which observer read paths exist
+  ansible.builtin.stat:
+    path: "{{ item.src }}"
+  loop: "{{ local_ai.observer.read_paths }}"
+  loop_control:
+    label: "{{ item.src }}"
+  register: local_ai_read_path_stat
+  when: local_ai.observer.enabled | bool
+
+- name: Keep only the read paths present on this host
+  ansible.builtin.set_fact:
+    local_ai_observer_read_paths: >-
+      {{
+        local_ai_read_path_stat.results
+        | selectattr('stat.exists', 'defined')
+        | selectattr('stat.exists')
+        | map(attribute='item')
+        | list
+      }}
+  when: local_ai.observer.enabled | bool
+
 # Internal-only, so the observer can reach Prometheus, Loki, Alertmanager and
 # the alert relay without gaining egress. monitoring_internal is NOT internal
 # despite its name, which is why this network exists at all. local_ai runs

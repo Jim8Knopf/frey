@@ -122,15 +122,23 @@ services:
       - NOTIFY_SEVERITY={{ o.notify_severity }}
       - RUNBOOK_PAGE={{ o.runbook_page }}
     volumes:
-      # Exactly one read-write mount. Everything else is read-only, and
-      # anything forbidden is simply absent: no photos, no secrets, no PKI,
-      # no stacks directory, no Docker socket, no host root. A path that was
-      # never mapped in cannot be reached by traversal, symlink or bug - the
-      # denial is ENOENT rather than EACCES.
+      # Read broadly, write to an explicit allowlist. Only two paths are
+      # read-write: the drafts directory and the broker's request queue.
+      # Everything else is :ro, and credential material is not mounted at all
+      # - so the denial is ENOENT rather than EACCES, and no code of ours has
+      # to be correct for that to hold.
       - "{{ o.drafts_dir }}:/drafts"
-      - "{{ frey.metrics_textfile_dir }}:/textfile:ro"
-      - "{{ frey.notes_data_dir }}:/notes:ro"
+{% if local_ai.broker.enabled | bool %}
+      # The only channel to anything privileged. Write a request here; read
+      # the answer from a directory that is read-only to this container, so
+      # the agent cannot forge its own response.
+      - "{{ local_ai.broker.req_dir }}:/broker/req"
+      - "{{ local_ai.broker.res_dir }}:/broker/res:ro"
+{% endif %}
       - "{{ local_ai.stack_dir }}/observer.py:{{ o.script_path }}:ro"
+{% for path in local_ai_observer_read_paths | default([]) %}
+      - "{{ path.src }}:{{ path.dest }}:ro"
+{% endfor %}
     networks:
       # Both internal. The observer therefore has no route to the internet,
       # which is what makes its broad read access safe: there is nowhere to

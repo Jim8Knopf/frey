@@ -137,12 +137,27 @@ on, and polling cannot break them.
 
 ### Its boundaries
 
+The rule is **read broadly, write only to explicitly named paths**. Reading is
+safe here because there is no egress; writing is what is capped.
+
 | | |
 | --- | --- |
-| writes | `/opt/frey/appdata/local-ai/drafts` only, as uid 10002 |
-| reads | notes, media metadata, textfile collectors, Prometheus, Loki |
+| **writes** | exactly two: `/drafts` for reports, and `broker/req`, the only channel to anything privileged. Both as uid 10002 |
+| reads | notes, media, photos, the stacks tree, textfile collectors, Prometheus, Loki, and `broker/res` — all `:ro` |
 | networks | `ai_private` and `ai_observe`, **both internal** |
-| never mounted | photos, Immich, `/opt/frey/pki`, `.vault_pass`, `/opt/frey/stacks`, `docker.sock`, host `/etc` |
+| never mounted | `/opt/frey/pki`, `.vault_pass`, the vaulted `secrets.yml`, `/etc/shadow`, the per-service `.*-keys.json` files, `docker.sock`, host `/etc` |
+
+Photos are mounted read-only and listed before Immich exists, so the boundary
+precedes the thing it guards: the agent can look at a photo and can never edit
+or delete one. A read path that does not exist yet is skipped rather than
+mounted, since Docker would otherwise create an empty directory for it.
+
+One residual risk, stated plainly because it was a deliberate choice: the
+rendered compose files under `/stacks` **do** contain *arr API keys, Authelia
+secrets and the LLDAP admin password. Nothing can be exfiltrated — there is no
+egress — but the model could quote one into a draft, and drafts are read on a
+phone. Removing the single `/stacks` entry from `local_ai.observer.read_paths`
+closes it; nothing else depends on it.
 
 It has **no internet egress at all**, which is what makes broad read access
 safe: there is nowhere to send anything, and its only output is a file you
@@ -192,6 +207,61 @@ One practical consequence: **restarting the observer cancels an in-flight
 request.** `llama-server` logs `cancel task` and the report is lost. Redeploying
 the role restarts it, so avoid redeploying while a report is generating.
 
+## The broker
+
+Phase 3: the only privileged thing the assistant can reach, and it exposes
+**read verbs only**. It runs on the host, and **its channel is a directory
+rather than a socket or a port** — because the agent container has no default
+route and cannot reach the host on any port, which is deliberate and is what
+makes its broad read access safe.
+
+The agent writes a request into `broker/req`, which it can write; the broker
+validates it and writes a response into `broker/res`, which the agent can only
+read — so it cannot forge an answer to its own request.
+
+| Verb | Returns |
+| --- | --- |
+| `unit_state` | systemd state for one allowlisted unit |
+| `diagnostic` | output of one allowlisted read-only command |
+| `container_logs` | tail of one allowlisted container's log |
+
+**No Docker socket and no Docker CLI.** Container state already reaches the
+agent from cAdvisor through Prometheus, and `container_logs` reads Docker's
+JSON log files straight off disk — which grants no ability to start, stop or
+exec anything, and still works when Loki is the thing that broke. Note that
+the log files live under **`/opt/frey/docker/containers`**, not
+`/var/lib/docker`: the NVMe migration moved Docker's data-root, and the old
+path still exists and is empty.
+
+Dispatch is an exact dictionary lookup, so an unknown verb has nowhere to go.
+`restart_container`, `run_command`, `restart_service`, `reboot`, `write_file`
+and `nmcli` are absent rather than refused.
+
+### Its confinement is systemd's, not its own code
+
+AppArmor was the intent, but it is **disabled in this Pi's kernel** —
+`/sys/module/apparmor/parameters/enabled` reads `N` and the tools are absent,
+so enabling it needs a kernel command-line change and a reboot. systemd's
+sandboxing gives the same guarantees with neither: `ProtectSystem=strict`
+makes the whole filesystem read-only except `ReadWritePaths=` (the write
+allowlist), `InaccessiblePaths=` makes every credential path **ENOENT even to
+root**, `PrivateNetwork=yes` removes networking entirely, and
+`CapabilityBoundingSet=` is empty.
+
+That empty capability set has real teeth, and it caused the one bug worth
+remembering: root without `CAP_DAC_OVERRIDE` obeys ordinary permission checks,
+so the broker could not traverse a request directory owned by the agent at
+0750 — and Python's `glob()` swallows that `PermissionError` and yields
+nothing, so it ran happily, found no work and logged nothing at all. The fix
+was group ownership, not handing the capability back.
+
+Stop every verb with one file and no deploy:
+
+```sh
+sudo touch /etc/frey/broker-disabled   # every verb now refuses
+sudo rm /etc/frey/broker-disabled      # and back
+```
+
 ### Caveats
 
 Every report is written by a 4B model. Verify every claim before acting on one;
@@ -227,6 +297,7 @@ From the Frey project directory on the admin computer:
 bash scripts/local-ai-ready-check.sh     # download, readiness and isolation; exit 2 = still downloading
 bash scripts/local-ai-check.sh           # anonymous access is redirected
 bash scripts/local-ai-observer-check.sh  # tries to break every observer boundary
+bash scripts/local-ai-broker-check.sh    # asks the broker for things it must refuse
 ```
 
 `local-ai-observer-check.sh` is the important one. It attempts egress, attempts

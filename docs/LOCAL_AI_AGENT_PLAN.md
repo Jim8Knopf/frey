@@ -118,17 +118,45 @@ network roles — so a future edit cannot widen it by accident. The repo already
 uses this pattern: `roles/campaign_ai/tasks/main.yml` asserts its own access
 policy before doing anything.
 
-### M4 — Kernel MAC on the broker.
+### M4 — Kernel confinement on the broker. **Revised 2026-11-07: systemd, not AppArmor.**
 
-The broker is the one component whose compromise is serious, because it holds
-`docker.sock`. It gets an AppArmor profile denying the photo paths, `/opt/frey/pki`,
-`.vault_pass` and `/etc/shadow` outright, so a future compose-file mistake
-cannot silently widen access even if M1 is misconfigured.
+**AppArmor is not available on this Pi.** The module is loaded, but
+`/sys/module/apparmor/parameters/enabled` reads **`N`**, the filesystem is not
+mounted, and `apparmor_parser` and `aa-status` are not installed. Enabling it
+needs a kernel command-line change and a reboot — which on a console-less Pi
+is exactly the class of change the constraint at the top of `CLAUDE.md` says
+not to make casually.
 
-The honest cost: **this repo has no AppArmor or seccomp anywhere today**, and a
-wrong profile denies silently on a machine with no console. Mitigation is to
-ship it in complain mode first, read the denials out of Loki, and only then
-enforce. **[DECIDE]** — this is the one layer with a real downside.
+**systemd's own sandboxing gets the same guarantees with no reboot and no new
+package**, and it is enforced by namespaces and seccomp in the kernel rather
+than by the broker's own code. Crucially `InaccessiblePaths=` produces
+**ENOENT**: the path is not there, rather than there and refused — the same
+distinction M1 rests on. The deployed unit carries:
+
+| Directive | Effect |
+| --- | --- |
+| `ProtectSystem=strict` | the entire filesystem is read-only… |
+| `ReadWritePaths=` | …except the two broker queues. This *is* the write allowlist |
+| `InaccessiblePaths=` | every credential path, ENOENT even to root |
+| `CapabilityBoundingSet=` (empty) | root without `CAP_DAC_OVERRIDE`, so it obeys ordinary permissions |
+| `PrivateNetwork=yes` | no network at all; the channel is a directory |
+| `SystemCallFilter=@system-service` | seccomp |
+| plus | `NoNewPrivileges`, `ProtectHome`, `RestrictNamespaces`, `ProtectProc=invisible`, `ProtectKernelTunables/Modules/Logs`, `RestrictSUIDSGID`, `LockPersonality` |
+
+Two things this cost, both worth recording:
+
+- **The empty capability set has teeth.** Root without `CAP_DAC_OVERRIDE` is
+  subject to ordinary permission checks, so the broker could not even traverse
+  a request directory owned by the agent at 0750 — and Python's `glob()`
+  swallows that `PermissionError` and yields nothing, so it sat there finding
+  no work and logging nothing at all. Fixed by group ownership rather than by
+  handing the capability back.
+- `systemctl show` **does** work under `ProtectSystem=strict`, which was the
+  main worry about going this strict. Verified.
+
+Enabling AppArmor properly remains available as a deliberate, scheduled
+change: `apparmor=1 security=apparmor` on the kernel command line, a reboot,
+and the tools installed. It is not needed for the guarantees above.
 
 ### M5 — Rate limit, circuit breaker, kill switch.
 
@@ -386,9 +414,59 @@ cooldown, a hard per-run action cap, and `monitoring_alerting.self_heal.act`
 to drop back to diagnose-and-notify. Verbs for anything that could brick the
 van do not exist in the file.
 
-**Phase 3 — broker with read verbs only, plus the denial test suite.** Build
-the broker, expose only reads, and prove every limit in §3 holds before a
-single write verb exists (§8).
+**Phase 3 — broker with read verbs only, plus the denial test suite. DONE
+2026-11-07.** Build the broker, expose only reads, and prove every limit in §3
+holds before a single write verb exists (§8).
+
+**The channel is a directory, not a socket or a port.** That was forced by a
+fact worth knowing: the agent container has **no default route and cannot
+reach the host on any port** — verified, not assumed. That is deliberate, and
+it is what makes the agent's broad read access safe. So a host-side listener
+is unreachable by construction, and mounting `docker.sock` into the agent
+would hand it the one thing this whole design withholds. The agent writes a
+request file into a directory it can write; `frey-broker`, running on the host
+under the systemd sandbox in §3 M4, validates it against an allowlist and
+writes a response into a directory the agent can only read — so it cannot
+forge an answer to its own request.
+
+**No Docker access at all.** The agent already gets container state from
+cAdvisor through Prometheus, so the broker never needed the socket. Even
+`container_logs` reads Docker's JSON log files straight off disk, which grants
+no ability to start, stop or exec anything — and still works when Loki, which
+normally carries those lines, is itself what broke.
+
+Three read verbs, each something the agent cannot get for itself:
+`unit_state` (systemd state for an allowlisted unit), `diagnostic` (output of
+an allowlisted read-only command — `frey-self-heal status` and friends), and
+`container_logs`. Dispatch is an exact dict lookup, so an unknown verb has
+nowhere to go.
+
+`scripts/local-ai-broker-check.sh` drives all of it from inside the agent
+container and **all 21 checks hold**: the three verbs work; `hostapd.service`,
+`ssh.service`, `NetworkManager.service`, an unlisted container and an unlisted
+diagnostic are all refused; `restart_container`, `run_command`,
+`restart_service`, `reboot`, `write_file` and `nmcli` do not exist; argument
+smuggling through a diagnostic name and traversal through a container name are
+both rejected; and the response directory rejects writes from the agent.
+
+Two traps found by running it rather than reading it:
+
+- **Docker's data-root is `/opt/frey/docker`, not `/var/lib/docker`** — moved
+  by the NVMe migration. The old path still exists and is empty, which is the
+  worst case: reading it finds no containers and looks exactly like a
+  container that is not running.
+- An unquoted `Environment=` assignment containing a space is split by systemd
+  into several broken assignments, reported as "Invalid environment
+  assignment" and then **ignored** — which silently emptied the diagnostic
+  allowlist.
+
+The agent's read surface was also widened here, per the decision that it may
+**read broadly and write only to explicitly named paths**: media, notes, the
+collectors and the stacks tree are mounted read-only, photos are listed ready
+for Immich, and only two paths are read-write — `/drafts` and the broker's
+request queue. Credential material stays unmounted. Note that more credential
+files exist than the obvious ones: the per-service `.{identity,media,monitoring}-keys.json`
+files and `identity/secrets` are generated secrets too.
 
 **Phase 4 — tier-1 write verbs, deadman, breaker, kill switch.** One verb at a
 time, starting with `recreate_container(frey-media-dns)` — the most frequent
