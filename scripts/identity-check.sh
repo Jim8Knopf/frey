@@ -8,16 +8,19 @@
 #
 # It asserts the four things that matter and are easy to break silently:
 #
-#   1. Protected services bounce an anonymous request to the login page.
-#      A 200 here means forward auth is OFF for that service - most likely a
-#      Traefik router was dropped because it named a middleware that did not
-#      exist, which 404s or serves openly rather than erroring anywhere you
-#      would notice.
+#   1. Services listed as `forward_auth` bounce an anonymous request to the
+#      login page. A 200 here means forward auth is OFF for that service -
+#      most likely a Traefik router was dropped because it named a middleware
+#      that did not exist, which 404s or serves openly rather than erroring
+#      anywhere you would notice.
 #
-#   2. Unprotected services still answer plain HTTP. This is deliberate, not an
+#   2. Everything else still answers plain HTTP. This is deliberate, not an
 #      oversight: a television cannot install a private root certificate and
 #      gives you no way to click through, so forcing HTTPS would take Jellyfin
 #      away from the TV.
+#
+#   Which service is which is read out of inventory/group_vars/all/identity.yml
+#   at run time, never copied into this file - see the note above PROTECTED.
 #
 #   3. Legacy *.frey names redirect to *.hub.frey rather than 404ing.
 #
@@ -31,6 +34,7 @@ PI_ADDR="${PI_ADDR:-10.20.0.1}"
 CA="${CA:-ca/frey-root-ca.crt}"
 DOMAIN="${DOMAIN:-hub.frey}"
 LEGACY="${LEGACY:-frey}"
+MATRIX="${MATRIX:-inventory/group_vars/all/identity.yml}"
 
 fails=0
 pass() { printf '  \033[32mok\033[0m    %-44s %s\n' "$1" "$2"; }
@@ -50,19 +54,55 @@ code() { # scheme host path
         "${1}://${2}${3}" 2>/dev/null
 }
 
-# Services behind the login page. Keep in step with identity_services.
-PROTECTED=(sonarr radarr lidarr chaptarr prowlarr bazarr cleanuparr
+# Services behind Authelia's FORWARD AUTH. Traefik bounces an anonymous
+# request to the login page before the app is ever reached, so 302 is the
+# assertion. Keep in step with identity_services.
+PROTECTED=(sonarr radarr lidarr chaptarr prowlarr bazarr
            qbittorrent maintainerr jellystat audiobookrequest navidrome)
+# Services that log in against Authelia THEMSELVES - `auth: oidc` in
+# identity_services. Traefik does not redirect these, and must not: the app
+# serves its own page and starts the OIDC flow from inside it, so an anonymous
+# GET of the root is a 200 by design.
+#
+# Cleanuparr moved from forward auth to oidc and stayed in the list above,
+# where the only possible outcome was a FAIL reporting a correctly protected
+# service as unprotected. A check that cannot pass is worse than no check: it
+# trains you to ignore the one script whose whole job is to tell you SSO
+# broke. What actually has to hold for these is that the API refuses an
+# anonymous caller, so that is what is asserted.
+OIDC_APPS=(cleanuparr)
+# Endpoint per OIDC app that must answer 401 without credentials. Not `/`,
+# which is the public SPA shell, and not a path that 404s - a 404 would pass
+# an "is not 200" test while proving nothing.
+declare -A OIDC_API=([cleanuparr]=/api/health)
 # Services that keep their own login, or none. These must stay on HTTP.
 OPEN=(jellyfin audiobookshelf seerr)
 
-echo "Protected services should send an anonymous request to the login page:"
+echo "Forward-auth services should send an anonymous request to the login page:"
 for svc in "${PROTECTED[@]}"; do
-    c=$(code https "${svc}.${DOMAIN}" /)
-    if [[ "$c" == "302" ]]; then
-        pass "${svc}.${DOMAIN}" "302 -> login"
-    else
+    read -r c target <<<"$(code_and_target https "${svc}.${DOMAIN}" /)"
+    if [[ "$c" != "302" ]]; then
         fail "${svc}.${DOMAIN}" "expected 302, got ${c:-no answer}"
+    elif [[ "$target" != "https://auth.${DOMAIN}/"* ]]; then
+        # A 302 somewhere else is the app's own login page answering, which
+        # means the request reached the app and forward auth is not in front
+        # of it.
+        fail "${svc}.${DOMAIN}" "302, but to ${target:-nowhere} - not the login page"
+    else
+        pass "${svc}.${DOMAIN}" "302 -> login"
+    fi
+done
+
+echo
+echo "OIDC services serve their own page, but their API must refuse anonymously:"
+for svc in "${OIDC_APPS[@]}"; do
+    shell=$(code https "${svc}.${DOMAIN}" /)
+    api=$(code https "${svc}.${DOMAIN}" "${OIDC_API[$svc]}")
+    if [[ "$shell" =~ ^(200|30[0-9])$ && "$api" == "401" ]]; then
+        pass "${svc}.${DOMAIN}" "app shell $shell, API $api"
+    else
+        fail "${svc}.${DOMAIN}" \
+            "expected shell 2xx/3xx and API 401, got shell ${shell:-no answer} API ${api:-no answer}"
     fi
 done
 
@@ -70,8 +110,12 @@ echo
 echo "Unprotected services should still answer plain HTTP (the TV path):"
 for svc in "${OPEN[@]}"; do
     c=$(code http "${svc}.${DOMAIN}" /)
-    # 2xx or an app's own redirect are both fine; a bounce to the auth host is
-    # not, and neither is nothing at all.
+    # 2xx or the app's own redirect are both fine - including an `oidc` app
+    # bouncing to Authelia to start its own login flow, which is the whole
+    # point of that mode, and a 301 from Dashy or Grafana, whose roles upgrade
+    # to HTTPS unconditionally because nothing reads them on a television.
+    # Only silence is a failure: no answer on port 80 means the TV has no
+    # way in.
     if [[ "$c" =~ ^(200|204|30[0-9])$ ]]; then
         pass "${svc}.${DOMAIN}" "$c"
     else

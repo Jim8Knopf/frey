@@ -46,7 +46,16 @@
       - "  Client secret: {{ identity_secrets[item ~ '_oidc_secret'] }}"
       - "  Scopes:        {{ identity.oidc_catalog[item].scopes | join(' ') }}"
       - "  Redirect URIs: {{ identity.oidc_catalog[item].redirect_uris | join(' ') }}"
-  loop: "{{ identity_confidential_clients | default([]) }}"
+  # Audiobookshelf drops off this list once it has been configured over its own
+  # API, because printing a client secret for a step nobody has to take is how
+  # a stale instruction survives: the next person pastes it back in by hand and
+  # concludes the automation does not work.
+  loop: >-
+    {{
+      (identity_confidential_clients | default([]))
+      | reject('in', ['audiobookshelf'] if (identity_abs_configured | default(false)) else [])
+      | list
+    }}
   loop_control:
     label: "{{ item }}"
   when: not ansible_check_mode
@@ -70,9 +79,18 @@
       - "     interchangeable, and Firefox and Chrome each keep their own"
       - "     store. Verify with: curl -I https://{{ identity.hosts.auth }}.{{ frey.service_domain }}/"
       - "     (no --cacert). Anything other than 200 means not trusted."
-      - "  2. Audiobookshelf OIDC: paste the values above into"
-      - "     Settings -> Authentication. It has no API or environment"
-      - "     variable for this."
+      - "{{
+             '  2. Audiobookshelf OIDC is configured automatically over its
+                  own API - nothing to do. Roles are the exception: it only
+                  understands admin/user/guest, so set each person on its own
+                  Users screen.'
+             if (identity_abs_configured | default(false))
+             else '  2. Audiobookshelf OIDC: paste the values above into
+                        Settings -> Authentication. It CAN be configured
+                        automatically - put its root password in
+                        vault_identity_secrets.audiobookshelf_admin_password
+                        and re-run. See roles/identity/defaults/main.yml.'
+         }}"
       - "  3. Jellyfin SSO: install the plugin, then paste the values printed"
       - "     by the identity_jellyfin tasks. See roles/identity/README.md -"
       - "     and note the plugin is untested on Jellyfin 12.3."

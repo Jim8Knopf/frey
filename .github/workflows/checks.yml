@@ -36,9 +36,17 @@ jobs:
           done
           shellcheck --severity=warning scripts/*.sh git-hooks/pre-commit git-hooks/post-commit git-hooks/test-pre-commit.sh
       - name: Run focused tests
+        # Globbed, not listed. The four directories named here before this
+        # silently excluded roles/silverbullet/tests and roles/wifi_portal/tests
+        # - fourteen passing tests that had never run in CI, because adding a
+        # role's tests and adding a line here are two separate acts and the
+        # second is easy to forget. A new roles/<m>/tests is now picked up with
+        # no change to this file.
         run: |
-          python3 -m unittest discover -s tests -p 'test_*.py'
-          python3 -m unittest discover -s roles/network_gateway/tests -p 'test_*.py'
-          python3 -m unittest discover -s roles/media_acquisition/tests -p 'test_*.py'
-          python3 -m unittest discover -s roles/monitoring/tests -p 'test_*.py'
+          for dir in tests roles/*/tests; do
+            python3 -m unittest discover -s "$dir" -p 'test_*.py'
+          done
+          # Offline test scripts: these take no arguments and need no host.
+          python3 scripts/test-portal-logic.py
+          python3 scripts/test-media-dns-upstream.py
           git-hooks/test-pre-commit.sh

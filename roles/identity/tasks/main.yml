@@ -154,12 +154,17 @@
 # Secrets are resolved AFTER the directories exist, not before: the persisted
 # key file lives in appdata, so resolving first would try to write it into a
 # directory that is not there yet on a first run.
+#
+# identity_audiobookshelf is in this list as well as its own, because the OIDC
+# client secret resolved here is the thing that task sends. Without it that tag
+# on its own would run against an undefined identity_secrets - a narrow tag
+# that cannot work is worse than no narrow tag.
 - name: Resolve identity secrets
   ansible.builtin.include_tasks:
     file: secrets.yml
     apply:
-      tags: [identity, sso, identity_config]
-  tags: [identity, sso, identity_config]
+      tags: [identity, sso, identity_config, identity_audiobookshelf]
+  tags: [identity, sso, identity_config, identity_audiobookshelf]
 
 # ------------------------------------------------------------------------------
 # SECRET FILES
@@ -378,6 +383,20 @@
     - identity.jellyfin.sso_plugin.enabled | bool
     - identity_services.jellyfin.auth | default('none') == 'oidc'
   tags: [identity, sso, identity_jellyfin]
+
+# Audiobookshelf, unlike Jellyfin, is configured rather than reported: it has
+# an admin API for its auth settings. It answers through Traefik, which means
+# it is only reachable once media_library has run - so on a first deploy this
+# finds nothing, says so, and leaves the values printed. See audiobookshelf.yml.
+- name: Configure Audiobookshelf SSO
+  ansible.builtin.include_tasks:
+    file: audiobookshelf.yml
+    apply:
+      tags: [identity, sso, identity_audiobookshelf]
+  when:
+    - identity.audiobookshelf.configure | bool
+    - identity_services.audiobookshelf.auth | default('none') == 'oidc'
+  tags: [identity, sso, identity_audiobookshelf]
 
 - name: Report what you still have to do by hand
   ansible.builtin.include_tasks:

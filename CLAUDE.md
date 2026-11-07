@@ -46,9 +46,18 @@ address that never changes. Reaching the Pi over its public-WiFi uplink needs
 
 ### Verification scripts
 
-These are the test suite. There is no lint config, no CI, and `ansible-lint` and
-`yamllint` are not installed. Run from the repo root on a machine that can reach
-the Pi:
+There is no lint config, and `ansible-lint` and `yamllint` are not installed.
+There IS CI: `.github/workflows/checks.yml` runs on every push and pull
+request and covers everything that does not need the Pi — `--syntax-check` on
+both playbooks, `scripts/check-repository-files.py`, `bash -n` and
+`shellcheck` over every shell script and git hook, the two offline test
+scripts, the vault hook's own regression tests, and every `test_*.py` under
+`tests/` and `roles/*/tests/`. Run it locally before pushing and nothing in
+it will surprise you.
+
+What CI cannot do is reach the van. These scripts are that half of the test
+suite, and they are the ones that decide whether a change actually worked.
+Run from the repo root on a machine that can reach the Pi:
 
 ```bash
 scripts/monitoring-check.sh            # every target up, rules loaded, collectors fresh
