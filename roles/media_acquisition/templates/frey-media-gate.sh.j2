@@ -311,7 +311,7 @@ show_status() {
 }
 
 case "${1:-apply}" in
-  apply|pause|resume)
+  apply|pause|resume|refresh)
     # Dispatcher events and the timer can overlap. Never let an older online
     # run resume downloads after a newer offline event.
     exec 9>"${STATE_DIR}/lock"
@@ -324,8 +324,17 @@ case "${1:-apply}" in
   status) show_status ;;
   pause) go_offline manual ;;
   resume) go_online ;;
+  # Revalidate indexers without touching the gate's online/offline state.
+  #
+  # go_online already does this, but only on the offline-to-online
+  # transition - so a fault that leaves indexers backed off WITHOUT an
+  # uplink transition never gets them revalidated. A DNS-only outage is
+  # exactly that shape: the resolver recovers, the uplink never changed,
+  # and every *arr stays disabled behind its own backoff until something
+  # clears it. This is the verb frey-self-heal calls for that case.
+  refresh) refresh_indexer_health ;;
   *)
-    echo "usage: $(basename "$0") {apply|status|pause|resume}" >&2
+    echo "usage: $(basename "$0") {apply|status|pause|resume|refresh}" >&2
     exit 64
     ;;
 esac

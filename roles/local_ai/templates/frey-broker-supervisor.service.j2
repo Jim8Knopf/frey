@@ -1,0 +1,55 @@
+[Unit]
+# Managed by Ansible role: local_ai
+Description=Announce broker proposals and enforce the deadman
+Documentation=file://{{ local_ai.broker.supervisor_script_path }}
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -u {{ local_ai.broker.supervisor_script_path }}
+TimeoutStartSec=180
+
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=BROKER_LOG_LEVEL={{ local_ai.broker.log_level }}
+Environment=FREY_NODE={{ frey.node_name }}
+Environment=BROKER_PROPOSALS_DIR={{ local_ai.broker.proposals_dir }}
+Environment=BROKER_DEADMAN_DIR={{ local_ai.broker.deadman_dir }}
+Environment=BROKER_KILL_SWITCH={{ local_ai.broker.kill_switch }}
+Environment=BROKER_DEADMAN_GRACE={{ local_ai.broker.deadman_grace_seconds }}
+Environment=BROKER_APPROVE_COMMAND={{ local_ai.broker.approve_command | basename }}
+# Notifications go through the alert relay, so no ntfy credential is needed
+# here at all. The topic is GENERATED into
+# /opt/frey/appdata/monitoring/.monitoring-keys.json rather than stored in the
+# vault, so monitoring_alerting.ntfy.topic resolves EMPTY outside the
+# monitoring role - and that key file is deliberately InaccessiblePaths here.
+# Handing the relay an Alertmanager-shaped payload also inherits its on-disk
+# queueing for when there is no uplink, which in a van is most of the value.
+Environment=RELAY_CONTAINER={{ frey.alert_relay.container_name }}
+Environment=RELAY_PORT={{ frey.alert_relay.port }}
+# health_snapshot is imported from broker.py, which reads these for the
+# watched-container set. Same code, same definition of health.
+Environment="BROKER_CONTAINERS={{ local_ai.broker.containers | join(',') }}"
+Environment="BROKER_RESTART={{ local_ai.broker.restartable | join(',') }}"
+Environment="BROKER_RECREATE={{ local_ai.broker.recreatable | join(',') }}"
+
+# As confined as the broker, and for the same reasons. It ended up needing no
+# network either: delivery goes through the relay over the Docker socket, not
+# over the uplink, so the whole phase-4 stack is egress-free. Its only inputs
+# are files the broker wrote; it takes no instruction from the agent.
+ProtectSystem=strict
+ReadWritePaths={{ local_ai.broker.proposals_dir }} {{ local_ai.broker.deadman_dir }} {{ local_ai.broker.kill_switch | dirname }}
+InaccessiblePaths={% for path in local_ai.broker.inaccessible_paths %}{{ path }} {% endfor %}
+
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

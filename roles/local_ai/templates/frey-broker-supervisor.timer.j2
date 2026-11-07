@@ -1,0 +1,16 @@
+[Unit]
+# Managed by Ansible role: local_ai
+Description=Periodically announce broker proposals and enforce the deadman
+
+[Timer]
+# Every minute. A proposal waiting to be offered is a fault still unfixed, and
+# an armed deadman is an action nobody has judged yet - neither should sit for
+# long. The run is a few file reads plus one docker call, so a short interval
+# costs nothing.
+OnBootSec=2min
+OnUnitActiveSec={{ local_ai.broker.supervisor_interval }}
+AccuracySec=15s
+Unit={{ local_ai.broker.service_name }}-supervisor.service
+
+[Install]
+WantedBy=timers.target

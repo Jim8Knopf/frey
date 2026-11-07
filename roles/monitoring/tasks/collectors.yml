@@ -57,6 +57,41 @@
     - monitoring_alerting.watchdog.enabled | bool
   tags: [monitoring, metrics, monitoring_collectors]
 
+- name: Deploy the self-healing script
+  # Closes the loop on the handful of faults that already have an alert rule
+  # AND one known safe fix. Alert-driven, so the rules stay the single source
+  # of truth for detection. Unlike the watchdog it deliberately depends on the
+  # alert chain; if Alertmanager is down it does nothing and the watchdog is
+  # what notices. There is no verb in it for networking, sshd or a deploy.
+  ansible.builtin.template:
+    src: frey-self-heal.sh.j2
+    dest: "{{ monitoring.bin_dir }}/frey-self-heal"
+    owner: root
+    group: root
+    mode: "0750"
+    validate: "bash -n %s"
+  no_log: true
+  when:
+    - monitoring_enable.alerting | bool
+    - monitoring_alerting.self_heal.enabled | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Deploy the self-healing units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - "{{ monitoring.self_heal.service_name }}.service"
+    - "{{ monitoring.self_heal.service_name }}.timer"
+  notify: Reload systemd
+  when:
+    - monitoring_enable.alerting | bool
+    - monitoring_alerting.self_heal.enabled | bool
+  tags: [monitoring, metrics, monitoring_collectors]
+
 - name: Create the log repair state directory
   # Outside /run, because the cumulative repair count has to survive the
   # reboot that caused the damage it is counting.
@@ -120,6 +155,17 @@
   when:
     - monitoring_enable.alerting | bool
     - monitoring_alerting.watchdog.enabled | bool
+    - not ansible_check_mode
+  tags: [monitoring, metrics, monitoring_collectors]
+
+- name: Enable the self-healing timer
+  ansible.builtin.systemd:
+    name: "{{ monitoring.self_heal.service_name }}.timer"
+    enabled: true
+    state: started
+  when:
+    - monitoring_enable.alerting | bool
+    - monitoring_alerting.self_heal.enabled | bool
     - not ansible_check_mode
   tags: [monitoring, metrics, monitoring_collectors]
 

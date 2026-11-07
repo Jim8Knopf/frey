@@ -1,0 +1,163 @@
+# Managed by Ansible. Do not edit on the Pi.
+#
+# Two containers on purpose. The gateway speaks to Frey's authenticated proxy;
+# the model sits on an internal-only network with no egress, no Docker socket,
+# no credentials and nothing mounted but its own weights, read-only. Widening
+# what the assistant can answer must never widen what it can reach.
+{% set m = local_ai.models[local_ai.default_model] %}
+services:
+  gateway:
+    image: {{ local_ai.gateway_image }}
+    container_name: frey-local-ai-gateway
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - --entrypoints.web.address=:8080
+      - --providers.file.filename=/etc/traefik/route.yml
+      - --accesslog=false
+    volumes:
+      - "{{ local_ai.stack_dir }}/route.yml:/etc/traefik/route.yml:ro"
+    networks:
+      - {{ frey.proxy_network }}
+      - ai_private
+    mem_limit: 128m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.local-ai.loadbalancer.server.port=8080"
+      - "traefik.http.routers.local-ai.rule=Host(`{{ local_ai.host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.local-ai.entrypoints=websecure"
+      - "traefik.http.routers.local-ai.tls=true"
+      - "traefik.http.routers.local-ai.middlewares=secure-headers@file,authelia@file"
+      - "traefik.http.routers.local-ai-legacy.rule=Host(`{{ local_ai.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.local-ai-legacy.entrypoints=websecure"
+      - "traefik.http.routers.local-ai-legacy.tls=true"
+      - "traefik.http.routers.local-ai-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.local-ai-legacy.service=local-ai"
+      - "traefik.http.routers.local-ai-http.rule=Host(`{{ local_ai.host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.local-ai-http.entrypoints=web"
+      - "traefik.http.routers.local-ai-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.local-ai-http.service=local-ai"
+  model:
+    profiles: [model]
+    image: {{ local_ai.image }}
+    container_name: frey-local-ai-model
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - "-m"
+      - "/models/{{ m.file }}"
+{% if m.mmproj_file is defined %}
+      - "--mmproj"
+      - "/models/{{ m.mmproj_file }}"
+{% endif %}
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--threads"
+      - "{{ m.threads }}"
+      - "--ctx-size"
+      - "{{ m.ctx }}"
+      - "--cache-reuse"
+      - "{{ m.cache_reuse }}"
+      - "-fa"
+      - "{{ m.flash_attn }}"
+      - "--temp"
+      - "{{ m.temperature }}"
+      - "--top-p"
+      - "{{ m.top_p }}"
+      - "--top-k"
+      - "{{ m.top_k }}"
+      - "--min-p"
+      - "{{ m.min_p }}"
+      - "--presence-penalty"
+      - "{{ m.presence_penalty }}"
+      - "--jinja"
+      # --reasoning, not --chat-template-kwargs: b12019 warns at startup that
+      # setting enable_thinking through chat-template-kwargs is deprecated.
+      # This flag sets the same template variable internally.
+      - "--reasoning"
+      - "{{ 'on' if m.enable_thinking | bool else 'off' }}"
+    volumes:
+      - "{{ local_ai.model_dir }}:/models:ro"
+    networks:
+      - ai_private
+    cpus: {{ m.cpus }}
+    mem_limit: {{ m.mem_limit }}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+{% if local_ai.observer.enabled | bool %}
+{% set o = local_ai.observer %}
+  observer:
+    profiles: [observer]
+    image: {{ o.image }}
+    container_name: {{ o.container_name }}
+    restart: unless-stopped
+    user: "{{ o.uid }}:{{ o.gid }}"
+    command: ["python3", "-u", "{{ o.script_path }}"]
+    environment:
+      - TZ={{ frey.timezone }}
+      - PYTHONDONTWRITEBYTECODE=1
+      - FREY_NODE={{ frey.node_name }}
+      - OBSERVER_LOG_LEVEL={{ o.log_level }}
+      - PROM_URL=http://prometheus:9090
+      - LOKI_URL=http://loki:3100
+      - ALERTMANAGER_URL=http://alertmanager:9093
+      - RELAY_URL=http://alert-relay:8080
+      - MODEL_URL=http://model:8080
+      - DRAFTS_DIR=/drafts
+      - TEXTFILE_DIR=/textfile
+      - NOTES_DIR=/notes
+      - POLL_SECONDS={{ o.poll_seconds }}
+      - DAILY_HOUR={{ o.daily_hour }}
+      - MAX_TOKENS={{ o.max_tokens }}
+      - MODEL_TIMEOUT={{ o.model_timeout }}
+      - NOTIFY_SEVERITY={{ o.notify_severity }}
+      - RUNBOOK_PAGE={{ o.runbook_page }}
+    volumes:
+      # Read broadly, write to an explicit allowlist. Only two paths are
+      # read-write: the drafts directory and the broker's request queue.
+      # Everything else is :ro, and credential material is not mounted at all
+      # - so the denial is ENOENT rather than EACCES, and no code of ours has
+      # to be correct for that to hold.
+      - "{{ o.drafts_dir }}:/drafts"
+{% if local_ai.broker.enabled | bool %}
+      # The only channel to anything privileged. Write a request here; read
+      # the answer from a directory that is read-only to this container, so
+      # the agent cannot forge its own response.
+      - "{{ local_ai.broker.req_dir }}:/broker/req"
+      - "{{ local_ai.broker.res_dir }}:/broker/res:ro"
+{% endif %}
+      - "{{ local_ai.stack_dir }}/observer.py:{{ o.script_path }}:ro"
+{% for path in local_ai_observer_read_paths | default([]) %}
+      - "{{ path.src }}:{{ path.dest }}:ro"
+{% endfor %}
+    networks:
+      # Both internal. The observer therefore has no route to the internet,
+      # which is what makes its broad read access safe: there is nowhere to
+      # send anything, and its only output is a file you read.
+      - ai_private
+      - {{ frey.ai_observe_network }}
+    cpus: {{ o.cpus }}
+    mem_limit: {{ o.mem_limit }}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+{% endif %}
+networks:
+  {{ frey.proxy_network }}:
+    external: true
+  ai_private:
+    internal: true
+{% if local_ai.observer.enabled | bool %}
+  {{ frey.ai_observe_network }}:
+    external: true
+{% endif %}

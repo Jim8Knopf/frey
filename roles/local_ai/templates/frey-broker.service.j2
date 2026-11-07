@@ -1,0 +1,93 @@
+[Unit]
+# Managed by Ansible role: local_ai
+Description=Frey broker - the only privileged thing the assistant can reach
+Documentation=file://{{ local_ai.broker.script_path }}
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u {{ local_ai.broker.script_path }}
+Restart=always
+RestartSec=10s
+
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=BROKER_LOG_LEVEL={{ local_ai.broker.log_level }}
+Environment=BROKER_REQ_DIR={{ local_ai.broker.req_dir }}
+Environment=BROKER_RES_DIR={{ local_ai.broker.res_dir }}
+Environment=BROKER_STATE_DIR={{ local_ai.broker.state_dir }}
+Environment=BROKER_KILL_SWITCH={{ local_ai.broker.kill_switch }}
+Environment=BROKER_POLL_SECONDS={{ local_ai.broker.poll_seconds }}
+Environment=BROKER_MAX_PER_MINUTE={{ local_ai.broker.max_per_minute }}
+Environment=BROKER_MAX_LOG_LINES={{ local_ai.broker.max_log_lines }}
+Environment=BROKER_DOCKER_ROOT={{ local_ai.broker.docker_containers_dir }}
+Environment=BROKER_PROPOSALS_DIR={{ local_ai.broker.proposals_dir }}
+Environment=BROKER_APPROVED_DIR={{ local_ai.broker.approved_dir }}
+Environment=BROKER_DEADMAN_DIR={{ local_ai.broker.deadman_dir }}
+Environment=BROKER_PROPOSAL_TTL={{ local_ai.broker.proposal_ttl_seconds }}
+Environment="BROKER_RECREATE={{ local_ai.broker.recreatable | join(',') }}"
+Environment="BROKER_RESTART={{ local_ai.broker.restartable | join(',') }}"
+Environment="BROKER_RERUN={{ local_ai.broker.rerunnable | join(',') }}"
+Environment="BROKER_UNITS={{ local_ai.broker.units | join(',') }}"
+Environment="BROKER_CONTAINERS={{ local_ai.broker.containers | join(',') }}"
+# Quoted, because the diagnostic commands contain spaces. An unquoted
+# Environment= assignment is split on whitespace into several broken
+# assignments, which systemd reports as "Invalid environment assignment"
+# and then IGNORES - leaving the allowlist silently empty.
+Environment="BROKER_DIAGNOSTICS={{ local_ai.broker.diagnostics | map('join', '=') | join(',') }}"
+
+# ---------------------------------------------------------------------------
+# The hard limits. These are systemd's, not this service's own code.
+#
+# AppArmor was the original intent, but it is DISABLED in this Pi's kernel -
+# /sys/module/apparmor/parameters/enabled reads N, the filesystem is not
+# mounted and the tools are absent. Enabling it needs a kernel command line
+# change and a reboot, which on a Pi with no console is exactly the class of
+# change CLAUDE.md says not to make casually.
+#
+# systemd's sandboxing gets the same guarantees with no reboot and no new
+# package: it is enforced by namespaces and seccomp in the kernel, and
+# InaccessiblePaths produces ENOENT - the path is not there, rather than there
+# and refused. That distinction is the whole point: no code of ours has to be
+# correct for it to hold.
+# ---------------------------------------------------------------------------
+
+# Everything is read-only except the paths named below. This is the explicit
+# write allowlist: the broker can write its responses and its own state, and
+# nothing else on the filesystem.
+ProtectSystem=strict
+# RuntimeDirectory creates and owns /run/frey-broker. ReadWritePaths
+# cannot name a path that does not exist yet: systemd then fails to set
+# up the mount namespace and the unit dies with 226/NAMESPACE.
+RuntimeDirectory={{ local_ai.broker.state_dir | basename }}
+ReadWritePaths={{ local_ai.broker.req_dir }} {{ local_ai.broker.res_dir }} {{ local_ai.broker.proposals_dir }} {{ local_ai.broker.approved_dir }} {{ local_ai.broker.deadman_dir }}
+
+# Credential material. Not "denied" - absent. More of these exist than the
+# four obvious ones: the per-service key files under appdata are generated
+# secrets too, and a report that quoted one would sync to a phone.
+InaccessiblePaths={% for path in local_ai.broker.inaccessible_paths %}{{ path }} {% endfor %}
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+# No network of any kind. The broker talks to a directory; it has no reason to
+# reach the uplink, and no verb that could use one.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

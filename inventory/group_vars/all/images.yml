@@ -1,6 +1,9 @@
 ---
 silverbullet_version: "2.12.1"
-campaign_ai_llama_version: "server-b12019"
+# b12019, published 2026-10-31, is the first pin verified against the served
+# model: it maps architecture "qwen35" and the "qwen3vl_merger" projector that
+# Qwen3.5's mmproj declares. Check both before moving this tag.
+local_ai_llama_version: "server-b12019"
 # Container image tags for every active Frey service.
 # Edit the tag here, then deploy the affected role (see docs/IMAGES.md).
 # Quote new tags, especially tags that resemble numbers.

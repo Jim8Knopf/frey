@@ -118,6 +118,9 @@ network_gateway → rpi_nvme → service_proxy → security_baseline
   → identity        (creates authelia@file; a router naming an unknown
                      middleware is DROPPED, so the service 404s with a
                      perfectly healthy container)
+  → silverbullet → local_ai   (local_ai asserts its own entry in
+                               identity_services, so the identity key and the
+                               role name must be renamed together)
   → media_acquisition → media_library   (acquisition generates the *arr API
                                          keys library wires Seerr to)
   → wifi_portal → dashy
@@ -342,4 +345,8 @@ A pure Jinja reference like `"{{ vault_x | default('') }}"` is fine.
 whitelist · `docs/SECURITY.md` · `docs/NVME_MIGRATION.md` ·
 `docs/SERVICE_MODULES.md` Traefik label patterns ·
 `docs/ADDING_MODULES.md` · `docs/ARCHITECTURE.md` · `docs/IMPROVEMENTS.md` roadmap ·
+`docs/LOCAL_AI_EVALUATION.md` the case for generalising and renaming
+`campaign_ai`, and the model/runtime verdicts behind it ·
+`docs/LOCAL_AI_AGENT_PLAN.md` the self-healing agent, its broker, and the
+six mechanisms that hard-limit it ·
 plus a `README.md` in every role.

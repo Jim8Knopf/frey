@@ -1,0 +1,323 @@
+---
+# Local inference as a shared service, not a single-purpose chat.
+#
+# `models` is a registry: every entry is downloadable and verified, and
+# `default_model` names the one llama-server actually loads. Adding a model is
+# an entry here plus a `systemctl enable frey-local-ai-download@<key>.timer`,
+# which the role does for every registered model.
+#
+# Download sizes and checksums below were read from the Hugging Face API on
+# 2026-11-07 (lfs.oid is the SHA-256). The revision is pinned in the URL for
+# the same reason images are pinned: an unattended pull on campground WiFi can
+# hand you a broken file with no internet left to fix it.
+local_ai:
+  stack_dir: "{{ frey.base_dir }}/stacks/local-ai"
+  model_dir: "{{ frey.base_dir }}/appdata/local-ai/models"
+  host: ai
+
+  # Which registered model llama-server loads. Changing this and redeploying
+  # switches the served model, provided it has finished downloading.
+  default_model: qwen35-4b
+
+  models:
+    # Qwen3.5-4B, Unsloth Dynamic 2.0 4-bit. Natively multimodal: the mmproj
+    # file is what gives llama-server vision, and it is the same server
+    # binary either way. Apache 2.0, 262144 context (we serve far less).
+    #
+    # Verified against llama.cpp b12019 before pinning:
+    #   model architecture  "qwen35"          src/llama-arch.cpp
+    #   mmproj projector    "qwen3vl_merger"  tools/mtmd/clip-impl.h
+    # Qwen3.5 reuses Qwen3-VL's merger, which is why vision works on a build
+    # that contains no string "qwen35" in clip.cpp.
+    qwen35-4b:
+      file: Qwen3.5-4B-UD-Q4_K_XL.gguf
+      url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-UD-Q4_K_XL.gguf
+      sha256: b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7
+      size_bytes: 2912109728
+      mmproj_file: mmproj-F16.gguf
+      mmproj_url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-F16.gguf
+      mmproj_sha256: cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864
+      mmproj_size_bytes: 672423616
+
+      # Generation on this Pi is memory-bandwidth-bound, so speed is set by
+      # file size, not by thread count. MEASURED 2026-11-07: 2.70 tokens/s
+      # (260 tokens in 96.2 s) - about 25% below the 3.5 first estimated by
+      # scaling the old 1.7B numbers, because this model achieves ~7.9 GB/s of
+      # effective weight-read bandwidth rather than the 10.5 assumed. Project
+      # from 7.9. Threads buy prompt processing, which is compute-bound - and
+      # the Pi 5's A76 cores have no i8mm, so that is the weak axis. Two
+      # threads deliberately leaves cores for the gateway: on a Pi with no
+      # Ethernet and no console, gateway responsiveness outranks inference
+      # speed every time.
+      threads: 2
+      cpus: 2.0
+
+      # 2.7 GiB of weights plus the KV cache plus the vision encoder. The host
+      # reported 8 GiB available on 2026-11-07, so this leaves about 3 GiB of
+      # headroom; raise ctx only after re-checking `free -g`.
+      mem_limit: 5g
+      ctx: 8192
+
+      # Reuse cached prompt prefixes via KV shifting instead of reprocessing a
+      # long system prompt on every request. Prompt processing is this
+      # machine's bottleneck, so this is the single largest latency win
+      # available and it costs nothing.
+      cache_reuse: 256
+
+      # Flash attention takes on|off|auto in llama.cpp b12019 - a bare -fa
+      # would swallow the next argument.
+      flash_attn: "on"
+
+      # Sampler defaults published for Qwen3.5 non-thinking general tasks.
+      # The rules benchmark deliberately overrides these with temperature 0;
+      # that is right for benchmarking and wrong for drafting.
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      min_p: 0.0
+      presence_penalty: 1.5
+
+      # The small Qwen3.5 series ships with reasoning disabled by default and
+      # the role keeps it that way: thinking tokens are generated at the same
+      # ~3.5 tokens/s as answer tokens.
+      enable_thinking: false
+
+  image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
+  gateway_image: "traefik:{{ traefik_version }}"
+
+  # Phase 1 of docs/LOCAL_AI_AGENT_PLAN.md: an observer that reads and
+  # explains, and cannot act. There is no broker, no Docker socket and no
+  # action verb - the limits are a property of what is mounted and what
+  # network it is on, not of the prompt.
+  observer:
+    enabled: true
+    container_name: frey-local-ai-observer
+    # Reuses the pinned Python image the alert relay already runs, so this
+    # adds no new image to track. The observer is stdlib-only for the same
+    # reason: no pip, no wheels, nothing to fetch at runtime.
+    image: "python:{{ monitoring_versions.relay_base }}"
+    script_path: /opt/frey-local-ai-observer/observer.py
+
+    # Its own identity, owning exactly one directory. Not SilverBullet's uid:
+    # sharing that would mean a future read-write mount silently granted it
+    # notes write access.
+    uid: 10002
+    gid: 10002
+    user_name: frey_local_ai
+
+    # The only read-write mount it has. Reports land here for you to promote
+    # by hand; nothing in the notes space is writable by the observer.
+    drafts_dir: "{{ frey.base_dir }}/appdata/local-ai/drafts"
+
+    mem_limit: 256m
+    cpus: 0.5
+
+    # Alertmanager is polled rather than configured to push here, so this
+    # component can never break the notification path Frey depends on. Five
+    # minutes is well inside the time it takes anyone to react from a phone.
+    poll_seconds: 300
+    # Local hour after which the daily summary is written, once per day.
+    daily_hour: 7
+    # A token budget is a time budget at ~3.5 tokens/s: 500 is about 2.5 min.
+    max_tokens: 500
+    model_timeout: 900
+    # Matches Frey's two severities: critical buzzes, warning stays silent.
+    notify_severity: critical
+    log_level: INFO
+
+    # A page in the notes space, relative to the notes root, holding your own
+    # "what to check first" guidance. Handed to the model as instructions from
+    # you, which beats anything a 4B knows about Frey - and the advice improves
+    # when you write, not when the model changes.
+    #
+    # This is the one use of the read-only notes mount that earns its place in
+    # a health reporter. An absent file is normal and silent, so this can be
+    # set before the page exists. Set to "" to not read the notes at all.
+    # The deployed space is spaces/notes (lowercase), holding index.md.
+    runbook_page: "spaces/notes/Frey/Runbook.md"
+
+    # Read broadly, write narrowly. Each entry is mounted READ-ONLY, and a
+    # path that does not exist yet is skipped rather than mounted - otherwise
+    # Docker would helpfully create an empty directory for it.
+    #
+    # The write surface is unaffected by anything here: only the drafts
+    # directory and the broker's request queue are read-write, and they are
+    # named explicitly in the compose file rather than coming from this list.
+    #
+    # Worth knowing about the stacks entry: the rendered compose files under
+    # it DO contain *arr API keys, Authelia secrets and the LLDAP admin
+    # password. There is no egress, so nothing can be exfiltrated - but the
+    # model could quote one into a draft, and drafts are read on a phone.
+    # Remove that single line to close it; nothing else depends on it.
+    read_paths:
+      - {src: "{{ frey.metrics_textfile_dir }}", dest: /textfile}
+      - {src: "{{ frey.notes_data_dir }}", dest: /notes}
+      - {src: "{{ frey.base_dir }}/data", dest: /media}
+      - {src: "{{ frey.base_dir }}/stacks", dest: /stacks}
+      # Immich is not deployed yet - only its OIDC client exists. Listed so
+      # the boundary precedes the thing it guards: readable, never writable.
+      - {src: "{{ frey.base_dir }}/data/photos", dest: /photos}
+
+  # Phase 3 of docs/LOCAL_AI_AGENT_PLAN.md: the only privileged thing the
+  # assistant can reach. Read verbs only - there is no write verb yet.
+  #
+  # It runs on the HOST, and its channel is a directory rather than a socket
+  # or a port. Verified 2026-11-07: the agent container has no default route
+  # and cannot reach the host on any port, which is deliberate and is what
+  # makes its broad read access safe. So a host-side listener is unreachable
+  # by construction, and mounting docker.sock into the agent would hand it the
+  # very thing this design withholds.
+  broker:
+    enabled: true
+    service_name: frey-broker
+    script_path: /usr/local/lib/frey/broker.py
+    base_dir: "{{ frey.base_dir }}/appdata/local-ai/broker"
+    req_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/req"
+    res_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/res"
+    state_dir: /run/frey-broker
+    # `touch` this and every verb refuses. One file, no deploy needed.
+    kill_switch: /etc/frey/broker-disabled
+    poll_seconds: 2
+    max_per_minute: 30
+    max_log_lines: 200
+    log_level: INFO
+
+    # NOT /var/lib/docker/containers. The NVMe migration moved Docker's
+    # data-root onto the NVMe, so `docker info --format '{{.DockerRootDir}}'`
+    # reports /opt/frey/docker. The old path still EXISTS and is empty, which
+    # is the worst case: reading it finds no containers and looks exactly like
+    # a container that is not running.
+    docker_containers_dir: "{{ frey.base_dir }}/docker/containers"
+
+    # --- Phase 4: proposals, not commands ---------------------------------
+    #
+    # The model may PROPOSE a repair. It can never run one. A proposal does
+    # nothing until a human types its id on the host, so the write path has a
+    # person in it by construction rather than by policy.
+    #
+    # The asymmetry against frey-self-heal is deliberate: that one acts
+    # autonomously because a tuned alert rule matched a known symptom and the
+    # fix was written by hand. Here the model's judgement is what is being
+    # trusted, and it has already produced one confident, well-structured,
+    # entirely wrong diagnosis.
+    proposals_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/proposals"
+    # Root only, 0700. The agent cannot write here, so it cannot approve
+    # itself.
+    approved_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/approved"
+    deadman_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/deadman"
+    proposal_ttl_seconds: 86400
+
+    approve_command: /usr/local/bin/frey-broker-approve
+    supervisor_script_path: /usr/local/lib/frey/broker_supervisor.py
+    supervisor_interval: 1min
+    # How long after an action to judge it: long enough for a restarted
+    # container to come back and be scraped again, short enough that a harmful
+    # action is caught while you might still be awake.
+    deadman_grace_seconds: 180
+
+    # Recreation is only for a fault baked in at container creation - stale
+    # DNS is the one real case - so this is far narrower than the restart
+    # list. A restart would faithfully reproduce the fault.
+    recreatable:
+      - frey-media-dns
+
+    # Stateless only. Every SQLite- or database-backed service is absent
+    # (jellyfin, audiobookshelf, seerr, lldap, authelia, the *arrs,
+    # qbittorrent, prometheus, loki, grafana, jellystat-db), and so is
+    # frey-traefik, which would 404 every service at once.
+    restartable:
+      - byparr
+      - prowlarr
+      - recyclarr
+      - unpackerr
+      - blackbox
+      - cadvisor
+      - node-exporter
+      - alloy
+
+    # Oneshot units that are idempotent by design and already run on timers,
+    # so running one early is indistinguishable from the timer firing.
+    # Deliberately no networking unit, and nothing that deploys.
+    rerunnable:
+      - frey-metrics.service
+      - frey-log-repair.service
+      - frey-media-dns-upstream.service
+      - frey-media-gate.service
+      - frey-self-heal.service
+
+    # systemd units the agent may ask the STATE of. Read-only: there is no
+    # verb that starts or stops anything. Deliberately excludes every
+    # networking unit - not because asking is dangerous, but because the
+    # allowlist is the place that habit is set.
+    units:
+      - frey-metrics.service
+      - frey-metrics.timer
+      - frey-self-heal.service
+      - frey-self-heal.timer
+      - frey-monitor-watchdog.timer
+      - frey-log-repair.timer
+      - frey-media-gate.timer
+      - frey-media-dns-upstream.timer
+      - frey-local-ai-download@qwen35-4b.timer
+      - docker.service
+
+    # Read-only diagnostics that already exist and already have a `status`
+    # verb. The command line comes from here, never from the request, so a
+    # request cannot smuggle an argument.
+    diagnostics:
+      - [self_heal, /usr/local/bin/frey-self-heal status]
+      - [media_dns, /usr/local/bin/frey-media-dns-upstream status]
+      - [media_gate, /usr/local/bin/frey-media-gate status]
+
+    # Containers whose logs the agent may tail. Read off disk, with no Docker
+    # socket and no Docker CLI, so this grants no ability to start or exec
+    # anything - and it still works when Loki is the thing that broke.
+    containers:
+      - frey-media-dns
+      - prowlarr
+      - sonarr
+      - radarr
+      - lidarr
+      - bazarr
+      - qbittorrent
+      - byparr
+      - alert-relay
+      - prometheus
+      - loki
+      - frey-traefik
+
+    # Absent, not denied: InaccessiblePaths makes these ENOENT even for root,
+    # so no code of ours has to be correct for the limit to hold.
+    #
+    # More credential files exist than the obvious four. The per-service key
+    # files under appdata are generated secrets, and a report that quoted one
+    # would sync to a phone - which is the actual risk here, since the agent
+    # has no egress and cannot exfiltrate anything.
+    inaccessible_paths:
+      - "{{ frey.base_dir }}/pki"
+      - "{{ frey.base_dir }}/appdata/identity/secrets"
+      - "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+      - "{{ frey.base_dir }}/appdata/monitoring/.monitoring-keys.json"
+      - "{{ frey.base_dir }}/appdata/.media-keys.json"
+      - "{{ frey.base_dir }}/appdata/cleanuparr/jwt-key.bin"
+      - /etc/shadow
+      - /etc/gshadow
+      - /root
+
+  # Units the role must remove, because renaming a template does not delete
+  # what a previous deploy already installed on the Pi.
+  legacy_units:
+    - frey-campaign-ai-download.service
+    - frey-campaign-ai-download.timer
+  legacy_stack_dir: "{{ frey.base_dir }}/stacks/campaign-ai"
+  legacy_model_dir: "{{ frey.base_dir }}/appdata/campaign-ai/models"
+
+  # Removed by name rather than with `docker compose down`, which skips any
+  # service gated behind a profile - the old model was `profiles: [model]`, so
+  # a compose teardown removed the gateway, left the model running and then
+  # could not delete the network it still held. Removal by name is also the
+  # only thing that still works once the old stack directory is gone.
+  legacy_containers:
+    - frey-campaign-ai-model
+    - frey-campaign-ai-gateway
+  legacy_network: campaign-ai_ai_private

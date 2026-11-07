@@ -1,0 +1,62 @@
+#!/bin/sh
+# Managed by Ansible. Do not edit on the Pi.
+#
+# Download and verify every artifact of one registered model, then start the
+# served model once its artifacts are all present. Takes the model key as its
+# only argument, so one script serves the whole registry and systemd can
+# instance it per model.
+#
+# Idempotent: an artifact that already exists is skipped, so the retry timer
+# can run this as often as it likes. Partial downloads resume via
+# --continue-at, which is what makes a dropped campground uplink recoverable.
+#
+# On success it writes a completion marker. The systemd unit is gated on that
+# marker's absence, which is what stops the retry timer from restarting a
+# model an administrator deliberately stopped in Dockge.
+set -eu
+
+key="${1:?model key required}"
+manifest="{{ local_ai.stack_dir }}/models.d/${key}.manifest"
+marker="{{ local_ai.model_dir }}/.${key}.complete"
+
+if [ ! -r "$manifest" ]; then
+  echo "no manifest for model '$key' at $manifest" >&2
+  exit 1
+fi
+
+cd {{ local_ai.model_dir | quote }}
+
+# Fields are whitespace-separated: sha256, filename, url. None of the three
+# can contain a space, so the default IFS is both sufficient and far less
+# fragile than depending on literal tabs surviving a template render.
+#
+# Verify before moving into place, so a truncated or corrupted file never
+# becomes the real filename - llama-server would otherwise load it and fail
+# in a much more confusing way.
+while read -r sha name url; do
+  [ -n "${sha:-}" ] || continue
+  case "$sha" in \#*) continue ;; esac
+  [ -f "$name" ] && continue
+
+  echo "downloading $name"
+  curl --fail --silent --show-error --location \
+    --retry 3 --connect-timeout 30 \
+    --speed-limit 1024 --speed-time 120 \
+    --continue-at - --output "$name.part" "$url"
+  echo "$sha  $name.part" | sha256sum -c -
+  mv "$name.part" "$name"
+  echo "verified $name"
+done < "$manifest"
+
+touch "$marker"
+echo "model '$key' complete"
+
+# Only the served model starts a container; other registered models are
+# downloaded and left on disk for a later `default_model` change or a
+# model-swap layer. Reaching here means the marker was absent when systemd
+# evaluated its condition, so this is a genuine first completion rather than
+# a periodic retry.
+if [ "$key" = {{ local_ai.default_model | quote }} ]; then
+  docker compose -f {{ (local_ai.stack_dir ~ '/docker-compose.yml') | quote }} \
+    --profile model up -d model
+fi

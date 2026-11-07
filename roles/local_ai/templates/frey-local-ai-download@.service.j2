@@ -1,0 +1,15 @@
+[Unit]
+Description=Download and verify local AI model %i
+Wants=network-online.target
+After=network-online.target docker.service
+# Gated on the completion marker, not on a filename, because a model can have
+# several artifacts (weights plus a vision projector). Once complete the timer
+# stops firing this, so it never restarts a model stopped on purpose.
+ConditionPathExists=!{{ local_ai.model_dir }}/.%i.complete
+
+[Service]
+Type=oneshot
+ExecStart={{ local_ai.stack_dir }}/download-model.sh %i
+# A multi-gigabyte download over campground WiFi has no useful upper bound;
+# curl's own --speed-limit/--speed-time is what gives up on a dead transfer.
+TimeoutStartSec=infinity
