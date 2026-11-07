@@ -89,6 +89,9 @@ MAX_STEPS = int(os.environ.get("CAMPAIGN_MAX_STEPS", "7"))
 TOOL_RESULT_BUDGET = int(os.environ.get("CAMPAIGN_TOOL_RESULT_BUDGET", "2500"))
 SEPARATOR = "\n---\n"
 LISTEN_PORT = int(os.environ.get("CAMPAIGN_PORT", "8080"))
+BROKER_REQ = pathlib.Path(os.environ.get("BROKER_REQ_DIR", "/broker/req"))
+BROKER_RES = pathlib.Path(os.environ.get("BROKER_RES_DIR", "/broker/res"))
+BROKER_TIMEOUT = int(os.environ.get("BROKER_TIMEOUT", "90"))
 
 # llama-server's own image serves NO web UI - verified 2026-11-07, both / and
 # /index.html return 415 even with an HTML Accept header. So this provides the
@@ -253,12 +256,79 @@ def tool_write_page(args):
     return f"{'rewrote' if existed else 'created'} {target.relative_to(SPACE)}"
 
 
+# --- system tools -----------------------------------------------------------
+#
+# Asking about Frey's health goes through the broker, which is the only
+# privileged thing anything here can reach. These are READ verbs; the broker
+# has no endpoint the assistant could call to change the system, and a repair
+# can only be PROPOSED for a human to approve by typing its id on the host.
+
+
+def broker_call(verb, args):
+    """One request through the broker's directory channel.
+
+    A directory rather than a socket because the agent has no route to the
+    host at all - see the broker's own header for why that is deliberate.
+    """
+    request_id = uuid.uuid4().hex[:24]
+    try:
+        (BROKER_REQ / f"{request_id}.json").write_text(
+            json.dumps({"verb": verb, "args": args})
+        )
+    except OSError as exc:
+        return f"cannot reach the broker: {exc}"
+    target = BROKER_RES / f"{request_id}.json"
+    deadline = time.time() + BROKER_TIMEOUT
+    while time.time() < deadline:
+        if target.exists():
+            try:
+                answer = json.loads(target.read_text())
+            except (OSError, ValueError):
+                time.sleep(0.4)
+                continue
+            if answer.get("ok"):
+                return json.dumps(answer.get("result"), default=str)[:TOOL_RESULT_BUDGET]
+            return f"refused: {answer.get('error')}"
+        time.sleep(0.5)
+    return "the broker did not answer in time"
+
+
+def tool_system_unit(args):
+    return broker_call("unit_state", {"unit": str(args.get("unit", ""))})
+
+
+def tool_system_check(args):
+    return broker_call("diagnostic", {"name": str(args.get("name", ""))})
+
+
+def tool_container_log(args):
+    return broker_call("container_logs", {
+        "container": str(args.get("container", "")),
+        "lines": args.get("lines", 30),
+    })
+
+
+def tool_propose_repair(args):
+    verb = str(args.get("action", ""))
+    target = str(args.get("target", ""))
+    reason = str(args.get("reason", ""))
+    key = "unit" if verb == "rerun_unit" else "container"
+    return broker_call("propose", {
+        "action": {"verb": verb, "args": {key: target}},
+        "reason": reason,
+    })
+
+
 TOOLS = {
     "list_pages": tool_list_pages,
     "read_page": tool_read_page,
     "search_notes": tool_search_notes,
     "append_page": tool_append_page,
     "write_page": tool_write_page,
+    "system_unit": tool_system_unit,
+    "system_check": tool_system_check,
+    "container_log": tool_container_log,
+    "propose_repair": tool_propose_repair,
 }
 
 # Descriptions stay terse on purpose: they are in the prompt on every single
@@ -288,8 +358,53 @@ TOOL_SCHEMA = [
             "required": ["path", "content"]}}},
 ]
 
-SYSTEM_PROMPT = f"""You keep a tabletop campaign wiki in SilverBullet. Pages \
-live under {ROOT}. Use the tools; do not guess at page contents.
+# Tools for questions about Frey itself. Kept in a SEPARATE list because tool
+# definitions are prompt tokens on every turn, and prefill time here grows
+# superlinearly - so a question about the campaign must not pay for the system
+# tools, and plain conversation must pay for neither.
+SYSTEM_TOOL_SCHEMA = [
+    {"type": "function", "function": {
+        "name": "system_check",
+        "description": "Run a read-only diagnostic. Names: self_heal, media_dns, media_gate.",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"}}, "required": ["name"]}}},
+    {"type": "function", "function": {
+        "name": "system_unit",
+        "description": "State of one systemd unit, e.g. frey-metrics.timer.",
+        "parameters": {"type": "object", "properties": {
+            "unit": {"type": "string"}}, "required": ["unit"]}}},
+    {"type": "function", "function": {
+        "name": "container_log",
+        "description": "Recent log lines from one container, e.g. prowlarr.",
+        "parameters": {"type": "object", "properties": {
+            "container": {"type": "string"}, "lines": {"type": "integer"}},
+            "required": ["container"]}}},
+    {"type": "function", "function": {
+        "name": "propose_repair",
+        "description": ("Propose a repair for a human to approve. Nothing runs until "
+                        "they approve it on the host. action is one of "
+                        "recreate_container, restart_container, rerun_unit."),
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string"}, "target": {"type": "string"},
+            "reason": {"type": "string"}},
+            "required": ["action", "target", "reason"]}}},
+]
+
+SYSTEM_WORDS = (
+    "status", "health", "healthy", "alert", "alarm", "broken", "down", "fail",
+    "error", "crash", "restart", "container", "docker", "service", "unit",
+    "timer", "disk", "memory", "ram", "cpu", "temperature", "throttl", "log",
+    "monitor", "prometheus", "loki", "grafana", "nvme", "uptime", "reboot",
+    "wifi", "uplink", "internet", "dns", "indexer", "jellyfin", "sonarr",
+    "radarr", "prowlarr", "qbittorrent", "frey", "pi ", "system", "repair",
+    "fix", "wrong",
+)
+
+SYSTEM_PROMPT = f"""You are Frey's assistant. You do two jobs: you keep a \
+tabletop campaign wiki in SilverBullet, with pages under {ROOT}, and you \
+answer questions about this machine's own health. You are also happy to just \
+talk. Use the tools when a question needs facts; do not guess at page \
+contents or system state.
 
 Rules:
 - Make new pages from the matching page in {ROOT}/Templates (read it first).
@@ -331,11 +446,16 @@ So:
 # time grows superlinearly. So it goes in only when the question is actually
 # about the wiki. A greeting or a general question pays nothing.
 
+# Deliberately NOT generic question words. An earlier version included
+# "what", "who", "where", "list" and "add", so almost any sentence matched
+# and a pure system question loaded the wiki tools too. With nine tool
+# definitions in the prompt the model got slower and called NO tool at all -
+# too much choice is its own failure mode. These are nouns from the campaign
+# domain only.
 CAMPAIGN_WORDS = (
-    "page", "note", "npc", "character", "faction", "ship", "species", "place",
-    "session", "thread", "rule", "campaign", "world", "pirate", "harbour",
-    "harbor", "crew", "quest", "link", "wiki", "add", "create", "update",
-    "rename", "list", "who", "where", "what", "summar", "recap", "template",
+    "npc", "character", "faction", "ship", "species", "place", "session",
+    "thread", "campaign", "world", "pirate", "harbour", "harbor", "crew",
+    "quest", "wiki", "template", "lore", "story", "recap", "page", "note",
 )
 
 
@@ -367,14 +487,18 @@ def wants_index(message, names):
 # --- model ------------------------------------------------------------------
 
 
-def call_model(messages):
+def call_model(messages, tools):
     payload = {
         "messages": messages,
-        "tools": TOOL_SCHEMA,
-        "tool_choice": "auto",
         "max_tokens": MAX_TOKENS,
         "stream": False,
     }
+    # No tools at all for plain conversation: their definitions are prompt
+    # tokens on every turn, and the cheapest turn is the one that carries
+    # none.
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     if MODEL_NAME:
         payload["model"] = MODEL_NAME
     request = urllib.request.Request(
@@ -389,9 +513,31 @@ def call_model(messages):
 
 def run_turn(user_text):
     """One exchange, bounded by MAX_STEPS tool calls."""
-    system = SYSTEM_PROMPT
+    # One window, three kinds of question. What goes into the prompt is chosen
+    # per question, because prefill time here grows superlinearly and the
+    # tool definitions are the bulk of it. A plain chat about the world pays
+    # for nothing it does not use.
+    low = user_text.lower()
     names = page_index()
-    if names and wants_index(user_text, names):
+    about_wiki = bool(names) and wants_index(user_text, names)
+    about_system = any(word in low for word in SYSTEM_WORDS)
+
+    # Prefer one domain. A question about the machine should not carry the
+    # wiki's tools, and vice versa: every definition is prompt tokens, and
+    # more choice measurably degraded tool use.
+    if about_wiki and about_system:
+        # Keep whichever signal is stronger rather than loading everything.
+        wiki_hits = sum(1 for w in CAMPAIGN_WORDS if w in low)
+        system_hits = sum(1 for w in SYSTEM_WORDS if w in low)
+        if system_hits > wiki_hits:
+            about_wiki = False
+        elif wiki_hits > system_hits:
+            about_system = False
+
+    tools = []
+    system = SYSTEM_PROMPT
+    if about_wiki:
+        tools += TOOL_SCHEMA
         listing = "\n".join(f"- {n}" for n in names[:150])
         system += (
             f"\n\nThese pages exist right now under {ROOT} (paths are relative "
@@ -399,9 +545,16 @@ def run_turn(user_text):
             f"link to anything not listed here unless you create it in this "
             f"turn:\n{listing}"
         )
-        log.info("included the page index (%d pages)", len(names))
-    else:
-        log.info("skipped the page index for this question")
+    if about_system:
+        tools += SYSTEM_TOOL_SCHEMA
+        system += (
+            "\n\nFor questions about Frey itself, use the system tools rather "
+            "than guessing. You cannot change anything: those tools only read. "
+            "If something needs fixing, use propose_repair and say plainly that "
+            "it will not run until approved on the host."
+        )
+    log.info("routing: wiki=%s system=%s tools=%d",
+             about_wiki, about_system, len(tools))
 
     messages = [
         {"role": "system", "content": system},
@@ -410,7 +563,7 @@ def run_turn(user_text):
     touched = []
     for step in range(MAX_STEPS):
         try:
-            data = call_model(messages)
+            data = call_model(messages, tools)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             return f"The model could not be reached: {exc}", touched
         choice = (data.get("choices") or [{}])[0]
@@ -510,9 +663,22 @@ def reply(answer, touched):
     _commit(f"campaign agent: replied in {CHAT_PAGE}")
 
 
+SW_KILL = """// Retire the previous service worker and its caches, then stand aside.
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    for (const key of await caches.keys()) { await caches.delete(key); }
+    await self.registration.unregister();
+    for (const client of await self.clients.matchAll({type: "window"})) {
+      client.navigate(client.url);
+    }
+  })());
+});
+"""
+
 PAGE = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Campaign assistant</title>
+<title>Frey assistant</title>
 <style>
 :root{--bg:#faf9f7;--fg:#1a1a1a;--mut:#6b6b6b;--line:#e2ddd6;--acc:#8a5a2b}
 @media(prefers-color-scheme:dark){:root{--bg:#17161a;--fg:#ece9e4;--mut:#9a948c;--line:#322e36;--acc:#c89a66}}
@@ -530,11 +696,11 @@ button{padding:0 18px;border:0;border-radius:10px;background:var(--acc);color:#f
 button:disabled{opacity:.5;cursor:default}
 #status{color:var(--mut);font-size:13px;margin-top:8px;min-height:1.2em}
 </style>
-<header>Campaign assistant
-<small>Reads your campaign and edits pages under <code>%ROOT%</code>. Replies take minutes &mdash; it is a 4B model on a Pi.</small></header>
+<header>Frey assistant
+<small>Ask about your world or about this machine. It reads and edits pages under <code>%ROOT%</code>, and can check system health. Replies take minutes &mdash; it is a 4B model on a Pi.</small></header>
 <main>
 <div id="log">loading&hellip;</div>
-<form id="f"><textarea id="m" placeholder="e.g. Add an NPC called Mara, a chart seller in Salt Harbor"></textarea>
+<form id="f"><textarea id="m" placeholder="Ask anything \u2014 about your world, or how Frey is doing"></textarea>
 <button id="b">Send</button></form>
 <div id="status"></div>
 </main>
@@ -557,6 +723,9 @@ f.addEventListener('submit',async e=>{
   }catch(err){st.textContent='could not send: '+err;}
   b.disabled=false; refresh();
 });
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.getRegistrations().then(rs=>{for(const r of rs){r.update();}});
+}
 refresh(); setInterval(refresh,5000);
 </script>
 """.replace("%ROOT%", ROOT)
@@ -586,6 +755,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, chat_path().read_text(errors="replace"))
             except OSError as exc:
                 self._send(500, f"cannot read the chat page: {exc}")
+        elif path == "/sw.js":
+            # Evict llama.cpp's service worker. Its web UI is a PWA that
+            # registers one at exactly this path, and a service worker
+            # intercepts every request to its origin - which is why a hard
+            # reload kept serving the cached model-only chat and no amount of
+            # routing could get past it.
+            #
+            # Serving a self-unregistering worker at the same URL is the
+            # standard way to retire one: the browser re-fetches this script,
+            # sees different bytes, installs it, and it immediately removes
+            # itself and the stale caches.
+            self._send(200, SW_KILL, "application/javascript; charset=utf-8")
+        elif path == "/manifest.webmanifest":
+            self._send(404, "gone\n")
         elif path == "/health":
             self._send(200, "ok\n")
         else:

@@ -1,15 +1,18 @@
 # Managed by Ansible. Do not edit on the Pi.
 #
-# One gateway, two hostnames, dispatched on Host.
+# ai.hub.frey        llama.cpp's own chat UI - streaming, token counts, a real
+#                    conversation view. It is simply better than anything
+#                    hand-rolled here, so it owns the main hostname.
+# campaign.hub.frey  the assistant, which has the tools: it reads and writes
+#                    the campaign wiki and can check this machine's health.
 #
-#   ai.hub.frey        the model: its own chat UI and the /v1 API
-#   campaign.hub.frey  the assistant that can read and write the notes
+# Dispatched on Host, and the assistant's rule comes first so its origin never
+# falls through to the model.
 #
-# They are separate ORIGINS deliberately. llama.cpp's web UI registers a
-# service worker, which intercepts every request to its origin and kept
-# serving the cached model-only chat even after a hard reload - so putting the
-# assistant on the same hostname made it unreachable in a browser no matter
-# what the routing said. A separate origin has no service worker to shadow it.
+# The two are separate ORIGINS for a browser reason as well as a tidiness one:
+# llama.cpp's UI is a PWA that registers a service worker at /sw.js, and a
+# service worker intercepts every request to its origin. Sharing a hostname
+# made the assistant unreachable no matter what the routing said.
 #
 # NOTE: Traefik's file provider does not reliably pick up edits to this file
 # through the bind mount, so the role restarts the gateway whenever it
@@ -18,11 +21,12 @@
 http:
   routers:
 {% if local_ai.campaign.enabled | bool %}
-    # Host first, so the assistant's origin never falls through to the model.
     campaign:
       rule: Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)
       service: campaign
 {% endif %}
+    # Everything else, including / and /v1, goes to the model - which is what
+    # serves its own web UI.
     model:
       rule: PathPrefix(`/`)
       service: model

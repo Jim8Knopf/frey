@@ -190,6 +190,12 @@ services:
     container_name: {{ c.container_name }}
     restart: unless-stopped
     user: "{{ c.uid }}:{{ c.gid }}"
+{% if local_ai.broker.enabled | bool %}
+    # Runs as SilverBullet's uid so it can write notes, plus the observer's
+    # group so it can write into the broker's request queue, which is
+    # group-owned by that gid at 0770.
+    group_add: ["{{ local_ai.observer.gid }}"]
+{% endif %}
     command: ["python3", "-u", "{{ c.script_path }}"]
     environment:
       - TZ={{ frey.timezone }}
@@ -207,6 +213,10 @@ services:
       - CAMPAIGN_MAX_STEPS={{ c.max_steps }}
       - CAMPAIGN_TOOL_RESULT_BUDGET={{ c.tool_result_budget }}
       - CAMPAIGN_PORT={{ c.port }}
+{% if local_ai.broker.enabled | bool %}
+      - BROKER_REQ_DIR=/broker/req
+      - BROKER_RES_DIR=/broker/res
+{% endif %}
     volumes:
       # Nested mounts on purpose, so the WRITE scope is enforced by the mount
       # table rather than only by the agent's own path checks:
@@ -219,6 +229,13 @@ services:
       - "{{ frey.notes_data_dir }}/spaces/notes/{{ c.root }}:/notes/{{ c.root }}"
       - "{{ frey.notes_data_dir }}/spaces/notes/.git:/notes/.git"
       - "{{ local_ai.stack_dir }}/campaign.py:{{ c.script_path }}:ro"
+{% if local_ai.broker.enabled | bool %}
+      # The only channel to anything privileged, and read verbs only. Requests
+      # go in; answers come from a directory that is read-only here, so the
+      # assistant cannot forge a reply to itself.
+      - "{{ local_ai.broker.req_dir }}:/broker/req"
+      - "{{ local_ai.broker.res_dir }}:/broker/res:ro"
+{% endif %}
     networks:
       # ai_private only: it needs the model and nothing else. internal, so no
       # egress - and it has no broker access and no system verbs at all.
