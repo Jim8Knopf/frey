@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-broker-approve - let one proposed repair actually run
+# Managed by Ansible role: local_ai. Do not edit on the Pi.
+# =============================================================================
+#
+# The assistant can propose a repair but cannot run one. This is the human
+# step, and it is the whole reason the write path is safe: approving takes an
+# id and nothing else, so it cannot smuggle a different action than the one
+# you were shown.
+#
+#   frey-broker-approve --list        what is waiting
+#   frey-broker-approve <id>          allow it; the broker runs it within seconds
+#   frey-broker-approve --reject <id> decline it now rather than letting it expire
+#
+# Ignoring a proposal is a valid way to decline: they expire on their own.
+# =============================================================================
+set -euo pipefail
+
+PROPOSALS="{{ local_ai.broker.proposals_dir }}"
+APPROVED="{{ local_ai.broker.approved_dir }}"
+
+if [[ $EUID -ne 0 ]]; then
+  echo "must be root: try 'sudo $(basename "$0") $*'" >&2
+  exit 1
+fi
+
+usage() {
+  echo "usage: $(basename "$0") {--list | <id> | --reject <id>}" >&2
+  exit 64
+}
+
+show() {
+  local path id state verb reason args
+  shopt -s nullglob
+  local found=0
+  for path in "$PROPOSALS"/*.json; do
+    id=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("id",""))' "$path")
+    state=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("state",""))' "$path")
+    [[ "$state" == "pending" ]] || continue
+    verb=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("verb",""))' "$path")
+    args=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1])).get("args") or {};print(" ".join("%s=%s"%kv for kv in d.items()))' "$path")
+    reason=$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("reason") or "")[:300])' "$path")
+    found=1
+    printf '%s  %s %s\n' "$id" "$verb" "$args"
+    printf '    reason: %s\n' "$reason"
+    printf '    allow:  sudo %s %s\n\n' "$(basename "$0")" "$id"
+  done
+  (( found == 1 )) || echo "no proposals are waiting."
+}
+
+approve() {
+  local id="$1" path state
+  path="$PROPOSALS/${id}.json"
+  if [[ ! -r "$path" ]]; then
+    echo "no such proposal: $id" >&2
+    exit 1
+  fi
+  state=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("state",""))' "$path")
+  if [[ "$state" != "pending" ]]; then
+    echo "proposal $id is already '$state'; nothing to do" >&2
+    exit 1
+  fi
+  # The marker carries only the id. Execution re-validates the verb and its
+  # target from scratch, so approving cannot widen what runs.
+  install -d -m 0700 -o root -g root "$APPROVED"
+  : > "$APPROVED/$id"
+  echo "approved $id - the broker will run it within a few seconds."
+  echo "A deadman is armed: if health gets worse the broker disables itself"
+  echo "and your phone gets told. Nothing is reverted automatically."
+}
+
+reject() {
+  local id="$1" path
+  path="$PROPOSALS/${id}.json"
+  if [[ ! -r "$path" ]]; then
+    echo "no such proposal: $id" >&2
+    exit 1
+  fi
+  python3 - "$path" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+if d.get("state") == "pending":
+    d["state"] = "rejected"
+    json.dump(d, open(p, "w"), indent=1)
+PY
+  echo "rejected $id"
+}
+
+case "${1:-}" in
+  --list|-l) show ;;
+  --reject|-r)
+    [[ $# -eq 2 ]] || usage
+    [[ "$2" =~ ^[0-9a-f]{8}$ ]] || { echo "malformed id: $2" >&2; exit 1; }
+    reject "$2"
+    ;;
+  "" | -h | --help) usage ;;
+  *)
+    [[ $# -eq 1 ]] || usage
+    [[ "$1" =~ ^[0-9a-f]{8}$ ]] || { echo "malformed id: $1" >&2; exit 1; }
+    approve "$1"
+    ;;
+esac

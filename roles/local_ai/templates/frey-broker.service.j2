@@ -21,6 +21,13 @@ Environment=BROKER_POLL_SECONDS={{ local_ai.broker.poll_seconds }}
 Environment=BROKER_MAX_PER_MINUTE={{ local_ai.broker.max_per_minute }}
 Environment=BROKER_MAX_LOG_LINES={{ local_ai.broker.max_log_lines }}
 Environment=BROKER_DOCKER_ROOT={{ local_ai.broker.docker_containers_dir }}
+Environment=BROKER_PROPOSALS_DIR={{ local_ai.broker.proposals_dir }}
+Environment=BROKER_APPROVED_DIR={{ local_ai.broker.approved_dir }}
+Environment=BROKER_DEADMAN_DIR={{ local_ai.broker.deadman_dir }}
+Environment=BROKER_PROPOSAL_TTL={{ local_ai.broker.proposal_ttl_seconds }}
+Environment="BROKER_RECREATE={{ local_ai.broker.recreatable | join(',') }}"
+Environment="BROKER_RESTART={{ local_ai.broker.restartable | join(',') }}"
+Environment="BROKER_RERUN={{ local_ai.broker.rerunnable | join(',') }}"
 Environment="BROKER_UNITS={{ local_ai.broker.units | join(',') }}"
 Environment="BROKER_CONTAINERS={{ local_ai.broker.containers | join(',') }}"
 # Quoted, because the diagnostic commands contain spaces. An unquoted
@@ -53,7 +60,7 @@ ProtectSystem=strict
 # cannot name a path that does not exist yet: systemd then fails to set
 # up the mount namespace and the unit dies with 226/NAMESPACE.
 RuntimeDirectory={{ local_ai.broker.state_dir | basename }}
-ReadWritePaths={{ local_ai.broker.req_dir }} {{ local_ai.broker.res_dir }}
+ReadWritePaths={{ local_ai.broker.req_dir }} {{ local_ai.broker.res_dir }} {{ local_ai.broker.proposals_dir }} {{ local_ai.broker.approved_dir }} {{ local_ai.broker.deadman_dir }}
 
 # Credential material. Not "denied" - absent. More of these exist than the
 # four obvious ones: the per-service key files under appdata are generated

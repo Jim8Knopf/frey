@@ -1,11 +1,12 @@
 # Local AI agent plan — a self-healing assistant with hard limits
 
-Status: **proposal, nothing deployed.** Builds on `docs/LOCAL_AI_EVALUATION.md`
-and extends `docs/CAMPAIGN_ASSISTANT_PLAN.md` phase 4 from "restricted draft
-agent" to "agent that helps keep Frey healthy".
+Status: **phases 0-4 deployed and verified on 2026-11-07.** Builds on
+`docs/LOCAL_AI_EVALUATION.md` and extends `docs/CAMPAIGN_ASSISTANT_PLAN.md`
+phase 4 from "restricted draft agent" to "agent that helps keep Frey healthy".
 
-Decisions still open are marked **[DECIDE]** and collected in §9. Everything
-else is a proposal you can correct.
+Where a section describes what was *planned* and the deployed reality differs,
+the deployed reality is marked inline — those divergences are the useful part
+of this document, because each one was found by running the thing.
 
 ## 1. The four constraints this plan is built around
 
@@ -13,10 +14,22 @@ Given directly:
 
 1. **Broad read, hard-capped write.** The agent may read nearly everything; what
    it may *change* is tightly bounded.
-2. **Writes begin in the notes only.**
-3. **Immich and the photo directories are hard-blocked**, at system level, not
-   by instruction.
+2. **Write only to explicitly named paths.** As deployed that is exactly two:
+   the drafts directory and the broker's request queue. *(This started as
+   "writes begin in the notes only" and was revised: reports go to a separate
+   drafts directory the agent owns, so the write boundary is enforced by mount
+   absence rather than by path checking inside the notes space.)*
+3. **Immich and the photo directories are hard-capped for WRITING**, at system
+   level, not by instruction — the agent can look at a photo and can never
+   edit or delete one. *(Also revised. These were originally unmounted
+   entirely; they are now mounted read-only, because reading is safe when
+   there is no egress and the cap that matters is on writing.)*
 4. **Networking is hard-blocked, to prevent bricking.**
+
+The one place reading is itself the risk is credential material, because the
+model could quote a secret into a draft that syncs to a phone. Those paths
+stay unmounted, and there are more of them than the obvious four — the
+per-service `.*-keys.json` files under `appdata` are generated secrets too.
 
 And one inherited from `CLAUDE.md`: the Pi has no Ethernet and no console, so a
 change that breaks networking or SSH does not degrade the system, it bricks it
@@ -59,26 +72,35 @@ by any means: no traversal, no symlink, no bug in tool code, no prompt
 injection. The denial is `ENOENT`, not `EACCES` — the path genuinely is not
 there.
 
+**As deployed.** The agent's row is what the container actually mounts; the
+broker is a host service confined by systemd rather than by mounts, so its
+column means "reachable in its namespace".
+
 | Path | Agent | Broker | Why |
 | --- | --- | --- | --- |
-| `/opt/frey/appdata/silverbullet` | **ro** | — | notes, uid 10001 |
-| `<drafts dir>` | **rw** (uid 10002) | — | the only write surface |
-| `/opt/frey/data/media` | **ro** | — | media metadata, read freely |
-| `<image inbox>` | **ro** | — | one drop folder, not a library |
-| `/opt/frey/metrics/textfile` | **ro** | — | the collector seam |
+| `<drafts dir>` | **rw** (uid 10002) | — | reports; one of exactly two write paths |
+| `<broker req queue>` | **rw** (uid 10002) | rw | the only channel to anything privileged |
+| `<broker res queue>` | **ro** | rw | read-only to the agent, so it cannot forge its own answer |
+| `/opt/frey/appdata/silverbullet` | **ro** + ACL | — | notes; 0700/0600, so an ACL grants the read |
+| `/opt/frey/data` | **ro** | ro | media and its metadata, read freely |
+| `/opt/frey/data/photos` | **ro** | ro | readable, never writable — constraint 3, and listed before Immich exists |
+| `/opt/frey/stacks` | **ro** | ro | compose state. Chosen deliberately despite carrying API keys; see below |
+| `/opt/frey/metrics/textfile` | **ro** | ro | the collector seam |
 | `/opt/frey/appdata/local-ai/models` | **ro** | — | weights |
-| **photos / Immich library** | **never** | **never** | constraint 3 |
+| `<broker approved dir>` | **never** | rw | the agent cannot approve its own proposal |
 | `/opt/frey/pki` | **never** | **never** | 0700, holds the root private key |
 | `.vault_pass`, `inventory/.../secrets.yml` | **never** | **never** | vault |
-| `/opt/frey/stacks/**` | **never** | ro | rendered compose carries *arr API keys, Authelia secrets, the LLDAP admin password **[DECIDE]** |
-| `/var/run/docker.sock` | **never** | ro | the whole point of the split |
-| host `/etc`, `/boot`, `/root` | **never** | **never** | sshd, firewall, `config.txt` |
-| host root filesystem | **never** | **never** | — |
+| `appdata/*/.*-keys.json`, `identity/secrets` | **never** | **never** | generated secrets, easy to miss |
+| `/var/run/docker.sock` | **never** | yes, from phase 4 | the whole point of the split |
+| host `/etc`, `/boot`, `/root`, `/etc/shadow` | **never** | **never** | sshd, firewall, `config.txt` |
+| host root filesystem | **never** | ro | — |
 
-Note the asymmetry on `/opt/frey/stacks/**`: it is excluded from the agent not
-because of exfiltration risk — there is no egress, see M6 — but because the
-agent would otherwise quote an API key into a draft note, and that draft syncs
-into a browser copy on your phone.
+One residual risk, recorded because it was a deliberate choice rather than an
+oversight: the rendered compose files under `/opt/frey/stacks` **do** contain
+*arr API keys, Authelia secrets and the LLDAP admin password. Nothing can be
+exfiltrated — there is no egress, see M6 — but the model could quote one into
+a draft, and drafts are read on a phone. Removing the single `/stacks` entry
+from `local_ai.observer.read_paths` closes it; nothing else depends on it.
 
 ### M2 — No verb. The forbidden action has no endpoint.
 
@@ -468,9 +490,83 @@ request queue. Credential material stays unmounted. Note that more credential
 files exist than the obvious ones: the per-service `.{identity,media,monitoring}-keys.json`
 files and `identity/secrets` are generated secrets too.
 
-**Phase 4 — tier-1 write verbs, deadman, breaker, kill switch.** One verb at a
-time, starting with `recreate_container(frey-media-dns)` — the most frequent
-fault and the most clearly reversible.
+**Phase 4 — write actions, deadman, breaker, kill switch. DONE 2026-11-07,
+propose-only.** One verb at a time, starting with
+`recreate_container(frey-media-dns)` — the most frequent fault and the most
+clearly reversible.
+
+**The model proposes; it never acts.** `recreate_container`,
+`restart_container` and `rerun_unit` are **not in the verb table at all**, so
+the agent cannot call them — the only path to one is a proposal that a human
+has approved by typing its id on the host. The write path therefore has a
+person in it by construction rather than by policy.
+
+That asymmetry against phase 2 is deliberate and worth stating, because it
+would otherwise look inconsistent: `frey-self-heal` acts autonomously because
+a tuned alert rule matched a **known** symptom and the fix was written by
+hand. Here the **model's judgement** is the thing being trusted, and it has
+already produced one confident, well-structured, entirely wrong diagnosis. So
+nothing is lost by gating it — the known faults still self-heal untouched, and
+only the novel cases wait for a human.
+
+The flow:
+
+1. The agent calls `propose` with an action and a reason of at least 20
+   characters. The broker validates the inner verb **and its target** against
+   the same allowlists execution will use, so an un-approvable proposal is
+   refused while the model can still be told why rather than after a human has
+   been paged.
+2. `frey-broker-supervisor` pushes it to ntfy with the literal command to run.
+   The broker cannot do this itself — it has `PrivateNetwork=yes` — and
+   keeping egress in a separate unit means it lives in the component with no
+   model input and no container privilege.
+3. `sudo frey-broker-approve <id>` writes a marker carrying **only the id**.
+   Execution re-validates from scratch, so approving cannot smuggle a
+   different action than the one you were shown. `--list` shows what is
+   waiting; `--reject` declines now; ignoring it lets it expire.
+4. The broker executes it, then **arms a deadman** recording the health it
+   measured beforehand.
+5. The supervisor re-measures after a grace period using the *same* code —
+   `health_snapshot` is imported, not reimplemented, because a deadman
+   comparing two different definitions of health is worse than none. If
+   stopped containers or firing alerts rose, it **trips the kill switch first
+   and notifies second** (the order matters when there is no uplink) and the
+   broker refuses every verb until you `rm` the switch.
+
+There is **no automatic revert**, by choice: a blind undo is itself an
+unattended action taken while the system is already degraded, which is how one
+fault becomes two. Every action here is reversible by hand.
+
+A missing health measurement never counts as a regression — a failed probe
+would otherwise make every uplink outage look like a bad repair.
+
+**The deadman false-tripped on its first real run, which was worth more than
+a clean pass.** Health was defined as *all* firing alerts, and the count went
+2 → 3 right after re-running a metrics collector — something that cannot
+possibly cause an alert. The breaker tripped correctly on its own terms and
+disabled the broker, exactly as designed; the definition of health was the
+bug. On this Pi the warning tier flaps constantly (the 5V rail hovers right at
+its 4.95 V threshold, container memory is high *because the model itself is
+4 GiB*) and the `Watchdog` heartbeat alert fires permanently by design, so
+counting those makes every action look harmful.
+
+Health is now **stopped containers plus CRITICAL alerts only**. Criticals are
+rare here and are what actually matters, so a new one appearing right after a
+repair is worth stopping for. This is the kind of fault only a live run finds:
+every unit test of that comparison would have passed.
+
+Approval needs SSH, which on a phone means an SSH client rather than a tap.
+That was accepted deliberately: the alternatives were a web endpoint whose
+whole purpose is triggering privileged actions, or parsing notes for
+approvals. ntfy's action buttons cannot do it, because Authelia forward auth
+302s any non-browser POST.
+
+`scripts/local-ai-broker-check.sh` proves both halves: that the three write
+actions are **not callable by the agent at all**, that `propose` refuses a
+forbidden target, a non-action verb and a missing reason, that the approval
+directory is absent from the agent so it cannot approve itself, that a valid
+proposal stays pending until approved, and that approval then really runs the
+unit, arms the deadman, and cannot be replayed.
 
 **Phase 5 — tier-2 propose-and-approve over ntfy.**
 

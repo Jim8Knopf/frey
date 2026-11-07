@@ -237,6 +237,78 @@ Dispatch is an exact dictionary lookup, so an unknown verb has nowhere to go.
 `restart_container`, `run_command`, `restart_service`, `reboot`, `write_file`
 and `nmcli` are absent rather than refused.
 
+### Write actions: the model proposes, you decide
+
+`recreate_container`, `restart_container` and `rerun_unit` exist — and are
+**not in the verb table**, so the agent cannot call them. The only path to one
+is a proposal you approve by typing its id on the host. The write path has a
+person in it by construction, not by policy.
+
+That is deliberately stricter than `frey-self-heal`, which acts on its own.
+The difference is what is being trusted: self-heal runs a fix *you wrote* for
+a symptom a *tuned alert rule* matched. Here the model's judgement is the
+input — and it has already produced one confident, well-structured, entirely
+wrong diagnosis. Gating it costs nothing, because the known faults still
+self-heal untouched; only novel cases wait for you.
+
+```sh
+sudo frey-broker-approve --list        # what is waiting, and why
+sudo frey-broker-approve <id>          # allow it; runs within seconds
+sudo frey-broker-approve --reject <id> # decline now
+```
+
+Ignoring a proposal declines it — they expire on their own. ntfy pushes each
+one with the literal command to paste.
+
+What may be targeted, and nothing else: `recreate_container` only
+`frey-media-dns` (recreation is for a fault baked in at container creation, so
+a restart would faithfully reproduce it); `restart_container` only the eight
+stateless containers, which excludes every SQLite-backed service and
+`frey-traefik`; `rerun_unit` only idempotent oneshots that already run on
+timers, so running one early is indistinguishable from the timer firing.
+
+**Approving takes an id and nothing else.** Execution re-validates the verb
+and its target from scratch, so approval cannot smuggle a different action
+than the one you were shown, and a target since removed from the allowlist
+stops being executable.
+
+### The deadman
+
+Every executed action arms one. It records the health measured beforehand —
+stopped containers among the watched set, plus firing alerts — and
+`frey-broker-supervisor` re-measures after three minutes using the *same
+code*, imported rather than reimplemented, because a deadman comparing two
+different definitions of health is worse than none.
+
+If either count rose, it **trips the kill switch first and notifies second**
+— the order matters, because when there is no uplink the agent must still be
+stopped. The broker then refuses every verb until you clear it. Being a
+separate process is the point: the broker cannot suppress its own failure by
+crashing, hanging, or choosing not to look.
+
+**There is no automatic revert**, deliberately. A blind undo is itself an
+unattended action taken while the system is already degraded, which is how one
+fault becomes two. Every action here is reversible by hand.
+
+A missing measurement never counts as a regression — a failed probe would
+otherwise make every uplink outage look like a bad repair.
+
+Health is **stopped containers plus critical alerts only**, and that matters.
+The first live run defined it as *all* firing alerts and false-tripped: the
+count went 2 → 3 right after re-running a metrics collector, which cannot
+cause an alert. The warning tier flaps constantly here — the 5V rail sits
+right at its threshold, container memory is high because the model is 4 GiB —
+and `Watchdog` fires permanently by design. The breaker worked; the definition
+of health did not.
+
+### Why approval needs SSH
+
+ntfy's action buttons cannot approve: Authelia forward auth answers any
+non-browser POST with a 302 to the login page. The alternatives were a web
+endpoint whose whole purpose is triggering privileged actions, or parsing
+notes for approvals. SSH was chosen as the least surprising of the three. On a
+phone that means an SSH client rather than a tap.
+
 ### Its confinement is systemd's, not its own code
 
 AppArmor was the intent, but it is **disabled in this Pi's kernel** —

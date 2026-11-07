@@ -104,6 +104,12 @@
     # mounts this read-only - so the agent cannot forge an answer to its own
     # request.
     - {path: "{{ local_ai.broker.res_dir }}", owner: root, group: root, mode: "0755"}
+    # Root only. The agent cannot write here, so it cannot approve its own
+    # proposal, and it cannot read here either - it checks status through the
+    # proposal_status verb instead of being handed the directory.
+    - {path: "{{ local_ai.broker.proposals_dir }}", owner: root, group: root, mode: "0700"}
+    - {path: "{{ local_ai.broker.approved_dir }}", owner: root, group: root, mode: "0700"}
+    - {path: "{{ local_ai.broker.deadman_dir }}", owner: root, group: root, mode: "0700"}
   when: local_ai.broker.enabled | bool
 
 - name: Create the broker program directory
@@ -134,13 +140,39 @@
     mode: "0755"
   when: local_ai.broker.enabled | bool
 
-- name: Install the broker unit
+- name: Install the broker supervisor program
+  # Separate because the broker has PrivateNetwork=yes and cannot reach ntfy,
+  # and because the deadman must be enforced by something the broker cannot
+  # suppress by crashing or hanging.
+  ansible.builtin.copy:
+    src: broker_supervisor.py
+    dest: "{{ local_ai.broker.supervisor_script_path }}"
+    owner: root
+    group: root
+    mode: "0750"
+  when: local_ai.broker.enabled | bool
+
+- name: Install the proposal approval command
   ansible.builtin.template:
-    src: frey-broker.service.j2
-    dest: "/etc/systemd/system/{{ local_ai.broker.service_name }}.service"
+    src: frey-broker-approve.sh.j2
+    dest: "{{ local_ai.broker.approve_command }}"
+    owner: root
+    group: root
+    mode: "0750"
+    validate: "bash -n %s"
+  when: local_ai.broker.enabled | bool
+
+- name: Install the broker units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
     owner: root
     group: root
     mode: "0644"
+  loop:
+    - "{{ local_ai.broker.service_name }}.service"
+    - "{{ local_ai.broker.service_name }}-supervisor.service"
+    - "{{ local_ai.broker.service_name }}-supervisor.timer"
   register: local_ai_broker_unit
   when: local_ai.broker.enabled | bool
   notify: Restart local AI broker
@@ -156,6 +188,15 @@
 - name: Enable and start the broker
   ansible.builtin.systemd_service:
     name: "{{ local_ai.broker.service_name }}.service"
+    enabled: true
+    state: started
+  when:
+    - local_ai.broker.enabled | bool
+    - not ansible_check_mode
+
+- name: Enable the broker supervisor timer
+  ansible.builtin.systemd_service:
+    name: "{{ local_ai.broker.service_name }}-supervisor.timer"
     enabled: true
     state: started
   when:

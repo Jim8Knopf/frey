@@ -140,6 +140,75 @@ elif not r.get("ok"):
 else:
     bad("path traversal through container name was ACCEPTED")
 
+# --- phase 4: the write path must have a human in it -----------------------
+#
+# The model may propose. It must not be able to act. These check both halves.
+
+for verb, args in [
+    ("rerun_unit", {"unit": "frey-metrics.service"}),
+    ("restart_container", {"container": "byparr"}),
+    ("recreate_container", {"container": "frey-media-dns"}),
+]:
+    r = ask(verb, args)
+    if r is None:
+        bad(f"INCONCLUSIVE (no response): direct write verb {verb}")
+    elif not r.get("ok") and "unknown verb" in str(r.get("error", "")):
+        ok(f"write action {verb} is not callable by the agent at all")
+    else:
+        bad(f"agent COULD call write action {verb} directly")
+
+# A proposal must be refused when it is not approvable, so the model finds out
+# while it can still be told why rather than after a human is paged.
+r = ask("propose", {"action": {"verb": "rerun_unit", "args": {"unit": "ssh.service"}},
+                    "reason": "a deliberately forbidden target used by the boundary check"})
+if r is None:
+    bad("INCONCLUSIVE (no response): propose with a forbidden target")
+elif not r.get("ok"):
+    ok("propose refuses a target outside the allowlist")
+else:
+    bad("propose ACCEPTED a forbidden target")
+
+r = ask("propose", {"action": {"verb": "run_command", "args": {}},
+                    "reason": "attempting to propose something that is not an action at all"})
+if r is None:
+    bad("INCONCLUSIVE (no response): propose of a non-action")
+elif not r.get("ok"):
+    ok("propose refuses a verb that is not a write action")
+else:
+    bad("propose ACCEPTED a non-action verb")
+
+r = ask("propose", {"action": {"verb": "rerun_unit", "args": {"unit": "frey-metrics.service"}},
+                    "reason": "too short"})
+if r is None:
+    bad("INCONCLUSIVE (no response): propose without a reason")
+elif not r.get("ok"):
+    ok("propose requires a stated reason")
+else:
+    bad("propose ACCEPTED an action with no real reason")
+
+# The approval directory must be unreachable from the agent - it cannot
+# approve its own proposal.
+import os as _os
+if _os.path.exists("/broker/approved"):
+    bad("approval directory is visible to the agent")
+else:
+    ok("approval directory is absent from the agent (ENOENT)")
+
+# Finally a real, valid proposal, left pending for the host side to approve.
+r = ask("propose", {"action": {"verb": "rerun_unit", "args": {"unit": "frey-metrics.service"}},
+                    "reason": "boundary check: re-running the metrics collector is idempotent"})
+if r and r.get("ok") and (r.get("result") or {}).get("proposal_id"):
+    pid = r["result"]["proposal_id"]
+    ok(f"valid proposal recorded as {pid}, state={r['result'].get('state')}")
+    status = ask("proposal_status", {"proposal_id": pid})
+    if status and status.get("ok") and (status.get("result") or {}).get("state") == "pending":
+        ok("proposal is still pending - proposing did not execute anything")
+    else:
+        bad(f"proposal did not stay pending: {json.dumps(status)[:200] if status else 'no response'}")
+    print(f"PROPOSAL_ID={pid}")
+else:
+    bad(f"valid proposal failed: {json.dumps(r)[:200] if r else 'no response'}")
+
 for status, msg in checks:
     print(f"{status:4} {msg}")
 print()
@@ -150,6 +219,53 @@ print(f"All {len(checks)} broker boundary checks held.")
 PY
 agent_status=$?
 cat "$OUT"
+
+# --- phase 4: approve the pending proposal and watch the deadman -----------
+PROPOSALS=/opt/frey/appdata/local-ai/broker/proposals
+DEADMAN=/opt/frey/appdata/local-ai/broker/deadman
+echo
+echo "approval flow:"
+pid=$(grep -oE 'PROPOSAL_ID=[0-9a-f]{8}' "$OUT" | head -1 | cut -d= -f2)
+if [[ -z "$pid" ]]; then
+  echo "FAIL no proposal id to approve"
+  fails=$((fails+1))
+else
+  before_run=$(systemctl show frey-metrics.service -p InactiveEnterTimestampMonotonic --value)
+  if frey-broker-approve "$pid" >/dev/null 2>&1; then
+    printf 'OK   approved %s via frey-broker-approve\n' "$pid"
+  else
+    printf 'FAIL could not approve %s\n' "$pid"; fails=$((fails+1))
+  fi
+  # The broker polls every couple of seconds.
+  for _ in $(seq 1 20); do
+    state=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("state",""))' \
+      "$PROPOSALS/${pid}.json" 2>/dev/null || true)
+    [[ "$state" == "done" || "$state" == "failed" ]] && break
+    sleep 2
+  done
+  if [[ "$state" == "done" ]]; then
+    printf 'OK   approved proposal executed (state=done)\n'
+  else
+    printf 'FAIL proposal state after approval: %s\n' "${state:-unknown}"; fails=$((fails+1))
+  fi
+  after_run=$(systemctl show frey-metrics.service -p InactiveEnterTimestampMonotonic --value)
+  if [[ "$after_run" != "$before_run" ]]; then
+    printf 'OK   the unit really ran (timestamp moved)\n'
+  else
+    printf 'FAIL the unit did not run\n'; fails=$((fails+1))
+  fi
+  if [[ -f "$DEADMAN/${pid}.json" ]]; then
+    printf 'OK   deadman armed for %s\n' "$pid"
+  else
+    printf 'FAIL no deadman armed for %s\n' "$pid"; fails=$((fails+1))
+  fi
+  # Approving twice must not run it twice.
+  if frey-broker-approve "$pid" >/dev/null 2>&1; then
+    printf 'FAIL re-approving an executed proposal was accepted\n'; fails=$((fails+1))
+  else
+    printf 'OK   an already-executed proposal cannot be approved again\n'
+  fi
+fi
 
 # --- the sandbox, asserted against the running unit ------------------------
 #

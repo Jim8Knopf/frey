@@ -189,6 +189,62 @@ local_ai:
     # a container that is not running.
     docker_containers_dir: "{{ frey.base_dir }}/docker/containers"
 
+    # --- Phase 4: proposals, not commands ---------------------------------
+    #
+    # The model may PROPOSE a repair. It can never run one. A proposal does
+    # nothing until a human types its id on the host, so the write path has a
+    # person in it by construction rather than by policy.
+    #
+    # The asymmetry against frey-self-heal is deliberate: that one acts
+    # autonomously because a tuned alert rule matched a known symptom and the
+    # fix was written by hand. Here the model's judgement is what is being
+    # trusted, and it has already produced one confident, well-structured,
+    # entirely wrong diagnosis.
+    proposals_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/proposals"
+    # Root only, 0700. The agent cannot write here, so it cannot approve
+    # itself.
+    approved_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/approved"
+    deadman_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/deadman"
+    proposal_ttl_seconds: 86400
+
+    approve_command: /usr/local/bin/frey-broker-approve
+    supervisor_script_path: /usr/local/lib/frey/broker_supervisor.py
+    supervisor_interval: 1min
+    # How long after an action to judge it: long enough for a restarted
+    # container to come back and be scraped again, short enough that a harmful
+    # action is caught while you might still be awake.
+    deadman_grace_seconds: 180
+
+    # Recreation is only for a fault baked in at container creation - stale
+    # DNS is the one real case - so this is far narrower than the restart
+    # list. A restart would faithfully reproduce the fault.
+    recreatable:
+      - frey-media-dns
+
+    # Stateless only. Every SQLite- or database-backed service is absent
+    # (jellyfin, audiobookshelf, seerr, lldap, authelia, the *arrs,
+    # qbittorrent, prometheus, loki, grafana, jellystat-db), and so is
+    # frey-traefik, which would 404 every service at once.
+    restartable:
+      - byparr
+      - prowlarr
+      - recyclarr
+      - unpackerr
+      - blackbox
+      - cadvisor
+      - node-exporter
+      - alloy
+
+    # Oneshot units that are idempotent by design and already run on timers,
+    # so running one early is indistinguishable from the timer firing.
+    # Deliberately no networking unit, and nothing that deploys.
+    rerunnable:
+      - frey-metrics.service
+      - frey-log-repair.service
+      - frey-media-dns-upstream.service
+      - frey-media-gate.service
+      - frey-self-heal.service
+
     # systemd units the agent may ask the STATE of. Read-only: there is no
     # verb that starts or stops anything. Deliberately excludes every
     # networking unit - not because asking is dangerous, but because the

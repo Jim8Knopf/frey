@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
 """frey-broker - the only privileged thing the assistant can reach.
 
-Phase 3 of docs/LOCAL_AI_AGENT_PLAN.md. Read verbs only; there is no write
-verb in this file yet.
+Phases 3 and 4 of docs/LOCAL_AI_AGENT_PLAN.md.
+
+WHAT THE AGENT CAN AND CANNOT DO
+
+Read verbs the agent may call directly: unit_state, diagnostic,
+container_logs, propose, proposal_status.
+
+Write actions the agent may NEVER call: recreate_container,
+restart_container, rerun_unit. They are not in VERBS at all. The only path to
+one is a proposal that a human has approved by typing its id on the host, so
+the write path has a person in it by construction rather than by policy.
+
+That asymmetry is deliberate. Deterministic repair of the KNOWN faults is
+already autonomous, in frey-self-heal, where a tuned alert rule matched a
+symptom and the fix was written by hand. Here the model's judgement is the
+thing being trusted - and it has already produced one confident, well
+structured, entirely wrong diagnosis.
 
 WHY IT IS A DIRECTORY AND NOT A SOCKET OR A PORT
 
@@ -25,11 +40,13 @@ model cannot ask to restart the radios because no entry accepts it.
 
 WHAT IT WILL NEVER DO
 
-There is no verb here that changes anything. No restart, no systemctl start,
-no docker, no ansible, no file write outside the response directory. When
-write verbs arrive in phase 4 they arrive one at a time, each with a deadman
-and a cooldown, and the refusal list in the unit file is enforced by systemd
-rather than by this code.
+No verb and no action here touches networking, sshd, the firewall, the kernel
+command line, or Ansible. Nothing reboots. Nothing writes a file outside the
+broker's own queues. Those are absences, not refusals: the code to do them is
+not here, and systemd's sandbox in the unit file enforces the rest.
+
+Every executed action arms a deadman that frey-broker-supervisor enforces, so
+this process cannot suppress its own failure by crashing or hanging.
 """
 
 import glob
@@ -74,6 +91,36 @@ for entry in filter(None, (os.environ.get("BROKER_DIAGNOSTICS") or "").split(","
         DIAGNOSTIC_ALLOWLIST[name.strip()] = command.strip().split()
 CONTAINER_ALLOWLIST = set(
     filter(None, (os.environ.get("BROKER_CONTAINERS") or "").split(","))
+)
+
+# --- phase 4: proposals -----------------------------------------------------
+#
+# The model never invokes a write verb. It can only PROPOSE one, and a
+# proposal does nothing until a human approves it by name on the host. So the
+# write path has a person in it by construction, not by policy - which matters
+# because the model's judgement is the thing being trusted here, and it has
+# already produced one confident, well-structured, wrong diagnosis.
+PROPOSALS_DIR = pathlib.Path(os.environ.get("BROKER_PROPOSALS_DIR", "/broker/proposals"))
+APPROVED_DIR = pathlib.Path(os.environ.get("BROKER_APPROVED_DIR", "/broker/approved"))
+DEADMAN_DIR = pathlib.Path(os.environ.get("BROKER_DEADMAN_DIR", "/broker/deadman"))
+
+PROPOSAL_TTL_SECONDS = int(os.environ.get("BROKER_PROPOSAL_TTL", "86400"))
+
+# Containers that may be recreated. Recreation is for a container whose fault
+# is baked in at creation - stale DNS being the one real case - so this list
+# is deliberately far narrower than the restart list.
+RECREATE_ALLOWLIST = set(
+    filter(None, (os.environ.get("BROKER_RECREATE") or "").split(","))
+)
+# Stateless containers only. Every SQLite- or database-backed service is
+# absent, and so is the proxy, which would 404 everything at once.
+RESTART_ALLOWLIST = set(
+    filter(None, (os.environ.get("BROKER_RESTART") or "").split(","))
+)
+# Oneshot units that are idempotent by design and already run on timers, so
+# running one early is indistinguishable from the timer firing.
+RERUN_ALLOWLIST = set(
+    filter(None, (os.environ.get("BROKER_RERUN") or "").split(","))
 )
 
 _recent = []
@@ -211,10 +258,144 @@ def verb_container_logs(args):
     return True, {"container": name, "lines": len(tail), "log": tail}
 
 
+# --- write actions ----------------------------------------------------------
+#
+# These are NOT in VERBS. Nothing the agent can call reaches them: they are
+# only ever executed from an approved proposal, which requires a human to have
+# typed the proposal's id on the host. Each is idempotent, individually
+# reviewed, and reversible by hand.
+
+
+def action_recreate_container(args):
+    name = str(args.get("container", ""))
+    if name not in RECREATE_ALLOWLIST:
+        return False, f"container not recreatable: {name!r}"
+    # Recreate, not restart: the stale upstream is fixed at creation time, so
+    # a restart would faithfully reproduce the fault.
+    rm = subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True, timeout=120)
+    if rm.returncode != 0:
+        return False, f"docker rm failed: {rm.stderr.strip()[:300]}"
+    # The owning unit brings it back with fresh DNS.
+    up = subprocess.run(
+        ["systemctl", "start", "frey-media-dns-upstream.service"],
+        capture_output=True, text=True, timeout=180,
+    )
+    if up.returncode != 0:
+        return False, f"recreate failed: {up.stderr.strip()[:300]}"
+    return True, {"recreated": name}
+
+
+def action_restart_container(args):
+    name = str(args.get("container", ""))
+    if name not in RESTART_ALLOWLIST:
+        return False, f"container not restartable: {name!r}"
+    # `docker restart`, never `docker kill -s HUP`: an API signal flags a
+    # container manually-stopped, after which it silently fails to come back
+    # at the next reboot.
+    out = subprocess.run(
+        ["docker", "restart", name], capture_output=True, text=True, timeout=180
+    )
+    if out.returncode != 0:
+        return False, f"docker restart failed: {out.stderr.strip()[:300]}"
+    return True, {"restarted": name}
+
+
+def action_rerun_unit(args):
+    unit = str(args.get("unit", ""))
+    if unit not in RERUN_ALLOWLIST:
+        return False, f"unit not rerunnable: {unit!r}"
+    out = subprocess.run(
+        ["systemctl", "start", unit], capture_output=True, text=True, timeout=180
+    )
+    if out.returncode != 0:
+        return False, f"systemctl start failed: {out.stderr.strip()[:300]}"
+    return True, {"reran": unit}
+
+
+WRITE_ACTIONS = {
+    "recreate_container": action_recreate_container,
+    "restart_container": action_restart_container,
+    "rerun_unit": action_rerun_unit,
+}
+
+
+def verb_propose(args):
+    """Record a proposal. Executes nothing.
+
+    Validation happens HERE as well as at execution time, so a proposal that
+    could never be approved is rejected while the model is still in a position
+    to be told why.
+    """
+    action = args.get("action") or {}
+    if not isinstance(action, dict):
+        return False, "action must be an object"
+    verb = str(action.get("verb", ""))
+    inner = action.get("args") or {}
+    if not isinstance(inner, dict):
+        inner = {}
+    reason = str(args.get("reason", "")).strip()
+
+    if verb not in WRITE_ACTIONS:
+        return False, f"not a proposable action: {verb!r}"
+    if len(reason) < 20:
+        return False, "a proposal needs a reason of at least 20 characters"
+
+    # Check the target against the same allowlist execution will use, so an
+    # un-approvable proposal never reaches the phone.
+    target_lists = {
+        "recreate_container": ("container", RECREATE_ALLOWLIST),
+        "restart_container": ("container", RESTART_ALLOWLIST),
+        "rerun_unit": ("unit", RERUN_ALLOWLIST),
+    }
+    key, allowed = target_lists[verb]
+    target = str(inner.get(key, ""))
+    if target not in allowed:
+        return False, f"{key} not permitted for {verb}: {target!r}"
+
+    proposal_id = uuid.uuid4().hex[:8]
+    record = {
+        "id": proposal_id,
+        "state": "pending",
+        "verb": verb,
+        "args": {key: target},
+        "reason": reason[:1000],
+        "created": time.time(),
+        "notified": False,
+    }
+    try:
+        (PROPOSALS_DIR / f"{proposal_id}.json").write_text(json.dumps(record, indent=1))
+    except OSError as exc:
+        return False, f"cannot record proposal: {exc}"
+    log.info("proposal %s recorded: %s %s", proposal_id, verb, target)
+    return True, {
+        "proposal_id": proposal_id,
+        "state": "pending",
+        "approve_with": f"frey-broker-approve {proposal_id}",
+        "note": "nothing runs until a human approves this on the host",
+    }
+
+
+def verb_proposal_status(args):
+    proposal_id = str(args.get("proposal_id", ""))
+    if not re.match(r"^[0-9a-f]{8}$", proposal_id):
+        return False, "malformed proposal id"
+    path = PROPOSALS_DIR / f"{proposal_id}.json"
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False, f"no such proposal: {proposal_id}"
+    return True, {
+        k: record.get(k)
+        for k in ("id", "state", "verb", "args", "created", "executed", "error")
+    }
+
+
 VERBS = {
     "unit_state": verb_unit_state,
     "diagnostic": verb_diagnostic,
     "container_logs": verb_container_logs,
+    "propose": verb_propose,
+    "proposal_status": verb_proposal_status,
 }
 
 
@@ -297,6 +478,149 @@ def handle(path):
     respond(request_id, ok, payload, verb)
 
 
+def health_snapshot():
+    """A number that should not get worse after a repair.
+
+    Two counts, both cheap and both network-free: containers that ought to be
+    running and are not, and alerts currently firing. Imported by the
+    supervisor so "before" and "after" are measured by identical code - a
+    deadman comparing two different definitions of health is worse than none.
+    """
+    stopped = None
+    firing = None
+    try:
+        out = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if out.returncode == 0:
+            watched = RESTART_ALLOWLIST | RECREATE_ALLOWLIST | CONTAINER_ALLOWLIST
+            stopped = 0
+            for line in out.stdout.splitlines():
+                name, _, state = line.partition("\t")
+                if name in watched and state.strip() != "running":
+                    stopped += 1
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        # CRITICAL alerts only, and this is load-bearing. A count of ALL
+        # firing alerts tripped the deadman on its first real run: the total
+        # went 2 -> 3 after re-running a metrics collector, which cannot
+        # possibly cause an alert. On this Pi the warning tier flaps
+        # constantly - the 5V rail hovers right at its threshold, container
+        # memory is high because the model itself is 4 GiB - and the Watchdog
+        # heartbeat alert fires permanently by design. Counting those makes
+        # every action look harmful.
+        #
+        # Criticals are rare here and are what actually matters, so a new one
+        # appearing right after a repair is a signal worth stopping for.
+        #
+        # Alertmanager has no host port, so it is reached from inside a
+        # container that can - the same reason the rest of this stack does.
+        out = subprocess.run(
+            ["docker", "exec", "alert-relay", "python3", "-c",
+             "import json,urllib.request;"
+             "o=urllib.request.build_opener(urllib.request.ProxyHandler({}));"
+             "a=json.load(o.open('http://alertmanager:9093/api/v2/alerts"
+             "?active=true&silenced=false&inhibited=false',timeout=10));"
+             "print(sum(1 for x in a if (x.get('labels') or {})"
+             ".get('severity')=='critical'))"],
+            capture_output=True, text=True, timeout=40,
+        )
+        if out.returncode == 0:
+            firing = int(out.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return {"stopped_containers": stopped, "critical_alerts": firing, "at": time.time()}
+
+
+def execute_approved():
+    """Run proposals a human has approved, and arm a deadman for each.
+
+    Re-validates from scratch. The approval marker carries no action of its
+    own - only an id - so approving cannot smuggle a different verb, and a
+    proposal whose target has since been removed from the allowlist stops
+    being executable.
+    """
+    try:
+        markers = sorted(APPROVED_DIR.glob("*"))
+    except OSError:
+        return
+    for marker in markers:
+        proposal_id = marker.name
+        if not re.match(r"^[0-9a-f]{8}$", proposal_id):
+            marker.unlink(missing_ok=True)
+            continue
+        path = PROPOSALS_DIR / f"{proposal_id}.json"
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            log.warning("approval for unknown proposal %s", proposal_id)
+            marker.unlink(missing_ok=True)
+            continue
+        marker.unlink(missing_ok=True)
+
+        if record.get("state") != "pending":
+            log.warning("proposal %s is %s, not executing", proposal_id, record.get("state"))
+            continue
+        if disabled():
+            log.warning("kill switch set; not executing proposal %s", proposal_id)
+            continue
+
+        handler = WRITE_ACTIONS.get(record.get("verb", ""))
+        if handler is None:
+            record["state"] = "refused"
+            record["error"] = "verb is no longer a write action"
+            path.write_text(json.dumps(record, indent=1))
+            continue
+
+        before = health_snapshot()
+        log.info("executing approved proposal %s: %s %s",
+                 proposal_id, record["verb"], record.get("args"))
+        try:
+            ok, payload = handler(record.get("args") or {})
+        except Exception as exc:
+            ok, payload = False, f"internal error: {exc}"
+
+        record["state"] = "done" if ok else "failed"
+        record["executed"] = time.time()
+        if ok:
+            record["result"] = payload
+        else:
+            record["error"] = str(payload)
+        try:
+            path.write_text(json.dumps(record, indent=1))
+        except OSError:
+            pass
+
+        if ok:
+            # Arm the deadman. The supervisor enforces it, so the broker
+            # cannot suppress its own failure by crashing or hanging.
+            try:
+                (DEADMAN_DIR / f"{proposal_id}.json").write_text(json.dumps({
+                    "proposal_id": proposal_id,
+                    "verb": record["verb"],
+                    "args": record.get("args"),
+                    "armed_at": time.time(),
+                    "before": before,
+                }, indent=1))
+                log.info("deadman armed for %s", proposal_id)
+            except OSError as exc:
+                log.error("could not arm deadman for %s: %s", proposal_id, exc)
+        else:
+            log.warning("proposal %s failed: %s", proposal_id, payload)
+
+
+def sweep_old_proposals():
+    now = time.time()
+    for path in PROPOSALS_DIR.glob("*.json"):
+        try:
+            if now - path.stat().st_mtime > PROPOSAL_TTL_SECONDS:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
 def sweep_old_responses():
     now = time.time()
     for path in RES_DIR.glob("*.json"):
@@ -308,25 +632,34 @@ def sweep_old_responses():
 
 
 def main():
-    for directory in (REQ_DIR, RES_DIR, STATE_DIR):
+    for directory in (REQ_DIR, RES_DIR, STATE_DIR,
+                      PROPOSALS_DIR, APPROVED_DIR, DEADMAN_DIR):
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
     log.info(
-        "broker starting: verbs=%s units=%d diagnostics=%d containers=%d",
+        "broker starting: verbs=%s units=%d diagnostics=%d containers=%d "
+        "write_actions=%s recreate=%d restart=%d rerun=%d",
         ",".join(sorted(VERBS)),
         len(UNIT_ALLOWLIST),
         len(DIAGNOSTIC_ALLOWLIST),
         len(CONTAINER_ALLOWLIST),
+        ",".join(sorted(WRITE_ACTIONS)),
+        len(RECREATE_ALLOWLIST),
+        len(RESTART_ALLOWLIST),
+        len(RERUN_ALLOWLIST),
     )
     last_sweep = 0.0
     while True:
         try:
             for path in sorted(REQ_DIR.glob("*.json")):
                 handle(path)
+            # Approved proposals are the only path to a write action.
+            execute_approved()
             if time.time() - last_sweep > 60:
                 sweep_old_responses()
+                sweep_old_proposals()
                 last_sweep = time.time()
         except Exception as exc:
             log.error("unhandled error in loop: %s", exc)
