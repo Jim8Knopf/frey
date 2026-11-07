@@ -258,6 +258,11 @@ services:
     environment:
       - TZ={{ tz }}
       - LOG_LEVEL=info
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    # Docker otherwise retains the uplink DNS from container creation.
+    dns:
+      - {{ media.network.resolver_address }}
+{% endif %}
     volumes:
       - "{{ appdata }}/seerr:/app/config"
     networks:

@@ -447,12 +447,9 @@ ansible-playbook ... --tags media_update -e media_update=true
   language" is unticked. The deploy's closing message spells it out.
 - **Private indexers** need your own tracker credentials, so they are added in
   Prowlarr's UI. Public ones are declared in `media_indexers`.
-- **`media_library` still uses the campground's resolver.** Jellyfin and Seerr
-  fetch metadata over the same uplink and are also .NET, so they can hit the
-  same AAAA failure. Pointing them at `frey-media-dns` would make the library
-  depend on a container this role owns, and the library is deliberately able
-  to deploy and run with acquisition switched off entirely. Fixing it properly
-  means a resolver that belongs to neither module.
+- **Library DNS:** Seerr uses `frey-media-dns` when acquisition and its resolver
+  are enabled, so its external lookups follow uplink changes. With acquisition
+  disabled it uses Docker's default DNS. Jellyfin still uses Docker's default.
 - **Byparr's proxy test fails by design.** It implements no `sessions.*`
   commands, which is what Prowlarr's test button calls, so it answers `502`
   and Prowlarr logs `Proxy validation failed` on every health check while

@@ -29,6 +29,7 @@ media:
   network:
     name: frey_media
     subnet: 172.28.0.0/16
+    resolver_address: 172.28.255.53
 
   # Pi 5 has no hardware video encoder; prefer formats clients can direct-play.
   clients:
