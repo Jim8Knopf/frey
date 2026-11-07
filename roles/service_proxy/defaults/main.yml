@@ -20,6 +20,8 @@ service_proxy:
 
   docker:
     data_root: /opt/frey/docker
+    default_address_pool: 10.21.0.0/16
+    default_address_pool_size: 24
     log_max_size: 10m
     log_max_file: "3"
     users: []
