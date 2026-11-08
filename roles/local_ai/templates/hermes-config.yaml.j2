@@ -127,6 +127,50 @@ tool_output:
   max_line_length: {{ local_ai.hermes.tool_output_max_line_length }}
 
 agent:
+  # THE ONLY THING THAT TELLS HERMES THE CAMPAIGN WIKI EXISTS.
+  #
+  # Mounting the notes is not enough: nothing in the prompt mentioned them, so
+  # the model had to guess a path it had never been told. Two routes that look
+  # right and are not:
+  #
+  #   AGENTS.md  - agent.coding_context is "auto", which injects AGENTS.md
+  #                and CLAUDE.md only when the cwd is a CODE workspace. A
+  #                SilverBullet space is not one, so the file is read by
+  #                nothing and warns about nothing.
+  #   a skill    - the whole skill mechanism rides on the `skills` TOOLSET,
+  #                which platform_toolsets deliberately excludes. With it off,
+  #                `hermes prompt-size` reports "skills index: 0 B" and
+  #                skills.auto_load silently loads nothing. Turning it on
+  #                costs 4,738 B of tool schemas, about 2.5 minutes of extra
+  #                prefill on every cold turn, to carry one paragraph.
+  #
+  # environment_hint is the mechanism meant for this - its own documentation
+  # describes it as stating the layout "without editing SOUL.md". Additive
+  # (SOUL.md REPLACES the identity block; this does not), lands in the stable
+  # tier so it caches, and costs only its own bytes.
+  environment_hint: |
+    The SilverBullet campaign wiki is mounted READ-ONLY at
+    {{ local_ai.hermes.notes_mount }} - Markdown files, one page each. The
+    campaign is under {{ local_ai.hermes.notes_mount }}/{{ local_ai.campaign.root }}/,
+    where Templates/ holds the shape each kind of page must follow and Rules/
+    holds the house-rules draft; NPCs, factions, ships, places, sessions and
+    threads sit alongside them.
+
+    Read those files with the file tools before answering anything about the
+    world, and list the directory rather than guessing a filename.
+
+    Never invent canon. If a name, faction, ship or event is not in a file,
+    say it is not written down yet - do not fill the gap with something
+    plausible. This wiki is the only record, and a confident invention is
+    indistinguishable from a fact once it is repeated back. Say which page a
+    fact came from.
+
+    You cannot write here: the mount is read-only and enforced by the kernel,
+    so an edit will fail. Page creation and edits go through the campaign
+    assistant at {{ local_ai.campaign_host }}.{{ frey.service_domain }}, which
+    runs as SilverBullet's own user. Offer the wording and say where it
+    belongs; never claim to have saved anything.
+
   # A wall-clock ceiling on one question. Hermes gives the model a wrap-up
   # notice at 80% of it, so a long answer ends deliberately instead of being
   # cut off. Without this a tool loop can hold the single model slot for
@@ -153,13 +197,14 @@ compression:
   # Showing them is the difference between "it is working" and "it is broken".
   progress_notices: true
 
-skills:
-  # The notes are mounted, and a mounted directory is a place Hermes would
-  # otherwise scan for project skills - producing untrusted-skill notices and
-  # prompt bytes for a space that contains none. Nothing here ships skills.
-  project_discovery: false
-
 terminal:
   # Start where the content is, so a relative path in a question means the
   # notes rather than Hermes's own home.
   cwd: "{{ local_ai.hermes.notes_mount }}"
+
+skills:
+  # The notes are mounted, and a mounted directory is a place Hermes would
+  # otherwise scan for PROJECT skills - producing untrusted-skill notices and
+  # prompt bytes for a space that contains none.
+  project_discovery: false
+
