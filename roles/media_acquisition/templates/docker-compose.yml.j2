@@ -74,16 +74,19 @@
   is doing the authenticating" - and this is that something finally arriving.
   Nothing inside the containers changes.
 #}
-{% macro proxy_labels(name, port) %}
+{% macro proxy_labels(name, port, header=true) %}
 {% set protected = name in (identity_protect | default([])) %}
 {% set middlewares = ['secure-headers@file'] + (['authelia@file'] if protected else []) %}
+{% if header %}
     labels:
+{% endif %}
       - "traefik.enable=true"
       - "traefik.docker.network={{ frey.proxy_network }}"
       - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
       - "traefik.http.routers.{{ name }}.rule=Host(`{{ name }}.{{ frey.service_domain }}`)"
       - "traefik.http.routers.{{ name }}.entrypoints=websecure"
       - "traefik.http.routers.{{ name }}.tls=true"
+      - "traefik.http.routers.{{ name }}.service={{ name }}"
       - "traefik.http.routers.{{ name }}.middlewares={{ middlewares | join(',') }}"
       - "traefik.http.routers.{{ name }}-legacy.rule=Host(`{{ name }}.{{ frey.local_domain }}`)"
       - "traefik.http.routers.{{ name }}-legacy.entrypoints=websecure"
@@ -146,7 +149,14 @@
   {{ name }}:
     image: {{ cfg.image }}
     container_name: {{ cfg.container_name }}
+{% if name == 'prowlarr' and m.vpn.enabled | bool %}
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+{% else %}
     hostname: {{ cfg.hostname }}
+{% endif %}
     restart: unless-stopped
     environment:
       - PUID={{ media.user.uid }}
@@ -164,11 +174,16 @@
 {% for volume in extra_volumes %}
       - "{{ volume }}"
 {% endfor %}
+{% if name != 'prowlarr' or not (m.vpn.enabled | bool) %}
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
 {{ stack_dns() }}
 {{ proxy_labels(name, cfg.port) }}
+{% else %}
+    labels:
+      - "traefik.enable=false"
+{% endif %}
     mem_limit: {{ cfg.mem_limit }}
 {% if cfg.cpus is defined %}
     cpus: "{{ cfg.cpus }}"
@@ -361,6 +376,11 @@ services:
 {% if media_vpn.type == 'wireguard' %}
       - WIREGUARD_PRIVATE_KEY={{ media_vpn.credentials.wireguard_private_key }}
       - WIREGUARD_ADDRESSES={{ media_vpn.credentials.wireguard_addresses }}
+{% if media_vpn.provider == 'custom' %}
+      - WIREGUARD_PUBLIC_KEY={{ media_vpn.credentials.wireguard_public_key }}
+      - WIREGUARD_ENDPOINT_IP={{ media_vpn_endpoint_lookup.stdout_lines[0].split()[0] }}
+      - WIREGUARD_ENDPOINT_PORT={{ media_vpn.credentials.wireguard_port }}
+{% endif %}
 {% if media_vpn.credentials.wireguard_preshared_key | length > 0 %}
       - WIREGUARD_PRESHARED_KEY={{ media_vpn.credentials.wireguard_preshared_key }}
 {% endif %}
@@ -372,7 +392,7 @@ services:
       - SERVER_COUNTRIES={{ media_vpn.server_countries | join(',') }}
 {% endif %}
       # Without these, the killswitch blocks Traefik and the *arrs too.
-      - FIREWALL_OUTBOUND_SUBNETS={{ media_vpn.allowed_subnets | join(',') }}
+      - FIREWALL_OUTBOUND_SUBNETS={{ (media_vpn.allowed_subnets + (media_vpn_proxy_network.network.IPAM.Config | map(attribute='Subnet') | list)) | unique | join(',') }}
       # Gluetun's own DNS-over-TLS, so lookups do not leak to the venue's
       # resolver. It does not affect FreyHub clients - only this namespace.
       - DOT=on
@@ -380,14 +400,21 @@ services:
     volumes:
       - "{{ appdata }}/gluetun:/gluetun"
     networks:
-      - {{ frey.proxy_network }}
-      - {{ media.network.name }}
+      {{ frey.proxy_network }}: {}
+      {{ media.network.name }}:
+        aliases:
+          - prowlarr
+          - byparr
+          - qbittorrent
 {#
   The qBittorrent web UI is routed to Gluetun, because that is where the
   listening socket actually lives once qBittorrent shares this namespace.
 #}
 {% if svc.qbittorrent.enabled | bool %}
 {{ proxy_labels('qbittorrent', svc.qbittorrent.port) }}
+{% if svc.prowlarr.enabled | bool %}
+{{ proxy_labels('prowlarr', svc.prowlarr.port, false) }}
+{% endif %}
 {% else %}
     labels:
       - "traefik.enable=false"
@@ -403,33 +430,6 @@ services:
       retries: 3
       start_period: 60s
 
-{% endif %}
-{% if svc.qbittorrent.enabled | bool %}
-  qbittorrent:
-    image: {{ svc.qbittorrent.image }}
-    container_name: {{ svc.qbittorrent.container_name }}
-{% if m.vpn.enabled | bool %}
-    # Inside the tunnel's network namespace: no interface, no hostname and no
-    # networks of its own, and therefore no way to reach the internet except
-    # through the VPN. Its web UI is published by Gluetun's Traefik labels.
-    network_mode: "service:gluetun"
-    depends_on:
-      gluetun:
-        condition: service_healthy
-{% else %}
-    hostname: {{ svc.qbittorrent.hostname }}
-{% endif %}
-    restart: unless-stopped
-    environment:
-      - PUID={{ media.user.uid }}
-      - PGID={{ media.user.gid }}
-      - TZ={{ tz }}
-      - UMASK={{ media.umask }}
-      - WEBUI_PORT={{ svc.qbittorrent.port }}
-      - TORRENTING_PORT={{ svc.qbittorrent.listen_port }}
-    volumes:
-      - "{{ appdata }}/qbittorrent:/config"
-      - "{{ media.data_dir }}:/data"
 {% endif %}
 {% if svc.jackett.enabled | bool %}
   jackett:
@@ -463,6 +463,33 @@ services:
       - no-new-privileges:true
 {{ logging() }}
 
+{% endif %}
+{% if svc.qbittorrent.enabled | bool %}
+  qbittorrent:
+    image: {{ svc.qbittorrent.image }}
+    container_name: {{ svc.qbittorrent.container_name }}
+{% if m.vpn.enabled | bool %}
+    # Inside the tunnel's network namespace: no interface, no hostname and no
+    # networks of its own, and therefore no way to reach the internet except
+    # through the VPN. Its web UI is published by Gluetun's Traefik labels.
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+{% else %}
+    hostname: {{ svc.qbittorrent.hostname }}
+{% endif %}
+    restart: unless-stopped
+    environment:
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - TZ={{ tz }}
+      - UMASK={{ media.umask }}
+      - WEBUI_PORT={{ svc.qbittorrent.port }}
+      - TORRENTING_PORT={{ svc.qbittorrent.listen_port }}
+    volumes:
+      - "{{ appdata }}/qbittorrent:/config"
+      - "{{ media.data_dir }}:/data"
 {% if not (m.vpn.enabled | bool) %}
     networks:
       - {{ frey.proxy_network }}
@@ -513,14 +540,23 @@ services:
   byparr:
     image: {{ svc.byparr.image }}
     container_name: {{ svc.byparr.container_name }}
+{% if m.vpn.enabled | bool %}
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+{% else %}
     hostname: {{ svc.byparr.hostname }}
+{% endif %}
     restart: unless-stopped
     environment:
       - TZ={{ tz }}
       - LOG_LEVEL=info
+{% if not (m.vpn.enabled | bool) %}
     networks:
       - {{ media.network.name }}
 {{ stack_dns() }}
+{% endif %}
     labels:
       - "traefik.enable=false"
       - "frey.module=media_acquisition"

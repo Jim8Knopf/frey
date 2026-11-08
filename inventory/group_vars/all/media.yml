@@ -136,12 +136,12 @@ media_enable:
   unpackerr: true
 
 media_vpn:
-  enabled: false
+  enabled: true
 
   # Your provider's name as Gluetun spells it: mullvad, protonvpn, nordvpn,
   # airvpn, ivpn, surfshark, windscribe, privateinternetaccess, custom, ...
   # Full list: https://github.com/qdm12/gluetun-wiki
-  provider: mullvad
+  provider: custom
 
   # wireguard or openvpn
   type: wireguard
@@ -152,8 +152,11 @@ media_vpn:
   server_countries: []
 
   credentials:
-    wireguard_private_key: "{{ vault_vpn_wireguard_private_key | default('') }}"
-    wireguard_addresses: "{{ vault_vpn_wireguard_addresses | default('') }}"
+    wireguard_private_key: "{{ vault_generous_wireguard_private_key | default('') }}"
+    wireguard_addresses: "{{ vault_generous_wireguard_addresses | default('') }}"
+    wireguard_public_key: "{{ vault_generous_wireguard_public_key | default('') }}"
+    wireguard_endpoint: "{{ vault_generous_wireguard_endpoint | default('') }}"
+    wireguard_port: "{{ vault_generous_wireguard_port | default(51820) }}"
     wireguard_preshared_key: "{{ vault_vpn_wireguard_preshared_key | default('') }}"
     openvpn_user: "{{ vault_vpn_openvpn_user | default('') }}"
     openvpn_password: "{{ vault_vpn_openvpn_password | default('') }}"
@@ -165,4 +168,3 @@ media_vpn:
   allowed_subnets:
     - "{{ media.network.subnet }}"
     - "{{ network_gateway.downstream.network_cidr }}"
-    - 172.16.0.0/12
