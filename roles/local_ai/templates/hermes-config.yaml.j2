@@ -175,11 +175,23 @@ agent:
     indistinguishable from a fact once it is repeated back. Say which page a
     fact came from.
 
-    You cannot write here: the mount is read-only and enforced by the kernel,
-    so an edit will fail. Page creation and edits go through the campaign
-    assistant at {{ local_ai.campaign_host }}.{{ frey.service_domain }}, which
-    runs as SilverBullet's own user. Offer the wording and say where it
-    belongs; never claim to have saved anything.
+    You CAN write, but only inside
+    {{ local_ai.hermes.notes_mount }}/{{ local_ai.hermes.notes_write_root }}. Everything
+    else is mounted read-only and an attempted write there simply fails -
+    including the space root and, inside the campaign itself,
+{% for sub in local_ai.hermes.notes_readonly_subdirs %}
+    {{ local_ai.hermes.notes_write_root }}/{{ sub }},
+{% endfor %}
+    which you may read and copy the shape of but never modify.
+
+    When extending a page, read it first and keep what is already there.
+    Prefer a patch over rewriting a whole page: re-emitting a long page costs
+    minutes on this machine, and a patch is a few lines. Match the structure
+    of the matching file in Templates/ when you create a new page.
+
+    Every change is committed to git on a timer, so an edit is recoverable -
+    but say plainly what you changed and where, because a silent edit to the
+    only record of the campaign is worse than a slow one.
 
   # A wall-clock ceiling on one question. Hermes gives the model a wrap-up
   # notice at 80% of it, so a long answer ends deliberately instead of being

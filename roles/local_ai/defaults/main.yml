@@ -261,11 +261,18 @@ local_ai:
     container_name: frey-hermes
     image: "nousresearch/hermes-agent:{{ local_ai_hermes_version }}"
 
-    # Its own uid, like the observer's: Hermes must not be able to write the
-    # notes through the filesystem. Anything it should be able to change goes
-    # through a tool with its own scope, never through a bind mount.
-    uid: 10003
-    gid: 10003
+    # SILVERBULLET'S OWN uid, changed from a private 10003 on 2026-11-09 when
+    # Hermes was given write access to the campaign. The campaign assistant
+    # already does this for the same reason: a page Hermes creates must stay
+    # editable in SilverBullet afterwards, and a file owned by a uid
+    # SilverBullet is not would be a page you could read and never fix.
+    #
+    # Sharing the uid is a deliberate reduction in isolation, and it is the
+    # mount table rather than the uid that bounds what Hermes can reach - see
+    # the volumes in docker-compose.yml.j2. The image remaps its own user to
+    # this at boot via HERMES_UID and chowns its data volume to match.
+    uid: 10001
+    gid: 10001
 
     # HERMES_HOME. Hermes refuses to start if this is group- or
     # world-writable - it exits with `unsafe_control_permissions` - so the
@@ -318,17 +325,29 @@ local_ai:
     # first turn (~11.5 min) plus several warm ones.
     run_budget_seconds: 2700
 
-    # The notes, READ-ONLY. Hermes answers questions about the campaign; it
-    # does not write it. Writes stay with the campaign assistant, which runs
-    # as SilverBullet's own uid precisely so the pages it creates are owned by
-    # SilverBullet - Hermes runs as its own uid, so anything it wrote here
-    # would be owned by 10003 and SilverBullet could not then edit it. That is
-    # a permissions trap worth not building.
+    # The notes. The SPACE is read-only and the campaign subtree inside it is
+    # writable, with Templates/ and Rules/ nested back to read-only - four
+    # mounts that together say "extend the campaign, change nothing else".
     #
-    # The mount is the boundary, not the prompt: Hermes sees exactly what is
-    # mounted and nothing else, which is the mechanism §3 of
-    # docs/LOCAL_AI_AGENT_PLAN.md asks for.
+    # Enforced by the mount table, which is the point. The campaign assistant
+    # refuses Templates/ and Rules/ in its own Python; here the kernel does
+    # it, so no amount of persuasion reaches them. That is the mechanism §3 of
+    # docs/LOCAL_AI_AGENT_PLAN.md asks for, and it is strictly stronger than a
+    # rule the model is asked to honour.
+    #
+    # The backstop is git: frey-notes-commit.timer commits the space on a
+    # schedule, so a bad edit is recoverable rather than silent.
     notes_mount: /notes
+
+    # Writable subtree, relative to the space. Everything outside it is
+    # read-only, including the space root.
+    notes_write_root: "{{ local_ai.campaign.root }}"
+
+    # Nested back to read-only INSIDE the writable subtree. Templates define
+    # the shape of every page made from them and Rules is where this model has
+    # been measured contradicting itself, so neither is a thing an agent
+    # should rewrite on a whim.
+    notes_readonly_subdirs: "{{ local_ai.campaign.readonly_subdirs }}"
 
     cpus: 2.0
     # The model holds the RAM; this is the agent process, measured at ~290 MB

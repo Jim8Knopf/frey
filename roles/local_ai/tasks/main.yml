@@ -458,12 +458,37 @@
   # on a group- or world-writable home, exiting with
   # `unsafe_control_permissions` before it reads any configuration - which
   # looks like a crash loop rather than a permissions problem.
+  #
+  # recurse, because the uid is not immutable: changing it to SilverBullet's
+  # left 521 files owned by the old one, and Hermes then refused to start with
+  # "install state is not writable by this user
+  # (/opt/data/installs/<id>/.install.lock)". The image's HERMES_UID remap
+  # chowns its data volume but evidently not that path. 16 MB, so recursing
+  # every run is cheap and idempotent.
   ansible.builtin.file:
     path: "{{ local_ai.hermes.home_dir }}"
     state: directory
     owner: "{{ local_ai.hermes.uid }}"
     group: "{{ local_ai.hermes.gid }}"
     mode: "0700"
+  when: local_ai.hermes.enabled | bool
+
+- name: Own the Hermes home as the agent's uid
+  # Ownership only, and deliberately WITHOUT `mode`: recursing with a mode
+  # applies 0700 to every file, Hermes rewrites some of them with its own
+  # permissions, and the task then reports changed on every run - which breaks
+  # "run it twice and the second run reports 0 changed", the only acceptance
+  # test this repo has.
+  #
+  # Needed because the uid is not immutable: changing it to SilverBullet's
+  # left 521 files owned by the old one and Hermes refused to start with
+  # "install state is not writable by this user". 16 MB, so recursing is cheap.
+  ansible.builtin.file:
+    path: "{{ local_ai.hermes.home_dir }}"
+    state: directory
+    owner: "{{ local_ai.hermes.uid }}"
+    group: "{{ local_ai.hermes.gid }}"
+    recurse: true
   when: local_ai.hermes.enabled | bool
 
 - name: Check for the persisted identity secrets
