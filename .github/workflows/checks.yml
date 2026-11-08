@@ -44,7 +44,26 @@ jobs:
         # no change to this file.
         run: |
           for dir in tests roles/*/tests; do
-            python3 -m unittest discover -s "$dir" -p 'test_*.py'
+            # A tests directory with no PYTHON tests is not a failure, and
+            # saying so is now necessary: Python 3.12+ exits 5 from
+            # `unittest discover` when nothing ran, and roles/media_library/tests
+            # holds JavaScript. Globbing roles/*/tests is what makes a new
+            # role's tests run with no edit here, so the guard belongs beside
+            # the glob rather than in it.
+            if compgen -G "$dir/test_*.py" > /dev/null; then
+              python3 -m unittest discover -s "$dir" -p 'test_*.py'
+            else
+              echo "no Python tests in $dir - skipping"
+            fi
+          done
+          # The Node tests, for exactly the reason the Python ones are
+          # globbed: they were in the tree and ran nowhere. Plain `assert`,
+          # no package.json, no install step - node is preinstalled on
+          # ubuntu-latest.
+          for file in roles/*/tests/test_*.js tests/test_*.js; do
+            [ -e "$file" ] || continue
+            echo "node $file"
+            node "$file"
           done
           # Offline test scripts: these take no arguments and need no host.
           python3 scripts/test-portal-logic.py
