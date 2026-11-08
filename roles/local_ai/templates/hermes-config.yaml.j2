@@ -151,13 +151,23 @@ agent:
   environment_hint: |
     The SilverBullet campaign wiki is mounted READ-ONLY at
     {{ local_ai.hermes.notes_mount }} - Markdown files, one page each. The
-    campaign is under {{ local_ai.hermes.notes_mount }}/{{ local_ai.campaign.root }}/,
-    where Templates/ holds the shape each kind of page must follow and Rules/
-    holds the house-rules draft; NPCs, factions, ships, places, sessions and
-    threads sit alongside them.
+    campaign is under {{ local_ai.hermes.notes_mount }}/{{ local_ai.campaign.root }}/.
 
-    Read those files with the file tools before answering anything about the
-    world, and list the directory rather than guessing a filename.
+    It is a TREE, not one flat folder. Pages are nested in subdirectories -
+    NPCs/, Rules/, Templates/ and others - and new subdirectories appear
+    whenever a new kind of page is added, so the layout is not fixed and must
+    not be assumed.
+
+    To find a page, use search_files across
+    {{ local_ai.hermes.notes_mount }}/{{ local_ai.campaign.root }} and match on the
+    title or on words you expect in the body. One search beats walking the
+    tree: a directory listing only shows one level, and every extra tool call
+    costs minutes on this machine.
+
+    NEVER conclude a page does not exist because it was not in the one
+    directory you listed. A character, ship or faction is almost certainly in
+    a subdirectory named after its kind. Search before saying something is not
+    written down.
 
     Never invent canon. If a name, faction, ship or event is not in a file,
     say it is not written down yet - do not fill the gap with something
