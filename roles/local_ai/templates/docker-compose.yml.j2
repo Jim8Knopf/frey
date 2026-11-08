@@ -295,23 +295,27 @@ services:
     #   not fine for a service.
     #
     # So: start as root, let s6 fix /run and drop to the uid below.
-    # `dashboard`, not `chat`: this is the long-running web UI. --skip-build
-    # is required and safe - the image ships a prebuilt bundle at
-    # hermes_cli/web_dist, so nothing calls npm at runtime and nothing needs
-    # an uplink. --no-open because there is no browser on the Pi.
+    # `sleep infinity`, and this is NOT laziness - it is the image's own
+    # architecture, and getting it wrong silently breaks conversation storage.
     #
-    # 0.0.0.0 inside the container is what lets Traefik reach it. Hermes
-    # DEMANDS an auth provider for any non-loopback bind - its --insecure flag
-    # became a no-op in the June 2026 hardening - which is satisfied by the
-    # OIDC block in config.yaml, not by a password.
-    command:
-      - dashboard
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "{{ h.port }}"
-      - "--skip-build"
-      - "--no-open"
+    # The container's CMD runs as s6's "main program", not as a supervised
+    # service, and container_boot.py calls _is_dashboard_container(argv):
+    # when argv[0] == "dashboard" it declares the container dashboard-only and
+    # SKIPS gateway reconciliation entirely ("reconcile: skipping (dashboard
+    # container - does not need per-profile gateways)"). The gateway is what
+    # owns the session store, so with `dashboard` as the CMD the web UI works,
+    # the model answers, and every message is thrown away: `sessions/` stays
+    # empty and state.db's `messages` table holds 0 rows, with only a startup
+    # warning naming it ("Session store is not initialized. Start this
+    # profile's gateway to initialize it.").
+    #
+    # The supported shape is to let s6 run both: main-hermes is deliberately a
+    # no-op (`exec sleep infinity` in the image), the dashboard is a real
+    # supervised service gated by HERMES_DASHBOARD, and profile-gateways
+    # registers the root gateway. So the CMD only has to keep the container
+    # alive, and the wrapper explicitly supports `sleep` ("first arg is an
+    # executable -> exec it directly").
+    command: ["sleep", "infinity"]
     environment:
       - TZ={{ frey.timezone }}
       # The supported way to own the data volume as a non-root uid: the image
@@ -319,6 +323,16 @@ services:
       # match. PUID/PGID are accepted aliases.
       - HERMES_UID={{ h.uid }}
       - HERMES_GID={{ h.gid }}
+      # Runs the dashboard as a supervised s6 service instead of as the CMD,
+      # which is what leaves gateway reconciliation switched on.
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_PORT={{ h.port }}
+      # Stands in for the --skip-build flag, which the image's dashboard
+      # service does not pass. Without either, main_dashboard.py runs the web
+      # UI build - npm, on a Pi, possibly with no uplink. Pointing at the
+      # bundle the image already ships skips it.
+      - HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
       # httpx 0.28.1 builds its SSL context with ssl.create_default_context(),
       # which reads this - verified in the image against
       # https://{{ identity_hosts.auth }}.{{ frey.service_domain }}, where OIDC discovery

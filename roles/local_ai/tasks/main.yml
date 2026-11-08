@@ -563,6 +563,46 @@
     - local_ai.hermes.enabled | bool
     - not ansible_check_mode
 
+# The gateway owns the session store, and without it Hermes answers normally
+# and persists NOTHING - sessions/ stays empty, state.db's `messages` table
+# holds 0 rows, and the only clue is one startup warning. The container
+# registers a gateway slot at boot but does not start it until an autostart
+# intent exists (`reconcile: profile=default prior_state=None
+# action=registered`), so the first run has to ask for it once. Hermes then
+# records desired_state: running in gateway_state.json and starts it itself on
+# every later boot.
+- name: Check whether the Hermes gateway is running
+  ansible.builtin.command:
+    cmd: "docker exec {{ local_ai.hermes.container_name }} hermes gateway status"
+  register: local_ai_hermes_gw
+  changed_when: false
+  failed_when: false
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+
+- name: Start the Hermes gateway so the session store has an owner
+  ansible.builtin.command:
+    cmd: "docker exec {{ local_ai.hermes.container_name }} hermes gateway start"
+  register: local_ai_hermes_gw_start
+  changed_when: local_ai_hermes_gw_start.rc == 0
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+    - "'Gateway is running' not in (local_ai_hermes_gw.stdout | default(''))"
+
+- name: Confirm the Hermes session store came up
+  # Fails loudly rather than leaving a chat that silently forgets everything.
+  ansible.builtin.command:
+    cmd: "docker exec {{ local_ai.hermes.container_name }} hermes gateway status"
+  register: local_ai_hermes_gw_check
+  changed_when: false
+  failed_when: "'Gateway is running' not in local_ai_hermes_gw_check.stdout"
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+    - local_ai_hermes_gw_start.changed | default(false)
+
 - name: Start the read-only observer
   community.docker.docker_compose_v2:
     project_src: "{{ local_ai.stack_dir }}"
