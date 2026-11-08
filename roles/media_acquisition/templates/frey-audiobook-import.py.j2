@@ -84,15 +84,18 @@ def import_torrent(torrent, files):
     destination = LIBRARY / (title + " [" + digest[:8] + "]")
     mkdir(LIBRARY)
     mkdir(destination)
+    linked = 0
     for source, relative in sources:
         target = destination / relative
         mkdir(target.parent)
         try:
             os.link(source, target, follow_symlinks=False)
+            linked += 1
         except FileExistsError:
             if target.is_symlink() or not os.path.samefile(source, target):
                 raise ValueError("library destination already exists with different content")
-    logging.info("Imported completed torrent: %s", title)
+    if linked:
+        logging.info("Imported completed torrent: %s (%d files linked)", title, linked)
 
 
 def main():

@@ -3,6 +3,8 @@ service_proxy:
   bind_address: "{{ frey.service_address }}"
   docker:
     data_root: "{{ frey.base_dir }}/docker"
+    default_address_pool: 10.21.0.0/16
+    default_address_pool_size: 24
     log_max_size: 10m
     log_max_file: "3"
     users:

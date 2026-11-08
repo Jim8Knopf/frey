@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Connect Jackett's AudioBookBay to Prowlarr and ReadMeABook, preserving settings."""
+import http.cookiejar
+import json
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+NETWORK = {{ media.network.name | to_json }}
+VPN = {{ 'True' if media_vpn.enabled | bool else 'False' }}
+KEYS = {{ (media.appdata_dir ~ '/.media-keys.json') | to_json }}
+
+
+def ip(name):
+    info = json.loads(subprocess.check_output(['docker', 'inspect', name]))
+    return info[0]['NetworkSettings']['Networks'][NETWORK]['IPAddress']
+
+
+def request(client, url, method='GET', data=None, headers=None, timeout=180):
+    h = dict(headers or {})
+    if data is not None:
+        h['Content-Type'] = 'application/json'
+    req = urllib.request.Request(url, method=method, headers=h,
+                                 data=json.dumps(data).encode() if data is not None else None)
+    with client.open(req, timeout=timeout) as response:
+        raw = response.read()
+        return json.loads(raw) if raw else None
+
+
+def main():
+    with open(KEYS, encoding='utf-8') as f:
+        keys = json.load(f)
+    tunnel_ip = ip('gluetun' if VPN else 'jackett')
+    jackett = f'http://{tunnel_ip}:9117'
+    client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    client.open(jackett + '/', timeout=30).read()
+    config_url = jackett + '/api/v2.0/server/config'
+    config = request(client, config_url)
+    solver_url = 'http://127.0.0.1:8191' if VPN else 'http://byparr:8191'
+    changed = False
+    if config.get('flaresolverrurl') != solver_url:
+        config['flaresolverrurl'] = solver_url
+        config['flaresolverr_maxtimeout'] = 90000
+        request(client, config_url, 'POST', config)
+        changed = True
+        # Jackett restarts its web host after server settings change.
+        for attempt in range(30):
+            time.sleep(2)
+            try:
+                client.open(jackett + '/', timeout=5).read()
+                config = request(client, config_url, timeout=5)
+                break
+            except (OSError, ValueError):
+                continue
+        else:
+            raise RuntimeError('Jackett did not return after its configuration restart')
+    indexers_url = jackett + '/api/v2.0/indexers'
+    all_indexers = request(client, indexers_url)
+    abb = next((x for x in all_indexers if x.get('id') == 'audiobookbay'), None)
+    if not abb:
+        raise RuntimeError('AudioBookBay is missing from this Jackett version')
+    if not abb.get('configured'):
+        url = indexers_url + '/audiobookbay/config'
+        request(client, url, 'POST', request(client, url))
+        changed = True
+    jackett_key = config['api_key']
+
+    prowlarr_ip = ip('gluetun' if VPN else 'prowlarr')
+    prowlarr = f'http://{prowlarr_ip}:9696/api/v1/'
+    headers = {'X-Api-Key': keys['prowlarr']}
+    configured = request(client, prowlarr + 'indexer', headers=headers)
+    existing = next((x for x in configured if x.get('name') == 'AudioBookBay (Jackett)'), None)
+    if not existing:
+        schema = request(client, prowlarr + 'indexer/schema', headers=headers)
+        definition = next(x for x in schema if x.get('name') == 'Generic Torznab')
+        profiles = request(client, prowlarr + 'appprofile', headers=headers)
+        profile = next(x for x in profiles if x.get('name') == 'Audiobook requests')
+        endpoint_host = 'gluetun' if VPN else 'jackett'
+        fields = {'baseUrl': f'http://{endpoint_host}:9117',
+                  'apiPath': '/api/v2.0/indexers/audiobookbay/results/torznab/api',
+                  'apiKey': jackett_key}
+        for field in definition['fields']:
+            if field['name'] in fields:
+                field['value'] = fields[field['name']]
+        definition.update(name='AudioBookBay (Jackett)', enable=True, privacy='public',
+                          redirect=True, appProfileId=profile['id'], tags=[])
+        existing = request(client, prowlarr + 'indexer', 'POST', definition, headers)
+        changed = True
+    elif existing.get('implementation') != 'Torznab':
+        raise RuntimeError('An unrelated indexer already uses the AudioBookBay (Jackett) name')
+
+    rmab = f"http://{ip('readmeabook')}:3030"
+    auth = request(client, rmab + '/api/auth/local/login', 'POST',
+                   {'username': 'frey-admin', 'password': keys['readmeabook_admin_password']})
+    rmab_headers = {'Authorization': 'Bearer ' + auth['accessToken']}
+    settings_url = rmab + '/api/admin/settings/prowlarr/indexers'
+    settings = request(client, settings_url, headers=rmab_headers)
+    matches = [x for x in settings['indexers'] if x.get('id') == existing['id']]
+    if len(matches) != 1:
+        raise RuntimeError('ReadMeABook cannot see the AudioBookBay indexer in Prowlarr')
+    if not matches[0].get('enabled'):
+        matches[0].update(enabled=True, priority=10, rssEnabled=False,
+                          audiobookCategories=[3030], seedingTimeMinutes=0, ratioLimit=0)
+        request(client, settings_url, 'PUT', {'indexers': settings['indexers']}, rmab_headers)
+        changed = True
+    print('changed' if changed else 'ok')
+
+
+try:
+    main()
+except Exception as exc:
+    # Keep API keys and cookies out of Ansible output and logs.
+    print(f'AudioBookBay setup failed: {type(exc).__name__}', file=sys.stderr)
+    sys.exit(1)

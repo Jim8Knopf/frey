@@ -142,6 +142,28 @@ identity:
   # ----------------------------------------------------------------------------
   oidc_catalog:
 
+    hermes:
+      client_name: Hermes Agent
+      public: false
+      token_endpoint_auth_method: client_secret_basic
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes: [openid, profile, email, offline_access]
+      redirect_uris:
+        - "https://hermes.{{ frey.service_domain }}/auth/callback"
+      claims_policy: ""
+
+    readmeabook:
+      client_name: ReadMeABook
+      public: false
+      token_endpoint_auth_method: client_secret_basic
+      require_pkce: true
+      pkce_challenge_method: S256
+      scopes: [openid, profile, email, groups, offline_access]
+      redirect_uris:
+        - "https://readmeabook.{{ frey.service_domain }}/api/auth/oidc/callback"
+      claims_policy: frey_groups
+
     silverbullet:
       client_name: SilverBullet
       public: false

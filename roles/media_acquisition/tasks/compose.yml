@@ -63,6 +63,25 @@
     - media
     - media_acquisition
 
+- name: Resolve custom VPN endpoint
+  ansible.builtin.command:
+    argv: [getent, ahostsv4, "{{ media_vpn.credentials.wireguard_endpoint }}"]
+  register: media_vpn_endpoint_lookup
+  changed_when: false
+  check_mode: false
+  when:
+    - media_vpn.enabled | bool
+    - media_vpn.provider == 'custom'
+    - media_vpn.type == 'wireguard'
+  tags: [media, media_acquisition]
+
+- name: Inspect proxy network for VPN access
+  community.docker.docker_network_info:
+    name: "{{ frey.proxy_network }}"
+  register: media_vpn_proxy_network
+  when: media_vpn.enabled | bool
+  tags: [media, media_acquisition]
+
 - name: Deploy media acquisition compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
@@ -72,6 +91,7 @@
     mode: "0640"
     validate: "docker compose -f %s config --quiet"
   register: media_acquisition_compose
+  no_log: true
   tags:
     - media
     - media_acquisition

@@ -399,17 +399,20 @@ curl -sS -H "Host: prowlarr.frey" http://10.20.0.1/api/v1/health \
 
 ## Deliberate Choices
 
-**VPN off by default, one switch to change it.** Torrent traffic goes out over
-whatever network the van is parked on and is attributable to it. That was an
-explicit decision, not an oversight.
-
-To change it, set `media_vpn.enabled: true` in
-`inventory/group_vars/all/media.yml` and put the credentials in the vault.
-qBittorrent then runs inside Gluetun's network namespace
+**VPN configuration.** `media_vpn.enabled` in
+`inventory/group_vars/all/media.yml` controls the tunnel. When enabled,
+qBittorrent, Prowlarr and Byparr run inside Gluetun's network namespace
 (`network_mode: service:gluetun`), so if the tunnel drops its firewall stops
-traffic rather than falling back to the venue's network — a SOCKS proxy would
-fail open instead. Ansible repoints the *arrs at `gluetun`, Traefik serves the
-UI from there, and `qbittorrent.frey` is unchanged.
+traffic rather than falling back to the venue's network. Traefik serves their
+UIs through Gluetun, and Docker network aliases preserve the existing service
+names. Local access is limited to the configured media and FreyHub subnets and
+the actual proxy network subnet.
+
+The custom Generous WireGuard endpoint hostname is resolved at deployment; if
+its address changes, rerun the media acquisition deployment to refresh it.
+The private key and peer settings are stored in the Ansible Vault. The free
+provider's P2P policy and availability on a particular uplink should be
+checked before relying on it.
 
 Enabling it with no credentials fails the deploy immediately with
 instructions, rather than starting an unconfigured tunnel that looks like a
@@ -447,12 +450,9 @@ ansible-playbook ... --tags media_update -e media_update=true
   language" is unticked. The deploy's closing message spells it out.
 - **Private indexers** need your own tracker credentials, so they are added in
   Prowlarr's UI. Public ones are declared in `media_indexers`.
-- **`media_library` still uses the campground's resolver.** Jellyfin and Seerr
-  fetch metadata over the same uplink and are also .NET, so they can hit the
-  same AAAA failure. Pointing them at `frey-media-dns` would make the library
-  depend on a container this role owns, and the library is deliberately able
-  to deploy and run with acquisition switched off entirely. Fixing it properly
-  means a resolver that belongs to neither module.
+- **Library DNS:** Seerr uses `frey-media-dns` when acquisition and its resolver
+  are enabled, so its external lookups follow uplink changes. With acquisition
+  disabled it uses Docker's default DNS. Jellyfin still uses Docker's default.
 - **Byparr's proxy test fails by design.** It implements no `sessions.*`
   commands, which is what Prowlarr's test button calls, so it answers `502`
   and Prowlarr logs `Proxy validation failed` on every health check while

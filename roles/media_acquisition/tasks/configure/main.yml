@@ -162,6 +162,24 @@
     - media_acquisition
     - media_config
 
+- name: Configure the AudioBookBay indexer
+  ansible.builtin.include_tasks:
+    file: audiobookbay.yml
+    apply:
+      tags:
+        - media
+        - media_acquisition
+        - media_config
+  when:
+    - media_acquisition.services.jackett.enabled | bool
+    - media_acquisition.services.prowlarr.enabled | bool
+    - media_acquisition.services.byparr.enabled | bool
+    - media_enable.readmeabook | default(false) | bool
+  tags:
+    - media
+    - media_acquisition
+    - media_config
+
 - name: Configure Cleanuparr
   # After the *arrs: this hands Cleanuparr the same API keys they were seeded
   # with, so they have to exist first.

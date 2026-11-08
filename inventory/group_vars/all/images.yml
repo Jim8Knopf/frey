@@ -35,6 +35,7 @@ media_versions:
   # which are discontinued.
   seerr: "v3.5.1"
   audiobookrequest: "1.11.0"
+  readmeabook: "1.2.13"
   # Held at 2.19.0 deliberately: the project's latest GitHub release is
   # v3.31.0 but no matching container image is published, so the newer tag
   # cannot be pulled. scripts/media-check-updates.sh will keep reporting this
@@ -48,6 +49,7 @@ media_versions:
   # --- Acquisition (needs an uplink) -----------------------------------------
   # linuxserver images use `version-<upstream version>` tags.
   prowlarr: "version-2.7.0.5723"
+  jackett: "0.24.3014"
   sonarr: "version-4.0.20.3014"
   radarr: "version-6.4.4.10685"
   lidarr: "version-3.1.6.5079"

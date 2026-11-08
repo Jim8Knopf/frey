@@ -54,11 +54,18 @@ code() { # scheme host path
         "${1}://${2}${3}" 2>/dev/null
 }
 
+code_and_target() { # scheme host path
+    curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 \
+        --cacert "$CA" \
+        --resolve "${2}:443:${PI_ADDR}" --resolve "${2}:80:${PI_ADDR}" \
+        "${1}://${2}${3}" 2>/dev/null
+}
+
 # Services behind Authelia's FORWARD AUTH. Traefik bounces an anonymous
 # request to the login page before the app is ever reached, so 302 is the
 # assertion. Keep in step with identity_services.
 PROTECTED=(sonarr radarr lidarr chaptarr prowlarr bazarr
-           qbittorrent maintainerr jellystat audiobookrequest navidrome)
+           qbittorrent maintainerr jellystat audiobookrequest readmeabook navidrome)
 # Services that log in against Authelia THEMSELVES - `auth: oidc` in
 # identity_services. Traefik does not redirect these, and must not: the app
 # serves its own page and starts the OIDC flow from inside it, so an anonymous

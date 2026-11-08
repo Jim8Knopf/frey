@@ -174,34 +174,9 @@ identity_services:
   local_ai:
     auth: forward_auth
     groups: [frey_admins, notes]
-    # TWO hostnames on purpose, and the second one exists for a browser
-    # reason rather than an architectural one: llama.cpp's web UI registers a
-    # service worker, which intercepts every request to its origin and kept
-    # serving the cached model-only chat even after a hard reload. A separate
-    # origin has no service worker and no cache, so campaign.hub.frey is
-    # guaranteed to load the assistant.
-    #
-    #   ai.hub.frey        the model and its own UI, plus the /v1 API
-    #   campaign.hub.frey  the assistant that can read and write the notes
     hosts: [ai, campaign]
 
-  # Hermes Agent, and NOT forward_auth like its neighbour above: Hermes is a
-  # real OIDC relying party and insists on its own auth provider as soon as it
-  # binds anything but loopback (its --insecure flag became a no-op in the
-  # June 2026 hardening). So it logs in against Authelia itself, which is one
-  # login rather than two - forward_auth in front of it would mean signing in
-  # at Authelia and then again at Hermes.
-  #
-  # Verified against the image's own code rather than its docs
-  # (plugins/dashboard_auth/self_hosted), because a wrong redirect_uri fails
-  # inside Authelia and not in the app:
-  #
-  #   redirect path  MUST end /auth/callback   validate_redirect_uri()
-  #   PKCE           always, S256              pkce_login_start()
-  #   client secret  layered ON TOP of PKCE    never replaces it
-  #   token auth     Basic unless the IDP      _token_endpoint_auth()
-  #                  omits client_secret_basic
-  #   scopes         openid profile email      _DEFAULT_SCOPES
+  # Preserve the active Hermes OIDC registration when applying this inventory.
   hermes:
     auth: oidc
     groups: [frey_admins]
@@ -255,6 +230,13 @@ identity_services:
     auth: forward_auth
     groups: [frey_admins, media]
     hosts: [audiobookrequest, bookrequests]
+
+  readmeabook:
+    auth: forward_auth
+    oidc_client: true
+    # Keep the first-run wizard restricted until it has created its admin.
+    groups: [frey_admins]
+    hosts: [readmeabook]
 
   maintainerr:
     # No authentication of its own whatsoever, and it can delete media.

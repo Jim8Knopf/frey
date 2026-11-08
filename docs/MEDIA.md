@@ -208,8 +208,17 @@ from the repo instead, set `vault_media_api_keys` in
 | Unpackerr | Sonarr, Radarr, Lidarr | Archive extraction |
 
 For audiobook requests, select `de` or an English region in the search form.
-Automatic source ranking does not guarantee the spoken language: inspect the
-source before choosing a download when an exact edition matters. The importer
+AudioBookRequest marks a request as downloaded when Prowlarr accepts it, not
+when the torrent finishes or Audiobookshelf indexes it. Check qBittorrent and
+Audiobookshelf for actual progress and availability. Its optional Audiobookshelf
+connection must be configured in AudioBookRequest before it can detect books
+already in the library; without it, manually uploaded books are not checked.
+Disable **Auto Download** in AudioBookRequest's Download settings and choose
+sources manually. Its current ranking accepts a title match without a matching
+author and can select the best result even if no result passes its quality
+checks. A request for Dan Willis's *Gangster* selected Michael Benson's
+*Gangsters vs. Nazis*. Check the title, author and language before choosing a
+source. The importer
 only accepts completed, selected audio files and common cover/metadata files;
 it does not unpack archives. Check `journalctl -u frey-audiobook-import.service`
 if a completed request does not appear. An indexer can only find titles and

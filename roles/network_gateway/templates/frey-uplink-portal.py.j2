@@ -93,6 +93,7 @@ META_REFRESH = re.compile(
 JS_REDIRECT = re.compile(
     r"""(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']""", re.I
 )
+JS_REDIR_URL = re.compile(r"""\bredirURL\s*=\s*["'](https?://[^"']+)["']""", re.I)
 
 
 def log(msg):
@@ -243,7 +244,7 @@ def probe_once(url, expect_status, expect_body):
 
     # A 200 where a 204 was due, or the wrong body: interception that answers
     # in-band rather than redirecting. The portal is named inside the page.
-    for pattern in (META_REFRESH, JS_REDIRECT):
+    for pattern in (META_REFRESH, JS_REDIRECT, JS_REDIR_URL):
         found = pattern.search(text)
         if found:
             return (False, urllib.parse.urljoin(url, found.group(1)))
@@ -433,7 +434,9 @@ def attempt_accept(ssid, portal_url):
     where = capture(ssid, page_url, text)
     parser = FormParser()
     try:
-        parser.feed(text)
+        # Some portals emit the invalid closing tag </style/>. Browsers
+        # recover from it, but HTMLParser otherwise treats the rest as CSS.
+        parser.feed(re.sub(r"</style\s*/\s*>", "</style>", text, flags=re.I))
     except Exception as exc:  # a portal's HTML is not our problem to fix
         log("could not parse portal HTML: %s" % exc)
         return False
@@ -478,14 +481,15 @@ def attempt_accept(ssid, portal_url):
         log("submission failed: %s" % exc)
         return False
 
-    state = connectivity()
-    if state == "full":
+    online, _ = find_portal()
+    if online:
         return True
     # The verdict can lag the gateway opening up by a second or two.
     time.sleep(3)
-    state = connectivity()
-    if state == "full":
+    online, _ = find_portal()
+    if online:
         return True
+    state = connectivity()
     log("still '%s' after submitting; captured to %s" % (state, where))
     return False
 
@@ -508,7 +512,7 @@ def main():
         return 0
 
     state = connectivity()
-    if state == "full":
+    if state == "full" and ssid not in ALLOWLIST:
         write_metrics(counters, state, ssid)
         return 0
 

@@ -1,0 +1,10 @@
+FROM ghcr.io/kikootwo/readmeabook:{{ media_versions.readmeabook }}
+COPY readmeabook-bilingual.js /tmp/frey-readmeabook-bilingual.js
+COPY readmeabook-german-library-match.cjs /app/frey-german-library-match.cjs
+COPY readmeabook-author-language.cjs /app/frey-author-language.cjs
+RUN node /tmp/frey-readmeabook-bilingual.js \
+    && node --check /app/.next/server/chunks/src_lib_integrations_audible_service_ts_1mow0o0u4euxe._.js \
+    && node --check /app/.next/server/chunks/src_lib_utils_audiobook-matcher_ts_1dp58968y1rlf._.js \
+    && node --check /app/.next/server/chunks/src_lib_services_works_service_ts_1of_a6o17-ecz._.js \
+    && node --check /app/.next/server/chunks/_0rdhav026snq-._.js \
+    && rm /tmp/frey-readmeabook-bilingual.js

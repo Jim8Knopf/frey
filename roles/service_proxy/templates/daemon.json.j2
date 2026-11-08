@@ -1,5 +1,8 @@
 {
   "data-root": "{{ service_proxy.docker.data_root }}",
+  "default-address-pools": [
+    {"base": "{{ service_proxy.docker.default_address_pool }}", "size": {{ service_proxy.docker.default_address_pool_size }}}
+  ],
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "{{ service_proxy.docker.log_max_size }}",

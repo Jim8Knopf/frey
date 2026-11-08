@@ -1,0 +1,15 @@
+---
+- name: Install the AudioBookBay wiring helper
+  ansible.builtin.template:
+    src: frey-audiobookbay-setup.py.j2
+    dest: /usr/local/bin/frey-audiobookbay-setup
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Connect AudioBookBay to Prowlarr and ReadMeABook
+  ansible.builtin.command: /usr/local/bin/frey-audiobookbay-setup
+  register: audiobookbay_wiring
+  changed_when: audiobookbay_wiring.stdout | trim == 'changed'
+  when: not ansible_check_mode
+  no_log: true
