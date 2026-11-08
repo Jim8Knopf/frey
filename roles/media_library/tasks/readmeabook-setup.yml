@@ -1,0 +1,316 @@
+---
+# The upstream setup endpoint is deliberately one-shot. Subsequent deploys
+# leave settings and requests managed in the application untouched.
+- name: Require the Audiobookshelf root password for first-time wiring
+  ansible.builtin.assert:
+    that:
+      - (vault_identity_secrets | default({})).get('audiobookshelf_admin_password', '') | length > 0
+      - media_secrets.prowlarr | default('') | length > 0
+      - media_secrets.qbittorrent_password | default('') | length > 0
+      - media_secrets.readmeabook_admin_password | default('') | length > 0
+      - media_secrets.readmeabook_abs_password | default('') | length > 0
+    fail_msg: "ReadMeABook setup needs the existing Audiobookshelf root and media credentials."
+  no_log: true
+
+- name: Read the ReadMeABook OIDC secret
+  ansible.builtin.slurp:
+    src: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+  register: readmeabook_identity_blob
+  no_log: true
+
+- name: Set ReadMeABook setup endpoints
+  ansible.builtin.set_fact:
+    readmeabook_api: "http://{{ readmeabook_container.container.NetworkSettings.Networks[media.network.name].IPAddress }}:3030"
+    readmeabook_oidc_secret: "{{ (readmeabook_identity_blob.content | b64decode | from_json).readmeabook_oidc_secret }}"
+    readmeabook_acquisition_host: "{{ 'gluetun' if media_vpn.enabled | bool else 'prowlarr' }}"
+    readmeabook_qbt_host: "{{ 'gluetun' if media_vpn.enabled | bool else 'qbittorrent' }}"
+  no_log: true
+
+- name: Log in to Audiobookshelf for initial setup
+  ansible.builtin.uri:
+    url: "http://{{ frey.service_address }}/login"
+    method: POST
+    headers:
+      Host: "audiobookshelf.{{ frey.service_domain }}"
+    body_format: json
+    body:
+      username: "{{ media_library.services.readmeabook.audiobookshelf_admin_user }}"
+      password: "{{ vault_identity_secrets.audiobookshelf_admin_password }}"
+    status_code: 200
+  register: readmeabook_abs_login
+  no_log: true
+  changed_when: false
+
+- name: Check for the persisted Audiobookshelf API key
+  ansible.builtin.stat:
+    path: "{{ media.appdata_dir }}/readmeabook/.abs-readonly-api-key"
+  register: readmeabook_abs_key_stat
+
+- name: Read Audiobookshelf accounts
+  ansible.builtin.uri:
+    url: "http://{{ frey.service_address }}/api/users"
+    headers:
+      Host: "audiobookshelf.{{ frey.service_domain }}"
+      Authorization: "Bearer {{ readmeabook_abs_login.json.user.accessToken }}"
+    status_code: 200
+  register: readmeabook_abs_users
+  no_log: true
+  changed_when: false
+
+- name: Create a read-only Audiobookshelf account for ReadMeABook
+  ansible.builtin.uri:
+    url: "http://{{ frey.service_address }}/api/users"
+    method: POST
+    headers:
+      Host: "audiobookshelf.{{ frey.service_domain }}"
+      Authorization: "Bearer {{ readmeabook_abs_login.json.user.accessToken }}"
+    body_format: json
+    body:
+      username: frey-readmeabook
+      password: "{{ media_secrets.readmeabook_abs_password }}"
+      type: user
+      isActive: true
+      permissions:
+        update: false
+        delete: false
+        upload: false
+        accessAllLibraries: true
+        accessExplicitContent: true
+    status_code: 200
+  when: (readmeabook_abs_users.json.users | selectattr('username', 'equalto', 'frey-readmeabook') | list | length) == 0
+  no_log: true
+  changed_when: true
+
+- name: Reload Audiobookshelf accounts
+  ansible.builtin.uri:
+    url: "http://{{ frey.service_address }}/api/users"
+    headers:
+      Host: "audiobookshelf.{{ frey.service_domain }}"
+      Authorization: "Bearer {{ readmeabook_abs_login.json.user.accessToken }}"
+    status_code: 200
+  register: readmeabook_abs_users_current
+  no_log: true
+  changed_when: false
+
+- name: Select the ReadMeABook Audiobookshelf account
+  ansible.builtin.set_fact:
+    readmeabook_abs_accounts: "{{ readmeabook_abs_users_current.json.users | selectattr('username', 'equalto', 'frey-readmeabook') | list }}"
+  no_log: true
+
+- name: Require a read-only Audiobookshelf account
+  ansible.builtin.assert:
+    that:
+      - readmeabook_abs_accounts | length == 1
+      - readmeabook_abs_accounts[0].type == 'user'
+      - not (readmeabook_abs_accounts[0].permissions.update | bool)
+      - not (readmeabook_abs_accounts[0].permissions.delete | bool)
+      - readmeabook_abs_accounts[0].isActive | bool
+    fail_msg: "The frey-readmeabook Audiobookshelf account must be active and read-only."
+  no_log: true
+
+- name: Create the ReadMeABook Audiobookshelf API key
+  ansible.builtin.uri:
+    url: "http://{{ frey.service_address }}/api/api-keys"
+    method: POST
+    headers:
+      Host: "audiobookshelf.{{ frey.service_domain }}"
+      Authorization: "Bearer {{ readmeabook_abs_login.json.user.accessToken }}"
+    body_format: json
+    body:
+      name: ReadMeABook
+      userId: "{{ readmeabook_abs_accounts[0].id }}"
+      isActive: true
+    status_code: 200
+  register: readmeabook_abs_created_key
+  when: not readmeabook_abs_key_stat.stat.exists
+  no_log: true
+  changed_when: true
+
+- name: Persist the ReadMeABook Audiobookshelf API key
+  ansible.builtin.copy:
+    dest: "{{ media.appdata_dir }}/readmeabook/.abs-readonly-api-key"
+    content: "{{ readmeabook_abs_created_key.json.apiKey.apiKey }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not readmeabook_abs_key_stat.stat.exists
+  no_log: true
+
+- name: Read the Audiobookshelf API key
+  ansible.builtin.slurp:
+    src: "{{ media.appdata_dir }}/readmeabook/.abs-readonly-api-key"
+  register: readmeabook_abs_key
+  no_log: true
+
+- name: Test the Audiobookshelf connection from ReadMeABook
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/setup/test-abs"
+    method: POST
+    body_format: json
+    body:
+      serverUrl: http://audiobookshelf
+      apiToken: "{{ readmeabook_abs_key.content | b64decode }}"
+    status_code: 200
+  register: readmeabook_abs_test
+  no_log: true
+  changed_when: false
+
+- name: Select the audiobook library
+  ansible.builtin.set_fact:
+    readmeabook_abs_libraries: "{{ readmeabook_abs_test.json.libraries | selectattr('name', 'equalto', 'audiobooks') | list }}"
+
+- name: Require exactly one matching audiobook library
+  ansible.builtin.assert:
+    that:
+      - readmeabook_abs_libraries | length == 1
+    fail_msg: "ReadMeABook needs exactly one Audiobookshelf library named audiobooks."
+
+- name: Test Prowlarr from ReadMeABook
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/setup/test-prowlarr"
+    method: POST
+    body_format: json
+    body:
+      url: "http://{{ readmeabook_acquisition_host }}:9696"
+      apiKey: "{{ media_secrets.prowlarr }}"
+    status_code: 200
+  register: readmeabook_prowlarr_test
+  no_log: true
+  changed_when: false
+
+- name: Select configured audiobook indexers
+  ansible.builtin.set_fact:
+    readmeabook_indexers: []
+
+- name: Build the audiobook indexer settings
+  ansible.builtin.set_fact:
+    readmeabook_indexers: "{{ readmeabook_indexers + [item | combine({'priority': 10, 'rssEnabled': false, 'audiobookCategories': [3030], 'seedingTimeMinutes': 0, 'ratioLimit': 0})] }}"
+  loop: "{{ readmeabook_prowlarr_test.json.indexers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name in ['The Pirate Bay', '1337x', 'Knaben', 'AudioBookBay (Jackett)']
+
+- name: Require an audiobook indexer
+  ansible.builtin.assert:
+    that: readmeabook_indexers | length > 0
+    fail_msg: "No configured audiobook indexer is enabled in Prowlarr."
+
+- name: Test qBittorrent from ReadMeABook
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/setup/test-download-client"
+    method: POST
+    body_format: json
+    body:
+      type: qbittorrent
+      url: "http://{{ readmeabook_qbt_host }}:8080"
+      username: "{{ media_secrets.qbittorrent_username | default('admin', true) }}"
+      password: "{{ media_secrets.qbittorrent_password }}"
+    status_code: 200
+  no_log: true
+  changed_when: false
+
+- name: Test the ReadMeABook file paths
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/setup/test-paths"
+    method: POST
+    body_format: json
+    body:
+      downloadDir: /data/torrents/readmeabook
+      mediaDir: /data/media/audiobooks
+    status_code: 200
+  register: readmeabook_paths_test
+  failed_when: not (readmeabook_paths_test.json.success | default(false) | bool)
+  changed_when: false
+
+- name: Test Authelia discovery from ReadMeABook
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/setup/test-oidc"
+    method: POST
+    body_format: json
+    body:
+      issuerUrl: "https://{{ identity_hosts.auth }}.{{ frey.service_domain }}"
+      clientId: readmeabook
+      clientSecret: "{{ readmeabook_oidc_secret }}"
+    status_code: 200
+  no_log: true
+  changed_when: false
+
+- name: Complete ReadMeABook setup
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/setup/complete"
+    method: POST
+    body_format: json
+    body:
+      backendMode: audiobookshelf
+      audibleRegion: "{{ media_library.services.readmeabook.audible_region }}"
+      admin:
+        username: frey-admin
+        password: "{{ media_secrets.readmeabook_admin_password }}"
+      audiobookshelf:
+        server_url: http://audiobookshelf
+        api_token: "{{ readmeabook_abs_key.content | b64decode }}"
+        library_id: "{{ readmeabook_abs_libraries[0].id }}"
+        # ABS watches the library itself; this read-only account cannot
+        # request a scan or alter metadata on the user's existing books.
+        trigger_scan_after_import: false
+      authMethod: both
+      registration:
+        require_admin_approval: true
+      oidc:
+        provider_name: Frey
+        issuer_url: "https://{{ identity_hosts.auth }}.{{ frey.service_domain }}"
+        client_id: readmeabook
+        client_secret: "{{ readmeabook_oidc_secret }}"
+        access_control_method: open
+        admin_claim_enabled: "true"
+        admin_claim_name: groups
+        admin_claim_value: frey_admins
+      prowlarr:
+        url: "http://{{ readmeabook_acquisition_host }}:9696"
+        api_key: "{{ media_secrets.prowlarr }}"
+        indexers: "{{ readmeabook_indexers }}"
+      downloadClient:
+        type: qbittorrent
+        url: "http://{{ readmeabook_qbt_host }}:8080"
+        username: "{{ media_secrets.qbittorrent_username | default('admin', true) }}"
+        password: "{{ media_secrets.qbittorrent_password }}"
+      paths:
+        download_dir: /data/torrents/readmeabook
+        media_dir: /data/media/audiobooks
+        metadata_tagging_enabled: false
+        chapter_merging_enabled: false
+        plex_format_coercion_enabled: false
+    status_code: 200
+    timeout: 60
+  register: readmeabook_complete
+  no_log: true
+  changed_when: true
+
+- name: Read the initial ReadMeABook jobs
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/admin/jobs"
+    headers:
+      Authorization: "Bearer {{ readmeabook_complete.json.accessToken }}"
+    status_code: 200
+  register: readmeabook_initial_jobs
+  no_log: true
+  changed_when: false
+
+- name: Require the initial library and catalogue jobs
+  ansible.builtin.assert:
+    that:
+      - (readmeabook_initial_jobs.json.jobs | selectattr('type', 'equalto', 'plex_library_scan') | list | length) == 1
+      - (readmeabook_initial_jobs.json.jobs | selectattr('type', 'equalto', 'audible_refresh') | list | length) == 1
+
+- name: Start the initial library and catalogue jobs
+  ansible.builtin.uri:
+    url: "{{ readmeabook_api }}/api/admin/jobs/{{ item.id }}/trigger"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ readmeabook_complete.json.accessToken }}"
+    status_code: 200
+  loop: "{{ readmeabook_initial_jobs.json.jobs | selectattr('type', 'in', ['plex_library_scan', 'audible_refresh']) | list }}"
+  loop_control:
+    label: "{{ item.type }}"
+  no_log: true
+  changed_when: true

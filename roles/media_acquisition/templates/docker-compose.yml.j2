@@ -430,6 +430,39 @@ services:
     volumes:
       - "{{ appdata }}/qbittorrent:/config"
       - "{{ media.data_dir }}:/data"
+{% endif %}
+{% if svc.jackett.enabled | bool %}
+  jackett:
+    image: {{ svc.jackett.image }}
+    container_name: {{ svc.jackett.container_name }}
+{% if m.vpn.enabled | bool %}
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+{% else %}
+    hostname: {{ svc.jackett.hostname }}
+    networks:
+      - {{ media.network.name }}
+{{ stack_dns() }}
+{% endif %}
+    restart: unless-stopped
+    environment:
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - TZ={{ tz }}
+      - AUTO_UPDATE=false
+    volumes:
+      - "{{ appdata }}/jackett:/config"
+    labels:
+      - "traefik.enable=false"
+      - "frey.module=media_acquisition"
+    mem_limit: {{ svc.jackett.mem_limit }}
+    cpus: "{{ svc.jackett.cpus }}"
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
 {% if not (m.vpn.enabled | bool) %}
     networks:
       - {{ frey.proxy_network }}

@@ -18,6 +18,45 @@ other module ran first.
 | Audiobookshelf | `audiobookshelf.frey`, `books.frey` | Audiobooks and podcasts |
 | Seerr | `seerr.frey`, `requests.frey`, `jellyseerr.frey` | Request films and shows |
 | AudioBookRequest | `audiobookrequest.frey`, `bookrequests.frey` | Request audiobooks |
+| ReadMeABook | `readmeabook.hub.frey` | Audiobook requests and downloads |
+
+ReadMeABook is deployed alongside AudioBookRequest. Its first-run setup uses
+Frey SSO, the existing Audiobookshelf library and Prowlarr, and a separate
+`readmeabook` qBittorrent category. Access is initially limited to
+`frey_admins` while the new workflow is being verified. The app's config,
+PostgreSQL and Redis directories under `appdata/readmeabook` must be backed up
+together; `config/.secrets` is needed to decrypt its saved credentials.
+ReadMeABook connects to Audiobookshelf with a read-only account: its automatic
+matching cannot rewrite existing book metadata. Audiobookshelf's filesystem
+watcher picks up imported files. For German catalogue results without a matching
+Audible ID, Frey also checks the indexed title and author, preserving edition
+names and refusing an unqualified single-word title match. This is an inference when the
+library item has no language or narrator metadata; ambiguous matches are left
+unmatched and can be matched in Audiobookshelf by hand.
+
+AudioBookBay searches go through the VPN-isolated Jackett instance and
+Prowlarr. Jackett's AudioBookBay adapter uses public searches and does not
+accept AudioBookBay usernames or passwords; its own generated API key is used
+to connect Prowlarr. The wiring helper adds the indexer to ReadMeABook while
+preserving existing indexer settings. Keep Jackett's appdata backed up so its
+API key survives a restore.
+
+ReadMeABook 1.2.13 filters author pages to the Audible region's language even
+when the language filter is off. Frey builds a pinned compatibility image that
+includes English and German on author pages and accepts the same author's
+normalized name across catalogue IDs. It orders the author's likely original
+language first, with English as the fallback. Confirmed overrides are in
+`media_readmeabook_author_languages`; otherwise the app consults Wikidata's
+native or unambiguous spoken/written language and caches the result. These
+fields do not always establish a writer's literary language, so check and add
+an override if a preference is wrong. The patches verify upstream bundle
+checksums and fail the image build if they change; review them before updating
+the pin.
+For indexer searches, accent-free and English article-free titles are tried
+after the original when it finds no usable result. Audiobook category restrictions and
+matching thresholds remain in place to avoid treating ebooks as audiobooks.
+Catalogue language does not prove the language of a torrent: inspect ambiguous
+releases when the spoken language matters.
 | Maintainerr | `maintainerr.frey` | Rule-based library cleanup |
 | Jellystat | `jellystat.frey` | Playback statistics |
 

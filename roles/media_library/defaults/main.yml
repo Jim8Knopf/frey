@@ -25,6 +25,8 @@ media_library:
       - jellyfin_admin_password
       - jellystat_postgres_password
       - jellystat_jwt_secret
+      - readmeabook_admin_password
+      - readmeabook_abs_password
     strict: false
     # See the note in media_acquisition: a cold first boot on a Pi needs far
     # longer than it looks like it should.
@@ -145,6 +147,18 @@ media_library:
       route_aliases:
         - bookrequests
       mem_limit: 512m
+
+    readmeabook:
+      enabled: "{{ media_enable.readmeabook | default(false) | bool }}"
+      upstream_image: ghcr.io/kikootwo/readmeabook:{{ media_versions.readmeabook }}
+      image: frey/readmeabook:{{ media_versions.readmeabook }}-bilingual7
+      container_name: readmeabook
+      hostname: readmeabook
+      port: 3030
+      route_host: readmeabook
+      mem_limit: 1536m
+      audiobookshelf_admin_user: media_admin
+      audible_region: us
 
     maintainerr:
       # Rule-based library cleanup: "delete watched movies older than N

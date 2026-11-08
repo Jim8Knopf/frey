@@ -21,6 +21,7 @@
       - media_versions is defined
       - media_enable is defined
       - not (media_enable.navidrome | bool) or ('identity' in frey.modules.enabled and identity_enable.authelia | bool and (identity_services.navidrome.auth == 'forward_auth'))
+      - not (media_enable.readmeabook | default(false) | bool) or ('identity' in frey.modules.enabled and 'media_acquisition' in frey.modules.enabled and identity_enable.authelia | bool)
     fail_msg: >-
       media_library configuration is invalid. The internal Docker network
       ({{ media.network.subnet }}) must not overlap FreyHub's
@@ -108,9 +109,27 @@
     - "{{ media.appdata_dir }}/audiobookshelf/metadata"
     - "{{ media.appdata_dir }}/seerr"
     - "{{ media.appdata_dir }}/audiobookrequest"
+    - "{{ media.appdata_dir }}/readmeabook"
+    - "{{ media.appdata_dir }}/readmeabook/config"
+    - "{{ media.appdata_dir }}/readmeabook/cache"
+    - "{{ media.data_dir }}/torrents/readmeabook"
     - "{{ media.appdata_dir }}/maintainerr"
     - "{{ media.appdata_dir }}/jellystat"
     - "{{ media.appdata_dir }}/jellystat/backup"
+  tags:
+    - media
+    - media_library
+
+- name: Ensure ReadMeABook database directories exist
+  # The image sets PostgreSQL and Redis ownership and mode on startup.
+  # Do not reset them while either database is running.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ media.appdata_dir }}/readmeabook/pgdata"
+    - "{{ media.appdata_dir }}/readmeabook/redis"
+  when: media_library.services.readmeabook.enabled | bool
   tags:
     - media
     - media_library
@@ -142,6 +161,68 @@
   tags:
     - media
     - media_library
+
+- name: Prepare the ReadMeABook compatibility image
+  when: media_library.services.readmeabook.enabled | bool
+  tags: [media, media_library]
+  block:
+    - name: Ensure the ReadMeABook image build directory exists
+      ansible.builtin.file:
+        path: "{{ media.appdata_dir }}/readmeabook/image"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the bilingual author-search patch
+      ansible.builtin.copy:
+        src: readmeabook-bilingual.js
+        dest: "{{ media.appdata_dir }}/readmeabook/image/readmeabook-bilingual.js"
+        owner: root
+        group: root
+        mode: "0644"
+      register: readmeabook_patch_file
+
+    - name: Install the German library matching helper
+      ansible.builtin.copy:
+        src: readmeabook-german-library-match.cjs
+        dest: "{{ media.appdata_dir }}/readmeabook/image/readmeabook-german-library-match.cjs"
+        owner: root
+        group: root
+        mode: "0644"
+      register: readmeabook_match_helper
+
+    - name: Install the author language preference helper
+      ansible.builtin.copy:
+        src: readmeabook-author-language.cjs
+        dest: "{{ media.appdata_dir }}/readmeabook/image/readmeabook-author-language.cjs"
+        owner: root
+        group: root
+        mode: "0644"
+      register: readmeabook_author_language_helper
+
+    - name: Install the ReadMeABook image recipe
+      ansible.builtin.template:
+        src: readmeabook.Dockerfile.j2
+        dest: "{{ media.appdata_dir }}/readmeabook/image/Dockerfile"
+        owner: root
+        group: root
+        mode: "0644"
+      register: readmeabook_dockerfile
+
+    - name: Ensure the pinned upstream ReadMeABook image is available
+      community.docker.docker_image_pull:
+        name: "{{ media_library.services.readmeabook.upstream_image }}"
+        pull: not_present
+      when: not ansible_check_mode
+
+    - name: Build the pinned bilingual ReadMeABook image
+      community.docker.docker_image_build:
+        name: "{{ media_library.services.readmeabook.image }}"
+        path: "{{ media.appdata_dir }}/readmeabook/image"
+        pull: false
+        rebuild: "{{ 'always' if (readmeabook_patch_file.changed or readmeabook_match_helper.changed or readmeabook_author_language_helper.changed or readmeabook_dockerfile.changed) else 'never' }}"
+      when: not ansible_check_mode
 
 - name: Deploy media library compose file
   ansible.builtin.template:
@@ -252,3 +333,13 @@
     - media
     - media_library
     - media_config
+
+- name: Configure ReadMeABook on first run
+  ansible.builtin.include_tasks:
+    file: readmeabook.yml
+    apply:
+      tags: [media, media_library]
+  when:
+    - media_library.services.readmeabook.enabled | bool
+    - not ansible_check_mode
+  tags: [media, media_library]

@@ -174,7 +174,13 @@ identity_services:
   local_ai:
     auth: forward_auth
     groups: [frey_admins, notes]
-    hosts: [ai]
+    hosts: [ai, campaign]
+
+  # Preserve the active Hermes OIDC registration when applying this inventory.
+  hermes:
+    auth: oidc
+    groups: [frey_admins]
+    hosts: [hermes]
 
   # --- Library ---------------------------------------------------------------
   jellyfin:
@@ -224,6 +230,13 @@ identity_services:
     auth: forward_auth
     groups: [frey_admins, media]
     hosts: [audiobookrequest, bookrequests]
+
+  readmeabook:
+    auth: forward_auth
+    oidc_client: true
+    # Keep the first-run wizard restricted until it has created its admin.
+    groups: [frey_admins]
+    hosts: [readmeabook]
 
   maintainerr:
     # No authentication of its own whatsoever, and it can delete media.

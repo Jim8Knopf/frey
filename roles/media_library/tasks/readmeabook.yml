@@ -1,0 +1,27 @@
+---
+- name: Inspect ReadMeABook container
+  community.docker.docker_container_info:
+    name: readmeabook
+  register: readmeabook_container
+
+- name: Wait for ReadMeABook to answer
+  ansible.builtin.uri:
+    url: "http://{{ readmeabook_container.container.NetworkSettings.Networks[media.network.name].IPAddress }}:3030/api/health"
+    status_code: 200
+    timeout: 10
+  register: readmeabook_health
+  retries: 36
+  delay: 5
+  until: readmeabook_health is succeeded
+  changed_when: false
+
+- name: Read ReadMeABook setup state
+  ansible.builtin.uri:
+    url: "http://{{ readmeabook_container.container.NetworkSettings.Networks[media.network.name].IPAddress }}:3030/api/setup/status"
+    status_code: 200
+  register: readmeabook_setup
+  changed_when: false
+
+- name: Configure a new ReadMeABook installation
+  ansible.builtin.include_tasks: readmeabook-setup.yml
+  when: not (readmeabook_setup.json.setupComplete | bool)

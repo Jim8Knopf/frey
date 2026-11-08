@@ -288,6 +288,11 @@ services:
       - PGID={{ media.user.gid }}
       - ABR_APP__PORT={{ svc.audiobookrequest.port }}
       - ABR_APP__OPENAPI_ENABLED=true
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    # Follow the changing uplink instead of Docker's creation-time resolver.
+    dns:
+      - {{ media.network.resolver_address }}
+{% endif %}
     volumes:
       - "{{ appdata }}/audiobookrequest:/config"
     networks:
@@ -296,6 +301,44 @@ services:
 {{ proxy_labels(svc.audiobookrequest.route_host, 'audiobookrequest', svc.audiobookrequest.port, svc.audiobookrequest.route_aliases | default([])) }}
     mem_limit: {{ svc.audiobookrequest.mem_limit }}
     pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+{{ logging() }}
+
+{% endif %}
+{% if svc.readmeabook.enabled | bool %}
+  readmeabook:
+    image: {{ svc.readmeabook.image }}
+    container_name: {{ svc.readmeabook.container_name }}
+    hostname: {{ svc.readmeabook.hostname }}
+    restart: unless-stopped
+    stop_grace_period: 90s
+    environment:
+      - TZ={{ tz }}
+      - PUID={{ media.user.uid }}
+      - PGID={{ media.user.gid }}
+      - UMASK=002
+      - PUBLIC_URL=https://readmeabook.{{ frey.service_domain }}
+      - NODE_EXTRA_CA_CERTS=/frey-ca.crt
+      - {{ ('FREY_AUTHOR_LANGUAGE_OVERRIDES=' ~ (media_readmeabook_author_languages | default({}) | to_json)) | to_json }}
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    dns:
+      - {{ media.network.resolver_address }}
+{% endif %}
+    volumes:
+      - "{{ appdata }}/readmeabook/config:/app/config"
+      - "{{ appdata }}/readmeabook/cache:/app/cache"
+      - "{{ appdata }}/readmeabook/pgdata:/var/lib/postgresql/data"
+      - "{{ appdata }}/readmeabook/redis:/var/lib/redis"
+      - "{{ media.data_dir }}/torrents/readmeabook:/data/torrents/readmeabook"
+      - "{{ media.data_dir }}/media/audiobooks:/data/media/audiobooks"
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+    networks:
+      - {{ frey.proxy_network }}
+      - {{ media.network.name }}
+{{ proxy_labels(svc.readmeabook.route_host, 'readmeabook', svc.readmeabook.port) }}
+    mem_limit: {{ svc.readmeabook.mem_limit }}
+    pids_limit: 512
     security_opt:
       - no-new-privileges:true
 {{ logging() }}

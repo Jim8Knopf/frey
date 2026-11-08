@@ -57,6 +57,15 @@ media_audiobook_public_indexer: true
 #        episode stays missing for as long as it takes.
 media_language_require_one: false
 
+# Confirmed working languages for audiobook authors. Unknown authors are looked
+# up conservatively; English is the fallback when a language is unavailable or
+# is neither German nor English. Keys are matched ignoring case/punctuation.
+media_readmeabook_author_languages:
+  "J. R. R. Tolkien": en
+  "Torsten Weitze": de
+  "Marc-Uwe Kling": de
+  "Andreas Brandhorst": de
+
 media_indexers:
 
   # --- Film and television ----------------------------------------------------
@@ -102,6 +111,7 @@ media_enable:
   audiobookshelf: true
   seerr: true
   audiobookrequest: true
+  readmeabook: true
   maintainerr: true
   # Jellystat costs an extra PostgreSQL container (~0.5 GB). Set false to get
   # that back; the database container follows this flag automatically.
@@ -109,6 +119,7 @@ media_enable:
 
   # --- Acquisition -----------------------------------------------------------
   prowlarr: true
+  jackett: true
   sonarr: true
   radarr: true
   # Lidarr's upstream metadata server has been unreliable through 2026, so
