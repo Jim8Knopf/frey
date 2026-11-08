@@ -410,6 +410,52 @@ Adding a toolset is paid for twice: once in the cold prefill, and again in
 every warm turn, because the re-evaluated tail begins at the first byte that
 differs from the cached prefix.
 
+### The defaults that are wrong for this hardware
+
+Hermes ships settings written for a provider that prefills in seconds. Three
+of them are actively harmful at 6.9 tok/s, and the role overrides all three:
+
+| setting | Hermes default | here | why |
+| --- | --- | --- | --- |
+| `tool_output.max_bytes` | 50,000 | **6,000** | 50 KB is ~11,000 tokens — about **27 minutes** of prefill for one file read, paid again next turn because the result stays in the conversation |
+| `auxiliary.title_generation.model_upgrade_enabled` | `true` | **`false`** | it names each conversation by asking a model: one extra multi-minute call for a label, and its lane has a 30 s no-progress cutoff this box cannot meet |
+| `compression.progress_notices` | `false` | **`true`** | compaction summarises the conversation *with the model*; filtered, a ten-minute compaction looks like a hang |
+
+Also set: `agent.run_budget_seconds` (45 min) so a tool loop cannot hold the
+single slot for hours — Hermes warns the model at 80% so an answer ends
+deliberately rather than being cut off; `skills.project_discovery: false`,
+since the mounted notes contain no skills and scanning them only costs prompt
+bytes; and `model.context_length`, which is **not optional** — see below.
+
+### The context window is pinned, and must be
+
+`model.context_length` is set to the `-c` the model is served with. Hermes does
+not detect it: its probe fails (`probe-down`) and it then guesses from the word
+"qwen" in the filename, landing on **131,072 — exactly twice** what is served.
+Hermes says so itself once pinned:
+
+```
+model.context_length pins ... at 65,536 tokens but the provider advertises
+131,072; the pin wins.
+```
+
+Unpinned, Hermes budgets its own trimming against a window twice the real one,
+and the overflow is not refused: llama-server truncates, so the **oldest** part
+of a long conversation disappears with nothing reported at either end.
+
+### What it can and cannot touch
+
+The notes are mounted **read-only** at `/notes`, so Hermes can answer questions
+about the campaign. It cannot write them, and that is a mount flag rather than
+a prompt rule — `touch` inside the container returns
+`Read-only file system`.
+
+Writes stay with the campaign assistant at `campaign.hub.frey`, which runs as
+SilverBullet's own uid so the pages it creates are owned by SilverBullet.
+Hermes runs as its own uid (10003); anything it wrote would be owned by 10003
+and SilverBullet could not edit it afterwards. That is a permissions trap worth
+not building.
+
 ### One slot, shared three ways
 
 `llama-server` runs with `parallel_slots: 1`, because two slots split two

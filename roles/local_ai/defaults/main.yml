@@ -243,6 +243,34 @@ local_ai:
     stale_timeout: 7200
     api_timeout: 7200
 
+    # Ceiling on a single tool result, and the most important number here
+    # after `toolsets`. Hermes's own default is 50,000 bytes, which is roughly
+    # 11,000 tokens - about 27 MINUTES of prefill at the 6.9 tok/s measured on
+    # this Pi, for one file read. 6 KB is ~1,300 tokens, ~3 minutes. A page
+    # bigger than this is truncated, which is the right trade: a truncated
+    # answer beats a turn nobody waits for.
+    tool_output_max_bytes: 6000
+    tool_output_max_lines: 200
+    tool_output_max_line_length: 400
+
+    # Wall-clock ceiling on one question, so a tool loop cannot tie up the
+    # single model slot for hours. Hermes warns the model at 80% so it can
+    # wrap up rather than being cut off mid-sentence. 45 min allows a cold
+    # first turn (~11.5 min) plus several warm ones.
+    run_budget_seconds: 2700
+
+    # The notes, READ-ONLY. Hermes answers questions about the campaign; it
+    # does not write it. Writes stay with the campaign assistant, which runs
+    # as SilverBullet's own uid precisely so the pages it creates are owned by
+    # SilverBullet - Hermes runs as its own uid, so anything it wrote here
+    # would be owned by 10003 and SilverBullet could not then edit it. That is
+    # a permissions trap worth not building.
+    #
+    # The mount is the boundary, not the prompt: Hermes sees exactly what is
+    # mounted and nothing else, which is the mechanism §3 of
+    # docs/LOCAL_AI_AGENT_PLAN.md asks for.
+    notes_mount: /notes
+
     cpus: 2.0
     # The model holds the RAM; this is the agent process, measured at ~290 MB
     # RSS with 26 threads while idle-waiting on a turn.

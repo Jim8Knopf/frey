@@ -113,3 +113,53 @@ platform_toolsets:
 {% for ts in local_ai.hermes.toolsets %}
     - {{ ts }}
 {% endfor %}
+
+# THE SECOND MOST IMPORTANT SETTING HERE, after platform_toolsets.
+#
+# Hermes's default is max_bytes: 50000 - roughly 11,000 tokens, which at the
+# 6.9 tok/s measured on this Pi is about 27 MINUTES of prefill for a single
+# file read, and it is paid again on the next turn because the tool result
+# lands in the conversation. The defaults are written for a provider that
+# prefills in seconds.
+tool_output:
+  max_bytes: {{ local_ai.hermes.tool_output_max_bytes }}
+  max_lines: {{ local_ai.hermes.tool_output_max_lines }}
+  max_line_length: {{ local_ai.hermes.tool_output_max_line_length }}
+
+agent:
+  # A wall-clock ceiling on one question. Hermes gives the model a wrap-up
+  # notice at 80% of it, so a long answer ends deliberately instead of being
+  # cut off. Without this a tool loop can hold the single model slot for
+  # hours, and every other interface waits behind it.
+  run_budget_seconds: {{ local_ai.hermes.run_budget_seconds }}
+
+auxiliary:
+  title_generation:
+    # Hermes names each conversation by ASKING A MODEL. That is one extra call
+    # per conversation, against a model that needs minutes per call, for a
+    # label - and it was the one thing observed failing and retrying here,
+    # because the auxiliary lane has a 30 s no-progress cutoff this hardware
+    # cannot meet. false keeps Hermes's instant derived title instead.
+    model_upgrade_enabled: false
+
+compression:
+  # Hermes compacts the conversation by SUMMARISING IT WITH THE MODEL. On a
+  # 65,536-token window the threshold floors at 0.75, so it fires around 49k
+  # tokens - and when it does, it costs a full model call: minutes of silence
+  # with nothing on screen.
+  #
+  # Default is to filter those statuses as noise, which on fast hardware is
+  # right and here would turn a ten-minute compaction into an apparent hang.
+  # Showing them is the difference between "it is working" and "it is broken".
+  progress_notices: true
+
+skills:
+  # The notes are mounted, and a mounted directory is a place Hermes would
+  # otherwise scan for project skills - producing untrusted-skill notices and
+  # prompt bytes for a space that contains none. Nothing here ships skills.
+  project_discovery: false
+
+terminal:
+  # Start where the content is, so a relative path in a question means the
+  # notes rather than Hermes's own home.
+  cwd: "{{ local_ai.hermes.notes_mount }}"

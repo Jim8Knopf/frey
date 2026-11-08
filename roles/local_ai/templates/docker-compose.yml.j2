@@ -346,6 +346,18 @@ services:
       - "{{ h.home_dir }}:/opt/data"
       - "{{ local_ai.stack_dir }}/hermes-config.yaml:/opt/data/config.yaml:ro"
       - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+      # The notes, READ-ONLY, so Hermes can answer questions about the
+      # campaign. Deliberately not writable: the campaign assistant runs as
+      # SilverBullet's own uid so its pages are owned by SilverBullet, and
+      # Hermes runs as its own - anything Hermes wrote here would be owned by
+      # {{ h.uid }} and SilverBullet could not edit it afterwards. Writes
+      # therefore stay with the assistant at
+      # {{ local_ai.campaign_host }}.{{ frey.service_domain }}.
+      #
+      # `:ro` is the whole boundary. It is a mount flag, not a prompt rule, so
+      # no amount of persuasion gets past it - which is what §3 of
+      # docs/LOCAL_AI_AGENT_PLAN.md requires of anything the model can reach.
+      - "{{ frey.notes_data_dir }}/spaces/notes:{{ h.notes_mount }}:ro"
     networks:
       # Both, and each for one reason:
       #   ai_private   reaches the model, and is internal so it has no egress
