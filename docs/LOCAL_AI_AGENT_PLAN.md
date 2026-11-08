@@ -563,6 +563,15 @@ UD-Q4_K_XL, `--cache-reuse`, the rename to `local_ai` / `ai.hub.frey`, and the
 generalised OpenAI-compatible endpoint. Do the rename *before* building agent
 tooling, or you build it twice. Covers `LOCAL_AI_EVALUATION.md` §12 steps 1–4.
 
+**Phase 1 — read-only observer. SUPERSEDED 2026-11-08 by §7a; see there
+before building on any of this.** It shipped, it answered the question it
+existed to ask, and the answer retires it: a 4B assembled a confident wrong
+causal chain, and the component costs ~8 minutes of the only model slot per
+report to produce a narrative that fixes nothing and duplicates an alert the
+phone already carried. The replacement is alert-triggered escalation, not a
+poll loop. Original rationale kept below because the reasoning about limits
+still governs what replaces it.
+
 **Phase 1 — read-only observer. Zero risk, immediately useful.** The agent
 reads Prometheus, Loki and the textfile collectors and writes incident reports
 into `/drafts`. No broker, no verbs, no actions. This alone solves the real
@@ -747,6 +756,120 @@ unit, arms the deadman, and cannot be replayed.
 A verb earns autonomy after N correct proposals. **[DECIDE]** the starting
 autonomy: my proposal is phase 4's tiering, but propose-only for the first
 weeks is the zero-surprise path.
+
+## 7a. TODO — replace the observer with an alert-triggered escalation
+
+**Status: agreed 2026-11-08, not started. This supersedes Phase 1.**
+
+The shape is wrong today and the fix is mostly wiring, not new machinery. Put
+plainly: *an alert should cause something to happen.* Nothing in this plan
+currently does that.
+
+### What is wrong
+
+```
+                          WHAT HAPPENS NOW
+alert fires
+  └─ Alertmanager ──webhook──▶ relay ──▶ phone        ← the only real trigger
+     frey-self-heal   polls Alertmanager on an 8-minute timer
+     observer         polls Alertmanager every 5 minutes, writes an essay
+```
+
+- **The trigger already exists and nothing uses it.** Alertmanager has
+  `webhook_configs` pointing at the relay, so the relay is handed every alert
+  the moment it fires. Both the observer and `frey-self-heal` ignore that and
+  discover the alert later by asking.
+- **The observer has no use case.** It writes a narrative that fixes nothing,
+  arrives after the phone notification it duplicates, and costs about eight
+  minutes of the only model slot per report (measured: six consecutive reports
+  took 6m59s–8m47s). It also evicts whatever conversation was cached in that
+  slot, which is what made a one-word chat message take six minutes.
+- **Its own test has concluded.** Phase 1 existed to answer "is a 4B good
+  enough at correlation before anything is allowed to act". The answer was no:
+  the first real report was well-structured, cited its evidence, and still
+  blamed the 5V rail for NVMe corruption after reading `status="none"` (which
+  only means *no healthcheck defined*) as containers in an unknown state.
+  That is a result worth keeping and a component worth retiring.
+
+### What it should be
+
+```
+                          WHAT IT SHOULD BE
+alert fires
+  └─ Alertmanager ──webhook──▶ relay ──▶ phone              [exists, untouched]
+                                 └──▶ frey-self-heal: known fault? apply fix
+                                        └─ no recipe, or still firing after it?
+                                            └──▶ Hermes, ONCE, for that alert
+                                                  • broker read verbs to diagnose
+                                                  • propose-only for any change
+                                                  • approved by id on the host
+```
+
+Hermes suits this better than the observer does, for the reason that looks
+backwards: it is slower per run but would run **rarely**. The observer's flaw
+is running often and producing nothing actionable. An escalation that fires
+only when the deterministic catalogue has no answer might run once a week,
+where ten minutes costs nothing.
+
+### Already built, and reused as-is
+
+- **the relay** — the event hop; Alertmanager already webhooks it
+- **`frey-self-heal`** — the deterministic repair catalogue, alert-name keyed
+- **the broker** — read verbs plus propose-only writes, 30 boundary checks
+- **Hermes** — at `hermes.hub.frey`, behind Authelia
+
+### What has to be built
+
+1. **Retire the observer.** Reclaims ~8 min of slot time per incident and its
+   RAM. Loses nothing anyone relies on; the phone notification is independent.
+   The `/drafts` history stays on disk.
+2. **Give Hermes the broker.** It currently has `file` tools and read-only
+   notes and **cannot inspect the system at all**, so "Hermes takes care of it"
+   is not true yet. This is the real work: an MCP server (or a tool shim) over
+   the broker's existing read verbs, plus `propose`.
+3. **Wire the escalation off the relay**, not off a timer.
+4. **Keep writes propose-only.** The broker already enforces this; do not add
+   an action verb to make the escalation tidier.
+
+### THE GATE — the part that decides whether this is an improvement
+
+Without a gate this is the observer again with a larger prompt. Escalate only
+when **all** hold:
+
+- `frey-self-heal` had no recipe for the alert, **or** its repair ran and the
+  alert is still firing afterwards
+- severity is `critical`, **or** the alert has been firing longer than a
+  persistence threshold `[DECIDE: suggest 30 min]`
+- no escalation is already in flight — strictly one at a time, because one
+  llama-server slot
+- a cooldown per alert name has expired `[DECIDE: suggest 6 h]`, so a flapping
+  alert cannot occupy the model all day
+
+And unconditionally: **never escalate while a human is using the model.** The
+observer's `model_busy()` / `defer_for_interactive()` pair already does this
+and should move with the escalation rather than be rewritten.
+
+### Open decisions
+
+- `[DECIDE]` persistence threshold and per-alert cooldown (suggestions above).
+- `[DECIDE]` does the escalation notify the phone when it *proposes* a repair?
+  Argument for: a proposal nobody reads is worthless. Against: it competes
+  with the alert that is already on the phone.
+- `[DECIDE]` which alerts are escalation-eligible at all. A deliberate
+  allowlist is more in keeping with §3 than "anything critical", and it also
+  bounds the blast radius of a confabulated diagnosis.
+- `[DECIDE]` whether the relay grows the escalation logic or a small sibling
+  unit owns it. The relay is load-bearing for notifications, and §3's reasoning
+  says not to put new logic in the path of something Frey depends on — which
+  argues for the sibling.
+
+### Do not regress these
+
+- The relay's notification path must stay untouched. It is the safety net, and
+  the reason the observer polled in the first place.
+- No new Alertmanager receiver or route: the existing webhook already carries
+  every alert, and editing that routing tree risks shadowing the relay.
+- Writes stay propose-only, approved by id on the host.
 
 ## 8. Proving the limits — `scripts/agent-denial-check.sh`
 
