@@ -93,7 +93,10 @@ services:
     command:
       - "-m"
       - "/models/{{ m.file }}"
-{% if m.mmproj_file is defined %}
+{% if m.mmproj_file is defined and m.enable_vision | default(false) | bool %}
+      # Only when vision is explicitly wanted: the projector disables
+      # cache_reuse server-wide, which costs minutes of re-prefill on every
+      # turn. See enable_vision in defaults/main.yml.
       - "--mmproj"
       - "/models/{{ m.mmproj_file }}"
 {% endif %}
@@ -111,6 +114,16 @@ services:
 {% endif %}
       - "--cache-reuse"
       - "{{ m.cache_reuse }}"
+{% if m.cache_reuse | int > 0 %}
+      # cache_reuse works "via KV shifting" and llama-server refuses it with
+      # "cache_reuse is not supported by this context" unless context shift is
+      # on - and --context-shift defaults to DISABLED in b12019. Without this
+      # pair, only an exact common prefix is reusable, and Hermes's changing
+      # timestamp sits early enough in its prompt to invalidate nearly all of
+      # it: measured f_keep 0.17-0.34, ~1,900 tokens re-prefilled per turn,
+      # about four minutes before the first generated word.
+      - "--context-shift"
+{% endif %}
 {% if m.cache_type_k is defined %}
       - "--cache-type-k"
       - "{{ m.cache_type_k }}"

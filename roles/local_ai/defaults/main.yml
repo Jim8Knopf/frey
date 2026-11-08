@@ -44,6 +44,27 @@ local_ai:
       url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-UD-Q4_K_XL.gguf
       sha256: b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7
       size_bytes: 2912109728
+      # VISION COSTS PROMPT CACHING, which on this hardware is the most
+      # expensive thing you can spend. Measured 2026-11-08: loading the
+      # projector makes llama-server print
+      #
+      #   cache_reuse is not supported by multimodal, it will be disabled
+      #
+      # and with cache_reuse off only an EXACT COMMON PREFIX can be reused.
+      # Hermes puts a changing timestamp early in its system prompt, so every
+      # turn diverged at about token 330 of 1,900 and re-prefilled the rest:
+      # f_keep measured 0.17-0.34, ~1,900 tokens at ~7.3 tok/s, so about
+      # FOUR MINUTES before a single word was generated - on a one-word
+      # message, and worse as the conversation grows.
+      #
+      # With cache_reuse active llama.cpp can skip the changed chunk and keep
+      # the rest. `LOCAL_AI_EVALUATION.md` called vision "nearly free"; that
+      # was wrong, and this is what it actually costs.
+      #
+      # true re-enables image understanding at ai.hub.frey and pays that cost
+      # again. Nothing in Frey currently needs it: the observer reads metrics
+      # and logs, and the campaign is text.
+      enable_vision: false
       mmproj_file: mmproj-F16.gguf
       mmproj_url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-F16.gguf
       mmproj_sha256: cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864

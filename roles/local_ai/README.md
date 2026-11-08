@@ -464,6 +464,31 @@ threads and collapsed to 0.59 tok/s. The practical consequence:
 cached prompt.** Alternating between the model's chat UI and Hermes means
 paying Hermes's 11.5-minute cold start again. Staying in one of them is cheap.
 
+**The observer is the thing most likely to make chat feel broken.** It is
+alert-driven and each report costs about **eight minutes** of the single slot
+(measured 2026-11-08: six consecutive reports took 6m59s to 8m47s). While one
+runs, anyone chatting is queued behind it - and the observer's prompt evicts
+theirs, so their next turn re-prefills from scratch too. That is what turned a
+one-word message into a six-minute wait.
+
+It now stands aside: `model_busy()` reads llama-server's `/slots` and
+`defer_for_interactive()` skips the cycle while a slot `is_processing`, for up
+to `OBSERVER_MAX_DEFERRALS` cycles (3, so at most ~15 minutes) before going
+ahead anyway. The deferral happens **before** `seen` is updated, so nothing is
+dropped - the alerts are picked up on the next cycle. The daily summary yields
+indefinitely, having no deadline. The phone alert does not depend on any of
+this: Alertmanager and the relay deliver it independently.
+
+The measured difference, same session, back to back:
+
+| | duration |
+| --- | --- |
+| first turn, cold slot | **17 min 13 s** |
+| next turn, nothing in between | **9 seconds** |
+
+That gap is the whole story of this deployment. Keeping the slot warm matters
+more than any other tuning here.
+
 A related hazard, and not Hermes's fault: **a cancelled request does not free a
 slot.** An abandoned turn was observed still occupying the model 4.6 minutes
 after its cancel, with everything else queued behind it. If the stack seems
