@@ -114,6 +114,12 @@ services:
 {% endif %}
       - "--cache-reuse"
       - "{{ m.cache_reuse }}"
+{% if m.spec_type | default('') | length > 0 %}
+      # Speculative decoding from n-grams already in the context: no draft
+      # model and no extra memory. See spec_type in defaults/main.yml.
+      - "--spec-type"
+      - "{{ m.spec_type }}"
+{% endif %}
 {% if m.cache_reuse | int > 0 %}
       # cache_reuse works "via KV shifting" and llama-server refuses it with
       # "cache_reuse is not supported by this context" unless context shift is

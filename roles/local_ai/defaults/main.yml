@@ -75,13 +75,35 @@ local_ai:
       # (260 tokens in 96.2 s) - about 25% below the 3.5 first estimated by
       # scaling the old 1.7B numbers, because this model achieves ~7.9 GB/s of
       # effective weight-read bandwidth rather than the 10.5 assumed. Project
-      # from 7.9. Threads buy prompt processing, which is compute-bound - and
-      # the Pi 5's A76 cores have no i8mm, so that is the weak axis. Two
-      # threads deliberately leaves cores for the gateway: on a Pi with no
+      # from 7.9. Threads buy PROMPT PROCESSING, which is compute-bound - and
+      # the Pi 5's A76 cores have no i8mm, so that is the weak axis.
+      #
+      # THREE, not two, revised 2026-11-08. The original two deliberately left
+      # cores for the gateway, on the correct principle that on a Pi with no
       # Ethernet and no console, gateway responsiveness outranks inference
-      # speed every time.
-      threads: 2
-      cpus: 2.0
+      # speed every time. That principle stands; the number was too
+      # conservative for what the box is now asked to do.
+      #
+      # What changed is the workload. An agentic turn is three or four model
+      # calls, and prefill - the compute-bound axis threads actually help - is
+      # most of each one: a one-line edit request measured over 14 minutes.
+      # The container was pegged at 187.94% of a 2.0 CPU limit while two of
+      # four cores sat idle.
+      #
+      # The reservation is kept, just narrowed: `cpus` below caps the
+      # container at 3.0, so a whole core is permanently unavailable to
+      # inference no matter how many threads llama.cpp spawns. hostapd and
+      # dnsmasq are bursty and cheap rather than CPU-hungry, so one reserved
+      # core is enough for them. If AP latency ever suffers, this is the first
+      # number to put back to 2 - that trade is not open to negotiation, it is
+      # just not needed at 3.
+      threads: 3
+      # 3.0, matching threads above, and the cap is the point: it leaves one
+      # of the Pi's four cores permanently outside inference's reach. The
+      # gateway reservation that used to be expressed as "only two threads"
+      # now lives here instead, where llama.cpp cannot exceed it whatever it
+      # decides to spawn.
+      cpus: 3.0
 
       # 2.7 GiB of weights, 0.64 GiB of vision projector, the KV cache, and
       # compute buffers.
@@ -142,6 +164,22 @@ local_ai:
       # machine's bottleneck, so this is the single largest latency win
       # available and it costs nothing.
       cache_reuse: 256
+
+      # DRAFT-MODEL-FREE speculative decoding, added 2026-11-08. llama.cpp
+      # drafts the next few tokens from n-grams already in the context and
+      # verifies them in one pass, so several tokens can be accepted for
+      # roughly the cost of one. No second model, no extra RAM - which is why
+      # this is worth trying before anything that needs either.
+      #
+      # It suits this workload specifically: editing a page means re-emitting
+      # text the model has just read, and that is exactly where an n-gram
+      # draft hits. It should do nothing for freshly invented prose, and a
+      # rejected draft costs the compute it took to check - so this is set
+      # empty to disable if measurement says it does not pay.
+      #
+      # llama.cpp's own defaults for draft length and hit count are kept;
+      # tuning them before knowing the acceptance rate is guesswork.
+      spec_type: ngram-simple
 
       # Flash attention takes on|off|auto in llama.cpp b12019 - a bare -fa
       # would swallow the next argument.
