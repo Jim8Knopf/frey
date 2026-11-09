@@ -194,10 +194,13 @@ media_vpn:
   #
   # Gluetun's killswitch drops everything arriving on the tunnel unless a port
   # is explicitly opened, so qBittorrent reports `firewalled` and can only
-  # reach peers that are themselves connectable. Measured 2026-11-09: zero
-  # connected seeds across 91 torrents, against swarms advertising up to 21.
-  # Every one of those seeds was behind its own NAT, so neither side could
-  # open the connection.
+  # reach peers that are themselves connectable.
+  #
+  # Do not reach for this on the strength of `firewalled` alone. Measured
+  # 2026-11-09, that status sat alongside zero connected seeds and zero DHT
+  # nodes on a weak uplink, and both recovered by themselves on a good one --
+  # 363 DHT nodes and `connected` within minutes, nothing here changed. Fix
+  # the link first and only set this if it persists afterwards.
   #
   # Set this to the port your provider forwards to you and qBittorrent starts
   # accepting incoming peers: the port is opened on the tunnel AND becomes

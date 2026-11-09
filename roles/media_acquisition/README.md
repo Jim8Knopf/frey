@@ -507,62 +507,55 @@ docker exec qbittorrent curl -s -b /tmp/c \
 ```
 
 `"connection_status":"firewalled"` with `"dht_nodes":0` means no incoming
-connections. Check the tracker list on an actual torrent before assuming that
-is the whole story, because one other fault produces the same shape:
-
-```bash
-docker exec qbittorrent curl -s -b /tmp/c \
-  "http://127.0.0.1:8080/api/v2/torrents/trackers?hash=<hash>"
-```
-
-`Operation not permitted` against every `udp://` tracker is **not** a dead
-tracker - it is `EPERM`, which is what the kernel returns to a socket whose
-packet the local firewall dropped. The tunnel is IPv4-only (`tun0` carries a
-single /32, no IPv6 route) while `ip6tables` inside Gluetun is policy
-`OUTPUT DROP`, so every AAAA answer is a destination that cannot be reached.
-Containers sharing this namespace resolve through Gluetun's own DoT server at
-`127.0.0.1`, **not** through `frey-media-dns`, so they do not get the AAAA
-filtering the *arrs rely on - the same trap, by a second route.
-
-**This is not fixed, and `DNS_BLOCK_IP_PREFIXES` is not the fix.** It reads
-like an answer filter and is not: measured 2026-11-09, `::/0` drops the whole
-record rather than the IPv6 half, so every dual-stack hostname stopped
-resolving inside the tunnel and the stack lost DNS entirely. The test suite
-now asserts it stays out. `DNS_UPSTREAM_IPV6=off` is already the default and
-governs how Gluetun reaches its upstreams, not what it returns.
-
-The two routes that remain, neither free:
-
-- Point Gluetun's resolver at `frey-media-dns` (`DOT=off` plus `DNS_ADDRESS`),
-  which already strips AAAA and has the venue-fallback logic. Costs the
-  leak-proof DNS that `DOT=on` buys - lookups would go out over the venue's
-  network instead of the tunnel, which is a privacy decision, not a technical
-  one.
-- Give the tunnel a working IPv6 path, if the provider offers one, so AAAA
-  answers become reachable instead of dropped.
-
-Until then, expect `udp://` trackers to fail on any host that publishes AAAA
-and peer discovery to lean on the HTTP(S) trackers that resolve IPv4-only.
-Diagnose with:
-
-```bash
-docker exec qbittorrent getent ahosts open.stealth.si   # AAAA lines present?
-```
-
- Gluetun's INPUT policy is DROP with no rule for `tun0`, so this
-is the expected state until a port is opened. Set `media_vpn.forwarded_port`
-to the port your provider forwards and the role opens it on the tunnel and
-sets it as qBittorrent's listen port together - a forwarded port only helps if
-the application listens on that exact number. Confirm with:
+connections and no peer discovery. Both recovered on their own once the uplink
+was good -- 363 DHT nodes and `"connected"` within minutes, with no config
+change -- so treat this as a symptom of steps 1 and 2 before treating it as a
+fault of its own. If it persists on a healthy link, the tunnel has no inbound
+path: set `media_vpn.forwarded_port` to the port your provider forwards and
+the role opens it on the tunnel and makes it qBittorrent's listen port
+together, since a forwarded port only helps if the application listens on that
+exact number. Confirm with:
 
 ```bash
 docker exec gluetun iptables -S | grep tun0
 ```
 
 Many providers, free ones especially, forward nothing. Leave it empty then;
-you stay limited to connectable peers, which is a real throughput loss but
-not a fault. The symptom is `num_seeds: 0` against a `num_complete` in the
-double digits - the swarm has seeds, and neither end can open the socket.
+you stay limited to connectable peers, which is a real loss but not a fault.
+
+### "Operation not permitted" on every udp:// tracker
+
+Worth its own note, because the error is thoroughly misleading. It is `EPERM`
+-- what the kernel returns to a socket whose packet the local firewall
+dropped, so it reads like a deliberate block rather than a network problem,
+and the obvious suspects are both innocent:
+
+- **It is not an AAAA fault**, though everything points that way. The tunnel
+  really is IPv4-only (`tun0` carries a single /32, no IPv6 route),
+  `ip6tables` inside Gluetun really is policy `OUTPUT DROP`, and containers
+  in this namespace really do resolve through Gluetun's own DoT server at
+  `127.0.0.1` rather than through `frey-media-dns`, so they really do get the
+  AAAA records the *arrs have filtered out. All true, and none of it is the
+  cause: the same trackers answered normally on a better uplink with that
+  configuration untouched.
+- **`DNS_BLOCK_IP_PREFIXES` is not the cure.** It reads like an answer filter
+  and is not -- measured 2026-11-09, `::/0` drops the whole record rather than
+  the IPv6 half, so every dual-stack hostname stopped resolving and the stack
+  lost DNS entirely. The test suite asserts it stays out.
+
+What it actually is: `HEALTH_RESTART_VPN=on` means Gluetun tears the tunnel
+down and rebuilds it whenever its health check fails, which on a weak uplink
+is often. While `tun0` is absent, the `-A OUTPUT -o tun0 -j ACCEPT` rule
+matches nothing, the `OUTPUT DROP` policy applies, and every send fails
+`EPERM` until the tunnel is back. So it is the uplink reported in the voice of
+a firewall. Check Gluetun's log for restart churn before changing anything:
+
+```bash
+docker logs --tail 50 gluetun | grep -iE "healthy|unhealthy|restart"
+```
+
+`Host not found (authoritative)` on a handful of trackers is unrelated and
+usually genuine -- public tracker lists rot, and dead hostnames are normal.
 
 **4. Whether the queue is deadlocked.** A small `max_active_downloads` and
 `dont_count_slow_torrents: false` together are a trap, and this role hit it:
