@@ -114,6 +114,26 @@
       # those sockets time out and get retried and the retries crowd out the
       # transfers.
       # ---------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # A DEAD TORRENT MUST NOT HOLD AN ACTIVE SLOT
+      #
+      # This is not optional alongside a small max_active_downloads, and
+      # leaving it off actively deadlocks the queue. Observed immediately
+      # after the first tuning deploy: all four download slots were held by
+      # three stalledDL and one metaDL torrent, every one of them with zero
+      # peers, while 44 perfectly good torrents sat in queuedDL behind them.
+      # Nothing downloaded at all. qBittorrent counts a stalled torrent as
+      # active unless told otherwise, so the fewer slots there are, the more
+      # effectively a handful of dead ones can block the lot.
+      #
+      # With this on, a torrent doing less than the threshold for longer than
+      # the timer stops counting, the queue advances past it, and it is still
+      # retried in the background in case the swarm comes back.
+      # ---------------------------------------------------------------------
+      dont_count_slow_torrents: true
+      slow_torrent_dl_rate_threshold: 2
+      slow_torrent_ul_rate_threshold: 2
+      slow_torrent_inactive_timer: 60
       max_connec: "{{ media_qbittorrent_max_connections | int }}"
       max_connec_per_torrent: "{{ media_qbittorrent_max_connections_per_torrent | int }}"
       max_uploads: "{{ media_qbittorrent_max_uploads | int }}"
@@ -184,6 +204,7 @@
       or (qbt_prefs.content | from_json).max_connec | default(0) | int
          != media_qbittorrent_max_connections | int
       or not (qbt_prefs.content | from_json).limit_tcp_overhead | default(false)
+      or not (qbt_prefs.content | from_json).dont_count_slow_torrents | default(false)
   when: qbt_cookie is defined
   no_log: true
 

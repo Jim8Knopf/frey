@@ -90,6 +90,14 @@ class QbittorrentPortTest(unittest.TestCase):
             self.assertNotIn('\n', entry, f'{entry!r} folded a following entry')
         self.assertIn('DOT=on', environment)
 
+    def test_dns_answers_are_not_filtered_by_ip_prefix(self):
+        """DNS_BLOCK_IP_PREFIXES=::/0 looked like an AAAA filter and is not:
+        measured 2026-11-09, it drops the whole RECORD, so every dual-stack
+        hostname stopped resolving in the tunnel. Keep it out."""
+        environment = self.gluetun()['environment']
+        self.assertFalse([e for e in environment
+                          if e.startswith('DNS_BLOCK_IP_PREFIXES')])
+
     def test_the_tunnel_is_disabled_without_a_vpn(self):
         """With no tunnel there is nothing to forward, so the role port stands."""
         self.variables['media_vpn']['enabled'] = False

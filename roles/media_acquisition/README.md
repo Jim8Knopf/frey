@@ -476,9 +476,24 @@ docker exec qbittorrent curl -o /dev/null -w '%{speed_download} B/s\n' \
   --max-time 60 "https://speed.cloudflare.com/__down?bytes=2000000"
 ```
 
-A 315 ms exit turned 72 KB/s on the host into 11.6 KB/s inside the tunnel - a
-factor of six. For scale from New Zealand, Australia is ~30 ms and the US west
-coast ~150 ms, so 315 ms is most of a planet. BitTorrent suffers more than a single download does, because
+How much this costs depends on the link underneath it, and the two measurements
+are worth knowing apart:
+
+| Uplink | Host | Through the tunnel | Exit cost |
+| --- | --- | --- | --- |
+| Venue, -72 dBm 2.4 GHz, lossy | 72 KB/s | 11.6 KB/s | ~6x |
+| Home, -37 dBm 5 GHz | 1.2 MB/s | 735 KB/s | ~40% |
+
+The same 315 ms exit, an hour apart. A long path costs ~40% on a clean link,
+which is the ordinary price of a distant exit - but on a narrow lossy one the
+two multiply, because every lost packet now costs a 315 ms recovery and the
+window never opens. So a distant exit is a nuisance at home and close to fatal
+at a campground. For scale from New Zealand, Australia is ~30 ms and the US
+west coast ~150 ms, so 315 ms is most of a planet.
+
+A steady RTT with `mdev` in single-digit milliseconds is genuine distance;
+spikes to 1940 ms like the venue produced are a queue filling up, which is
+what the overhead limits below are for. BitTorrent suffers more than a single download does, because
 per-connection throughput is bounded by window/RTT and that penalty is paid
 once per peer. If the two numbers differ by much, move the exit closer before
 touching anything else; with `provider: custom` that means repointing
@@ -492,7 +507,49 @@ docker exec qbittorrent curl -s -b /tmp/c \
 ```
 
 `"connection_status":"firewalled"` with `"dht_nodes":0` means no incoming
-connections. Gluetun's INPUT policy is DROP with no rule for `tun0`, so this
+connections. Check the tracker list on an actual torrent before assuming that
+is the whole story, because one other fault produces the same shape:
+
+```bash
+docker exec qbittorrent curl -s -b /tmp/c \
+  "http://127.0.0.1:8080/api/v2/torrents/trackers?hash=<hash>"
+```
+
+`Operation not permitted` against every `udp://` tracker is **not** a dead
+tracker - it is `EPERM`, which is what the kernel returns to a socket whose
+packet the local firewall dropped. The tunnel is IPv4-only (`tun0` carries a
+single /32, no IPv6 route) while `ip6tables` inside Gluetun is policy
+`OUTPUT DROP`, so every AAAA answer is a destination that cannot be reached.
+Containers sharing this namespace resolve through Gluetun's own DoT server at
+`127.0.0.1`, **not** through `frey-media-dns`, so they do not get the AAAA
+filtering the *arrs rely on - the same trap, by a second route.
+
+**This is not fixed, and `DNS_BLOCK_IP_PREFIXES` is not the fix.** It reads
+like an answer filter and is not: measured 2026-11-09, `::/0` drops the whole
+record rather than the IPv6 half, so every dual-stack hostname stopped
+resolving inside the tunnel and the stack lost DNS entirely. The test suite
+now asserts it stays out. `DNS_UPSTREAM_IPV6=off` is already the default and
+governs how Gluetun reaches its upstreams, not what it returns.
+
+The two routes that remain, neither free:
+
+- Point Gluetun's resolver at `frey-media-dns` (`DOT=off` plus `DNS_ADDRESS`),
+  which already strips AAAA and has the venue-fallback logic. Costs the
+  leak-proof DNS that `DOT=on` buys - lookups would go out over the venue's
+  network instead of the tunnel, which is a privacy decision, not a technical
+  one.
+- Give the tunnel a working IPv6 path, if the provider offers one, so AAAA
+  answers become reachable instead of dropped.
+
+Until then, expect `udp://` trackers to fail on any host that publishes AAAA
+and peer discovery to lean on the HTTP(S) trackers that resolve IPv4-only.
+Diagnose with:
+
+```bash
+docker exec qbittorrent getent ahosts open.stealth.si   # AAAA lines present?
+```
+
+ Gluetun's INPUT policy is DROP with no rule for `tun0`, so this
 is the expected state until a port is opened. Set `media_vpn.forwarded_port`
 to the port your provider forwards and the role opens it on the tunnel and
 sets it as qBittorrent's listen port together - a forwarded port only helps if
@@ -507,7 +564,23 @@ you stay limited to connectable peers, which is a real throughput loss but
 not a fault. The symptom is `num_seeds: 0` against a `num_complete` in the
 double digits - the swarm has seeds, and neither end can open the socket.
 
-**4. Only now, the torrents themselves.** `stalledDL` with `num_complete: 0`
+**4. Whether the queue is deadlocked.** A small `max_active_downloads` and
+`dont_count_slow_torrents: false` together are a trap, and this role hit it:
+
+```bash
+docker exec qbittorrent python3 -c 'import json,collections;print(
+  collections.Counter(t["state"] for t in json.load(open("/tmp/t.json"))))'
+```
+
+44 torrents in `queuedDL` while the handful of active slots all sit on
+`stalledDL`/`metaDL` means dead torrents are holding the slots and nothing
+behind them will ever start. qBittorrent counts a stalled torrent as active
+unless told not to, so the fewer slots there are, the more easily a few dead
+ones block everything. The role sets `dont_count_slow_torrents: true` for
+exactly this; if downloads stop dead after a concurrency change, check this
+first.
+
+**5. Only now, the torrents themselves.** `stalledDL` with `num_complete: 0`
 is a dead torrent and no amount of tuning fixes it. Check that the queue is
 not simply starved of sources before changing the connection budget.
 
