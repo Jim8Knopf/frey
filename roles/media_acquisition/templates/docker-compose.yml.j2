@@ -393,6 +393,17 @@ services:
 {% endif %}
       # Without these, the killswitch blocks Traefik and the *arrs too.
       - FIREWALL_OUTBOUND_SUBNETS={{ (media_vpn.allowed_subnets + (media_vpn_proxy_network.network.IPAM.Config | map(attribute='Subnet') | list)) | unique | join(',') }}
+{% if media_vpn.forwarded_port | default('') | string | length > 0 %}
+      # The one hole in the killswitch on the tunnel side. Gluetun's INPUT
+      # policy is DROP with no rule for tun0, so by default nothing on the
+      # internet can open a connection to qBittorrent and it reports itself
+      # as `firewalled` -- reaching only peers that are connectable
+      # themselves, which on public trackers is the minority. This opens
+      # exactly the forwarded port and nothing else. Plain YAML comment on
+      # purpose: see the PUID note further down -- trim_blocks would make a
+      # Jinja comment block here eat the next "- " into the previous value.
+      - FIREWALL_VPN_INPUT_PORTS={{ media_vpn.forwarded_port }}
+{% endif %}
       # Gluetun's own DNS-over-TLS, so lookups do not leak to the venue's
       # resolver. It does not affect FreyHub clients - only this namespace.
       - DOT=on
@@ -486,7 +497,7 @@ services:
       - TZ={{ tz }}
       - UMASK={{ media.umask }}
       - WEBUI_PORT={{ svc.qbittorrent.port }}
-      - TORRENTING_PORT={{ svc.qbittorrent.listen_port }}
+      - TORRENTING_PORT={{ m.vpn.qbittorrent_listen_port }}
     volumes:
       - "{{ appdata }}/qbittorrent:/config"
       - "{{ media.data_dir }}:/data"

@@ -95,7 +95,7 @@
       category_changed_tmm_enabled: true
       save_path_changed_tmm_enabled: true
       torrent_changed_tmm_enabled: true
-      listen_port: "{{ media_acquisition.services.qbittorrent.listen_port }}"
+      listen_port: "{{ media_acquisition.vpn.qbittorrent_listen_port | int }}"
       random_port: false
       upnp: false
       dht: true
@@ -104,7 +104,39 @@
       queueing_enabled: true
       max_active_downloads: "{{ media_qbittorrent_max_active_downloads | int }}"
       max_active_torrents: "{{ media_qbittorrent_max_active_torrents | int }}"
-      # No proxy: this deployment runs without a VPN by choice.
+      # ---------------------------------------------------------------------
+      # THE CONNECTION BUDGET
+      #
+      # Sized for a venue radio rather than for fibre; the reasoning and the
+      # measurements are in inventory/group_vars/all/media.yml beside the
+      # values. Short version: qBittorrent's 500/100 defaults generate more
+      # handshake traffic than a 0.6 Mbit/s uplink can carry, so most of
+      # those sockets time out and get retried and the retries crowd out the
+      # transfers.
+      # ---------------------------------------------------------------------
+      max_connec: "{{ media_qbittorrent_max_connections | int }}"
+      max_connec_per_torrent: "{{ media_qbittorrent_max_connections_per_torrent | int }}"
+      max_uploads: "{{ media_qbittorrent_max_uploads | int }}"
+      max_uploads_per_torrent: "{{ media_qbittorrent_max_uploads_per_torrent | int }}"
+      # ---------------------------------------------------------------------
+      # COUNT PROTOCOL OVERHEAD AGAINST THE LIMITS
+      #
+      # Off by default, which means a rate limit governs payload only and the
+      # real figure on the wire is higher - on a link this narrow, enough to
+      # keep the uplink queue permanently full. A full queue is what produced
+      # the 315-1940 ms RTT swing measured on 2026-11-09, and latency that
+      # bad slows every download whether or not it is the one being limited.
+      #
+      # These make the limiter honest, so the alternate limits the uplink
+      # gating applies on a metered connection throttle to the number they
+      # claim rather than to something meaningfully larger.
+      # ---------------------------------------------------------------------
+      limit_tcp_overhead: true
+      limit_utp_rate: true
+      # No SOCKS proxy. When media_vpn.enabled is true the tunnel is applied
+      # at the network-namespace level instead - qBittorrent shares Gluetun's
+      # namespace, so every socket it opens is already inside the tunnel and
+      # a proxy here would be a second, redundant and fail-open hop.
       proxy_type: 0
       proxy_torrents_only: false
       # Throttled values used by the uplink gating script on metered links.
@@ -149,6 +181,9 @@
          != media_qbittorrent_max_active_downloads | int
       or (qbt_prefs.content | from_json).max_active_torrents | default(0) | int
          != media_qbittorrent_max_active_torrents | int
+      or (qbt_prefs.content | from_json).max_connec | default(0) | int
+         != media_qbittorrent_max_connections | int
+      or not (qbt_prefs.content | from_json).limit_tcp_overhead | default(false)
   when: qbt_cookie is defined
   no_log: true
 

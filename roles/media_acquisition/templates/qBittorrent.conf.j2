@@ -40,7 +40,7 @@ WebUI\UseUPnP=false
 [BitTorrent]
 # Everything lands under the single /data tree so imports can hardlink.
 Session\DefaultSavePath=/data/torrents
-Session\Port={{ media_acquisition.services.qbittorrent.listen_port }}
+Session\Port={{ media_acquisition.vpn.qbittorrent_listen_port }}
 Session\UseRandomPort=false
 # No temporary directory: a completed torrent must not be copied across
 # directories, or the hardlink advantage is lost again.

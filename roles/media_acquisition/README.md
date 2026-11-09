@@ -419,8 +419,10 @@ instructions, rather than starting an unconfigured tunnel that looks like a
 broken stack.
 
 **No published ports, including the torrent listen port.** Behind a venue's
-NAT there is no inbound path to forward, so publishing it would open the
-uplink side for nothing. Outbound peer connections work regardless.
+NAT there is no inbound path to forward, so publishing it on the *host* would
+open the uplink side for nothing. With the tunnel up the inbound path, if
+there is one at all, comes from the provider instead - see
+`media_vpn.forwarded_port` under [Download speed](#download-speed).
 
 **Auth is `External`.** Servarr local users cannot be seeded without writing
 the app's database, so the *arr UIs are open to anyone on the FreyHub LAN and
@@ -438,6 +440,76 @@ deliberately:
 # connection. Needs the explicit flag: a plain deploy never pulls.
 ansible-playbook ... --tags media_update -e media_update=true
 ```
+
+## Download Speed
+
+Diagnose in this order. Measured figures below are from 2026-11-09 on a
+public venue uplink, and they are what the defaults in
+`inventory/group_vars/all/media.yml` are tuned against.
+
+**1. The uplink, before anything else.** Nothing in this role can beat the
+radio. Check what the link actually negotiated, not whether it is "connected":
+
+```bash
+sudo iw dev wlan1 link        # signal, rx/tx bitrate
+curl -o /dev/null -w '%{speed_download} B/s\n' \
+  --max-time 30 "https://speed.cloudflare.com/__down?bytes=8000000"
+```
+
+`signal: -72 dBm` with `rx bitrate: 13.0 MBit/s MCS 1` delivered 72 KB/s. At
+that point the ceiling is physical: park closer, or use a different network.
+
+Two things on the Pi make a weak uplink worse. FreyHub's own AP shares the
+2.4 GHz band with the uplink radio, and if `network.wifi.channel` overlaps the
+venue's channel the AP's transmitter deafens the uplink's receiver - they are
+inches apart. Compare `sudo iw dev wlan0 info` against `wlan1 link` and move
+the AP to a non-overlapping channel (1 / 6 / 11) if they collide. Switching
+the AP to `band: a` removes the conflict entirely, at the cost of range
+through the van body. **Both are `network_gateway` changes, so they arm the
+deadman rollback - read `docs/GATEWAY.md` first.**
+
+**2. How far away the VPN exit is.** This dwarfs every qBittorrent setting:
+
+```bash
+ping -c 5 <wireguard_endpoint_ip>     # base RTT to the exit
+docker exec qbittorrent curl -o /dev/null -w '%{speed_download} B/s\n' \
+  --max-time 60 "https://speed.cloudflare.com/__down?bytes=2000000"
+```
+
+A 315 ms exit turned 72 KB/s on the host into 11.6 KB/s inside the tunnel - a
+factor of six. For scale from New Zealand, Australia is ~30 ms and the US west
+coast ~150 ms, so 315 ms is most of a planet. BitTorrent suffers more than a single download does, because
+per-connection throughput is bounded by window/RTT and that penalty is paid
+once per peer. If the two numbers differ by much, move the exit closer before
+touching anything else; with `provider: custom` that means repointing
+`media_vpn.credentials.wireguard_endpoint`, as `server_countries` is ignored.
+
+**3. Whether peers can reach you.**
+
+```bash
+docker exec qbittorrent curl -s -b /tmp/c \
+  http://127.0.0.1:8080/api/v2/transfer/info
+```
+
+`"connection_status":"firewalled"` with `"dht_nodes":0` means no incoming
+connections. Gluetun's INPUT policy is DROP with no rule for `tun0`, so this
+is the expected state until a port is opened. Set `media_vpn.forwarded_port`
+to the port your provider forwards and the role opens it on the tunnel and
+sets it as qBittorrent's listen port together - a forwarded port only helps if
+the application listens on that exact number. Confirm with:
+
+```bash
+docker exec gluetun iptables -S | grep tun0
+```
+
+Many providers, free ones especially, forward nothing. Leave it empty then;
+you stay limited to connectable peers, which is a real throughput loss but
+not a fault. The symptom is `num_seeds: 0` against a `num_complete` in the
+double digits - the swarm has seeds, and neither end can open the socket.
+
+**4. Only now, the torrents themselves.** `stalledDL` with `num_complete: 0`
+is a dead torrent and no amount of tuning fixes it. Check that the queue is
+not simply starved of sources before changing the connection budget.
 
 ## Known Gaps
 
