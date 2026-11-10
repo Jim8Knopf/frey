@@ -133,6 +133,15 @@ services:
       - JELLYFIN_PublishedServerUrl=https://jellyfin.{{ frey.service_domain }}
       # Transcoding is software-only on a Pi 5; keep the scratch dir on NVMe.
       - JELLYFIN_FFmpeg__probesize=1G
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    # Follow the changing uplink instead of Docker's creation-time
+    # resolver. Without this the container keeps whatever upstream the
+    # host had when it was CREATED, so moving the van to a new network
+    # leaves it unable to resolve anything at all until it is recreated
+    # -- which is how every new item arrived with no artwork.
+    dns:
+      - {{ media.network.resolver_address }}
+{% endif %}
     volumes:
       - "{{ appdata }}/jellyfin:/config"
       # Read-only: Jellyfin plays, the *arrs write. Nothing here should be
@@ -183,6 +192,15 @@ services:
       - TZ={{ tz }}
       - ND_EXTAUTH_TRUSTEDSOURCES={{ frey.navidrome_network.traefik_ip }}/32
       - ND_ENABLEUSEREDITING=false
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    # Follow the changing uplink instead of Docker's creation-time
+    # resolver. Without this the container keeps whatever upstream the
+    # host had when it was CREATED, so moving the van to a new network
+    # leaves it unable to resolve anything at all until it is recreated
+    # -- which is how every new item arrived with no artwork.
+    dns:
+      - {{ media.network.resolver_address }}
+{% endif %}
     volumes:
       - "{{ appdata }}/navidrome:/data"
       - "{{ media.data_dir }}/media/music:/music:ro"
@@ -217,6 +235,15 @@ services:
       # without it the OIDC token exchange fails with a bare
       # SELF_SIGNED_CERT_IN_CHAIN that says nothing useful.
       - NODE_EXTRA_CA_CERTS=/frey-ca.crt
+{% endif %}
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    # Follow the changing uplink instead of Docker's creation-time
+    # resolver. Without this the container keeps whatever upstream the
+    # host had when it was CREATED, so moving the van to a new network
+    # leaves it unable to resolve anything at all until it is recreated
+    # -- which is how every new item arrived with no artwork.
+    dns:
+      - {{ media.network.resolver_address }}
 {% endif %}
     volumes:
       - "{{ appdata }}/audiobookshelf/config:/config"
@@ -353,6 +380,15 @@ services:
     user: "{{ media.user.uid }}:{{ media.user.gid }}"
     environment:
       - TZ={{ tz }}
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    # Follow the changing uplink instead of Docker's creation-time
+    # resolver. Without this the container keeps whatever upstream the
+    # host had when it was CREATED, so moving the van to a new network
+    # leaves it unable to resolve anything at all until it is recreated
+    # -- which is how every new item arrived with no artwork.
+    dns:
+      - {{ media.network.resolver_address }}
+{% endif %}
     volumes:
       - "{{ appdata }}/maintainerr:/opt/data"
     networks:
@@ -417,6 +453,15 @@ services:
       - POSTGRES_IP={{ svc.jellystat_db.hostname }}
       - POSTGRES_PORT=5432
       - JWT_SECRET={{ media_secrets.jellystat_jwt_secret }}
+{% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
+    # Follow the changing uplink instead of Docker's creation-time
+    # resolver. Without this the container keeps whatever upstream the
+    # host had when it was CREATED, so moving the van to a new network
+    # leaves it unable to resolve anything at all until it is recreated
+    # -- which is how every new item arrived with no artwork.
+    dns:
+      - {{ media.network.resolver_address }}
+{% endif %}
     volumes:
       - "{{ appdata }}/jellystat/backup:/app/backend/backup-data"
     networks:

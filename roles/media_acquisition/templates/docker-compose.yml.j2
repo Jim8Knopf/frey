@@ -408,6 +408,22 @@ services:
       # resolver. It does not affect FreyHub clients - only this namespace.
       - DOT=on
       - HEALTH_VPN_DURATION_INITIAL=30s
+      # Health targets as IP literals, never hostnames. Gluetun's own
+      # defaults here are cloudflare.com:443,github.com:443, which makes
+      # the check that decides whether to REBUILD the tunnel depend on
+      # DNS -- and DNS inside this namespace depends on the tunnel. One
+      # lookup timeout on a slow exit therefore tears the tunnel down,
+      # which kills DNS, which fails the check again: measured
+      # 2026-11-10, 7,487 'restarting VPN' lines in 24 hours, every one
+      # of them 'lookup github.com: i/o timeout'. Each rebuild empties
+      # qBittorrent's DHT table and makes in-flight UDP sends fail
+      # EPERM, so the symptom is the *arrs and the trackers all dying at
+      # once while the host's own network is perfectly fine.
+      #
+      # These two are the same addresses HEALTH_ICMP_TARGET_IPS already
+      # uses for the periodic check, which never had this problem
+      # precisely because it was given IPs rather than names.
+      - HEALTH_TARGET_ADDRESSES=1.1.1.1:443,8.8.8.8:443
     volumes:
       - "{{ appdata }}/gluetun:/gluetun"
     networks:
