@@ -44,7 +44,26 @@ jobs:
         # no change to this file.
         run: |
           for dir in tests roles/*/tests; do
-            python3 -m unittest discover -s "$dir" -p 'test_*.py'
+            # A tests directory holding no Python tests is not a failure, and
+            # must be skipped rather than discovered: since Python 3.12
+            # `unittest discover` exits 5 when it finds nothing, so globbing
+            # the directories turned the FIRST such directory into a red CI
+            # run. roles/media_library/tests is exactly that - four
+            # JavaScript tests and no Python - and it broke every build from
+            # the commit that added it until this one, on a step whose output
+            # says only "NO TESTS RAN".
+            if compgen -G "$dir/test_*.py" > /dev/null; then
+              python3 -m unittest discover -s "$dir" -p 'test_*.py'
+            else
+              echo "no Python tests in $dir"
+            fi
+          done
+          # The JavaScript half, globbed for the same reason the Python half
+          # is: these four had never run in CI at all. They need only Node
+          # built-ins, which ubuntu-latest already has.
+          for file in tests/test_*.js roles/*/tests/test_*.js; do
+            [ -e "$file" ] || continue
+            node "$file"
           done
           # Offline test scripts: these take no arguments and need no host.
           python3 scripts/test-portal-logic.py
