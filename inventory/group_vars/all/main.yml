@@ -64,6 +64,7 @@ frey:
       - rpi_nvme
       - service_proxy
       - security_baseline
+      - terminal
       - frey_pki
       - identity
       - silverbullet
@@ -94,6 +95,10 @@ frey:
         role: security_baseline
         tags:
           - security
+      terminal:
+        role: terminal
+        tags:
+          - terminal
       frey_pki:
         role: frey_pki
         tags:
