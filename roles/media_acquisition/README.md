@@ -419,8 +419,10 @@ instructions, rather than starting an unconfigured tunnel that looks like a
 broken stack.
 
 **No published ports, including the torrent listen port.** Behind a venue's
-NAT there is no inbound path to forward, so publishing it would open the
-uplink side for nothing. Outbound peer connections work regardless.
+NAT there is no inbound path to forward, so publishing it on the *host* would
+open the uplink side for nothing. With the tunnel up the inbound path, if
+there is one at all, comes from the provider instead - see
+`media_vpn.forwarded_port` under [Download speed](#download-speed).
 
 **Auth is `External`.** Servarr local users cannot be seeded without writing
 the app's database, so the *arr UIs are open to anyone on the FreyHub LAN and
@@ -438,6 +440,142 @@ deliberately:
 # connection. Needs the explicit flag: a plain deploy never pulls.
 ansible-playbook ... --tags media_update -e media_update=true
 ```
+
+## Download Speed
+
+Diagnose in this order. Measured figures below are from 2026-11-09 on a
+public venue uplink, and they are what the defaults in
+`inventory/group_vars/all/media.yml` are tuned against.
+
+**1. The uplink, before anything else.** Nothing in this role can beat the
+radio. Check what the link actually negotiated, not whether it is "connected":
+
+```bash
+sudo iw dev wlan1 link        # signal, rx/tx bitrate
+curl -o /dev/null -w '%{speed_download} B/s\n' \
+  --max-time 30 "https://speed.cloudflare.com/__down?bytes=8000000"
+```
+
+`signal: -72 dBm` with `rx bitrate: 13.0 MBit/s MCS 1` delivered 72 KB/s. At
+that point the ceiling is physical: park closer, or use a different network.
+
+Two things on the Pi make a weak uplink worse. FreyHub's own AP shares the
+2.4 GHz band with the uplink radio, and if `network.wifi.channel` overlaps the
+venue's channel the AP's transmitter deafens the uplink's receiver - they are
+inches apart. Compare `sudo iw dev wlan0 info` against `wlan1 link` and move
+the AP to a non-overlapping channel (1 / 6 / 11) if they collide. Switching
+the AP to `band: a` removes the conflict entirely, at the cost of range
+through the van body. **Both are `network_gateway` changes, so they arm the
+deadman rollback - read `docs/GATEWAY.md` first.**
+
+**2. How far away the VPN exit is.** This dwarfs every qBittorrent setting:
+
+```bash
+ping -c 5 <wireguard_endpoint_ip>     # base RTT to the exit
+docker exec qbittorrent curl -o /dev/null -w '%{speed_download} B/s\n' \
+  --max-time 60 "https://speed.cloudflare.com/__down?bytes=2000000"
+```
+
+How much this costs depends on the link underneath it, and the two measurements
+are worth knowing apart:
+
+| Uplink | Host | Through the tunnel | Exit cost |
+| --- | --- | --- | --- |
+| Venue, -72 dBm 2.4 GHz, lossy | 72 KB/s | 11.6 KB/s | ~6x |
+| Home, -37 dBm 5 GHz | 1.2 MB/s | 735 KB/s | ~40% |
+
+The same 315 ms exit, an hour apart. A long path costs ~40% on a clean link,
+which is the ordinary price of a distant exit - but on a narrow lossy one the
+two multiply, because every lost packet now costs a 315 ms recovery and the
+window never opens. So a distant exit is a nuisance at home and close to fatal
+at a campground. For scale from New Zealand, Australia is ~30 ms and the US
+west coast ~150 ms, so 315 ms is most of a planet.
+
+A steady RTT with `mdev` in single-digit milliseconds is genuine distance;
+spikes to 1940 ms like the venue produced are a queue filling up, which is
+what the overhead limits below are for. BitTorrent suffers more than a single download does, because
+per-connection throughput is bounded by window/RTT and that penalty is paid
+once per peer. If the two numbers differ by much, move the exit closer before
+touching anything else; with `provider: custom` that means repointing
+`media_vpn.credentials.wireguard_endpoint`, as `server_countries` is ignored.
+
+**3. Whether peers can reach you.**
+
+```bash
+docker exec qbittorrent curl -s -b /tmp/c \
+  http://127.0.0.1:8080/api/v2/transfer/info
+```
+
+`"connection_status":"firewalled"` with `"dht_nodes":0` means no incoming
+connections and no peer discovery. Both recovered on their own once the uplink
+was good -- 363 DHT nodes and `"connected"` within minutes, with no config
+change -- so treat this as a symptom of steps 1 and 2 before treating it as a
+fault of its own. If it persists on a healthy link, the tunnel has no inbound
+path: set `media_vpn.forwarded_port` to the port your provider forwards and
+the role opens it on the tunnel and makes it qBittorrent's listen port
+together, since a forwarded port only helps if the application listens on that
+exact number. Confirm with:
+
+```bash
+docker exec gluetun iptables -S | grep tun0
+```
+
+Many providers, free ones especially, forward nothing. Leave it empty then;
+you stay limited to connectable peers, which is a real loss but not a fault.
+
+### "Operation not permitted" on every udp:// tracker
+
+Worth its own note, because the error is thoroughly misleading. It is `EPERM`
+-- what the kernel returns to a socket whose packet the local firewall
+dropped, so it reads like a deliberate block rather than a network problem,
+and the obvious suspects are both innocent:
+
+- **It is not an AAAA fault**, though everything points that way. The tunnel
+  really is IPv4-only (`tun0` carries a single /32, no IPv6 route),
+  `ip6tables` inside Gluetun really is policy `OUTPUT DROP`, and containers
+  in this namespace really do resolve through Gluetun's own DoT server at
+  `127.0.0.1` rather than through `frey-media-dns`, so they really do get the
+  AAAA records the *arrs have filtered out. All true, and none of it is the
+  cause: the same trackers answered normally on a better uplink with that
+  configuration untouched.
+- **`DNS_BLOCK_IP_PREFIXES` is not the cure.** It reads like an answer filter
+  and is not -- measured 2026-11-09, `::/0` drops the whole record rather than
+  the IPv6 half, so every dual-stack hostname stopped resolving and the stack
+  lost DNS entirely. The test suite asserts it stays out.
+
+What it actually is: `HEALTH_RESTART_VPN=on` means Gluetun tears the tunnel
+down and rebuilds it whenever its health check fails, which on a weak uplink
+is often. While `tun0` is absent, the `-A OUTPUT -o tun0 -j ACCEPT` rule
+matches nothing, the `OUTPUT DROP` policy applies, and every send fails
+`EPERM` until the tunnel is back. So it is the uplink reported in the voice of
+a firewall. Check Gluetun's log for restart churn before changing anything:
+
+```bash
+docker logs --tail 50 gluetun | grep -iE "healthy|unhealthy|restart"
+```
+
+`Host not found (authoritative)` on a handful of trackers is unrelated and
+usually genuine -- public tracker lists rot, and dead hostnames are normal.
+
+**4. Whether the queue is deadlocked.** A small `max_active_downloads` and
+`dont_count_slow_torrents: false` together are a trap, and this role hit it:
+
+```bash
+docker exec qbittorrent python3 -c 'import json,collections;print(
+  collections.Counter(t["state"] for t in json.load(open("/tmp/t.json"))))'
+```
+
+44 torrents in `queuedDL` while the handful of active slots all sit on
+`stalledDL`/`metaDL` means dead torrents are holding the slots and nothing
+behind them will ever start. qBittorrent counts a stalled torrent as active
+unless told not to, so the fewer slots there are, the more easily a few dead
+ones block everything. The role sets `dont_count_slow_torrents: true` for
+exactly this; if downloads stop dead after a concurrency change, check this
+first.
+
+**5. Only now, the torrents themselves.** `stalledDL` with `num_complete: 0`
+is a dead torrent and no amount of tuning fixes it. Check that the queue is
+not simply starved of sources before changing the connection budget.
 
 ## Known Gaps
 

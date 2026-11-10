@@ -99,6 +99,41 @@
   changed_when: false
   failed_when: false
 
+- name: "indexers: enforce the seeder floor on the default sync profile"
+  # Prowlarr pushes minimumSeeders down into each *arr's copy of every
+  # indexer on this profile, so this is the setting that stops Sonarr and
+  # Radarr grabbing releases nobody is seeding. See the reasoning and the
+  # measurement beside the value in defaults/main.yml.
+  #
+  # The body is the whole object, not just the one field: Prowlarr replaces
+  # rather than merges, so a partial body would silently reset the enable*
+  # flags on the profile every general indexer depends on.
+  ansible.builtin.uri:
+    url: "{{ media_api_base }}/api/v1/appprofile/{{ existing.id }}"
+    method: PUT
+    headers:
+      Host: "prowlarr.{{ frey.local_domain }}"
+      X-Api-Key: "{{ media_secrets.prowlarr }}"
+    body_format: json
+    body: "{{ existing | combine({'minimumSeeders': seeder_floor | int}) }}"
+    status_code: [200, 202]
+    timeout: "{{ media_acquisition.configure.api_timeout }}"
+  vars:
+    seeder_floor: "{{ media_acquisition.indexers.default_profile.minimum_seeders }}"
+    existing: >-
+      {{
+        (prowlarr_profiles_after.json | default([]))
+        | selectattr('name', 'equalto', media_acquisition.indexers.default_profile.name)
+        | first | default({})
+      }}
+  register: prowlarr_seeder_floor
+  changed_when: prowlarr_seeder_floor.status | default(0) in [200, 202]
+  failed_when: false
+  when:
+    - existing.id is defined
+    # Only when it actually differs, so a converged run reports no change.
+    - (existing.minimumSeeders | default(0) | int) != (seeder_floor | int)
+
 - name: "indexers: read the Cloudflare proxy tag"
   ansible.builtin.uri:
     url: "{{ media_api_base }}/api/v1/tag"

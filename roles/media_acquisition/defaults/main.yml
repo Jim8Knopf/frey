@@ -86,6 +86,20 @@ media_acquisition:
         'gluetun' if (media_vpn.enabled | bool)
         else media_acquisition.services.qbittorrent.hostname
       }}
+    # The port qBittorrent actually listens on for incoming peers.
+    #
+    # A forwarded port is only worth anything if the application listens on
+    # that exact number, so when media_vpn.forwarded_port is set it wins over
+    # the role's own listen_port. Unset - the default, and the case for every
+    # provider that does not offer forwarding - leaves the role default
+    # untouched, and qBittorrent stays outbound-only exactly as before.
+    qbittorrent_listen_port: >-
+      {{
+        media_vpn.forwarded_port | int
+        if (media_vpn.enabled | bool
+            and (media_vpn.forwarded_port | default('') | string | length > 0))
+        else media_acquisition.services.qbittorrent.listen_port
+      }}
 
   # ---------------------------------------------------------------------------
   # UPLINK GATING
@@ -426,6 +440,35 @@ media_acquisition:
   # audiobook pipeline silently did nothing.
   # ---------------------------------------------------------------------------
   indexers:
+    # -------------------------------------------------------------------------
+    # THE SEEDER FLOOR ON THE GENERAL PROFILE
+    #
+    # Prowlarr ships one profile, id 1, named Standard, and every indexer
+    # except the audiobook sources is attached to it. Prowlarr pushes this
+    # number down into each *arr's copy of the indexer, so it is what stops
+    # Sonarr and Radarr grabbing a release nobody is seeding.
+    #
+    # The role never set it, so it sat at whatever Prowlarr defaults to, and
+    # whatever that is it was permissive enough to let unseeded releases
+    # through. Measured 2026-11-09 with it unset: 37 of 48 incomplete
+    # torrents had zero seeds AND zero peers,
+    # holding 42.9 GB of partial downloads, and every one had been added
+    # within the previous seven days. Cleanuparr can remove them afterwards;
+    # this is what stops them arriving.
+    #
+    # Three, not higher. A floor also costs downloads: a thin-but-live swarm
+    # is skipped along with the dead ones, and in a van the niche release is
+    # often the only one that exists. Three is enough that a single seeder
+    # going offline does not strand the torrent, while still grabbing most of
+    # what a public tracker carries. Raise it if the queue still fills with
+    # stalls; lower it if searches start coming back empty.
+    # -------------------------------------------------------------------------
+    default_profile:
+      # Prowlarr's own name for the built-in profile. Matched by name rather
+      # than by id for the reason given in tasks/configure/indexers.yml: the
+      # list has a second profile in it now, so position proves nothing.
+      name: Standard
+      minimum_seeders: 3
     audiobook_profile:
       name: Audiobook requests
       enable_rss: false

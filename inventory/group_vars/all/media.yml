@@ -98,10 +98,35 @@ media_indexers:
     definition: internetarchive
     audiobooks: true
 
-# Permit 15 concurrent downloads and reserve three more active-torrent slots
-# for the existing upload limit. qBittorrent's global limit applies to both.
-media_qbittorrent_max_active_downloads: 15
-media_qbittorrent_max_active_torrents: 18
+# ==============================================================================
+# QBITTORRENT CONCURRENCY AND CONNECTION BUDGET
+#
+# These are tuned for the link a van actually has, not for a home connection.
+#
+# Measured on the uplink at Hobbiton Tours Free Wifi, 2026-11-09: 2.4 GHz at
+# -72 dBm, negotiated 13 Mbit/s MCS 1, which delivered 72 KB/s host-side and
+# RTT to the VPN endpoint swinging between 315 ms and 1940 ms. That jitter is
+# the tell - it is a queue filling up, not distance.
+#
+# On a link like that, concurrency is actively harmful. Fifteen simultaneous
+# downloads shared 72 KB/s fifteen ways, so nothing finished, while the
+# per-torrent handshake and announce traffic ate a visible slice of the
+# bandwidth it was competing for. Four at a time over the same link finishes
+# four torrents in the time fifteen finished none.
+#
+# The connection caps exist for the same reason. qBittorrent's defaults - 500
+# global connections, 100 per torrent - are a sensible home-fibre figure and a
+# denial of service against a 0.6 Mbit/s radio: every one of those sockets
+# wants a handshake, and on a 300 ms+ path with packet loss most of them time
+# out and are retried. Raise all of these on a venue with real bandwidth; the
+# numbers below are the floor that keeps a bad link usable.
+# ==============================================================================
+media_qbittorrent_max_active_downloads: 4
+media_qbittorrent_max_active_torrents: 8
+media_qbittorrent_max_connections: 100
+media_qbittorrent_max_connections_per_torrent: 30
+media_qbittorrent_max_uploads: 8
+media_qbittorrent_max_uploads_per_torrent: 3
 
 media_enable:
 
@@ -147,9 +172,48 @@ media_vpn:
   type: wireguard
 
   # Where to exit. Leave empty to let the provider choose.
-  # Keep this in mind for a van: an exit far from where you are parked makes
-  # every download slower.
+  #
+  # THIS IS THE LARGEST SINGLE LEVER ON DOWNLOAD SPEED, and it has already
+  # cost us once. Measured 2026-11-09, parked in New Zealand: the configured
+  # endpoint answered at 315 ms base RTT, so it is most of a planet away --
+  # Australia would be ~30 ms and the US west coast ~150 ms. On the venue's
+  # weak uplink that cost a factor of six (72 KB/s host, 11.6 KB/s tunnelled);
+  # on a clean 5 GHz link an hour later the same exit cost ~40% (1.2 MB/s
+  # against 735 KB/s). Distance and a bad link multiply rather than add: every
+  # lost packet costs a 315 ms recovery, so the window never opens. BitTorrent
+  # feels it more than a single download does, because per-connection
+  # throughput is bounded by window/RTT and that is paid once per peer.
+  #
+  # With `provider: custom` this list does nothing: the endpoint is pinned by
+  # `credentials.wireguard_endpoint` below, so moving closer means pointing
+  # that at a nearer server, not editing this.
   server_countries: []
+
+  # ---------------------------------------------------------------------------
+  # INBOUND PORT
+  #
+  # Gluetun's killswitch drops everything arriving on the tunnel unless a port
+  # is explicitly opened, so qBittorrent reports `firewalled` and can only
+  # reach peers that are themselves connectable.
+  #
+  # Do not reach for this on the strength of `firewalled` alone. Measured
+  # 2026-11-09, that status sat alongside zero connected seeds and zero DHT
+  # nodes on a weak uplink, and both recovered by themselves on a good one --
+  # 363 DHT nodes and `connected` within minutes, nothing here changed. Fix
+  # the link first and only set this if it persists afterwards.
+  #
+  # Set this to the port your provider forwards to you and qBittorrent starts
+  # accepting incoming peers: the port is opened on the tunnel AND becomes
+  # qBittorrent's listen port, because a forwarded port only helps if the
+  # application is actually listening on that exact number.
+  #
+  # Leave empty if your provider does not offer port forwarding - many do not,
+  # and nothing here breaks without it. You simply stay connectable-peers-only.
+  # Note that Gluetun cannot negotiate this for a `custom` provider; it has an
+  # automatic path for PIA and ProtonVPN only, so for anything else the port
+  # comes from the provider's control panel and is pasted here.
+  # ---------------------------------------------------------------------------
+  forwarded_port: ""
 
   credentials:
     wireguard_private_key: "{{ vault_generous_wireguard_private_key | default('') }}"
