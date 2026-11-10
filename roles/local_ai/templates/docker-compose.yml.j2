@@ -156,6 +156,12 @@ services:
       - "{{ m.min_p }}"
       - "--presence-penalty"
       - "{{ m.presence_penalty }}"
+{% if m.repeat_penalty is defined %}
+      # Only for models whose publisher recommends one. LFM2.5 asks for 1.05;
+      # the Qwen entry omits the key and keeps llama.cpp's default.
+      - "--repeat-penalty"
+      - "{{ m.repeat_penalty }}"
+{% endif %}
       - "--jinja"
       # --reasoning, not --chat-template-kwargs: b12019 warns at startup that
       # setting enable_thinking through chat-template-kwargs is deprecated.
