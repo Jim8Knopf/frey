@@ -628,6 +628,41 @@
     - not ansible_check_mode
     - local_ai_hermes_gw_start.changed | default(false)
 
+# --- Re-warm the prompt cache after a restart ---------------------------------
+# Restarting llama-server throws away every cached prompt prefix, and the next
+# person to ask a question pays a full cold prefill for it: measured
+# 2026-11-10, a restart left an ordinary Hermes question as task 0 with 4,649
+# tokens to process - about ten minutes before the first word, against roughly
+# nine SECONDS for the same question on a warm slot.
+#
+# Deploying therefore has a cost that lands on whoever asks next, not on the
+# deploy. This moves that cost to a moment when nobody is waiting, by asking
+# Hermes one trivial question immediately after a restart. Hermes is used as
+# the warmer rather than a hand-built request on purpose: the prefix that
+# needs to be cached is Hermes's own system prompt, and only Hermes can
+# reproduce it byte for byte.
+#
+# Fire-and-forget (poll: 0). The warm-up takes about as long as the cold turn
+# it prevents, and waiting for it would just move the ten minutes into the
+# playbook run.
+- name: Note whether the model container was recreated
+  # Only a recreate loses the cache. A run that changed nothing must not
+  # trigger a ten-minute warm-up for no reason.
+  ansible.builtin.set_fact:
+    local_ai_model_restarted: "{{ local_ai_model_start.changed | default(false) }}"
+  when: not ansible_check_mode
+
+- name: Re-warm the model's prompt cache after a restart
+  ansible.builtin.command:
+    cmd: "docker exec {{ local_ai.hermes.container_name }} hermes -z ok"
+  async: 1800
+  poll: 0
+  changed_when: false
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+    - local_ai_model_restarted | default(false) | bool
+
 - name: Start the read-only observer
   community.docker.docker_compose_v2:
     project_src: "{{ local_ai.stack_dir }}"
@@ -656,6 +691,7 @@
     services: [model]
     state: present
     pull: never
+  register: local_ai_model_start
   when:
     - not ansible_check_mode
     - (local_ai_model_markers.results
