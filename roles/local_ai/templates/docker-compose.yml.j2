@@ -106,6 +106,12 @@ services:
       - "8080"
       - "--threads"
       - "{{ m.threads }}"
+{% if m.threads_batch is defined %}
+      # Prompt processing gets more threads than generation: compute-bound
+      # versus memory-bandwidth-bound. See threads_batch in defaults/main.yml.
+      - "--threads-batch"
+      - "{{ m.threads_batch }}"
+{% endif %}
       - "--ctx-size"
       - "{{ m.ctx }}"
 {% if m.parallel_slots is defined %}

@@ -78,6 +78,19 @@ local_ai:
       # from 7.9. Threads buy PROMPT PROCESSING, which is compute-bound - and
       # the Pi 5's A76 cores have no i8mm, so that is the weak axis.
       #
+      # TWO for generation and THREE for prefill, split 2026-11-10 after
+      # watching a real turn. The two axes have opposite bottlenecks and a
+      # single thread count cannot serve both:
+      #
+      #   generation  memory-bandwidth-bound. Threads past ~2 buy little and
+      #               can lose to memory contention. 2.70 tok/s was measured
+      #               at two threads.
+      #   prefill     compute-bound. Threads help directly, which is what the
+      #               move to three was for.
+      #
+      # So `threads` stays at the value generation was measured good at, and
+      # threads_batch below takes the extra core for prompt processing.
+      #
       # THREE, not two, revised 2026-11-08. The original two deliberately left
       # cores for the gateway, on the correct principle that on a Pi with no
       # Ethernet and no console, gateway responsiveness outranks inference
@@ -97,7 +110,11 @@ local_ai:
       # core is enough for them. If AP latency ever suffers, this is the first
       # number to put back to 2 - that trade is not open to negotiation, it is
       # just not needed at 3.
-      threads: 3
+      threads: 2
+
+      # Prompt processing only (llama.cpp `--threads-batch`). The compute-bound
+      # axis, so it gets the third core; generation keeps two.
+      threads_batch: 3
       # 3.0, matching threads above, and the cap is the point: it leaves one
       # of the Pi's four cores permanently outside inference's reach. The
       # gateway reservation that used to be expressed as "only two threads"
