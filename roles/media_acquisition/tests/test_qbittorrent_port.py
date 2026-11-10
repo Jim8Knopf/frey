@@ -90,6 +90,20 @@ class QbittorrentPortTest(unittest.TestCase):
             self.assertNotIn('\n', entry, f'{entry!r} folded a following entry')
         self.assertIn('DOT=on', environment)
 
+    def test_health_targets_are_ip_literals_not_hostnames(self):
+        """Gluetun's default health targets are hostnames, which puts DNS in
+        the path that decides whether to REBUILD the tunnel -- while DNS
+        itself depends on the tunnel. Measured 2026-11-10: 7,487 VPN restarts
+        in 24 hours, every one 'lookup github.com: i/o timeout'."""
+        targets = [e.split('=', 1)[1] for e in self.gluetun()['environment']
+                   if e.startswith('HEALTH_TARGET_ADDRESSES=')]
+        self.assertEqual(len(targets), 1, 'health targets must be pinned')
+        for address in targets[0].split(','):
+            host = address.rsplit(':', 1)[0]
+            self.assertRegex(host, r'^\d+\.\d+\.\d+\.\d+$',
+                             '%r is a hostname; DNS must stay out of the '
+                             'health path' % host)
+
     def test_dns_answers_are_not_filtered_by_ip_prefix(self):
         """DNS_BLOCK_IP_PREFIXES=::/0 looked like an AAAA filter and is not:
         measured 2026-11-09, it drops the whole RECORD, so every dual-stack
