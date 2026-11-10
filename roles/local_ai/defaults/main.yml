@@ -14,6 +14,16 @@ local_ai:
   stack_dir: "{{ frey.base_dir }}/stacks/local-ai"
   model_dir: "{{ frey.base_dir }}/appdata/local-ai/models"
   host: ai
+  # The assistant gets its own hostname so a service worker on the
+  # model's origin cannot shadow it. Must also appear in
+  # identity_services.local_ai.hosts, or it has no certificate and no
+  # Authelia rule.
+  campaign_host: campaign
+  # Hermes Agent's own hostname. Must also appear in
+  # identity_services.hermes.hosts, or it has no certificate and no OIDC
+  # client - and its redirect_uri in identity.oidc_catalog.hermes is built
+  # from this same name, so the two cannot drift apart silently.
+  hermes_host: hermes
 
   # Which registered model llama-server loads. Changing this and redeploying
   # switches the served model, provided it has finished downloading.
@@ -34,6 +44,27 @@ local_ai:
       url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-UD-Q4_K_XL.gguf
       sha256: b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7
       size_bytes: 2912109728
+      # VISION COSTS PROMPT CACHING, which on this hardware is the most
+      # expensive thing you can spend. Measured 2026-11-08: loading the
+      # projector makes llama-server print
+      #
+      #   cache_reuse is not supported by multimodal, it will be disabled
+      #
+      # and with cache_reuse off only an EXACT COMMON PREFIX can be reused.
+      # Hermes puts a changing timestamp early in its system prompt, so every
+      # turn diverged at about token 330 of 1,900 and re-prefilled the rest:
+      # f_keep measured 0.17-0.34, ~1,900 tokens at ~7.3 tok/s, so about
+      # FOUR MINUTES before a single word was generated - on a one-word
+      # message, and worse as the conversation grows.
+      #
+      # With cache_reuse active llama.cpp can skip the changed chunk and keep
+      # the rest. `LOCAL_AI_EVALUATION.md` called vision "nearly free"; that
+      # was wrong, and this is what it actually costs.
+      #
+      # true re-enables image understanding at ai.hub.frey and pays that cost
+      # again. Nothing in Frey currently needs it: the observer reads metrics
+      # and logs, and the campaign is text.
+      enable_vision: false
       mmproj_file: mmproj-F16.gguf
       mmproj_url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/mmproj-F16.gguf
       mmproj_sha256: cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864
@@ -44,25 +75,128 @@ local_ai:
       # (260 tokens in 96.2 s) - about 25% below the 3.5 first estimated by
       # scaling the old 1.7B numbers, because this model achieves ~7.9 GB/s of
       # effective weight-read bandwidth rather than the 10.5 assumed. Project
-      # from 7.9. Threads buy prompt processing, which is compute-bound - and
-      # the Pi 5's A76 cores have no i8mm, so that is the weak axis. Two
-      # threads deliberately leaves cores for the gateway: on a Pi with no
+      # from 7.9. Threads buy PROMPT PROCESSING, which is compute-bound - and
+      # the Pi 5's A76 cores have no i8mm, so that is the weak axis.
+      #
+      # TWO for generation and THREE for prefill, split 2026-11-10 after
+      # watching a real turn. The two axes have opposite bottlenecks and a
+      # single thread count cannot serve both:
+      #
+      #   generation  memory-bandwidth-bound. Threads past ~2 buy little and
+      #               can lose to memory contention. 2.70 tok/s was measured
+      #               at two threads.
+      #   prefill     compute-bound. Threads help directly, which is what the
+      #               move to three was for.
+      #
+      # So `threads` stays at the value generation was measured good at, and
+      # threads_batch below takes the extra core for prompt processing.
+      #
+      # THREE, not two, revised 2026-11-08. The original two deliberately left
+      # cores for the gateway, on the correct principle that on a Pi with no
       # Ethernet and no console, gateway responsiveness outranks inference
-      # speed every time.
+      # speed every time. That principle stands; the number was too
+      # conservative for what the box is now asked to do.
+      #
+      # What changed is the workload. An agentic turn is three or four model
+      # calls, and prefill - the compute-bound axis threads actually help - is
+      # most of each one: a one-line edit request measured over 14 minutes.
+      # The container was pegged at 187.94% of a 2.0 CPU limit while two of
+      # four cores sat idle.
+      #
+      # The reservation is kept, just narrowed: `cpus` below caps the
+      # container at 3.0, so a whole core is permanently unavailable to
+      # inference no matter how many threads llama.cpp spawns. hostapd and
+      # dnsmasq are bursty and cheap rather than CPU-hungry, so one reserved
+      # core is enough for them. If AP latency ever suffers, this is the first
+      # number to put back to 2 - that trade is not open to negotiation, it is
+      # just not needed at 3.
       threads: 2
-      cpus: 2.0
 
-      # 2.7 GiB of weights plus the KV cache plus the vision encoder. The host
-      # reported 8 GiB available on 2026-11-07, so this leaves about 3 GiB of
-      # headroom; raise ctx only after re-checking `free -g`.
-      mem_limit: 5g
-      ctx: 8192
+      # Prompt processing only (llama.cpp `--threads-batch`). The compute-bound
+      # axis, so it gets the third core; generation keeps two.
+      threads_batch: 3
+      # 3.0, matching threads above, and the cap is the point: it leaves one
+      # of the Pi's four cores permanently outside inference's reach. The
+      # gateway reservation that used to be expressed as "only two threads"
+      # now lives here instead, where llama.cpp cannot exceed it whatever it
+      # decides to spawn.
+      cpus: 3.0
+
+      # 2.7 GiB of weights, 0.64 GiB of vision projector, the KV cache, and
+      # compute buffers.
+      #
+      # Raised from 5g/8192 to host a 64K context, which is the floor an agent
+      # framework like Hermes requires. The KV arithmetic for this model:
+      # 32 layers x 4 kv_heads x 256 head_dim = 65536 elements per token, so
+      # at q8_0 (~1.06 bytes/element) that is 68 KiB/token.
+      #
+      #   8192 ctx  @ fp16 = 1.0 GiB    64K @ fp16 = 8.5 GiB  (will not fit)
+      #   8192 ctx  @ q8_0 = 0.5 GiB    64K @ q8_0 = 4.25 GiB (fits)
+      #
+      # So 8g covers the worst case of a completely full context. llama.cpp
+      # allocates the cache lazily, so steady state at 5-20K tokens is nearer
+      # 5-6 GiB. Measured on 2026-11-07: other containers total ~4.5 GiB of
+      # the host's 15.8 GiB, leaving room - but the host was ALREADY using
+      # 822 MiB of swap beforehand, so check `free -m` before going further.
+      # 65536, and it is NOT a free choice: Hermes Agent enforces a 64,000
+      # minimum in its own code (`_enforce_minimum_context` raises), so this
+      # is the floor for as long as Hermes is kept. See
+      # `docs/LOCAL_AI_AGENT_PLAN.md` 6a.
+      #
+      # The earlier comment here argued for 20480 on the grounds that a window
+      # you cannot afford to FILL buys nothing. That reasoning is still sound
+      # and still applies to the prompt budget - but it was paired with RAM
+      # arithmetic that measurement contradicted. Measured 2026-11-08 at 64K:
+      # the container sits at 5.15-5.37 GiB of this 9g limit with 6.3-7.0 GiB
+      # still available on the host. The predicted 10.5 GiB fp16 / 6.6 GiB
+      # q8_0 was pessimistic.
+      #
+      # Dropping Hermes means this can go back to 20480 / 6g and reclaim
+      # about 2 GiB. Nothing else here needs 64K.
+      mem_limit: 9g
+      ctx: 65536
+
+      # ONE slot, not the default four. llama-server happily accepts parallel
+      # requests and splits two threads between them: measured 2026-11-07, a
+      # request sharing the model with a concurrent observer report fell to
+      # 0.59 tokens/s against 3.7-7.6 running alone. Queueing is strictly
+      # better here than competing - total throughput is higher and latency
+      # becomes predictable instead of depending on what else happens to be
+      # running.
+      parallel_slots: 1
+
+      # Quantising the KV cache is what makes 64K affordable at all, and it
+      # needs flash attention (below) to work.
+      #
+      # Worth knowing: Unsloth's own Qwen3.5 notes suggest
+      # `--cache-type-k bf16 --cache-type-v bf16` for context problems, which
+      # is the OPPOSITE of this. So this is the one setting here that trades
+      # against vendor advice, and answer quality must be re-checked with
+      # scripts/campaign-rules-benchmark.py after changing it.
+      cache_type_k: q8_0
+      cache_type_v: q8_0
 
       # Reuse cached prompt prefixes via KV shifting instead of reprocessing a
       # long system prompt on every request. Prompt processing is this
       # machine's bottleneck, so this is the single largest latency win
       # available and it costs nothing.
       cache_reuse: 256
+
+      # DRAFT-MODEL-FREE speculative decoding, added 2026-11-08. llama.cpp
+      # drafts the next few tokens from n-grams already in the context and
+      # verifies them in one pass, so several tokens can be accepted for
+      # roughly the cost of one. No second model, no extra RAM - which is why
+      # this is worth trying before anything that needs either.
+      #
+      # It suits this workload specifically: editing a page means re-emitting
+      # text the model has just read, and that is exactly where an n-gram
+      # draft hits. It should do nothing for freshly invented prose, and a
+      # rejected draft costs the compute it took to check - so this is set
+      # empty to disable if measurement says it does not pay.
+      #
+      # llama.cpp's own defaults for draft length and hit count are kept;
+      # tuning them before knowing the acceptance rate is guesswork.
+      spec_type: ngram-simple
 
       # Flash attention takes on|off|auto in llama.cpp b12019 - a bare -fa
       # would swallow the next argument.
@@ -84,6 +218,173 @@ local_ai:
 
   image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
   gateway_image: "traefik:{{ traefik_version }}"
+
+  # The campaign assistant: a tool-using loop that maintains the wiki.
+  #
+  # You talk to it inside SilverBullet. It is deliberately separate from the
+  # observer - different job, different mounts, different identity - and it
+  # has no broker access and no system verbs at all.
+  campaign:
+    enabled: true
+    container_name: frey-campaign-agent
+    # Reuses the pinned Python image the relay and observer already run, and
+    # is stdlib-only, so there is nothing to fetch at runtime.
+    image: "python:{{ monitoring_versions.relay_base }}"
+    script_path: /opt/frey-campaign/campaign.py
+
+    # SilverBullet's OWN uid, deliberately. The observer gets its own uid
+    # because it must never write the notes; this one must, and sharing the
+    # uid means pages it creates are owned by SilverBullet and readable by it,
+    # with no permission juggling and no ACL for writes.
+    uid: 10001
+    gid: 10001
+
+    root: Campaigns/Pirate
+    chat_page: Campaigns/Pirate/Chat.md
+    # Refused by the agent's own code. The templates define the structure of
+    # every page made from them, and the rules draft is where this model has
+    # been measured contradicting itself. This pair is the one boundary here
+    # enforced by code rather than by a mount, with git as the backstop.
+    readonly_subdirs: [Templates, Rules]
+
+    poll_seconds: 20
+    # A turn can legitimately take many minutes on this hardware.
+    model_timeout: 1800
+    max_tokens: 500
+    # Each step is a full model round-trip, so this is a time budget.
+    max_steps: 4
+    # Every character of a tool result is prefill latency. See the measured
+    # curve in files/campaign.py - time doubles as tokens double.
+    tool_result_budget: 2500
+
+    mem_limit: 256m
+    cpus: 0.5
+    log_level: INFO
+
+    # How often the host commits the notes space. This interval IS the
+    # granularity of your undo, and a turn takes minutes, so keep it short.
+    commit_interval: 2min
+
+    # The chat window. Reached only through the authenticated gateway on
+    # ai_private - no published port, no egress.
+    port: 8080
+
+  # Hermes Agent at hermes.hub.frey. A third interface beside the model's own
+  # UI and the assistant, not a replacement for either: all three share one
+  # llama-server slot, and the measurements in
+  # docs/LOCAL_AI_AGENT_PLAN.md 6a are what this configuration is built on.
+  hermes:
+    enabled: true
+    container_name: frey-hermes
+    image: "nousresearch/hermes-agent:{{ local_ai_hermes_version }}"
+
+    # SILVERBULLET'S OWN uid, changed from a private 10003 on 2026-11-09 when
+    # Hermes was given write access to the campaign. The campaign assistant
+    # already does this for the same reason: a page Hermes creates must stay
+    # editable in SilverBullet afterwards, and a file owned by a uid
+    # SilverBullet is not would be a page you could read and never fix.
+    #
+    # Sharing the uid is a deliberate reduction in isolation, and it is the
+    # mount table rather than the uid that bounds what Hermes can reach - see
+    # the volumes in docker-compose.yml.j2. The image remaps its own user to
+    # this at boot via HERMES_UID and chowns its data volume to match.
+    uid: 10001
+    gid: 10001
+
+    # HERMES_HOME. Hermes refuses to start if this is group- or
+    # world-writable - it exits with `unsafe_control_permissions` - so the
+    # role creates it 0700 and owned by the uid above. Do not relax this to
+    # make a mount convenient.
+    home_dir: "{{ frey.base_dir }}/appdata/local-ai/hermes"
+
+    # `hermes dashboard` serves the prebuilt web UI. 9119 is its own default.
+    port: 9119
+
+    # THE SETTING THAT DECIDES WHETHER THIS IS USABLE AT ALL.
+    #
+    # Hermes's prompt is dominated by tool-schema JSON, not by its 44 bundled
+    # skills: `hermes prompt-size` reports 39,999 B of schemas for 21 tools
+    # against 12,177 B of identity and guidance, and each skill costs only
+    # 70-88 B of always-on index because its body is read lazily.
+    #
+    # Restricting the toolset took the prompt from 12,800 to 4,096 tokens,
+    # measured server-side, which is the difference between about an hour to
+    # first token and about 11.5 minutes on a cold slot. Every toolset added
+    # here is paid for twice: once in that cold prefill, and again in every
+    # warm turn, because the re-evaluated tail starts at the first byte that
+    # differs from the cached prefix.
+    toolsets: [file]
+
+    # Hermes enforces a 64,000-token floor in its own code
+    # (_enforce_minimum_context raises below it), which is why
+    # serve.ctx above is 65536 and cannot be lowered while this is enabled.
+    min_context: 64000
+
+    # Generous on purpose. Prefill of Hermes's own prompt is minutes, and the
+    # default watchdogs assume a fast provider: a 240 s non-streaming timeout
+    # is what made the first six attempts here look like a broken endpoint.
+    stale_timeout: 7200
+    api_timeout: 7200
+
+    # Ceiling on a single tool result, and the most important number here
+    # after `toolsets`. Hermes's own default is 50,000 bytes, which is roughly
+    # 11,000 tokens - about 27 MINUTES of prefill at the 6.9 tok/s measured on
+    # this Pi, for one file read. 6 KB is ~1,300 tokens, ~3 minutes. A page
+    # bigger than this is truncated, which is the right trade: a truncated
+    # answer beats a turn nobody waits for.
+    tool_output_max_bytes: 6000
+    tool_output_max_lines: 200
+    tool_output_max_line_length: 400
+
+    # Wall-clock ceiling on one question, so a tool loop cannot tie up the
+    # single model slot for hours. Hermes warns the model at 80% so it can
+    # wrap up rather than being cut off mid-sentence. 45 min allows a cold
+    # first turn (~11.5 min) plus several warm ones.
+    run_budget_seconds: 2700
+
+    # The notes. The SPACE is read-only and the campaign subtree inside it is
+    # writable, with Templates/ and Rules/ nested back to read-only - four
+    # mounts that together say "extend the campaign, change nothing else".
+    #
+    # Enforced by the mount table, which is the point. The campaign assistant
+    # refuses Templates/ and Rules/ in its own Python; here the kernel does
+    # it, so no amount of persuasion reaches them. That is the mechanism §3 of
+    # docs/LOCAL_AI_AGENT_PLAN.md asks for, and it is strictly stronger than a
+    # rule the model is asked to honour.
+    #
+    # The backstop is git: frey-notes-commit.timer commits the space on a
+    # schedule, so a bad edit is recoverable rather than silent.
+    notes_mount: /notes
+
+    # Writable subtree, relative to the space. Everything outside it is
+    # read-only, including the space root.
+    notes_write_root: "{{ local_ai.campaign.root }}"
+
+    # Nested back to read-only INSIDE the writable subtree. Templates define
+    # the shape of every page made from them and Rules is where this model has
+    # been measured contradicting itself, so neither is a thing an agent
+    # should rewrite on a whim.
+    notes_readonly_subdirs: "{{ local_ai.campaign.readonly_subdirs }}"
+
+    cpus: 2.0
+    # The model holds the RAM; this is the agent process, measured at ~290 MB
+    # RSS with 26 threads while idle-waiting on a turn.
+    mem_limit: 1g
+
+    # Must match identity.oidc_catalog.hermes.scopes in
+    # roles/identity/defaults/main.yml. Spelled out again here for the reason
+    # CLAUDE.md gives: a role's defaults are only in scope while that role
+    # runs, so this template cannot read the catalog. roles/monitoring does
+    # the same for Grafana's scopes. If the two ever disagree, Authelia
+    # rejects the authorization request and the error surfaces in Authelia's
+    # log, not in Hermes's.
+    oidc_scopes: "openid profile email offline_access"
+
+    # Written by the identity role on its first run and reused forever after.
+    # Declared here as well as in roles/identity/ because a role's defaults
+    # are only in scope while that role runs - see CLAUDE.md. The plaintext
+    # client secret for `hermes` lives in this file under `hermes_oidc_secret`.
+    identity_key_file: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
 
   # Phase 1 of docs/LOCAL_AI_AGENT_PLAN.md: an observer that reads and
   # explains, and cannot act. There is no broker, no Docker socket and no

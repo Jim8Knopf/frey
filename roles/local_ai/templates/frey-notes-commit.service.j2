@@ -1,0 +1,9 @@
+[Unit]
+# Managed by Ansible role: local_ai
+Description=Commit the notes space so every change is revertable
+Documentation=file:///usr/local/bin/frey-notes-commit
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-notes-commit
+TimeoutStartSec=120

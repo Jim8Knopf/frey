@@ -5,6 +5,14 @@ OpenAI-compatible API are served at `https://ai.hub.frey` behind Frey sign-in,
 limited to `frey_admins` and `notes`. Inference runs entirely on the Pi; only
 model downloads need internet.
 
+Three interfaces share one model, and they share **one llama-server slot**:
+
+| | |
+| --- | --- |
+| `ai.hub.frey` | the model's own chat UI, and the `/v1` API |
+| `campaign.hub.frey` | the campaign assistant, which reads and writes the notes |
+| `hermes.hub.frey` | Hermes Agent — slower, but a real agent. See below. |
+
 This replaces the `campaign_ai` role. The role name, the module tag, the host
 and the `identity_services` key all changed together, because the role asserts
 its own access policy and fails its first task otherwise. An Ansible deploy
@@ -360,6 +368,172 @@ With no model downloaded the observer still runs and still records evidence;
 the assessment section simply says the model did not answer. That is
 deliberate: a monitoring component that refuses to run until everything else is
 healthy is useless in exactly the situation it exists for.
+
+## Hermes Agent
+
+`https://hermes.hub.frey` runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+against the local model. It is a third interface beside the model's own chat UI
+and the campaign assistant — not a replacement for either.
+
+**It is usable, but it is slow, and the numbers matter more than the feature
+list.** Measured on this Pi (`docs/LOCAL_AI_AGENT_PLAN.md` §6a):
+
+| | prefill | time |
+| --- | --- | --- |
+| first turn on a cold slot | 4,070 tok | **11.5 min** |
+| each turn after that | 489 tok | **~1.8 min** |
+
+The deployed configuration is lighter than that measurement — `hermes
+prompt-size` reports **~17.4 KB (~3,900 tokens)** against the ~57.9 KB a
+default install sends — so treat those figures as the pessimistic end.
+
+### Why it is slow, and the one setting that decides it
+
+Hermes sends a large prompt before you type anything, and on this hardware
+prompt processing is the binding constraint (and gets *slower* as context
+grows). `hermes prompt-size` says where it goes, and the obvious suspect is
+innocent:
+
+```
+tool schemas (21 tools)   39,999 B   <- 69% of it
+stable (identity/skills)  12,177 B
+volatile (memory/time)     5,112 B
+```
+
+The 44 bundled skills cost only **70–88 B each** of always-on index; their
+bodies are read lazily. **Tool schemas are the cost**, so
+`local_ai.hermes.toolsets` is the setting that decides whether this is usable
+at all. It is `[file]`, which takes the prompt from 12,800 to ~3,900 tokens —
+the difference between about an hour to first token and about eleven minutes.
+
+Adding a toolset is paid for twice: once in the cold prefill, and again in
+every warm turn, because the re-evaluated tail begins at the first byte that
+differs from the cached prefix.
+
+### The defaults that are wrong for this hardware
+
+Hermes ships settings written for a provider that prefills in seconds. Three
+of them are actively harmful at 6.9 tok/s, and the role overrides all three:
+
+| setting | Hermes default | here | why |
+| --- | --- | --- | --- |
+| `tool_output.max_bytes` | 50,000 | **6,000** | 50 KB is ~11,000 tokens — about **27 minutes** of prefill for one file read, paid again next turn because the result stays in the conversation |
+| `auxiliary.title_generation.model_upgrade_enabled` | `true` | **`false`** | it names each conversation by asking a model: one extra multi-minute call for a label, and its lane has a 30 s no-progress cutoff this box cannot meet |
+| `compression.progress_notices` | `false` | **`true`** | compaction summarises the conversation *with the model*; filtered, a ten-minute compaction looks like a hang |
+
+Also set: `agent.run_budget_seconds` (45 min) so a tool loop cannot hold the
+single slot for hours — Hermes warns the model at 80% so an answer ends
+deliberately rather than being cut off; `skills.project_discovery: false`,
+since the mounted notes contain no skills and scanning them only costs prompt
+bytes; and `model.context_length`, which is **not optional** — see below.
+
+### The context window is pinned, and must be
+
+`model.context_length` is set to the `-c` the model is served with. Hermes does
+not detect it: its probe fails (`probe-down`) and it then guesses from the word
+"qwen" in the filename, landing on **131,072 — exactly twice** what is served.
+Hermes says so itself once pinned:
+
+```
+model.context_length pins ... at 65,536 tokens but the provider advertises
+131,072; the pin wins.
+```
+
+Unpinned, Hermes budgets its own trimming against a window twice the real one,
+and the overflow is not refused: llama-server truncates, so the **oldest** part
+of a long conversation disappears with nothing reported at either end.
+
+### What it can and cannot touch
+
+The notes are mounted **read-only** at `/notes`, so Hermes can answer questions
+about the campaign. It cannot write them, and that is a mount flag rather than
+a prompt rule — `touch` inside the container returns
+`Read-only file system`.
+
+Writes stay with the campaign assistant at `campaign.hub.frey`, which runs as
+SilverBullet's own uid so the pages it creates are owned by SilverBullet.
+Hermes runs as its own uid (10003); anything it wrote would be owned by 10003
+and SilverBullet could not edit it afterwards. That is a permissions trap worth
+not building.
+
+### One slot, shared three ways
+
+`llama-server` runs with `parallel_slots: 1`, because two slots split two
+threads and collapsed to 0.59 tok/s. The practical consequence:
+**`ai.hub.frey`, `campaign.hub.frey` and `hermes.hub.frey` evict each other's
+cached prompt.** Alternating between the model's chat UI and Hermes means
+paying Hermes's 11.5-minute cold start again. Staying in one of them is cheap.
+
+**The observer is the thing most likely to make chat feel broken.** It is
+alert-driven and each report costs about **eight minutes** of the single slot
+(measured 2026-11-08: six consecutive reports took 6m59s to 8m47s). While one
+runs, anyone chatting is queued behind it - and the observer's prompt evicts
+theirs, so their next turn re-prefills from scratch too. That is what turned a
+one-word message into a six-minute wait.
+
+It now stands aside: `model_busy()` reads llama-server's `/slots` and
+`defer_for_interactive()` skips the cycle while a slot `is_processing`, for up
+to `OBSERVER_MAX_DEFERRALS` cycles (3, so at most ~15 minutes) before going
+ahead anyway. The deferral happens **before** `seen` is updated, so nothing is
+dropped - the alerts are picked up on the next cycle. The daily summary yields
+indefinitely, having no deadline. The phone alert does not depend on any of
+this: Alertmanager and the relay deliver it independently.
+
+The measured difference, same session, back to back:
+
+| | duration |
+| --- | --- |
+| first turn, cold slot | **17 min 13 s** |
+| next turn, nothing in between | **9 seconds** |
+
+That gap is the whole story of this deployment. Keeping the slot warm matters
+more than any other tuning here.
+
+A related hazard, and not Hermes's fault: **a cancelled request does not free a
+slot.** An abandoned turn was observed still occupying the model 4.6 minutes
+after its cancel, with everything else queued behind it. If the stack seems
+wedged, check `docker logs frey-local-ai-model` for a task that was cancelled
+but never released.
+
+### Sign-in
+
+`auth: oidc`, not forward auth. Hermes is a real OIDC relying party and
+*requires* an auth provider as soon as it binds anything but loopback, so it
+logs in against Authelia itself — one login, not two. Access is still
+`identity_services.hermes.groups`, which Authelia applies before issuing a
+token, so the missing forward-auth middleware does not widen who gets in.
+
+`ctx: 65536` is **mandatory while this is enabled**: Hermes enforces a 64,000
+minimum in its own code. Disabling Hermes allows `20480` / `6g` again and
+reclaims about 2 GiB.
+
+### Things that cost hours, recorded so they cost nobody else any
+
+- **`HERMES_PROVIDER` is not a knob.** The provider comes from `config.yaml`
+  (`model.provider`), which the role templates.
+- **`provider: auto` plus any `OPENAI_*` variable resolves to `openai-api`**,
+  whose transport is the Codex **Responses** API — `/v1/responses`, which
+  llama.cpp does not implement. It does not fail as a 404: the call produces
+  no events and dies as *"Non-streaming API call timed out after 240s"*, three
+  times, then trips a stale-attempt breaker. Nothing names the cause.
+- **A `context window of 20,480` error may be about nothing real.** The stock
+  config ships `anthropic/claude-opus-4.6`; that error described the stored
+  placeholder, not the served model.
+- **`provider: llamacpp` is for a server Hermes supervises itself** and raises
+  `LocalRuntimeUnavailableError` against an external one. Use `custom`.
+- **Do not set `user:` on the container.** s6-overlay's preinit then dies in a
+  restart loop (`/run belongs to uid 0 instead of 10003`), and `init: true`
+  only hides it by making s6 skip itself — which leaves the agent running as
+  root. Pass `HERMES_UID` / `HERMES_GID` instead, which the image documents.
+- **`HERMES_HOME` must be `0700`** or Hermes exits with
+  `unsafe_control_permissions` before reading any configuration.
+- **`dashboard.public_url` is required behind Traefik.** Without it Hermes
+  builds an `http://` redirect URI from the proxy's plain-HTTP hop, Authelia
+  rejects it as a mismatch, and the error appears in *Authelia's* log. The
+  wrong fix is registering an `http://` callback; that would put the
+  authorization code on the wire unencrypted.
+- **`SSL_CERT_FILE=/frey-ca.crt`** is what makes httpx trust the Frey CA for
+  OIDC discovery.
 
 ## Verifying
 

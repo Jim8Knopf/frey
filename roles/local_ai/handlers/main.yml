@@ -1,6 +1,18 @@
 ---
 # The observer program is bind-mounted read-only into the container, so a new
 # version on disk is not picked up until the process restarts.
+# Traefik's file provider did NOT pick up changes to route.yml through the
+# bind mount, so routing fixes sat unused while the gateway served a stale
+# config - and the symptom was Traefik's own 404 on paths that should have
+# matched. Restart it whenever its configuration changes.
+- name: Restart local AI gateway
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    services: [gateway]
+    state: restarted
+    pull: never
+  when: not ansible_check_mode
+
 - name: Restart local AI broker
   ansible.builtin.systemd_service:
     name: "{{ local_ai.broker.service_name }}.service"
@@ -8,6 +20,17 @@
     daemon_reload: true
   when:
     - local_ai.broker.enabled | bool
+    - not ansible_check_mode
+
+- name: Restart campaign assistant
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [campaign]
+    services: [campaign]
+    state: restarted
+    pull: never
+  when:
+    - local_ai.campaign.enabled | bool
     - not ansible_check_mode
 
 - name: Restart local AI observer
@@ -19,4 +42,19 @@
     pull: never
   when:
     - local_ai.observer.enabled | bool
+    - not ansible_check_mode
+
+# Hermes reads config.yaml once at startup, and it is bind-mounted read-only,
+# so a regenerated file does nothing until the process restarts. A restart
+# also loses the warm prompt cache in llama-server's single slot, which is why
+# this is a handler rather than an unconditional restart.
+- name: Restart Hermes
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [hermes]
+    services: [hermes]
+    state: restarted
+    pull: never
+  when:
+    - local_ai.hermes.enabled | bool
     - not ansible_check_mode

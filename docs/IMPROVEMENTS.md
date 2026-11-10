@@ -30,6 +30,18 @@
 
 ## Near Term
 
+- **Replace the read-only observer with an alert-triggered escalation.** An
+  alert should cause something to happen; today the only thing actually driven
+  by an alert is the phone notification, while `frey-self-heal` and the
+  observer both poll Alertmanager on timers. The observer writes a narrative
+  that fixes nothing, duplicates an alert you already have, and costs ~8
+  minutes of the single model slot per report — evicting whatever conversation
+  was cached there. Retire it; hang a gated escalation off the relay (which
+  Alertmanager already webhooks) so Hermes is asked once, with the broker, only
+  when `frey-self-heal` has no recipe or its repair did not hold. Design,
+  gate thresholds and open decisions:
+  [LOCAL_AI_AGENT_PLAN.md §7a](LOCAL_AI_AGENT_PLAN.md).
+
 - Prototype the linked campaign knowledge base and local assistant described in
   [CAMPAIGN_ASSISTANT_PLAN.md](CAMPAIGN_ASSISTANT_PLAN.md).
 - Template the Jellyfin SSO plugin's configuration XML, once the plugin has

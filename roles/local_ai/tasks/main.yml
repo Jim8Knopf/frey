@@ -325,6 +325,7 @@
     - {src: route.yml.j2, dest: route.yml, mode: "0644"}
     - {src: download-model.sh.j2, dest: download-model.sh, mode: "0755"}
   when: not ansible_check_mode or local_ai_stack_stat.stat.exists
+  notify: Restart local AI gateway
 
 - name: Install the observer program
   ansible.builtin.copy:
@@ -337,6 +338,61 @@
     - local_ai.observer.enabled | bool
     - not ansible_check_mode or local_ai_stack_stat.stat.exists
   notify: Restart local AI observer
+
+- name: Install the notes committer
+  # On the host because the agent's image has no git binary and its rootfs is
+  # read-only, so it cannot commit its own writes. This also captures edits
+  # made by hand in SilverBullet.
+  ansible.builtin.template:
+    src: frey-notes-commit.sh.j2
+    dest: /usr/local/bin/frey-notes-commit
+    owner: root
+    group: root
+    mode: "0750"
+    validate: "bash -n %s"
+  when: local_ai.campaign.enabled | bool
+
+- name: Install the notes committer units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-notes-commit.service
+    - frey-notes-commit.timer
+  register: local_ai_commit_units
+  when: local_ai.campaign.enabled | bool
+
+- name: Reload systemd after changing the notes committer
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - local_ai.campaign.enabled | bool
+    - local_ai_commit_units.changed
+    - not ansible_check_mode
+
+- name: Enable the notes committer timer
+  ansible.builtin.systemd_service:
+    name: frey-notes-commit.timer
+    enabled: true
+    state: started
+  when:
+    - local_ai.campaign.enabled | bool
+    - not ansible_check_mode
+
+- name: Install the campaign assistant program
+  ansible.builtin.copy:
+    src: campaign.py
+    dest: "{{ local_ai.stack_dir }}/campaign.py"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - local_ai.campaign.enabled | bool
+    - not ansible_check_mode or local_ai_stack_stat.stat.exists
+  notify: Restart campaign assistant
 
 - name: Install the notes ACL helper
   ansible.builtin.template:
@@ -392,6 +448,109 @@
     - local_ai_download_unit.changed or local_ai_legacy_removed.changed
     - not ansible_check_mode
 
+# --- Hermes Agent ----------------------------------------------------------
+# Its own hostname, its own uid, and its own login. See
+# docs/LOCAL_AI_AGENT_PLAN.md 6a for why the toolset is trimmed and what one
+# turn costs.
+
+- name: Create the Hermes home directory
+  # 0700 is not a preference. Hermes checks this itself and refuses to start
+  # on a group- or world-writable home, exiting with
+  # `unsafe_control_permissions` before it reads any configuration - which
+  # looks like a crash loop rather than a permissions problem.
+  #
+  # recurse, because the uid is not immutable: changing it to SilverBullet's
+  # left 521 files owned by the old one, and Hermes then refused to start with
+  # "install state is not writable by this user
+  # (/opt/data/installs/<id>/.install.lock)". The image's HERMES_UID remap
+  # chowns its data volume but evidently not that path. 16 MB, so recursing
+  # every run is cheap and idempotent.
+  ansible.builtin.file:
+    path: "{{ local_ai.hermes.home_dir }}"
+    state: directory
+    owner: "{{ local_ai.hermes.uid }}"
+    group: "{{ local_ai.hermes.gid }}"
+    mode: "0700"
+  when: local_ai.hermes.enabled | bool
+
+- name: Own the Hermes home as the agent's uid
+  # Ownership only, and deliberately WITHOUT `mode`: recursing with a mode
+  # applies 0700 to every file, Hermes rewrites some of them with its own
+  # permissions, and the task then reports changed on every run - which breaks
+  # "run it twice and the second run reports 0 changed", the only acceptance
+  # test this repo has.
+  #
+  # Needed because the uid is not immutable: changing it to SilverBullet's
+  # left 521 files owned by the old one and Hermes refused to start with
+  # "install state is not writable by this user". 16 MB, so recursing is cheap.
+  ansible.builtin.file:
+    path: "{{ local_ai.hermes.home_dir }}"
+    state: directory
+    owner: "{{ local_ai.hermes.uid }}"
+    group: "{{ local_ai.hermes.gid }}"
+    recurse: true
+  when: local_ai.hermes.enabled | bool
+
+- name: Check for the persisted identity secrets
+  ansible.builtin.stat:
+    path: "{{ local_ai.hermes.identity_key_file }}"
+  register: local_ai_identity_stat
+  when: local_ai.hermes.enabled | bool
+
+- name: Read the identity secrets
+  ansible.builtin.slurp:
+    src: "{{ local_ai.hermes.identity_key_file }}"
+  register: local_ai_identity_blob
+  when:
+    - local_ai.hermes.enabled | bool
+    - local_ai_identity_stat.stat.exists
+  no_log: true
+
+- name: Pick up the Hermes OIDC client secret
+  ansible.builtin.set_fact:
+    local_ai_hermes_oidc_secret: >-
+      {{
+        (
+          (local_ai_identity_blob.content | b64decode | from_json)
+          | default({}, true)
+        ).hermes_oidc_secret | default('', true)
+        if (local_ai_identity_stat.stat.exists | default(false))
+        else ''
+      }}
+  when: local_ai.hermes.enabled | bool
+  no_log: true
+
+- name: Require the Hermes OIDC client secret to exist
+  # Deliberately fatal rather than degrading to no authentication. Hermes
+  # demands an auth provider for any non-loopback bind, so a missing secret
+  # cannot be worked around here - it would simply fail to start, with the
+  # cause one layer further away.
+  ansible.builtin.assert:
+    that:
+      - local_ai_hermes_oidc_secret | length > 0
+    fail_msg: >-
+      No hermes_oidc_secret in {{ local_ai.hermes.identity_key_file }}. The
+      identity role generates it on its first run, so deploy identity before
+      (or together with) local_ai - `--tags identity`, or a full site.yml run,
+      where the module order already guarantees it.
+  when: local_ai.hermes.enabled | bool
+
+- name: Install the Hermes configuration
+  # Holds the OIDC client secret, hence 0640 and the group the container runs
+  # as. Mounted read-only, like every other generated file here: edits belong
+  # in roles/local_ai/templates/.
+  ansible.builtin.template:
+    src: hermes-config.yaml.j2
+    dest: "{{ local_ai.stack_dir }}/hermes-config.yaml"
+    owner: root
+    group: "{{ local_ai.hermes.gid }}"
+    mode: "0640"
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode or local_ai_stack_stat.stat.exists
+  no_log: true
+  notify: Restart Hermes
+
 - name: Start the authenticated local AI gateway
   community.docker.docker_compose_v2:
     project_src: "{{ local_ai.stack_dir }}"
@@ -405,6 +564,70 @@
 # says the model did not answer. A monitoring component that refuses to run
 # until everything else is perfect is useless in exactly the situation it
 # exists for.
+- name: Start the campaign assistant
+  # Needs the model to answer, but starting without it is harmless: the chat
+  # page simply reports that the model could not be reached.
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [campaign]
+    services: [campaign]
+    state: present
+    pull: never
+  when:
+    - local_ai.campaign.enabled | bool
+    - not ansible_check_mode
+
+- name: Start Hermes Agent
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [hermes]
+    services: [hermes]
+    state: present
+    pull: never
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+
+# The gateway owns the session store, and without it Hermes answers normally
+# and persists NOTHING - sessions/ stays empty, state.db's `messages` table
+# holds 0 rows, and the only clue is one startup warning. The container
+# registers a gateway slot at boot but does not start it until an autostart
+# intent exists (`reconcile: profile=default prior_state=None
+# action=registered`), so the first run has to ask for it once. Hermes then
+# records desired_state: running in gateway_state.json and starts it itself on
+# every later boot.
+- name: Check whether the Hermes gateway is running
+  ansible.builtin.command:
+    cmd: "docker exec {{ local_ai.hermes.container_name }} hermes gateway status"
+  register: local_ai_hermes_gw
+  changed_when: false
+  failed_when: false
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+
+- name: Start the Hermes gateway so the session store has an owner
+  ansible.builtin.command:
+    cmd: "docker exec {{ local_ai.hermes.container_name }} hermes gateway start"
+  register: local_ai_hermes_gw_start
+  changed_when: local_ai_hermes_gw_start.rc == 0
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+    - "'Gateway is running' not in (local_ai_hermes_gw.stdout | default(''))"
+
+- name: Confirm the Hermes session store came up
+  # Fails loudly rather than leaving a chat that silently forgets everything.
+  ansible.builtin.command:
+    cmd: "docker exec {{ local_ai.hermes.container_name }} hermes gateway status"
+  register: local_ai_hermes_gw_check
+  changed_when: false
+  failed_when: "'Gateway is running' not in local_ai_hermes_gw_check.stdout"
+  when:
+    - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+    - local_ai_hermes_gw_start.changed | default(false)
+
 - name: Start the read-only observer
   community.docker.docker_compose_v2:
     project_src: "{{ local_ai.stack_dir }}"

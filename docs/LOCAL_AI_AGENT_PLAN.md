@@ -305,81 +305,254 @@ what makes that tolerable — the worst case is a *wrong but safe* choice from a
 safe menu, caught by the deadman and the breaker. Do not relax the menu because
 the model seems to be doing well.
 
-## 6a. Hermes Agent, evaluated 2026-11-07
+## 6a. Hermes Agent, evaluated 2026-11-07, re-tested 2026-11-08
 
-**Verdict: do not deploy on Frey. Disqualified by hardware arithmetic, not by
-design.** This supersedes the open question in
-`docs/CAMPAIGN_AGENT_EVALUATION.md`, which recorded two timed-out image pulls
-and never reached a conclusion.
+**It runs, and with a trimmed toolset it is usable: ~11.5 minutes to warm a
+slot, then about 2 minutes per turn. It is KEPT on that basis.**
 
-What changed since that note: the current release is **v0.23.0 (2026-11-05)**,
-not the v0.22.5 recorded there. **ARM64 is confirmed**, so the architecture
-doubt in that document is settled — `nousresearch/hermes-agent:v0.23.0` ships
-`arm64/linux` at about 1120 MB compressed, with a `-desktop` variant at
-1355 MB. The two earlier pull timeouts were a slow uplink, not a missing image.
+This section was rewritten after actually running it. The first version
+disqualified Hermes on RAM arithmetic and a context minimum, and **both of
+those arguments were wrong**. They are kept below only as a record of how the
+prediction failed, because the failure mode is instructive: every number that
+mattered turned out to be measurable, and the measured ones disagreed with the
+predicted ones in both directions.
+
+Release tested: **v0.23.0**, digest
+`sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002`,
+3.21 GB on disk, `arm64/linux`.
+
+### What was proven to work
+
+- **It runs on the Pi 5.** Bootstraps 44 bundled skills and a pinned Chromium,
+  reaches `Setup complete`, and serves a local gateway. Gateway RSS is about
+  **290 MB** — trivial next to the model.
+- **64K context fits.** The old table below predicted 6.6 GiB at q8_0 and
+  called the fp16 case impossible. Measured with `ctx: 65536`: the model
+  container sits at **5.15-5.37 GiB of a 9 GiB limit** with **6.3-7.0 GiB still
+  available on the host**. The "no room" argument does not hold.
+- **It is built for slow local servers.** It detects a local `base_url` and
+  says so: *"Local provider detected — no-event TTFB watchdog raised from 120s
+  to 1800s (agent.local_stream_stale_timeout)"*, and ships a **900 s** local
+  prefill grace. This is not a framework that assumes a fast provider.
+- **Its filesystem hygiene is real.** It refuses a world-writable
+  `HERMES_HOME` outright (`unsafe_control_permissions`); the home needs `700`.
+
+### The configuration traps, in the order they bite
+
+These cost most of the evaluation and none of them are in the docs.
+
+1. **`HERMES_PROVIDER` is not a knob.** Provider comes from `config.yaml`
+   (`model.provider`). The stock file ships `provider: "auto"`,
+   `default: "anthropic/claude-opus-4.6"` and
+   `base_url: "https://openrouter.ai/api/v1"`.
+2. **`auto` + `OPENAI_BASE_URL` resolves to `openai-api`, whose transport is
+   the Codex Responses API** — `/v1/responses`, which llama.cpp does not
+   implement. The symptom is not a 404 but
+   *"Non-streaming API call timed out after 240s with no response"*, three
+   attempts, then *"unresponsive for 5 consecutive stale attempts"*. Nothing
+   names the real cause.
+3. **That stale model name also produces a fake diagnosis.** The
+   `ValueError: Model anthropic/claude-opus-4.6 has a context window of 20,480
+   tokens, which is below the minimum 64,000` was describing the *stored
+   placeholder*, not the served model. The 64K floor is a genuine enforced
+   check (`_enforce_minimum_context`), but that message was not about us.
+4. **`provider: "llamacpp"` is reserved for Hermes's own supervised server.**
+   Pointing it at an external one raises
+   `LocalRuntimeUnavailableError: The local model server is turned off`.
+5. **`provider: "custom"` is the correct setting** for an external
+   OpenAI-compatible endpoint. It selects `chat_completion_stream_request`,
+   which is what finally worked.
+
+A sixth, worth keeping because it explains confusing server logs: Hermes's own
+source notes that *"a non-streamed request can't be cancelled through the
+router, so it would keep the server busy after Hermes gives up on it."* That is
+exactly what was observed — llama-server kept grinding 2048-token batches for
+minutes after each abandoned attempt, which made the first runs look far worse
+than they were.
+
+### Where the prompt actually goes
+
+`hermes prompt-size` gives a byte breakdown, and it contradicts the obvious
+guess. **The 44 skills are not the cost.**
+
+| component | bytes |
+| --- | --- |
+| **tool schemas (21 tools)** | **39,999** |
+| system prompt, stable (identity / guidance / skills index) | 12,177 |
+| system prompt, volatile (memory / profile / timestamp) | 5,112 |
+| context (`AGENTS.md`, cwd files) | 644 |
+| **total** | **~57,900 (~12,900 tokens)** |
+
+Each skill contributes only **70-88 bytes** of always-on index cost; its
+`SKILL.md` is read lazily when used. So **tool schemas are 69% of the prompt**,
+and they are the only large trimmable part (`-t/--toolsets`).
+
+The floor matters as much as the total: stable + volatile is **17.3 KB
+(~3,850 tokens) with zero tools enabled**, and the 5,112-byte volatile block
+(memory, profile, timestamp) is by definition different every turn.
+
+### What it costs on this hardware
+
+Server-side measurement, cold slot, full default toolset:
+
+| prefill reached | cumulative | average rate | that batch alone |
+| --- | --- | --- | --- |
+| 2,048 tok | 278 s | 7.36 tok/s | 7.36 tok/s |
+| 4,096 tok | 702 s | 5.84 tok/s | **4.83 tok/s** |
+
+`progress = 0.16` at 2,048 tokens independently confirms the ~12,800-token
+total. The rate **degrades as context grows**, matching the superlinear
+prefill already recorded in `LOCAL_AI_EVALUATION.md`, so the full prompt
+extrapolates to **roughly an hour to first token** — for the message
+"Reply with exactly: ok". Generation then runs at 2.70 tok/s.
+
+**And llama-server is configured with one slot** (`parallel_slots: 1`, chosen
+because two slots split two threads and collapsed to 0.59 tok/s). A warm prefix
+cache is therefore the only thing that could make repeat turns cheap, and it is
+evicted by any other use of `ai.hub.frey` — which is precisely the "one
+interface for everything" this plan is built around.
+
+### Verdict: usable, and kept — with the trim and the caveats
+
+Measured end to end on 2026-11-08, `provider: custom`, `-t file`, two
+consecutive turns, both answering correctly:
+
+| | prefill tokens | prefill time | rate | wall clock |
+| --- | --- | --- | --- | --- |
+| turn 1, cold slot | 4,070 | **692.8 s (11.5 min)** | 5.87 tok/s | 16 min 9 s |
+| turn 2, warm slot | **489** | **106.5 s (1.8 min)** | 4.59 tok/s | 2 min 21 s |
+
+**The prefix cache is what makes it viable.** Turn 2 re-evaluated only 489 of
+4,044 tokens — the volatile block (timestamp, session id, the new message) and
+everything after the first divergence. That 489-token re-evaluation is the
+floor for every warm turn, so **~2 minutes per turn** is the realistic steady
+state, with a **~11.5 minute** cost once per cold slot.
+
+**`-t file` is not optional.** It cuts the prompt from 12,800 to 4,096 tokens
+by dropping 17 of 21 tool schemas. Without it the cold turn is ~1 hour. Any
+toolset added here is paid for twice: once in the cold prefill and again in
+every warm turn that follows the divergence point.
+
+#### What this costs, and what to watch
+
+- **The cold start returns whenever the slot is lost.** `parallel_slots: 1`
+  means any other use of `ai.hub.frey` evicts Hermes's 4,096-token prefix, and
+  the next Hermes turn pays 11.5 minutes again. This is in direct tension with
+  the "one interface for everything" goal in §5 — the two uses evict each
+  other. Unresolved; see the open decision below.
+- **A cancelled request does not free the slot.** An abandoned turn was
+  observed still grinding **4.6 minutes** after its cancel, during which every
+  other request queued behind it. Hermes's own source states the cause: *"a
+  non-streamed request can't be cancelled through the router, so it would keep
+  the server busy after Hermes gives up on it."*
+- **It is not free while idle.** The gateway runs 26 threads at ~290 MB RSS,
+  and load average reached **10.28 on four cores** during a turn.
+- **`ctx: 65536` is now mandatory, not a trial setting.** Hermes enforces a
+  64K minimum in code (`_enforce_minimum_context`), so the context cannot go
+  back to 20480 while Hermes is kept. That is why `mem_limit` stays at 9g:
+  measured 5.15-5.37 GiB resident, 6.3-7.0 GiB still available on the host.
+
+#### Deployed as a module, 2026-11-08
+
+`hermes.hub.frey`, Ansible-managed, idempotent at 0 changed. The earlier
+hand-patched `config.yaml` under `/opt/frey/appdata/hermes-trial/` is no longer
+what runs; `roles/local_ai/templates/hermes-config.yaml.j2` is.
+
+The deployed prompt is **smaller** than the figures above — `hermes
+prompt-size` against the live config reports **~17.4 KB (~3,900 tokens)**
+versus ~57.9 KB for a default install, with tool schemas down from 39,999 B
+(21 tools) to 5,480 B (4), and the volatile block down from 5,112 B to 781 B.
+So the table above is the pessimistic end.
+
+Verified end to end, short of a browser login: `hermes.hub.frey` redirects to
+its own `/auth/login?provider=self-hosted`, which bounces to Authelia's
+authorization endpoint with `client_id=hermes`, an **https** redirect URI
+matching the registered one, `scope=openid profile email offline_access` and
+S256 PKCE — and Authelia accepts it, answering with its login flow rather than
+`invalid_client`. The agent process runs as uid 10003 (confirmed with `docker
+top`, since `docker exec id` reports the image's own user here).
+
+Five things only deploying could have found, all now recorded in
+`roles/local_ai/README.md`:
+
+- **`identity` is not in scope outside its own role.** The config template
+  read `identity.oidc_catalog.hermes.scopes` and failed with `'identity' is
+  undefined` - the trap `CLAUDE.md` names. The scope list is now spelled out
+  in `local_ai` defaults with a comment, as `roles/monitoring` does for
+  Grafana.
+- **`user:` on the container makes s6-overlay die in a restart loop**
+  (`/run belongs to uid 0 instead of 10003`), and `init: true` only hides it
+  by making s6 skip itself - which leaves the agent running as root. The
+  image's own message says to pass `HERMES_UID`/`HERMES_GID`.
+- **Behind Traefik, `dashboard.public_url` is required.** Without it Hermes
+  derives `http://` from the proxy's plain-HTTP hop and Authelia rejects the
+  redirect URI as a mismatch - in Authelia's log, not Hermes's. Registering an
+  `http://` callback would have "fixed" it by putting the authorization code
+  on the wire unencrypted.
+- **A failed play discards queued handlers.** The first deploy wrote the
+  Authelia client and then failed on the template above, so `Restart authelia`
+  never ran; every later run saw the config unchanged, never re-notified, and
+  Authelia served an 11-hour-old config while reporting
+  `invalid_client` / "The requested OAuth 2.0 Client does not exist". This is
+  the `config.txt` trap again: correct on disk is not correct in the process.
+- **Authelia warns when `grant_types` includes `refresh_token` without the
+  `offline_access` scope**, and says the warning will become an error. Fixed
+  by granting the scope, which the Hermes plugin genuinely uses, rather than
+  by removing the grant. Grafana still carries the same warning.
+
+Still open, and deliberately not decided here: the single slot. `ai.hub.frey`,
+`campaign.hub.frey` and `hermes.hub.frey` evict each other's cached prompt, so
+alternating between them re-pays Hermes's cold start. Raising
+`parallel_slots` is not the answer - two slots split two threads and measured
+0.59 tok/s.
 
 ### What is genuinely good about it
 
-- **It runs fully offline against an OpenAI-compatible endpoint** — the docs
-  name vLLM, SGLang, Ollama "or any OpenAI-compatible API", with a custom base
-  URL. Phase 0 just gave Frey exactly such an endpoint, so the integration
-  point already exists.
-- **It can be fully contained.** Alongside terminal-backend isolation it
-  supports **whole-process wrapping**, running the entire agent process tree
-  in a Docker container under declarative filesystem, network, process and
-  inference policy. That is precisely what §3 requires.
-- **Its security documentation is unusually honest**, and worth quoting
-  because it states the thesis of this whole plan better than this document
-  does: *"The only security boundary against an adversarial LLM is the
-  operating system. Nothing inside the agent process constitutes
-  containment."* It also says in-process approval gates and redaction are
-  *"not security boundaries"* but heuristics. Any vendor willing to write that
-  down is being straight with you.
+Unchanged from the first evaluation, and still true:
 
-### Why it still cannot run here
+- **It runs fully offline against an OpenAI-compatible endpoint**, which
+  phase 0 already provides.
+- **It can be fully contained** — whole-process wrapping under declarative
+  filesystem, network, process and inference policy, which is what §3 wants.
+- **Its security documentation is unusually honest**, and states the thesis of
+  this plan better than this document does: *"The only security boundary
+  against an adversarial LLM is the operating system. Nothing inside the agent
+  process constitutes containment."* It also says in-process approval gates and
+  redaction are *"not security boundaries"* but heuristics. A vendor willing to
+  write that down is being straight with you.
 
-**The context requirement.** The documentation states a hard minimum:
-*"Hermes Agent requires a model with at least 64,000 tokens of context."*
-Frey serves 8192. The cost of 64K on this hardware is arithmetic, not opinion.
+### The prediction that failed, kept as a record
 
-Qwen3.5-4B is 32 layers with 4 key/value heads and head_dim 256, so each token
-costs `2 x 32 x 4 x 256` values of KV cache — **128 KiB per token at fp16**:
+The first evaluation disqualified Hermes with this table and the claim that the
+fp16 column was impossible and the q8_0 column would leave ~1.4 GiB for
+everything else:
 
 | Context | KV cache fp16 | KV cache q8_0 | Plus 2.71 GiB weights |
 | --- | --- | --- | --- |
 | 8192 (deployed) | 1.0 GiB | 0.5 GiB | 3.7 / 3.2 GiB |
 | **64000 (Hermes minimum)** | **7.8 GiB** | **~3.9 GiB** | **10.5 / 6.6 GiB** |
 
-The host reported **8 GiB available** on 2026-11-07. The fp16 column is
-impossible. The q8_0 column technically fits and then leaves about 1.4 GiB for
-Jellyfin, the *arrs, Authelia, LLDAP and monitoring — which is the same
-CPU-and-RAM contention argument `CLAUDE.md` already makes about software
-transcoding, except worse, because it is resident rather than occasional.
+Measured, 64K cost **5.15-5.37 GiB total** and left **6.3-7.0 GiB available**.
+It also predicted "roughly 53 minutes before the first output token" from an
+assumed 20 tok/s against a *full* 64K window — a number that was wrong in
+method (nothing fills the window; the prompt is ~12.9K) yet landed near the
+right order of magnitude for the wrong reason.
 
-**And the arithmetic that actually settles it is prompt processing.** Context
-is not free to *fill*. Prompt processing is compute-bound and the Pi 5's A76
-cores have no i8mm. At a generous 20 tokens/s, a 64K-token agent turn spends
-**roughly 53 minutes before the first output token**. Even a modest 10K-token
-turn is about eight minutes. An agent that takes tens of minutes per step
-cannot keep a system healthy; the fault it was reasoning about has moved on.
-
-A secondary problem: *"Any component running inside the agent process (skills,
-plugins, hook handlers) can read whatever the agent itself can read, including
-in-memory credentials."* That is fine under whole-process wrapping with no
-credentials present, but it means the boundary must be the container, and
-every skill and plugin must be treated as having the agent's full access.
+**The lesson is the one `CLAUDE.md` already teaches about `config.txt`: a
+number correct on paper is not a number the machine is running.** Two hours of
+measurement replaced both estimates, and the thing that actually decided it —
+the size of Hermes's own prompt — appeared in neither prediction.
 
 ### What to do instead
 
 - **Keep the broker design in §3.** It exists because the model must not hold
-  a shell. Hermes's own security page agrees with that reasoning.
-- **Keep the `/v1` endpoint as the integration seam.** If Hermes is ever
-  wanted, it belongs on the ThinkPad — a machine with real compute — pointed
-  at a real model, not on the Pi. The endpoint makes that possible with no
-  further work.
-- **Re-evaluate only if** the context minimum drops substantially, or Frey
-  gains hardware with the memory bandwidth and compute to fill 64K in seconds
-  rather than minutes. Neither is foreseeable on a Pi 5.
+  a shell, and Hermes's own security page argues the same.
+- **Keep the `/v1` endpoint as the integration seam.** It is what let this
+  evaluation happen at all, and it is what makes Hermes-on-the-ThinkPad
+  possible later with no further work.
+- **Re-evaluate if** Hermes gains a way to shrink its always-on tool schemas,
+  or Frey gains hardware that prefills ~13K tokens in seconds.
+
 
 ## 7. Phases
 
@@ -389,6 +562,15 @@ Each phase is independently useful and independently abandonable.
 UD-Q4_K_XL, `--cache-reuse`, the rename to `local_ai` / `ai.hub.frey`, and the
 generalised OpenAI-compatible endpoint. Do the rename *before* building agent
 tooling, or you build it twice. Covers `LOCAL_AI_EVALUATION.md` §12 steps 1–4.
+
+**Phase 1 — read-only observer. SUPERSEDED 2026-11-08 by §7a; see there
+before building on any of this.** It shipped, it answered the question it
+existed to ask, and the answer retires it: a 4B assembled a confident wrong
+causal chain, and the component costs ~8 minutes of the only model slot per
+report to produce a narrative that fixes nothing and duplicates an alert the
+phone already carried. The replacement is alert-triggered escalation, not a
+poll loop. Original rationale kept below because the reasoning about limits
+still governs what replaces it.
 
 **Phase 1 — read-only observer. Zero risk, immediately useful.** The agent
 reads Prometheus, Loki and the textfile collectors and writes incident reports
@@ -574,6 +756,120 @@ unit, arms the deadman, and cannot be replayed.
 A verb earns autonomy after N correct proposals. **[DECIDE]** the starting
 autonomy: my proposal is phase 4's tiering, but propose-only for the first
 weeks is the zero-surprise path.
+
+## 7a. TODO — replace the observer with an alert-triggered escalation
+
+**Status: agreed 2026-11-08, not started. This supersedes Phase 1.**
+
+The shape is wrong today and the fix is mostly wiring, not new machinery. Put
+plainly: *an alert should cause something to happen.* Nothing in this plan
+currently does that.
+
+### What is wrong
+
+```
+                          WHAT HAPPENS NOW
+alert fires
+  └─ Alertmanager ──webhook──▶ relay ──▶ phone        ← the only real trigger
+     frey-self-heal   polls Alertmanager on an 8-minute timer
+     observer         polls Alertmanager every 5 minutes, writes an essay
+```
+
+- **The trigger already exists and nothing uses it.** Alertmanager has
+  `webhook_configs` pointing at the relay, so the relay is handed every alert
+  the moment it fires. Both the observer and `frey-self-heal` ignore that and
+  discover the alert later by asking.
+- **The observer has no use case.** It writes a narrative that fixes nothing,
+  arrives after the phone notification it duplicates, and costs about eight
+  minutes of the only model slot per report (measured: six consecutive reports
+  took 6m59s–8m47s). It also evicts whatever conversation was cached in that
+  slot, which is what made a one-word chat message take six minutes.
+- **Its own test has concluded.** Phase 1 existed to answer "is a 4B good
+  enough at correlation before anything is allowed to act". The answer was no:
+  the first real report was well-structured, cited its evidence, and still
+  blamed the 5V rail for NVMe corruption after reading `status="none"` (which
+  only means *no healthcheck defined*) as containers in an unknown state.
+  That is a result worth keeping and a component worth retiring.
+
+### What it should be
+
+```
+                          WHAT IT SHOULD BE
+alert fires
+  └─ Alertmanager ──webhook──▶ relay ──▶ phone              [exists, untouched]
+                                 └──▶ frey-self-heal: known fault? apply fix
+                                        └─ no recipe, or still firing after it?
+                                            └──▶ Hermes, ONCE, for that alert
+                                                  • broker read verbs to diagnose
+                                                  • propose-only for any change
+                                                  • approved by id on the host
+```
+
+Hermes suits this better than the observer does, for the reason that looks
+backwards: it is slower per run but would run **rarely**. The observer's flaw
+is running often and producing nothing actionable. An escalation that fires
+only when the deterministic catalogue has no answer might run once a week,
+where ten minutes costs nothing.
+
+### Already built, and reused as-is
+
+- **the relay** — the event hop; Alertmanager already webhooks it
+- **`frey-self-heal`** — the deterministic repair catalogue, alert-name keyed
+- **the broker** — read verbs plus propose-only writes, 30 boundary checks
+- **Hermes** — at `hermes.hub.frey`, behind Authelia
+
+### What has to be built
+
+1. **Retire the observer.** Reclaims ~8 min of slot time per incident and its
+   RAM. Loses nothing anyone relies on; the phone notification is independent.
+   The `/drafts` history stays on disk.
+2. **Give Hermes the broker.** It currently has `file` tools and read-only
+   notes and **cannot inspect the system at all**, so "Hermes takes care of it"
+   is not true yet. This is the real work: an MCP server (or a tool shim) over
+   the broker's existing read verbs, plus `propose`.
+3. **Wire the escalation off the relay**, not off a timer.
+4. **Keep writes propose-only.** The broker already enforces this; do not add
+   an action verb to make the escalation tidier.
+
+### THE GATE — the part that decides whether this is an improvement
+
+Without a gate this is the observer again with a larger prompt. Escalate only
+when **all** hold:
+
+- `frey-self-heal` had no recipe for the alert, **or** its repair ran and the
+  alert is still firing afterwards
+- severity is `critical`, **or** the alert has been firing longer than a
+  persistence threshold `[DECIDE: suggest 30 min]`
+- no escalation is already in flight — strictly one at a time, because one
+  llama-server slot
+- a cooldown per alert name has expired `[DECIDE: suggest 6 h]`, so a flapping
+  alert cannot occupy the model all day
+
+And unconditionally: **never escalate while a human is using the model.** The
+observer's `model_busy()` / `defer_for_interactive()` pair already does this
+and should move with the escalation rather than be rewritten.
+
+### Open decisions
+
+- `[DECIDE]` persistence threshold and per-alert cooldown (suggestions above).
+- `[DECIDE]` does the escalation notify the phone when it *proposes* a repair?
+  Argument for: a proposal nobody reads is worthless. Against: it competes
+  with the alert that is already on the phone.
+- `[DECIDE]` which alerts are escalation-eligible at all. A deliberate
+  allowlist is more in keeping with §3 than "anything critical", and it also
+  bounds the blast radius of a confabulated diagnosis.
+- `[DECIDE]` whether the relay grows the escalation logic or a small sibling
+  unit owns it. The relay is load-bearing for notifications, and §3's reasoning
+  says not to put new logic in the path of something Frey depends on — which
+  argues for the sibling.
+
+### Do not regress these
+
+- The relay's notification path must stay untouched. It is the safety net, and
+  the reason the observer polled in the first place.
+- No new Alertmanager receiver or route: the existing webhook already carries
+  every alert, and editing that routing tree risks shadowing the relay.
+- Writes stay propose-only, approved by id on the host.
 
 ## 8. Proving the limits — `scripts/agent-denial-check.sh`
 

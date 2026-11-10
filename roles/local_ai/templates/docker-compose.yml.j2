@@ -42,6 +42,48 @@ services:
       - "traefik.http.routers.local-ai-http.entrypoints=web"
       - "traefik.http.routers.local-ai-http.middlewares=to-canonical@file"
       - "traefik.http.routers.local-ai-http.service=local-ai"
+{% if local_ai.campaign.enabled | bool %}
+      # The assistant's own hostname, same gateway, same auth. route.yml
+      # dispatches on Host so this reaches the assistant rather than the model.
+      - "traefik.http.routers.campaign.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.campaign.entrypoints=websecure"
+      - "traefik.http.routers.campaign.tls=true"
+      - "traefik.http.routers.campaign.middlewares=secure-headers@file,authelia@file"
+      - "traefik.http.routers.campaign.service=local-ai"
+      - "traefik.http.routers.campaign-legacy.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.campaign-legacy.entrypoints=websecure"
+      - "traefik.http.routers.campaign-legacy.tls=true"
+      - "traefik.http.routers.campaign-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.campaign-legacy.service=local-ai"
+      - "traefik.http.routers.campaign-http.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.campaign-http.entrypoints=web"
+      - "traefik.http.routers.campaign-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.campaign-http.service=local-ai"
+{% endif %}
+{% if local_ai.hermes.enabled | bool %}
+      # Hermes's hostname, same gateway, and DELIBERATELY WITHOUT
+      # authelia@file. Hermes is an OIDC relying party that runs its own login
+      # against Authelia, so forward auth here would mean authenticating twice
+      # for one service. Access is still restricted to
+      # identity_services.hermes.groups, which Authelia applies before it
+      # issues a token - taking the middleware off does not widen who gets in.
+      #
+      # secure-headers stays: that is transport hardening, not authentication.
+      - "traefik.http.routers.hermes.rule=Host(`{{ local_ai.hermes_host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.hermes.entrypoints=websecure"
+      - "traefik.http.routers.hermes.tls=true"
+      - "traefik.http.routers.hermes.middlewares=secure-headers@file"
+      - "traefik.http.routers.hermes.service=local-ai"
+      - "traefik.http.routers.hermes-legacy.rule=Host(`{{ local_ai.hermes_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.hermes-legacy.entrypoints=websecure"
+      - "traefik.http.routers.hermes-legacy.tls=true"
+      - "traefik.http.routers.hermes-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.hermes-legacy.service=local-ai"
+      - "traefik.http.routers.hermes-http.rule=Host(`{{ local_ai.hermes_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.hermes_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.hermes-http.entrypoints=web"
+      - "traefik.http.routers.hermes-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.hermes-http.service=local-ai"
+{% endif %}
   model:
     profiles: [model]
     image: {{ local_ai.image }}
@@ -51,7 +93,10 @@ services:
     command:
       - "-m"
       - "/models/{{ m.file }}"
-{% if m.mmproj_file is defined %}
+{% if m.mmproj_file is defined and m.enable_vision | default(false) | bool %}
+      # Only when vision is explicitly wanted: the projector disables
+      # cache_reuse server-wide, which costs minutes of re-prefill on every
+      # turn. See enable_vision in defaults/main.yml.
       - "--mmproj"
       - "/models/{{ m.mmproj_file }}"
 {% endif %}
@@ -61,10 +106,44 @@ services:
       - "8080"
       - "--threads"
       - "{{ m.threads }}"
+{% if m.threads_batch is defined %}
+      # Prompt processing gets more threads than generation: compute-bound
+      # versus memory-bandwidth-bound. See threads_batch in defaults/main.yml.
+      - "--threads-batch"
+      - "{{ m.threads_batch }}"
+{% endif %}
       - "--ctx-size"
       - "{{ m.ctx }}"
+{% if m.parallel_slots is defined %}
+      - "--parallel"
+      - "{{ m.parallel_slots }}"
+{% endif %}
       - "--cache-reuse"
       - "{{ m.cache_reuse }}"
+{% if m.spec_type | default('') | length > 0 %}
+      # Speculative decoding from n-grams already in the context: no draft
+      # model and no extra memory. See spec_type in defaults/main.yml.
+      - "--spec-type"
+      - "{{ m.spec_type }}"
+{% endif %}
+{% if m.cache_reuse | int > 0 %}
+      # cache_reuse works "via KV shifting" and llama-server refuses it with
+      # "cache_reuse is not supported by this context" unless context shift is
+      # on - and --context-shift defaults to DISABLED in b12019. Without this
+      # pair, only an exact common prefix is reusable, and Hermes's changing
+      # timestamp sits early enough in its prompt to invalidate nearly all of
+      # it: measured f_keep 0.17-0.34, ~1,900 tokens re-prefilled per turn,
+      # about four minutes before the first generated word.
+      - "--context-shift"
+{% endif %}
+{% if m.cache_type_k is defined %}
+      - "--cache-type-k"
+      - "{{ m.cache_type_k }}"
+{% endif %}
+{% if m.cache_type_v is defined %}
+      - "--cache-type-v"
+      - "{{ m.cache_type_v }}"
+{% endif %}
       - "-fa"
       - "{{ m.flash_attn }}"
       - "--temp"
@@ -151,6 +230,200 @@ services:
     cap_drop: [ALL]
     read_only: true
     tmpfs: [/tmp]
+{% endif %}
+{% if local_ai.campaign.enabled | bool %}
+{% set c = local_ai.campaign %}
+  campaign:
+    profiles: [campaign]
+    image: {{ c.image }}
+    container_name: {{ c.container_name }}
+    restart: unless-stopped
+    user: "{{ c.uid }}:{{ c.gid }}"
+{% if local_ai.broker.enabled | bool %}
+    # Runs as SilverBullet's uid so it can write notes, plus the observer's
+    # group so it can write into the broker's request queue, which is
+    # group-owned by that gid at 0770.
+    group_add: ["{{ local_ai.observer.gid }}"]
+{% endif %}
+    command: ["python3", "-u", "{{ c.script_path }}"]
+    environment:
+      - TZ={{ frey.timezone }}
+      - PYTHONDONTWRITEBYTECODE=1
+      - CAMPAIGN_LOG_LEVEL={{ c.log_level }}
+      - MODEL_URL=http://model:8080
+      - MODEL_NAME=/models/{{ m.file }}
+      - CAMPAIGN_SPACE=/notes
+      - CAMPAIGN_ROOT={{ c.root }}
+      - CAMPAIGN_CHAT_PAGE={{ c.chat_page }}
+      - CAMPAIGN_READONLY={{ c.readonly_subdirs | join(',') }}
+      - CAMPAIGN_POLL_SECONDS={{ c.poll_seconds }}
+      - CAMPAIGN_MODEL_TIMEOUT={{ c.model_timeout }}
+      - CAMPAIGN_MAX_TOKENS={{ c.max_tokens }}
+      - CAMPAIGN_MAX_STEPS={{ c.max_steps }}
+      - CAMPAIGN_TOOL_RESULT_BUDGET={{ c.tool_result_budget }}
+      - CAMPAIGN_PORT={{ c.port }}
+{% if local_ai.broker.enabled | bool %}
+      - BROKER_REQ_DIR=/broker/req
+      - BROKER_RES_DIR=/broker/res
+{% endif %}
+    volumes:
+      # Nested mounts on purpose, so the WRITE scope is enforced by the mount
+      # table rather than only by the agent's own path checks:
+      #   the space itself is read-only,
+      #   the campaign subtree is read-write,
+      #   .git is read-write because committing needs it and it lives at the
+      #   space root - without this nesting, enabling commits would have meant
+      #   mounting the entire space read-write.
+      - "{{ frey.notes_data_dir }}/spaces/notes:/notes:ro"
+      - "{{ frey.notes_data_dir }}/spaces/notes/{{ c.root }}:/notes/{{ c.root }}"
+      - "{{ frey.notes_data_dir }}/spaces/notes/.git:/notes/.git"
+      - "{{ local_ai.stack_dir }}/campaign.py:{{ c.script_path }}:ro"
+{% if local_ai.broker.enabled | bool %}
+      # The only channel to anything privileged, and read verbs only. Requests
+      # go in; answers come from a directory that is read-only here, so the
+      # assistant cannot forge a reply to itself.
+      - "{{ local_ai.broker.req_dir }}:/broker/req"
+      - "{{ local_ai.broker.res_dir }}:/broker/res:ro"
+{% endif %}
+    networks:
+      # ai_private only: it needs the model and nothing else. internal, so no
+      # egress - and it has no broker access and no system verbs at all.
+      - ai_private
+    cpus: {{ c.cpus }}
+    mem_limit: {{ c.mem_limit }}
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+{% endif %}
+{% if local_ai.hermes.enabled | bool %}
+{% set h = local_ai.hermes %}
+  hermes:
+    profiles: [hermes]
+    image: {{ h.image }}
+    container_name: {{ h.container_name }}
+    restart: unless-stopped
+    # NO `user:` here, and no `init: true` either - both were tried and both
+    # are wrong, in ways the image tells you about only after it fails:
+    #
+    #   `user:` makes s6-overlay's preinit die in a restart loop, because it
+    #   refuses to continue unless /run belongs to the container uid and it
+    #   has no privileges left to fix it ("/run belongs to uid 0 instead of
+    #   10003 ... and we're lacking the privileges to fix it", exit 100). The
+    #   image's own message is explicit: "DON'T use --user", pass HERMES_UID
+    #   and HERMES_GID instead and it remaps its user at boot.
+    #
+    #   `init: true` hides that crash rather than fixing it: with an init
+    #   process as PID 1, s6 notices it is not PID 1 and skips itself - so
+    #   nothing drops privileges and the agent runs as ROOT. That is how the
+    #   one-shot measurements were taken, which is fine for a measurement and
+    #   not fine for a service.
+    #
+    # So: start as root, let s6 fix /run and drop to the uid below.
+    # `sleep infinity`, and this is NOT laziness - it is the image's own
+    # architecture, and getting it wrong silently breaks conversation storage.
+    #
+    # The container's CMD runs as s6's "main program", not as a supervised
+    # service, and container_boot.py calls _is_dashboard_container(argv):
+    # when argv[0] == "dashboard" it declares the container dashboard-only and
+    # SKIPS gateway reconciliation entirely ("reconcile: skipping (dashboard
+    # container - does not need per-profile gateways)"). The gateway is what
+    # owns the session store, so with `dashboard` as the CMD the web UI works,
+    # the model answers, and every message is thrown away: `sessions/` stays
+    # empty and state.db's `messages` table holds 0 rows, with only a startup
+    # warning naming it ("Session store is not initialized. Start this
+    # profile's gateway to initialize it.").
+    #
+    # The supported shape is to let s6 run both: main-hermes is deliberately a
+    # no-op (`exec sleep infinity` in the image), the dashboard is a real
+    # supervised service gated by HERMES_DASHBOARD, and profile-gateways
+    # registers the root gateway. So the CMD only has to keep the container
+    # alive, and the wrapper explicitly supports `sleep` ("first arg is an
+    # executable -> exec it directly").
+    command: ["sleep", "infinity"]
+    environment:
+      - TZ={{ frey.timezone }}
+      # The supported way to own the data volume as a non-root uid: the image
+      # remaps its `hermes` user to these at boot and chowns /opt/data to
+      # match. PUID/PGID are accepted aliases.
+      - HERMES_UID={{ h.uid }}
+      - HERMES_GID={{ h.gid }}
+      # Runs the dashboard as a supervised s6 service instead of as the CMD,
+      # which is what leaves gateway reconciliation switched on.
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_PORT={{ h.port }}
+      # Stands in for the --skip-build flag, which the image's dashboard
+      # service does not pass. Without either, main_dashboard.py runs the web
+      # UI build - npm, on a Pi, possibly with no uplink. Pointing at the
+      # bundle the image already ships skips it.
+      - HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+      # httpx 0.28.1 builds its SSL context with ssl.create_default_context(),
+      # which reads this - verified in the image against
+      # https://{{ identity_hosts.auth }}.{{ frey.service_domain }}, where OIDC discovery
+      # returned 200 and the expected issuer. Without it the back channel
+      # fails inside the OIDC library, which an app-level "trust everything"
+      # switch would not cover even if one existed.
+      - SSL_CERT_FILE=/frey-ca.crt
+      - REQUESTS_CA_BUNDLE=/frey-ca.crt
+      # Hermes's own watchdogs assume a fast provider. The default
+      # non-streaming cutoff is 240 s, and prefill of its prompt here is
+      # minutes, which is what made a healthy endpoint look broken.
+      - HERMES_LOCAL_STREAM_STALE_TIMEOUT={{ h.stale_timeout }}
+      - HERMES_STREAM_STALE_TIMEOUT={{ h.stale_timeout }}
+      - HERMES_CODEX_TTFB_TIMEOUT_SECONDS={{ h.stale_timeout }}
+      - HERMES_API_TIMEOUT={{ h.api_timeout }}
+      # The llama-server endpoint is declared in config.yaml as provider
+      # `custom`; this is the key that pairs with it. Deliberately NOT
+      # OPENAI_BASE_URL/OPENAI_API_KEY: their presence is what makes provider
+      # `auto` resolve to openai-api and talk the Responses API to a server
+      # that does not implement it.
+      - CUSTOM_API_KEY=local
+    volumes:
+      # HERMES_HOME. Holds sessions, skills and its OIDC session state, so it
+      # is persistent and NOT read-only.
+      - "{{ h.home_dir }}:/opt/data"
+      - "{{ local_ai.stack_dir }}/hermes-config.yaml:/opt/data/config.yaml:ro"
+      - "{{ frey.pki_public_dir }}/frey-root-ca.crt:/frey-ca.crt:ro"
+      # The notes, in FOUR nested mounts that together say "extend the
+      # campaign, change nothing else". Order matters: Docker sorts by path
+      # depth, so the shallower read-only mounts are laid down first and the
+      # deeper ones override them.
+      #
+      #   the space            read-only   nothing outside the campaign
+      #   Campaigns/Pirate     WRITABLE    new pages and edits land here
+      #   .../Templates        read-only   the shape every page copies
+      #   .../Rules            read-only   where this model contradicts itself
+      #
+      # This is the boundary, and it is a mount flag rather than a prompt
+      # rule, so no amount of persuasion reaches past it. Strictly stronger
+      # than the campaign assistant's equivalent, which refuses those two
+      # directories in its own Python - §3 of docs/LOCAL_AI_AGENT_PLAN.md
+      # asks for exactly this difference.
+      #
+      # Hermes runs as SilverBullet's uid (see h.uid), so pages it writes stay
+      # editable in SilverBullet. git is the backstop: frey-notes-commit.timer
+      # commits the space on a schedule, so a bad edit is recoverable.
+      - "{{ frey.notes_data_dir }}/spaces/notes:{{ h.notes_mount }}:ro"
+      - "{{ frey.notes_data_dir }}/spaces/notes/{{ h.notes_write_root }}:{{ h.notes_mount }}/{{ h.notes_write_root }}"
+{% for sub in h.notes_readonly_subdirs %}
+      - "{{ frey.notes_data_dir }}/spaces/notes/{{ h.notes_write_root }}/{{ sub }}:{{ h.notes_mount }}/{{ h.notes_write_root }}/{{ sub }}:ro"
+{% endfor %}
+    networks:
+      # Both, and each for one reason:
+      #   ai_private   reaches the model, and is internal so it has no egress
+      #   proxy        lets Traefik route hermes.{{ frey.service_domain }} here, and lets the
+      #                OIDC back channel reach Authelia by the HTTPS name on
+      #                the Frey certificate. Traefik carries a network alias
+      #                for every identity_hostnames entry, which is why that
+      #                name resolves at all on a Docker bridge - the host's
+      #                dnsmasq is bound to the AP radio and ignores queries
+      #                arriving over one.
+      - ai_private
+      - {{ frey.proxy_network }}
+    cpus: {{ h.cpus }}
+    mem_limit: {{ h.mem_limit }}
+    security_opt: [no-new-privileges:true]
 {% endif %}
 networks:
   {{ frey.proxy_network }}:
