@@ -41,8 +41,10 @@ The old stack in `archive/legacy-stack/` is reference-only.
 | `monitoring` | Metrics, logs, alerts, Grafana and Dockge |
 
 The registry keeps dependencies ordered: proxy → PKI → identity, acquisition →
-library, monitoring last. Acquisition stays separate because it can pause when
-there is no uplink without interrupting playback.
+library, monitoring last. Acquisition can pause without interrupting playback.
+Compose files live under `/opt/frey/stacks`, persistent application data under
+`/opt/frey/appdata`, and media under `/opt/frey/data`. FreyHub DNS resolves
+subdomains locally; Traefik routes services through its proxy network.
 
 ## Deploy and check
 
@@ -68,7 +70,14 @@ Move storage before deploying services: [NVME_MIGRATION](docs/NVME_MIGRATION.md)
 
 ## Maintenance
 
-- Edit image pins in `images.yml`, then deploy the owning module.
+- Edit quoted image tags in `images.yml`, review upstream migration notes, then
+  deploy and verify the owning module. `scripts/media-check-updates.sh` and
+  `scripts/monitoring-check.sh --updates` report available updates without
+  changing pins. Confirm ARM64 availability and back up data before major
+  database or application upgrades; downgrades may require a restore.
+  Media and monitoring normally use cached images; to re-pull
+  an unchanged tag use `--tags media_update -e media_update=true` or
+  `--tags monitoring_update -e monitoring_update=true` respectively.
 - Use Dockge at `dockge.hub.frey` for logs and restarts. Its stack files are
   read-only; make lasting changes in the roles.
 - Run `scripts/identity-check.sh` after authentication changes and

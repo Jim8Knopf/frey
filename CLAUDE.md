@@ -342,9 +342,9 @@ A pure Jinja reference like `"{{ vault_x | default('') }}"` is fine.
 `docs/GATEWAY.md` radios, captive portals, deadman rollback, two-phase migration ·
 `docs/IDENTITY.md` SSO, the `hub` label, certificates ·
 `docs/MEDIA.md` · `docs/MONITORING.md` · `docs/SSH_ACCESS.md` the lockouts and the
-whitelist · `docs/SECURITY.md` · `docs/NVME_MIGRATION.md` ·
-`docs/SERVICE_MODULES.md` Traefik label patterns ·
-`docs/ADDING_MODULES.md` · `docs/ARCHITECTURE.md` · `docs/IMPROVEMENTS.md` roadmap ·
+whitelist · `roles/security_baseline/README.md` · `docs/NVME_MIGRATION.md` ·
+`docs/ADDING_MODULES.md` Traefik label patterns and module contract ·
+`README.md` architecture · `docs/IMPROVEMENTS.md` roadmap ·
 `docs/LOCAL_AI_EVALUATION.md` the case for generalising and renaming
 `campaign_ai`, and the model/runtime verdicts behind it ·
 `docs/LOCAL_AI_AGENT_PLAN.md` the self-healing agent, its broker, and the

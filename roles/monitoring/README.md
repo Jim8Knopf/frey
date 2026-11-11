@@ -25,15 +25,10 @@ monitoring module; `monitoring_enable.dockge` controls the service.
 Static imports preserve task order and focused tags (`monitoring_config`,
 `monitoring_collectors`). Images precede validators; collectors precede startup.
 
-## Dockge migration
+## Dockge
 
-The first deployment transfers Dockge from its standalone project into
-monitoring. Its name, URL and `/opt/frey/appdata/dockge` data stay the same.
-The old Compose file is removed only after the new service answers. A failed
-migration restores the standalone project. Data directories are never removed.
+Dockge requires Authelia protection because it holds the Docker socket. Its
+stack mount is read-only by default; `monitoring.dockge.stacks_writable` allows
+temporary UI edits, which Ansible overwrites on deployment.
 
-Dockge keeps its stacks mount read-only and requires Authelia protection because
-it holds the Docker socket. Set `monitoring.dockge.stacks_writable` only if you
-intend to permit temporary UI edits; Ansible overwrites them on deployment.
-
-Operations and troubleshooting: [MONITORING](../../docs/MONITORING.md).
+Operations, migration and troubleshooting: [MONITORING](../../docs/MONITORING.md).

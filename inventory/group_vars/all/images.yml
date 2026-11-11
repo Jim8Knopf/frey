@@ -5,7 +5,7 @@ silverbullet_version: "2.12.1"
 # Qwen3.5's mmproj declares. Check both before moving this tag.
 local_ai_llama_version: "server-b12019"
 # Container image tags for every active Frey service.
-# Edit the tag here, then deploy the affected role (see docs/IMAGES.md).
+# Edit the tag here, then deploy the affected role (see README.md).
 # Quote new tags, especially tags that resemble numbers.
 # Confirm ARM64 support and review migration notes before upgrading.
 
