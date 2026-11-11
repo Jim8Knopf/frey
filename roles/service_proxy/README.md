@@ -20,16 +20,4 @@ older `local-ai_ai_private` network on `172.20.0.0/16` can capture the APNK
 Library DNS servers at `172.20.1.15` and `172.20.1.16`. The legacy local AI
 stack must be assessed and migrated separately if it is still present.
 
-Example labels for `immich.frey`:
-
-```yaml
-labels:
-  traefik.enable: "true"
-  traefik.docker.network: frey_proxy
-  traefik.http.routers.immich.rule: Host(`immich.frey`)
-  traefik.http.routers.immich.entrypoints: web
-  traefik.http.routers.immich.middlewares: secure-headers@file
-  traefik.http.services.immich.loadbalancer.server.port: "2283"
-networks:
-  - frey_proxy
-```
+See [Adding Modules](../../docs/ADDING_MODULES.md) for service routing and authentication.

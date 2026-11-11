@@ -36,3 +36,18 @@ frey:
 - Do not make modules depend on archived roles.
 - Prefer compose-file modules for services, but keep networking, storage, and security as separate modules.
 - For web services, use `frey_proxy` plus Traefik labels rather than editing DNS.
+
+## Web services
+
+FreyHub DNS resolves `*.frey` to the Pi; connect services to `frey_proxy`
+and use Traefik labels rather than adding DNS entries. Services use HTTPS at
+`<name>.hub.frey`, with the old `<name>.frey` name redirected. Copy the
+`proxy_labels` macro from `roles/media_acquisition/templates/docker-compose.yml.j2`
+to generate canonical HTTPS, legacy and HTTP routers. Protected services must
+redirect HTTP to HTTPS because Authelia uses secure cookies; unprotected
+services may serve HTTP for clients that cannot trust the Frey CA. Configure
+protection in `identity_services` in `inventory/group_vars/all/identity.yml`.
+
+Store persistent data under `/opt/frey/appdata/<service>`, join only required
+networks, avoid publishing ports unless needed, and keep secrets in the vault.
+See [IDENTITY](IDENTITY.md) for access policy.
