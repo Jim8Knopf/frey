@@ -248,14 +248,109 @@ media_acquisition:
       # the queue cleaner on through the API fails. Exclude with no patterns
       # is the honest spelling of "strike every failed import".
       failed_import_pattern_mode: Exclude
-    # Left off on purpose. The malware blocker fetches blocklists from the
-    # internet, and the download cleaner only acts on seeding rules that do
-    # not exist until someone defines them -- so both would be either broken
-    # or inert in a van. Flip them in media.yml once there is a reason to.
+    # -------------------------------------------------------------------------
+    # MALWARE BLOCKER
+    #
+    # Still off, and still for the reason it always was: it fetches its
+    # blocklist over the internet, and what it does with a list it could not
+    # fetch is not something this stack has established. In a van that is a
+    # question you get to find out the answer to at a campground.
+    #
+    # Now fully configured, so enabling it is one flag in media.yml rather
+    # than research. Chaptarr is absent because Cleanuparr has no Chaptarr
+    # application type at all -- the same reason it is missing from
+    # `instances` below.
+    # -------------------------------------------------------------------------
     malware_blocker:
       enabled: false
+      cron_expression: "0/5 * * * * ?"
+      blocklist_type: Blacklist
+      # Upstream's own list, which it refreshes every five minutes.
+      blocklist_path: https://cleanuparr.pages.dev/static/blacklist
+      # Remove the whole download when ANY file matches -- which is the point,
+      # since malware arrives as one extra file beside legitimate media.
+      delete_if_any_file_blocked: true
+      apps:
+        - sonarr
+        - radarr
+        - lidarr
+
+    # -------------------------------------------------------------------------
+    # DOWNLOAD CLEANER -- now on, because the rule it needs exists
+    #
+    # This was off on the grounds that it "only acts on seeding rules that do
+    # not exist until someone defines them". That was true. The rule below is
+    # that definition, so the reason has been removed rather than overruled.
+    #
+    # What it adds is the one case the queue cleaner cannot see. The queue
+    # cleaner strikes downloads stuck on metadata, errored, or failing to
+    # import; it has no rule for a torrent that downloads happily and then
+    # loses every seeder. That one sits in the *arr queue indefinitely,
+    # holding an active-download slot, and Sonarr will not look for a
+    # replacement while it is still queued. Measured 2026-11-09: 37 of 48
+    # incomplete torrents had zero seeds AND zero peers.
+    #
+    # TWO PARTS, BOTH REQUIRED. dead_torrents only TAGS a torrent; the
+    # seeding rule matching that tag is what removes it. Each is a separate
+    # endpoint keyed by the download client id, neither of them under
+    # api/configuration/download_cleaner -- see tasks/configure/cleanuparr.yml.
+    # -------------------------------------------------------------------------
     download_cleaner:
-      enabled: false
+      enabled: true
+      # Hourly, and ONE RUN IS ONE STRIKE, so max_strikes below is in hours.
+      cron_expression: "0 0 * * * ?"
+
+      # Categories to police. The *arr ones are derived from this role's own
+      # services so they cannot drift; these are the ones owned elsewhere.
+      extra_categories:
+        - audiobookrequest
+        - readmeabook
+
+      dead_torrents:
+        enabled: true
+        # Tag rather than recategorise: a category change would also move the
+        # torrent's save path, and the hardlink arrangement depends on that
+        # path staying exactly where it is.
+        use_tag: true
+        tag: cleanuparr-dead
+        # 24 hourly runs of zero seeders before it is tagged.
+        #
+        # Deliberately patient. EVERY torrent reports zero seeders while the
+        # uplink is down or the tunnel is rebuilding itself, and this van does
+        # both -- so a short count deletes healthy torrents during an outage.
+        # Strikes reset as soon as a torrent looks alive again, which makes
+        # the real bar a full day of CONTINUOUS deadness. Upstream permits as
+        # low as 3; do not go near that here.
+        max_strikes: 24
+
+      # The rule that does the removing. Only dead torrents are touched.
+      # Healthy ones seed on indefinitely: there is no space pressure to
+      # justify stopping them -- 3.2 TB free, measured 2026-11-10 -- and
+      # stopping them would only take upload away from the swarms we took
+      # from.
+      seeding_rule:
+        name: Dead torrents
+        # Public only. Every indexer this stack uses is public, and deleting
+        # from a private tracker risks a hit-and-run penalty, so the narrower
+        # setting is also the safer one.
+        privacy_type: Public
+        # RATIO IS USELESS AS A TRIGGER HERE and must stay disabled. Measured
+        # 2026-11-10 across 52 completed torrents: median ratio 0.00, maximum
+        # 0.07, because qBittorrent reported `firewalled` and no peer could
+        # open a connection to us. A ratio rule would never once have fired.
+        # Upstream rejects having both this and max_seed_time at -1.
+        max_ratio: -1
+        min_seed_time: 0
+        # Zero hours: by the time it is tagged it has had its 24 hours.
+        max_seed_time: 0
+        # No "keep it while the swarm is thin" guard -- the swarm is empty,
+        # which is the whole reason it was tagged.
+        min_seeders: 0
+        # Safe because imports are hardlinks: the library keeps the bytes and
+        # only the torrent's reference goes. Left false, the torrent would be
+        # removed and its files stranded under /data/torrents forever.
+        delete_source_files: true
+        action: Delete
     general:
       # Both of these phone home. With no uplink the status check fails every
       # few minutes and fills the log with connection stack traces that look

@@ -99,6 +99,10 @@
       # by Authelia and bounced to a login page.
       ansible.builtin.set_fact:
         cleanuparr_url: "{{ media_api_base }}/api/configuration"
+        # The download cleaner's per-client features are NOT under
+        # /api/configuration -- each has its own controller, keyed by the
+        # download client id. Hence a second root.
+        cleanuparr_api: "{{ media_api_base }}/api"
         cleanuparr_headers:
           Host: "cleanuparr.{{ frey.local_domain }}"
           X-Api-Key: "{{ cleanuparr_key }}"
@@ -261,6 +265,303 @@
         # that category -- so the container runs, reports healthy, and cleans
         # up nothing at all until these are set.
         # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # DEAD TORRENTS
+        #
+        # TWO ENDPOINTS, BOTH REQUIRED, both keyed by the download client id:
+        # dead-torrent-config only TAGS a torrent, and a seeding rule matching
+        # that tag is what removes it. Configure one without the other and
+        # either nothing is tagged or things are tagged and never removed.
+        # Neither lives under /api/configuration/download_cleaner, which is
+        # why a PUT to that section alone leaves both untouched.
+        #
+        # The counts and thresholds, and why ratio is useless as a trigger
+        # here, are explained beside the values in defaults/main.yml.
+        # ----------------------------------------------------------------------
+        - name: Re-read the Cleanuparr download clients
+          # Re-read rather than reuse the earlier register: if qBittorrent was
+          # only registered a few tasks ago, the id we need did not exist yet.
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/download_client"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_clients_after
+          changed_when: false
+          no_log: true
+
+        - name: Resolve the Cleanuparr download client id and categories
+          ansible.builtin.set_fact:
+            cleanuparr_client_id: >-
+              {{
+                (cleanuparr_clients_after.json | default([]))
+                | selectattr('name', 'equalto',
+                             media_acquisition.cleanuparr_wiring.download_client.name)
+                | map(attribute='id') | first | default('')
+              }}
+            # Derived from this role's own services so the two cannot drift,
+            # plus the categories owned by other modules.
+            cleanuparr_categories: >-
+              {{
+                (media_acquisition.services | dict2items
+                 | selectattr('value.enabled', 'truthy')
+                 | selectattr('value.category', 'defined')
+                 | map(attribute='value.category') | list
+                 + media_acquisition.cleanuparr_wiring.download_cleaner.extra_categories)
+                | unique | sort
+              }}
+
+        - name: Record Cleanuparr as unwired when the download client has no id
+          ansible.builtin.set_fact:
+            media_wiring_failures: >-
+              {{
+                media_wiring_failures
+                + ['cleanuparr: download client id not found, dead-torrent rules skipped']
+              }}
+          when: cleanuparr_client_id | length == 0
+
+        - name: Read the Cleanuparr dead-torrent configuration
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/dead-torrent-config/{{ cleanuparr_client_id }}"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: [200, 404]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_dead
+          changed_when: false
+          failed_when: false
+          when: cleanuparr_client_id | length > 0
+          no_log: true
+
+        - name: Define the desired Cleanuparr dead-torrent configuration
+          ansible.builtin.set_fact:
+            cleanuparr_dead_want: >-
+              {{
+                {
+                  'enabled': dead.enabled | bool,
+                  'targetCategory': dead.tag,
+                  'useTag': dead.use_tag | bool,
+                  'maxStrikes': dead.max_strikes | int,
+                  'categories': cleanuparr_categories,
+                }
+              }}
+          vars:
+            dead: "{{ media_acquisition.cleanuparr_wiring.download_cleaner.dead_torrents }}"
+          when: cleanuparr_client_id | length > 0
+
+        - name: Align the Cleanuparr dead-torrent configuration
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/dead-torrent-config/{{ cleanuparr_client_id }}"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_dead_want }}"
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          vars:
+            live: "{{ cleanuparr_dead.json | default({}) }}"
+          register: cleanuparr_dead_set
+          changed_when: cleanuparr_dead_set.status | default(0) in [200, 204]
+          failed_when: false
+          when:
+            - cleanuparr_client_id | length > 0
+            # Only when it actually differs, so a converged run reports no change.
+            - >-
+              (live.enabled | default(false) | bool) != cleanuparr_dead_want.enabled
+              or (live.useTag | default(false) | bool) != cleanuparr_dead_want.useTag
+              or (live.targetCategory | default('')) != cleanuparr_dead_want.targetCategory
+              or (live.maxStrikes | default(0) | int) != cleanuparr_dead_want.maxStrikes
+              or (live.categories | default([]) | sort) != cleanuparr_categories
+
+        - name: Read the Cleanuparr seeding rules
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/seeding-rules/{{ cleanuparr_client_id }}"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: [200, 404]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_rules
+          changed_when: false
+          failed_when: false
+          when: cleanuparr_client_id | length > 0
+          no_log: true
+
+        - name: Define the desired Cleanuparr dead-torrent seeding rule
+          ansible.builtin.set_fact:
+            cleanuparr_rule_want: >-
+              {{
+                {
+                  'name': rule.name,
+                  'categories': cleanuparr_categories,
+                  'tagsAny': [dead.tag],
+                  'tagsAll': [],
+                  'trackerPatterns': [],
+                  'privacyType': rule.privacy_type,
+                  'maxRatio': rule.max_ratio | float,
+                  'minSeedTime': rule.min_seed_time | float,
+                  'maxSeedTime': rule.max_seed_time | float,
+                  'minSeeders': rule.min_seeders | int,
+                  'maxInactiveDays': -1,
+                  'deleteSourceFiles': rule.delete_source_files | bool,
+                  'action': rule.action,
+                }
+              }}
+          vars:
+            rule: "{{ media_acquisition.cleanuparr_wiring.download_cleaner.seeding_rule }}"
+            dead: "{{ media_acquisition.cleanuparr_wiring.download_cleaner.dead_torrents }}"
+          when: cleanuparr_client_id | length > 0
+
+        - name: Create the Cleanuparr dead-torrent seeding rule
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/seeding-rules/{{ cleanuparr_client_id }}"
+            method: POST
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_rule_want }}"
+            status_code: [200, 201, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_rule_created
+          changed_when: cleanuparr_rule_created.status | default(0) in [200, 201, 204]
+          failed_when: false
+          when:
+            - cleanuparr_client_id | length > 0
+            - cleanuparr_rule_want.name not in
+              (cleanuparr_rules.json | default([]) | map(attribute='name') | list)
+
+        - name: Update the Cleanuparr dead-torrent seeding rule in place
+          # Addressed by RULE id, not client id - a different route shape from
+          # every other endpoint in this file.
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/seeding-rules/{{ existing.id }}"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_rule_want }}"
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          vars:
+            existing: >-
+              {{
+                (cleanuparr_rules.json | default([]))
+                | selectattr('name', 'equalto', cleanuparr_rule_want.name)
+                | first | default({})
+              }}
+          register: cleanuparr_rule_updated
+          changed_when: cleanuparr_rule_updated.status | default(0) in [200, 204]
+          failed_when: false
+          when:
+            - cleanuparr_client_id | length > 0
+            - existing.id is defined
+            - >-
+              (existing.tagsAny | default([]) | sort) != (cleanuparr_rule_want.tagsAny | sort)
+              or (existing.categories | default([]) | sort) != cleanuparr_categories
+              or (existing.maxSeedTime | default(-1) | float) != cleanuparr_rule_want.maxSeedTime
+              or (existing.maxRatio | default(-1) | float) != cleanuparr_rule_want.maxRatio
+              or (existing.minSeeders | default(-1) | int) != cleanuparr_rule_want.minSeeders
+              or (existing.action | default('')) != cleanuparr_rule_want.action
+              or (existing.privacyType | default('')) != cleanuparr_rule_want.privacyType
+              or (existing.deleteSourceFiles | default(false) | bool)
+                 != cleanuparr_rule_want.deleteSourceFiles
+
+        - name: Read the Cleanuparr download cleaner configuration
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/download_cleaner"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_dlclean
+          changed_when: false
+          no_log: true
+
+        - name: Enable the Cleanuparr download cleaner
+          # Last of this group on purpose: enabled before the rule exists, it
+          # would tag dead torrents and then leave them tagged forever.
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/download_cleaner"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: >-
+              {{
+                cleanuparr_dlclean.json | combine({
+                  'enabled': cleaner.enabled | bool,
+                  'cronExpression': cleaner.cron_expression,
+                })
+              }}
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          vars:
+            cleaner: "{{ media_acquisition.cleanuparr_wiring.download_cleaner }}"
+          register: cleanuparr_dlclean_set
+          changed_when: cleanuparr_dlclean_set.status | default(0) in [200, 204]
+          failed_when: false
+          when: >-
+            (cleanuparr_dlclean.json.enabled | default(false) | bool) != (cleaner.enabled | bool)
+            or (cleanuparr_dlclean.json.cronExpression | default('')) != cleaner.cron_expression
+
+        # ----------------------------------------------------------------------
+        # MALWARE BLOCKER
+        #
+        # Public trackers occasionally carry an executable dressed up as an
+        # episode. This checks each download's file list against an upstream
+        # blacklist and removes it before it finishes. Off by default upstream.
+        # ----------------------------------------------------------------------
+        - name: Read the Cleanuparr malware blocker configuration
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/malware_blocker"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_malware
+          changed_when: false
+          no_log: true
+
+        - name: Define the desired Cleanuparr malware blocker configuration
+          ansible.builtin.set_fact:
+            cleanuparr_malware_want: >-
+              {{
+                cleanuparr_malware.json | combine({
+                  'enabled': mb.enabled | bool,
+                  'cronExpression': mb.cron_expression,
+                  'deleteIfAnyFileBlocked': mb.delete_if_any_file_blocked | bool,
+                })
+              }}
+          vars:
+            mb: "{{ media_acquisition.cleanuparr_wiring.malware_blocker }}"
+
+        - name: Add the per-application blocklists to the Cleanuparr malware blocker
+          ansible.builtin.set_fact:
+            cleanuparr_malware_want: >-
+              {{
+                cleanuparr_malware_want | combine({
+                  item: {
+                    'enabled': true,
+                    'blocklistType': mb.blocklist_type,
+                    'blocklistPath': mb.blocklist_path,
+                  }
+                }, recursive=True)
+              }}
+          loop: "{{ media_acquisition.cleanuparr_wiring.malware_blocker.apps }}"
+          vars:
+            mb: "{{ media_acquisition.cleanuparr_wiring.malware_blocker }}"
+
+        - name: Align the Cleanuparr malware blocker
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_url }}/malware_blocker"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_malware_want }}"
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_malware_set
+          changed_when: cleanuparr_malware_set.status | default(0) in [200, 204]
+          failed_when: false
+          when: cleanuparr_malware_want != cleanuparr_malware.json
+
         - name: Read the Cleanuparr queue cleaner configuration
           ansible.builtin.uri:
             url: "{{ cleanuparr_url }}/queue_cleaner"
