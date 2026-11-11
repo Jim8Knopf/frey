@@ -27,7 +27,7 @@ local_ai:
 
   # Which registered model llama-server loads. Changing this and redeploying
   # switches the served model, provided it has finished downloading.
-  default_model: qwen35-4b
+  default_model: lfm25-8b-a1b
 
   models:
     # Qwen3.5-4B, Unsloth Dynamic 2.0 4-bit. Natively multimodal: the mmproj
@@ -306,7 +306,11 @@ local_ai:
       cache_reuse: 256
       cache_type_k: q8_0
       cache_type_v: q8_0
-      flash_attn: on
+      # QUOTED. Bare `on` is a YAML 1.1 boolean, so it renders as "True" and
+      # llama.cpp refuses it: 'error while handling argument "-fa": unknown
+      # value for --flash-attn: True', in a restart loop. The Qwen entry above
+      # quotes it for the same reason.
+      flash_attn: "on"
       spec_type: ngram-simple
 
       # Smaller than the 4B's, because the weights are larger: 4.98 GiB here
