@@ -295,7 +295,7 @@
           ansible.builtin.set_fact:
             cleanuparr_client_id: >-
               {{
-                (cleanuparr_clients_after.json | default([]))
+                (cleanuparr_clients_after.json.clients | default([]))
                 | selectattr('name', 'equalto',
                              media_acquisition.cleanuparr_wiring.download_client.name)
                 | map(attribute='id') | first | default('')
