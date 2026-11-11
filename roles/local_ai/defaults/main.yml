@@ -182,6 +182,26 @@ local_ai:
       # available and it costs nothing.
       cache_reuse: 256
 
+      # EXPLICIT, because llama.cpp's default is 8192 MiB and that is larger
+      # than this container's entire budget. Discovered 2026-11-11 by the
+      # kernel: llama-server was OOM-killed inside its cgroup at anon-rss
+      # 9,429,392 kB - 8.99 GiB, exactly the 9g limit - while serving an
+      # ordinary 4,000-token request.
+      #
+      # `--cache-ram` is the prompt cache for idle slots, and it grows as more
+      # conversations are cached. At the default it will eventually claim 8
+      # GiB on top of 2.7 GiB of weights and whatever the KV cache holds, so
+      # the OOM was not bad luck, it was arithmetic.
+      #
+      # Each kill restarts the container, which THROWS AWAY EVERY CACHED
+      # PREFIX - so the symptom is not a crash anyone notices, it is the next
+      # question taking ten minutes instead of nine seconds. Several of the
+      # "why is it slow" reports were this.
+      #
+      # 2 GiB leaves room for weights plus KV plus compute buffers under the
+      # 9g cap, and still holds several conversation prefixes.
+      cache_ram: 2048
+
       # DRAFT-MODEL-FREE speculative decoding, added 2026-11-08. llama.cpp
       # drafts the next few tokens from n-grams already in the context and
       # verifies them in one pass, so several tokens can be accepted for
@@ -288,6 +308,11 @@ local_ai:
       cache_type_v: q8_0
       flash_attn: on
       spec_type: ngram-simple
+
+      # Smaller than the 4B's, because the weights are larger: 4.98 GiB here
+      # against 2.71. See the long note on the Qwen entry for what the
+      # default 8192 did to that one.
+      cache_ram: 1536
 
   image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
   gateway_image: "traefik:{{ traefik_version }}"

@@ -118,6 +118,13 @@ services:
       - "--parallel"
       - "{{ m.parallel_slots }}"
 {% endif %}
+{% if m.cache_ram is defined %}
+      # Caps the idle-slot prompt cache. llama.cpp defaults this to 8192 MiB,
+      # which is bigger than this container's whole budget and OOM-killed the
+      # server on 2026-11-11. See cache_ram in defaults/main.yml.
+      - "--cache-ram"
+      - "{{ m.cache_ram }}"
+{% endif %}
       - "--cache-reuse"
       - "{{ m.cache_reuse }}"
 {% if m.spec_type | default('') | length > 0 %}
