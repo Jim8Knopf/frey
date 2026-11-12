@@ -10,7 +10,7 @@ dashy:
     - name: Media library
       services: [jellyfin, navidrome, audiobookshelf, seerr, audiobookrequest, readmeabook, maintainerr, jellystat]
     - name: Media downloads
-      services: [sonarr, radarr, lidarr, chaptarr, prowlarr, bazarr, cleanuparr, qbittorrent]
+      services: [sonarr, radarr, lidarr, soularr, recyclarr, chaptarr, prowlarr, bazarr, cleanuparr, qbittorrent]
     - name: Monitoring
       services: [grafana, prometheus, alertmanager]
     - name: Management

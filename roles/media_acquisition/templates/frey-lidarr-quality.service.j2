@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply Frey music quality settings to new Lidarr artists
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-lidarr-quality
+TimeoutStartSec=120

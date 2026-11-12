@@ -58,6 +58,9 @@ INDEXER_TEST_SERVICES=(
 {% if media_acquisition.services.radarr.enabled | bool %}
   "radarr {{ media_acquisition.services.radarr.port }} {{ media_acquisition.services.radarr.api_version }}"
 {% endif %}
+{% if media_acquisition.services.lidarr.enabled | bool %}
+  "lidarr {{ media_acquisition.services.lidarr.port }} {{ media_acquisition.services.lidarr.api_version }}"
+{% endif %}
 )
 
 log() { logger -t frey-media-gate -- "$*"; [ -t 1 ] && echo "$*"; }
@@ -227,6 +230,37 @@ arr_containers_action() {
   done
 }
 
+# Soulseek does not share qBittorrent's alternate speed limits. Stop its
+# transfers on metered or unusable links and only restart containers that this
+# gate stopped; do not resurrect a container deliberately stopped by a user.
+soulseek_stop() {
+{% if media_acquisition.services.slskd.enabled | default(false) | bool %}
+  local name
+  for name in soularr slskd; do
+    if [ "$(docker inspect --format {% raw %}'{{.State.Running}}'{% endraw %} "${name}" 2>/dev/null)" = true ]; then
+      if docker stop "${name}" >/dev/null 2>&1; then
+        : > "${STATE_DIR}/${name}-gated"
+      fi
+    fi
+  done
+{% else %}
+  :
+{% endif %}
+}
+
+soulseek_resume() {
+{% if media_acquisition.services.slskd.enabled | default(false) | bool %}
+  local name
+  for name in slskd soularr; do
+    if [ -e "${STATE_DIR}/${name}-gated" ] && docker start "${name}" >/dev/null 2>&1; then
+      rm -f "${STATE_DIR}/${name}-gated"
+    fi
+  done
+{% else %}
+  :
+{% endif %}
+}
+
 offline_long_enough() {
   local since now
   [ -r "${OFFLINE_STAMP}" ] || return 1
@@ -241,6 +275,11 @@ offline_long_enough() {
 
 go_online() {
   rm -f "${OFFLINE_STAMP}"
+  if uplink_is_metered; then
+    soulseek_stop
+  else
+    soulseek_resume
+  fi
   if qbt_login; then
     if uplink_is_metered; then
       qbt_set_alt_limits
@@ -263,6 +302,7 @@ go_online() {
 
 go_offline() {
   local state="$1"
+  soulseek_stop
   [ -r "${OFFLINE_STAMP}" ] || date +%s > "${OFFLINE_STAMP}"
   local entry service port api_version
   for entry in "${INDEXER_TEST_SERVICES[@]}"; do

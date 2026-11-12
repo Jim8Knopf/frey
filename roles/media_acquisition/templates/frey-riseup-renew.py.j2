@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Acquire and renew a Riseup client certificate without exposing its key."""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+PROFILE = '{{ media.appdata_dir }}/gluetun/riseup.conf'
+API = 'https://api.black.riseup.net/3/'
+CA_URL = 'https://black.riseup.net/ca.crt'
+GATEWAY = 'vpn02-par.riseup.net'
+PENDING = PROFILE + '.restart-pending'
+STACK = '{{ media_acquisition.stack_dir }}/docker-compose.yml'
+CLIENTS = [{% for name in ['qbittorrent', 'prowlarr', 'slskd', 'jackett', 'byparr'] %}{% if media_acquisition.services[name].enabled %}'{{ name }}',{% endif %}{% endfor %}]
+
+
+def fetch(url):
+    # Once running, renew through the VPN: some public networks intercept the
+    # provider's website. wget verifies HTTPS using the container CA bundle.
+    try:
+        state = subprocess.check_output(['docker', 'inspect', '-f', '{{ '{{' }}.State.Health.Status{{ '}}' }}', 'gluetun'], stderr=subprocess.DEVNULL, text=True).strip()
+        if state == 'healthy':
+            return subprocess.check_output(['docker', 'exec', 'gluetun', 'wget', '-q', '-T', '20', '-O', '-', url], timeout=30)
+    except (subprocess.SubprocessError, OSError):
+        pass
+    with urllib.request.urlopen(url, timeout=20) as response:
+        return response.read(1024 * 1024)
+
+
+def pem(text, kind):
+    match = re.search(r'-----BEGIN ' + kind + r'-----.*?-----END ' + kind + r'-----', text, re.S)
+    if not match:
+        raise ValueError('missing certificate material')
+    return match.group(0)
+
+
+def still_valid():
+    try:
+        with open(PROFILE, encoding='utf-8') as profile:
+            text = profile.read()
+        client = re.search(r'<cert>\s*(.*?)\s*</cert>', text, re.S)
+        if not client:
+            return False
+        cert = pem(client.group(1), 'CERTIFICATE')
+        return subprocess.run(['openssl', 'x509', '-noout', '-checkend', '864000'], input=cert, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    except (OSError, ValueError):
+        return False
+
+
+def restart_vpn_and_clients():
+    subprocess.run(['docker', 'restart', 'gluetun'], check=True, stdout=subprocess.DEVNULL)
+    for _ in range(60):
+        state = subprocess.check_output(['docker', 'inspect', '-f', '{{ '{{' }}.State.Health.Status{{ '}}' }}', 'gluetun'], text=True).strip()
+        if state == 'healthy':
+            break
+        time.sleep(3)
+    else:
+        raise RuntimeError('VPN did not become healthy')
+    # Restarting a container creates a new network namespace. Recreate every
+    # network_mode:service:gluetun client so none remains in the old one.
+    if CLIENTS:
+        subprocess.run(['docker', 'compose', '-f', STACK, 'up', '-d', '--no-deps', '--force-recreate'] + CLIENTS, check=True, stdout=subprocess.DEVNULL)
+    os.unlink(PENDING)
+
+
+def main():
+    if still_valid():
+        if '--restart' in sys.argv and os.path.exists(PENDING):
+            restart_vpn_and_clients()
+        print('unchanged')
+        return
+    service = json.loads(fetch(API + 'config/eip-service.json'))
+    gateway = next(g for g in service['gateways'] if g['host'] == GATEWAY and any(t.get('type') == 'openvpn' and 'tcp' in t.get('protocols', []) and '80' in t.get('ports', []) for t in g['capabilities']['transport']))
+    import ipaddress
+    address = str(ipaddress.IPv4Address(gateway['ip_address']))
+    material = fetch(API + 'cert').decode()
+    certificate = pem(material, 'CERTIFICATE')
+    try:
+        key = pem(material, 'RSA PRIVATE KEY')
+    except ValueError:
+        key = pem(material, 'PRIVATE KEY')
+    ca = pem(fetch(CA_URL).decode(), 'CERTIFICATE')
+    # Riseup uses a separate client CA, so its server CA cannot validate the
+    # client certificate. HTTPS authenticates the API response; validate the
+    # certificate expiry and key pair before replacing a working file.
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for name, value in [('cert', certificate), ('key', key), ('ca', ca)]:
+            path = os.path.join(d, name)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(value + '\n')
+            os.chmod(path, 0o600)
+            paths.append(path)
+        cert_path, key_path, ca_path = paths
+        subprocess.run(['openssl', 'x509', '-in', ca_path, '-noout', '-checkend', '864000'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['openssl', 'x509', '-in', cert_path, '-noout', '-checkend', '864000'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cert_pub = subprocess.check_output(['openssl', 'x509', '-in', cert_path, '-pubkey', '-noout'])
+        key_pub = subprocess.check_output(['openssl', 'pkey', '-in', key_path, '-pubout'], stderr=subprocess.DEVNULL)
+        if cert_pub != key_pub:
+            raise ValueError('client certificate and key do not match')
+    profile = ('client\ndev tun\nproto tcp-client\nremote ' + address + ' 80\nnobind\npersist-key\npersist-tun\n'
+               'cipher AES-256-GCM\ndata-ciphers AES-256-GCM\nauth SHA512\nremote-cert-tls server\n'
+               'verify-x509-name vpn02-par name\ntls-version-min 1.2\npull-filter ignore block-outside-dns\nverb 1\n'
+               '<ca>\n' + ca + '\n</ca>\n<cert>\n' + certificate + '\n</cert>\n<key>\n' + key + '\n</key>\n')
+    os.makedirs(os.path.dirname(PROFILE), exist_ok=True)
+    if '--restart' in sys.argv:
+        fd = os.open(PENDING, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(fd)
+    fd, temporary = tempfile.mkstemp(prefix='.riseup-', dir=os.path.dirname(PROFILE))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(profile)
+        os.replace(temporary, PROFILE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    print('updated')
+    if '--restart' in sys.argv:
+        restart_vpn_and_clients()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as exc:
+        print('Riseup renewal failed: ' + type(exc).__name__, file=sys.stderr)
+        sys.exit(1)

@@ -272,6 +272,19 @@ identity_services:
     hosts: [lidarr]
     api_bypass: true
 
+  soularr:
+    # The UI can edit configuration and read API keys; every path needs SSO.
+    auth: forward_auth
+    groups: [frey_admins]
+    hosts: [soularr]
+
+  recyclarr:
+    # Recyclarr has no web server. Traefik redirects this name to the
+    # administrator-protected Dockge view of the acquisition stack.
+    auth: none
+    groups: [frey_admins]
+    hosts: [recyclarr]
+
   chaptarr:
     auth: forward_auth
     groups: [frey_admins]

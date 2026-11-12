@@ -9,7 +9,28 @@
   at a container that only exists when that module is deployed.
 #}
 http:
+{% if media_enable.recyclarr | default(false) | bool and monitoring_enable.dockge | default(false) | bool %}
+  routers:
+    recyclarr-https:
+      rule: "Host(`recyclarr.{{ frey.service_domain }}`) || Host(`recyclarr.{{ frey.local_domain }}`)"
+      entryPoints: [websecure]
+      tls: {}
+      service: noop@internal
+      middlewares: [recyclarr-to-dockge]
+    recyclarr-http:
+      rule: "Host(`recyclarr.{{ frey.service_domain }}`) || Host(`recyclarr.{{ frey.local_domain }}`)"
+      entryPoints: [web]
+      service: noop@internal
+      middlewares: [recyclarr-to-dockge]
+{% endif %}
   middlewares:
+{% if media_enable.recyclarr | default(false) | bool and monitoring_enable.dockge | default(false) | bool %}
+    recyclarr-to-dockge:
+      redirectRegex:
+        regex: '^https?://[^/]+(?:/.*)?$'
+        replacement: 'https://{{ monitoring_hosts.dockge }}.{{ frey.service_domain }}/compose/media_acquisition'
+        permanent: false
+{% endif %}
     drop-remote-user:
       headers:
         customRequestHeaders:

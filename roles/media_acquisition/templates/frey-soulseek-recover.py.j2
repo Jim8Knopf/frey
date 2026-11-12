@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Import complete orphaned Soulseek albums that Lidarr can identify safely."""
+import json
+import logging
+from pathlib import Path, PurePosixPath
+import subprocess
+import time
+import urllib.parse
+import urllib.request
+
+ROOT = Path({{ (media.data_dir ~ '/slskd/complete') | to_json }})
+KEYFILE = Path({{ media_acquisition.configure.key_file | to_json }})
+LIDARR = "http://{{ frey.service_address }}/api/v1/"
+MEDIA_NETWORK = {{ media.network.name | to_json }}
+LIDARR_HOST = "lidarr.{{ frey.local_domain }}"
+MIN_AGE = 600
+
+
+def request(url, key, host=None, body=None):
+    headers = {"X-Api-Key": key}
+    if host:
+        headers["Host"] = host
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=45) as response:
+        return json.load(response)
+
+
+def active_folders(peers):
+    active = set()
+    for peer in peers:
+        for directory in peer.get("directories", []):
+            if any(not str(f.get("state", "")).startswith("Completed") for f in directory.get("files", [])):
+                name = str(directory.get("directory", "")).replace("\\", "/").rstrip("/")
+                if not name:
+                    raise ValueError("active transfer has no directory")
+                active.add(PurePosixPath(name).name.casefold())
+    return active
+
+
+def eligible(folder, items, tracks, missing_ids):
+    """Only a complete, unambiguous album with no existing files is eligible."""
+    if not items or any(x.get("rejections") or x.get("additionalFile") for x in items):
+        return None
+    album_ids = {(x.get("album") or {}).get("id") for x in items}
+    artist_ids = {(x.get("artist") or {}).get("id") for x in items}
+    releases = {x.get("albumReleaseId") for x in items}
+    if len(album_ids) != 1 or len(artist_ids) != 1 or len(releases) != 1 or None in album_ids | artist_ids | releases:
+        return None
+    album_id = next(iter(album_ids))
+    if album_id not in missing_ids:
+        return None
+    files, mapped = [], []
+    for x in items:
+        path = PurePosixPath(x.get("path", ""))
+        expected_parent = PurePosixPath("/data/slskd/complete") / folder.name
+        if path.parent != expected_parent or len(x.get("tracks", [])) != 1:
+            return None
+        source = folder / path.name
+        if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(folder.resolve()):
+            return None
+        track_ids = [t.get("id") for t in x["tracks"]]
+        if None in track_ids:
+            return None
+        mapped.extend(track_ids)
+        files.append({"path": str(path), "artistId": next(iter(artist_ids)), "albumId": album_id,
+                      "albumReleaseId": next(iter(releases)), "trackIds": track_ids,
+                      "quality": x["quality"], "indexerFlags": x.get("indexerFlags", 0),
+                      "disableReleaseSwitching": True})
+    expected = {t["id"] for t in tracks}
+    if not expected or set(mapped) != expected or len(mapped) != len(expected):
+        return None
+    if any(t.get("hasFile") or t.get("trackFileId", 0) for t in tracks):
+        return None
+    return files
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    keys = json.loads(KEYFILE.read_text())
+    inspected = json.loads(subprocess.check_output(["docker", "inspect", "gluetun"], text=True))
+    ip = inspected[0]["NetworkSettings"]["Networks"][MEDIA_NETWORK]["IPAddress"]
+    peers = request("http://" + ip + ":5030/api/v0/transfers/downloads", keys["slskd_api"])
+    active = active_folders(peers)
+    # Different peers can use unrelated folder names for the same album.
+    # Wait until all transfers settle before considering any recovery.
+    if active:
+        logging.info("Soulseek transfers are active; recovery will retry later")
+        return
+    missing = set()
+    page = 1
+    while True:
+        data = request(LIDARR + "wanted/missing?" + urllib.parse.urlencode({"page": page, "pageSize": 100}), keys["lidarr"], LIDARR_HOST)
+        missing.update(x["id"] for x in data["records"])
+        if page * 100 >= data["totalRecords"]:
+            break
+        page += 1
+    for folder in sorted(ROOT.iterdir()):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        children = list(folder.iterdir())
+        if not children or any(p.is_symlink() or not p.is_file() or time.time() - p.stat().st_mtime < MIN_AGE for p in children):
+            continue
+        query = urllib.parse.urlencode({"folder": "/data/slskd/complete/" + folder.name, "filterExistingFiles": "true"})
+        items = request(LIDARR + "manualimport?" + query, keys["lidarr"], LIDARR_HOST)
+        if not items or not (items[0].get("album") or {}).get("id"):
+            continue
+        album_id = items[0]["album"]["id"]
+        if album_id not in missing:
+            continue
+        tracks = request(LIDARR + "track?" + urllib.parse.urlencode({"albumId": album_id}), keys["lidarr"], LIDARR_HOST)
+        files = eligible(folder, items, tracks, missing)
+        if not files:
+            continue
+        result = request(LIDARR + "command", keys["lidarr"], LIDARR_HOST,
+                         {"name": "ManualImport", "files": files, "importMode": "copy", "replaceExistingFiles": False})
+        logging.info("Queued recovery of %s (%d tracks), command %s", folder.name, len(files), result["id"])
+
+
+if __name__ == "__main__":
+    main()

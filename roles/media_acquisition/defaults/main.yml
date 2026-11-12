@@ -162,6 +162,10 @@ media_acquisition:
       - sonarr
       - radarr
       - lidarr
+      - slskd_api
+      - slskd_web_password
+      - soulseek_account
+      - soulseek_password
       - chaptarr
       - bazarr
       - qbittorrent_password
@@ -576,7 +580,7 @@ media_acquisition:
       # Follows byparr's switch only in spirit: this one is not optional while
       # anything in the stack needs to reach an indexer, so it tracks whether
       # the acquisition stack itself is doing anything.
-      enabled: "{{ media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool }}"
+      enabled: "{{ media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool or media_enable.lidarr | bool }}"
       image: dockurr/dnsmasq:{{ media_versions.dnsmasq }}
       container_name: frey-media-dns
       hostname: frey-media-dns
@@ -667,6 +671,18 @@ media_acquisition:
         - path: /data/media/movies
       language_scoring: true
 
+    slskd:
+      enabled: "{{ media_enable.slskd | default(false) | bool }}"
+      image: "slskd/slskd:{{ media_versions.slskd }}"
+      container_name: slskd
+      mem_limit: 512m
+
+    soularr:
+      enabled: "{{ media_enable.soularr | default(false) | bool }}"
+      image: "mrusse08/soularr:{{ media_versions.soularr }}"
+      container_name: soularr
+      mem_limit: 384m
+
     lidarr:
       # Honest warning: Lidarr's metadata server has been unreliable through
       # 2026, so adding artists and library imports break periodically. This
@@ -694,7 +710,7 @@ media_acquisition:
         - name: Music
           path: /data/media/music
           quality_field: defaultQualityProfileId
-          quality_profile: Standard
+          quality_profile: Frey Music
           metadata_field: defaultMetadataProfileId
           metadata_profile: Standard
 

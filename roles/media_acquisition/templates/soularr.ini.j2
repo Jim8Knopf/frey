@@ -1,0 +1,50 @@
+[Lidarr]
+api_key = {{ media_secrets.lidarr }}
+host_url = http://lidarr:8686
+download_dir = /data/slskd/complete
+disable_sync = False
+
+[Slskd]
+api_key = {{ media_secrets.slskd_api }}
+host_url = http://gluetun:5030
+url_base = /
+download_dir = /downloads
+delete_searches = True
+# This is an overall album deadline, not an inactivity timeout. One peer at
+# 150 KB/s can need over an hour for a lossless album on the van uplink.
+stalled_timeout = 10800
+remote_queue_timeout = 300
+
+[Release Settings]
+use_most_common_tracknum = True
+allow_multi_disc = True
+skip_region_check = True
+accepted_formats = CD,Digital Media,Vinyl
+
+[Search Settings]
+search_timeout = 10000
+maximum_peer_queue = 50
+minimum_peer_upload_speed = 0
+minimum_filename_match_ratio = 0.8
+minimum_search_interval = 10
+# Prefer high-quality compressed audio. Keep 192 kbps as a space-saving
+# fallback and lossless FLAC when no acceptable MP3 source is found.
+allowed_filetypes = mp3 320,mp3 256,mp3 192,flac
+search_type = incrementing_page
+# Two albums can use separate peers without flooding the limited uplink.
+number_of_albums_to_grab = 2
+search_source = missing
+failed_import_denylist = True
+ignore_failed_users = True
+# Peer availability changes; retry later without repeatedly hitting a failed
+# peer in the same run.
+failed_user_ignore_hours = 2
+search_retry_wait_hours = 1
+
+[Download Settings]
+download_filtering = True
+use_extension_whitelist = False
+
+[Logging]
+level = INFO
+log_to_file = True

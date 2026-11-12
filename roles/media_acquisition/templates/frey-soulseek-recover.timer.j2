@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for completed Soulseek albums awaiting import
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=frey-soulseek-recover.service
+
+[Install]
+WantedBy=timers.target

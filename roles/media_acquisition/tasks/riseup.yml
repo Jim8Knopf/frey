@@ -1,0 +1,46 @@
+---
+- name: Install Riseup VPN certificate helper
+  ansible.builtin.template:
+    src: frey-riseup-renew.py.j2
+    dest: /usr/local/bin/frey-riseup-renew
+    owner: root
+    group: root
+    mode: "0700"
+    validate: "python3 -m py_compile %s"
+  when: media_vpn.enabled | bool and media_vpn.riseup | default(false) | bool
+  tags: [media, media_acquisition]
+
+- name: Obtain a valid Riseup VPN client certificate
+  ansible.builtin.command: /usr/local/bin/frey-riseup-renew
+  register: riseup_certificate
+  changed_when: "'updated' in riseup_certificate.stdout"
+  when:
+    - media_vpn.enabled | bool
+    - media_vpn.riseup | default(false) | bool
+    - not ansible_check_mode
+  no_log: true
+  tags: [media, media_acquisition]
+
+- name: Install Riseup certificate renewal units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [frey-riseup-renew.service, frey-riseup-renew.timer]
+  register: riseup_units
+  when: media_vpn.enabled | bool and media_vpn.riseup | default(false) | bool
+  tags: [media, media_acquisition]
+
+- name: Enable Riseup certificate renewal
+  ansible.builtin.systemd:
+    name: frey-riseup-renew.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ riseup_units.changed }}"
+  when:
+    - media_vpn.enabled | bool
+    - media_vpn.riseup | default(false) | bool
+    - not ansible_check_mode
+  tags: [media, media_acquisition]

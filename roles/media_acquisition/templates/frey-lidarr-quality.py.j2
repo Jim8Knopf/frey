@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Keep Lidarr's default music profile high quality and storage-conscious."""
+import copy
+import json
+import sys
+import urllib.request
+
+KEYFILE = {{ media_acquisition.configure.key_file | to_json }}
+BASE = "http://{{ frey.service_address }}/api/v1/"
+HOST = "lidarr.{{ frey.local_domain }}"
+PROFILE = "Frey Music"
+ROOT = "/data/media/music"
+PLAN = "--check" in sys.argv
+
+
+def request(path, key, method="GET", body=None):
+    headers = {"Host": HOST, "X-Api-Key": key}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    with urllib.request.urlopen(urllib.request.Request(BASE + path, headers=headers, method=method, data=data), timeout=30) as response:
+        return json.load(response) if response.status != 204 else None
+
+
+def desired_profile(standard):
+    result = copy.deepcopy(standard)
+    result.pop("id", None)
+    result["name"] = PROFILE
+    result["upgradeAllowed"] = False
+    wanted = {"Low Quality Lossy", "Mid Quality Lossy", "High Quality Lossy", "Lossless"}
+    groups = {x.get("name"): x for x in result["items"] if x.get("name") in wanted}
+    if set(groups) != wanted:
+        raise ValueError("Lidarr's Standard profile has unexpected quality groups")
+    for item in result["items"]:
+        allowed = item.get("name") in wanted
+        item["allowed"] = allowed
+        for child in item.get("items", []):
+            child["allowed"] = allowed
+    # Lidarr ranks later items higher. Lossless is a fallback below every
+    # accepted lossy group, avoiding needless large downloads.
+    items = [x for x in result["items"] if x.get("name") != "Lossless"]
+    index = next(i for i, x in enumerate(items) if x.get("name") == "Low Quality Lossy")
+    items.insert(index, groups["Lossless"])
+    result["items"] = items
+    result["cutoff"] = groups["High Quality Lossy"]["id"]
+    return result
+
+
+def main():
+    key = json.load(open(KEYFILE))["lidarr"]
+    profiles = request("qualityprofile", key)
+    standard = next((p for p in profiles if p["name"] == "Standard"), None)
+    if not standard:
+        raise ValueError("Lidarr's Standard profile was not found")
+    want = desired_profile(standard)
+    current = next((p for p in profiles if p["name"] == PROFILE), None)
+    changed = False
+    if current is None:
+        changed = True
+        if not PLAN:
+            current = request("qualityprofile", key, "POST", want)
+    else:
+        body = dict(want, id=current["id"])
+        if any(current.get(k) != body.get(k) for k in ("name", "upgradeAllowed", "cutoff", "items")):
+            changed = True
+            if not PLAN:
+                current = request("qualityprofile/" + str(current["id"]), key, "PUT", body)
+    profile_id = current["id"] if current else None
+    any_ids = {p["id"] for p in profiles if p["name"] == "Any"}
+    roots = request("rootfolder", key)
+    for root in roots:
+        if root.get("path", "").rstrip("/") == ROOT and root.get("defaultQualityProfileId") != profile_id:
+            changed = True
+            if not PLAN:
+                request("rootfolder/" + str(root["id"]), key, "PUT", dict(root, defaultQualityProfileId=profile_id))
+    for artist in request("artist", key):
+        # Preserve explicitly chosen profiles; move only the built-in Any.
+        if artist.get("qualityProfileId") in any_ids:
+            changed = True
+            if not PLAN:
+                request("artist/" + str(artist["id"]), key, "PUT", dict(artist, qualityProfileId=profile_id))
+    print("changed" if changed else "unchanged")
+
+
+if __name__ == "__main__":
+    main()

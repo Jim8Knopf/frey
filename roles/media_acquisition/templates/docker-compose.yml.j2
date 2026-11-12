@@ -74,7 +74,7 @@
   is doing the authenticating" - and this is that something finally arriving.
   Nothing inside the containers changes.
 #}
-{% macro proxy_labels(name, port, header=true) %}
+{% macro proxy_labels(name, port, header=true, api_access=true) %}
 {% set protected = name in (identity_protect | default([])) %}
 {% set middlewares = ['secure-headers@file'] + (['authelia@file'] if protected else []) %}
 {% if header %}
@@ -122,11 +122,13 @@
       # Higher priority than -http so these paths are matched before the
       # blanket redirect.
       # ----------------------------------------------------------------------
+{% if api_access %}
       - "traefik.http.routers.{{ name }}-api.rule=(Host(`{{ name }}.{{ frey.service_domain }}`) || Host(`{{ name }}.{{ frey.local_domain }}`)) && (PathPrefix(`/api`) || PathPrefix(`/feed`) || PathPrefix(`/ping`))"
       - "traefik.http.routers.{{ name }}-api.entrypoints=web"
       - "traefik.http.routers.{{ name }}-api.service={{ name }}"
       - "traefik.http.routers.{{ name }}-api.middlewares=secure-headers@file"
       - "traefik.http.routers.{{ name }}-api.priority=100"
+{% endif %}
 {% else %}
       - "traefik.http.routers.{{ name }}-http.middlewares=secure-headers@file"
 {% endif %}
@@ -385,8 +387,12 @@ services:
       - WIREGUARD_PRESHARED_KEY={{ media_vpn.credentials.wireguard_preshared_key }}
 {% endif %}
 {% else %}
+{% if media_vpn.riseup | default(false) | bool %}
+      - OPENVPN_CUSTOM_CONFIG=/gluetun/riseup.conf
+{% else %}
       - OPENVPN_USER={{ media_vpn.credentials.openvpn_user }}
       - OPENVPN_PASSWORD={{ media_vpn.credentials.openvpn_password }}
+{% endif %}
 {% endif %}
 {% if media_vpn.server_countries | length > 0 %}
       - SERVER_COUNTRIES={{ media_vpn.server_countries | join(',') }}
@@ -456,6 +462,53 @@ services:
       timeout: 20s
       retries: 3
       start_period: 60s
+
+{% endif %}
+{% if svc.slskd.enabled | bool %}
+  slskd:
+    image: {{ svc.slskd.image }}
+    container_name: slskd
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
+    environment:
+      - TZ={{ tz }}
+    volumes:
+      - "{{ appdata }}/slskd:/app"
+      - "{{ media.data_dir }}:/data"
+    mem_limit: {{ svc.slskd.mem_limit }}
+    pids_limit: 256
+{{ logging() }}
+
+{% endif %}
+{% if svc.soularr.enabled | bool %}
+  soularr:
+    image: {{ svc.soularr.image }}
+    container_name: soularr
+    restart: unless-stopped
+    user: "{{ media.user.uid }}:{{ media.user.gid }}"
+    environment:
+      - TZ={{ tz }}
+      - SCRIPT_INTERVAL=1800
+      - WEBUI_ENABLED=true
+    volumes:
+      - "{{ appdata }}/soularr:/data"
+      - "{{ media.data_dir }}/slskd/complete:/downloads"
+    networks:
+      - {{ media.network.name }}
+      - {{ frey.proxy_network }}
+    depends_on:
+      slskd:
+        condition: service_healthy
+      lidarr:
+        condition: service_started
+    mem_limit: {{ svc.soularr.mem_limit }}
+    pids_limit: 128
+{{ logging() }}
+{{ proxy_labels('soularr', 8265, api_access=false) }}
 
 {% endif %}
 {% if svc.jackett.enabled | bool %}

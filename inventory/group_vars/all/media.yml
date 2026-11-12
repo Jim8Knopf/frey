@@ -101,18 +101,17 @@ media_indexers:
 # ==============================================================================
 # QBITTORRENT CONCURRENCY AND CONNECTION BUDGET
 #
-# These are tuned for the link a van actually has, not for a home connection.
+# Keep a bounded connection budget for a mobile link while allowing more
+# downloads to make progress concurrently.
 #
 # Measured on the uplink at Hobbiton Tours Free Wifi, 2026-11-09: 2.4 GHz at
 # -72 dBm, negotiated 13 Mbit/s MCS 1, which delivered 72 KB/s host-side and
 # RTT to the VPN endpoint swinging between 315 ms and 1940 ms. That jitter is
 # the tell - it is a queue filling up, not distance.
 #
-# On a link like that, concurrency is actively harmful. Fifteen simultaneous
-# downloads shared 72 KB/s fifteen ways, so nothing finished, while the
-# per-torrent handshake and announce traffic ate a visible slice of the
-# bandwidth it was competing for. Four at a time over the same link finishes
-# four torrents in the time fifteen finished none.
+# On that particular link fifteen simultaneous downloads shared 72 KB/s and
+# none finished quickly. The requested setting below allows fifteen; on a weak
+# uplink that trades time to finish each item for more simultaneous progress.
 #
 # The connection caps exist for the same reason. qBittorrent's defaults - 500
 # global connections, 100 per torrent - are a sensible home-fibre figure and a
@@ -121,8 +120,9 @@ media_indexers:
 # out and are retried. Raise all of these on a venue with real bandwidth; the
 # numbers below are the floor that keeps a bad link usable.
 # ==============================================================================
-media_qbittorrent_max_active_downloads: 4
-media_qbittorrent_max_active_torrents: 8
+media_qbittorrent_max_active_downloads: 15
+# Leave room for stalled torrents and uploads alongside the 15 downloads.
+media_qbittorrent_max_active_torrents: 30
 media_qbittorrent_max_connections: 100
 media_qbittorrent_max_connections_per_torrent: 30
 media_qbittorrent_max_uploads: 8
@@ -150,6 +150,9 @@ media_enable:
   # Lidarr's upstream metadata server has been unreliable through 2026, so
   # adding artists and imports break periodically. Not a configuration fault.
   lidarr: true
+  # Soulseek searches supplement the torrent indexers for missing albums.
+  slskd: true
+  soularr: true
   chaptarr: true
   bazarr: true
   qbittorrent: true
@@ -169,9 +172,12 @@ media_vpn:
   provider: custom
 
   # wireguard or openvpn
-  type: wireguard
+  type: openvpn
+  # Riseup's OpenVPN over TCP works on restrictive uplinks. The helper
+  # obtains and renews a short-lived client certificate through the VPN.
+  riseup: true
 
-  # Where to exit. Leave empty to let the provider choose.
+  # This setting applies to built-in providers, not the custom Riseup profile.
   #
   # THIS IS THE LARGEST SINGLE LEVER ON DOWNLOAD SPEED, and it has already
   # cost us once. Measured 2026-11-09, parked in New Zealand: the configured
@@ -184,9 +190,8 @@ media_vpn:
   # feels it more than a single download does, because per-connection
   # throughput is bounded by window/RTT and that is paid once per peer.
   #
-  # With `provider: custom` this list does nothing: the endpoint is pinned by
-  # `credentials.wireguard_endpoint` below, so moving closer means pointing
-  # that at a nearer server, not editing this.
+  # With `provider: custom` this list does nothing. The Riseup helper selects
+  # its configured gateway from the provider's authenticated gateway list.
   server_countries: []
 
   # ---------------------------------------------------------------------------

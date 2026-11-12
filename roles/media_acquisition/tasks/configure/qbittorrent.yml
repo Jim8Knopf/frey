@@ -98,6 +98,12 @@
       listen_port: "{{ media_acquisition.vpn.qbittorrent_listen_port | int }}"
       random_port: false
       upnp: false
+      # The Gluetun namespace also has Docker interfaces. Binding libtorrent
+      # to tun0 prevents it selecting a Docker source address whose policy
+      # route points outside the tunnel and is dropped by the killswitch.
+      # The WebUI remains reachable through the shared namespace.
+      current_network_interface: "{{ 'tun0' if (media_vpn.enabled | bool) else '' }}"
+      current_interface_address: ""
       dht: true
       pex: true
       lsd: true
@@ -203,6 +209,9 @@
          != media_qbittorrent_max_active_torrents | int
       or (qbt_prefs.content | from_json).max_connec | default(0) | int
          != media_qbittorrent_max_connections | int
+      or (qbt_prefs.content | from_json).current_network_interface | default('')
+         != ('tun0' if (media_vpn.enabled | bool) else '')
+      or (qbt_prefs.content | from_json).current_interface_address | default('') != ''
       or not (qbt_prefs.content | from_json).limit_tcp_overhead | default(false)
       or not (qbt_prefs.content | from_json).dont_count_slow_torrents | default(false)
   when: qbt_cookie is defined

@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew the Riseup VPN client certificate
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/frey-riseup-renew --restart

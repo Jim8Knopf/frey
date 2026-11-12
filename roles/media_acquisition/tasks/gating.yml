@@ -17,7 +17,9 @@
     state: directory
     owner: root
     group: root
-    mode: "0750"
+    # The unprivileged local AI broker must traverse this shared directory to
+    # see its kill switch. Secrets inside it are individually restricted.
+    mode: "0755"
   tags:
     - media
     - media_acquisition
@@ -78,6 +80,93 @@
     - media
     - media_acquisition
     - audiobook_import
+
+- name: Install the Soulseek album recovery helper
+  ansible.builtin.template:
+    src: frey-soulseek-recover.py.j2
+    dest: /usr/local/bin/frey-soulseek-recover
+    owner: root
+    group: root
+    mode: "0755"
+    validate: "python3 -m py_compile %s"
+  tags: [media, media_acquisition, soulseek_recovery]
+
+- name: Install Soulseek album recovery units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-soulseek-recover.service
+    - frey-soulseek-recover.timer
+  register: soulseek_recovery_units
+  tags: [media, media_acquisition, soulseek_recovery]
+
+- name: Enable the Soulseek album recovery timer
+  ansible.builtin.systemd:
+    name: frey-soulseek-recover.timer
+    daemon_reload: "{{ soulseek_recovery_units.changed }}"
+    enabled: "{{ media_acquisition.services.soularr.enabled | bool }}"
+    state: "{{ 'started' if (media_acquisition.services.soularr.enabled | bool) else 'stopped' }}"
+  when: not ansible_check_mode
+  tags: [media, media_acquisition, soulseek_recovery]
+
+- name: Install the Lidarr music quality policy
+  ansible.builtin.template:
+    src: frey-lidarr-quality.py.j2
+    dest: /usr/local/bin/frey-lidarr-quality
+    owner: root
+    group: root
+    mode: "0755"
+    validate: "python3 -m py_compile %s"
+  when: media_acquisition.services.lidarr.enabled | bool
+  tags: [media, media_acquisition, music_quality]
+
+- name: Apply the Lidarr music quality policy
+  ansible.builtin.command:
+    argv: [/usr/local/bin/frey-lidarr-quality]
+  register: lidarr_music_quality
+  retries: 12
+  delay: 5
+  until: lidarr_music_quality.rc == 0
+  changed_when: lidarr_music_quality.stdout | trim == 'changed'
+  ignore_errors: "{{ not (media_acquisition.configure.strict | bool) }}"
+  when:
+    - media_acquisition.services.lidarr.enabled | bool
+    - not ansible_check_mode
+  tags: [media, media_acquisition, music_quality]
+
+- name: Report a failed Lidarr quality update
+  ansible.builtin.debug:
+    msg: "Lidarr's music quality policy could not be applied; retry --tags music_quality when Lidarr is available."
+  when:
+    - not ansible_check_mode
+    - lidarr_music_quality.failed | default(false)
+  tags: [media, media_acquisition, music_quality]
+
+- name: Install Lidarr music quality units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - frey-lidarr-quality.service
+    - frey-lidarr-quality.timer
+  register: lidarr_quality_units
+  tags: [media, media_acquisition, music_quality]
+
+- name: Enable the Lidarr music quality timer
+  ansible.builtin.systemd:
+    name: frey-lidarr-quality.timer
+    daemon_reload: "{{ lidarr_quality_units.changed }}"
+    enabled: "{{ media_acquisition.services.lidarr.enabled | bool }}"
+    state: "{{ 'started' if (media_acquisition.services.lidarr.enabled | bool) else 'stopped' }}"
+  when: not ansible_check_mode
+  tags: [media, media_acquisition, music_quality]
 
 - name: Install the NetworkManager dispatcher hook for media gating
   ansible.builtin.template:

@@ -47,6 +47,8 @@ media_versions:
   sonarr: "version-4.0.20.3014"
   radarr: "version-6.4.4.10685"
   lidarr: "version-3.1.6.5079"
+  slskd: "0.26.2"
+  soularr: "v1.2.3"
   bazarr: "version-v1.6.2"
   qbittorrent: "version-5.3.0_v2.1.2"
   # Chaptarr: successor to Readarr, which was retired in June 2025.

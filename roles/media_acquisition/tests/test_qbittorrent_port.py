@@ -124,9 +124,18 @@ class QbittorrentPortTest(unittest.TestCase):
 
 
 class QbittorrentBudgetTest(QbittorrentPortTest):
+    def test_torrent_interface_follows_vpn_switch(self):
+        tasks = yaml.safe_load((ROOT / 'roles/media_acquisition/tasks/configure/qbittorrent.yml').read_text())
+        task = next(t for t in tasks if t.get('name') == 'Apply qBittorrent preferences')
+        expression = trust_as_template(task['vars']['qbt_desired_prefs']['current_network_interface'])
+        self.variables['media_vpn']['enabled'] = True
+        self.assertEqual(self.templar().template(expression), 'tun0')
+        self.variables['media_vpn']['enabled'] = False
+        self.assertEqual(self.templar().template(expression), '')
+
     def test_the_connection_budget_suits_a_venue_radio(self):
         """Guard the tuning: home-fibre defaults collapse a 0.6 Mbit/s uplink."""
-        self.assertLessEqual(self.variables['media_qbittorrent_max_active_downloads'], 6)
+        self.assertEqual(self.variables['media_qbittorrent_max_active_downloads'], 15)
         self.assertLessEqual(self.variables['media_qbittorrent_max_connections'], 200)
         self.assertLessEqual(
             self.variables['media_qbittorrent_max_connections_per_torrent'],

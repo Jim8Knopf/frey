@@ -126,7 +126,11 @@ sudo python3 -c 'import json; print(json.load(
 | qBittorrent | `http://qbittorrent.frey` | Torrent client |
 | Cleanuparr | `http://cleanuparr.frey` | Stuck-download cleanup |
 
-Byparr, Recyclarr and Unpackerr have no web UI and are not routed.
+Soularr's administrator-only interface is at `https://soularr.hub.frey`.
+Its configuration is managed by Ansible and edits made in the UI are replaced
+on the next deploy. Recyclarr has no web interface; `https://recyclarr.hub.frey`
+opens the media acquisition stack in Dockge for status and logs. Byparr and
+Unpackerr have no web UI.
 
 ## Cleanuparr
 
@@ -408,11 +412,21 @@ UIs through Gluetun, and Docker network aliases preserve the existing service
 names. Local access is limited to the configured media and FreyHub subnets and
 the actual proxy network subnet.
 
-The custom Generous WireGuard endpoint hostname is resolved at deployment; if
-its address changes, rerun the media acquisition deployment to refresh it.
-The private key and peer settings are stored in the Ansible Vault. The free
-provider's P2P policy and availability on a particular uplink should be
-checked before relying on it.
+With the VPN enabled, qBittorrent's BitTorrent interface is bound to `tun0`.
+The shared namespace also has Docker interfaces, and their source-specific
+routes can send attempted peer connections toward the killswitch instead of
+the tunnel. The WebUI remains available through Gluetun. If peer discovery
+stays at zero after the tunnel has recovered, check the interface and DHT
+status in qBittorrent; a qBittorrent restart may be needed to rebuild its
+session. When the VPN is disabled, the interface restriction is cleared.
+
+The active custom Riseup OpenVPN profile uses TCP to work on restrictive
+uplinks. The root-only renewal helper checks the client certificate daily,
+renews it before expiry, verifies the key pair and reconnects the dependent
+containers after restarting Gluetun. The server certificate and gateway name
+are verified. Renewal uses the working VPN first, then verified direct HTTPS;
+if both paths fail, the existing profile remains in place and the timer retries.
+The earlier Generous WireGuard credentials remain in the Ansible Vault.
 
 Enabling it with no credentials fails the deploy immediately with
 instructions, rather than starting an unconfigured tunnel that looks like a

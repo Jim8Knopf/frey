@@ -136,6 +136,8 @@ GITHUB = {
     "unpackerr": "Unpackerr/unpackerr",
     "byparr": "ThePhaseless/Byparr",
     "gluetun": "qdm12/gluetun",
+    "slskd": "slskd/slskd",
+    "soularr": "mrusse/soularr",
 }
 HUB = {
     "chaptarr": "chaptarr/chaptarr",

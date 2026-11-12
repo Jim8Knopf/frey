@@ -231,6 +231,8 @@ monitoring_probe_hostnames: >-
       (
         identity_services | default({}) | dict2items
         | rejectattr('key', 'in', [] if monitoring_enable.dockge else ['dockge'])
+        | rejectattr('key', 'in', [] if (monitoring_enable.dockge and media_enable.recyclarr) else ['recyclarr'])
+        | rejectattr('key', 'in', [] if media_enable.soularr else ['soularr'])
         | map(attribute='value.hosts') | map('first') | list
       )
       + [

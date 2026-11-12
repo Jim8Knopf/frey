@@ -8,6 +8,9 @@
 - name: Configure the resolver
   ansible.builtin.import_tasks: resolver_config.yml
 
+- name: Prepare Riseup VPN credentials
+  ansible.builtin.import_tasks: riseup.yml
+
 - name: Deploy the Compose stack
   ansible.builtin.import_tasks: compose.yml
 
