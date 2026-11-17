@@ -1,0 +1,51 @@
+#!/bin/sh
+# NetworkManager dispatcher hook - managed by Ansible role: media_acquisition
+#
+# Rebuilds the VPN tunnel when an uplink appears.
+#
+# Without this, coming back online after a long time parked off-grid can leave
+# the tunnel down for up to the timer interval even though everything needed to
+# fix it is available again. Two things go stale while there is no internet and
+# neither can repair itself: the client certificate expires (Riseup issues them
+# for ~35 days), and the gateways written into the profile can all be retired.
+# In both cases OpenVPN retries forever against a profile that cannot work, so
+# every download client sharing its network namespace stays down.
+#
+# Numbered 88 so it is dispatched ahead of the resolver and gating hooks. The
+# tunnel is the bottom of that stack: the gate's first act on coming online is
+# to test every indexer, and those tests run through this tunnel, so testing
+# before it is up marks indexers failed for no reason. Dispatch order is only a
+# head start, not a guarantee -- each hook hands off with --no-block, so the
+# work itself races. The renewal is safe under that race because it is
+# idempotent and reconnects only when the profile is genuinely newer than the
+# running tunnel.
+#
+# The real work goes to a transient systemd unit with --no-block rather than
+# running inline. Dispatcher scripts run serially and block every other hook
+# behind them, and this one can probe sixteen gateways and fetch a certificate.
+# Blocking here would delay NetworkManager's own event handling - including
+# events that FreyHub depends on.
+
+IFACE="$1"
+ACTION="$2"
+
+case "${ACTION}" in
+  up | connectivity-change | dhcp4-change) ;;
+  *) exit 0 ;;
+esac
+
+# React to the uplink radio, or to any global connectivity verdict change
+# (which is how a captive portal sign-in finally completing shows up, and how
+# a backhaul that was dead behind an already-associated AP announces itself).
+#
+# There is deliberately no `down` case: losing the uplink is the one moment
+# this has nothing useful to do, and probing then just burns timeouts.
+if [ "${IFACE}" != "{{ network_gateway.upstream.interface }}" ] \
+   && [ "${ACTION}" != "connectivity-change" ]; then
+  exit 0
+fi
+
+exec systemd-run --no-block --quiet \
+  --unit="frey-riseup-renew-$$" \
+  --description="Frey Riseup VPN gateway selection" \
+  /usr/local/bin/frey-riseup-renew --restart

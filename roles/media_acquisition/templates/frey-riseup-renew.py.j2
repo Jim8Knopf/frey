@@ -32,6 +32,14 @@ REMOTES_MAX = 8
 # of Riseup's sixteen gateways were dead, so that default stalled the tunnel
 # for minutes at a time and every client sharing its namespace stayed down.
 CONNECT_TIMEOUT = 15
+# Renew the client certificate once it has less than this long to live.
+# Riseup issues them for about 35 days, so this is really the off-grid
+# tolerance: it is how much validity the van is guaranteed to be carrying when
+# it loses its uplink. An expired certificate cannot be replaced without
+# internet, and the tunnel cannot authenticate without one, so downloads stay
+# down until an uplink comes back no matter how healthy everything else is.
+# 20 days rather than 10 doubles that margin and costs one fetch every ~15 days.
+RENEW_WITHIN = 20 * 24 * 3600
 
 
 def fetch(url):
@@ -66,7 +74,7 @@ def still_valid():
         if not client:
             return False
         cert = pem(client.group(1), 'CERTIFICATE')
-        return subprocess.run(['openssl', 'x509', '-noout', '-checkend', '864000'], input=cert, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        return subprocess.run(['openssl', 'x509', '-noout', '-checkend', str(RENEW_WITHIN)], input=cert, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except (OSError, ValueError):
         return False
 
@@ -264,13 +272,19 @@ def main():
         return
     try:
         addresses = candidates()
-    except (OSError, ValueError, json.JSONDecodeError):
-        # Parked with no uplink, or the API is unreachable. A valid profile is
-        # still the best one available, so this is not a failure to report.
-        if material:
-            print('unchanged')
-            return
-        raise
+    except (OSError, json.JSONDecodeError):
+        # No uplink, or a captive portal answering with its own HTML. Neither
+        # is actionable and neither is this script's fault: the dispatcher hook
+        # runs again the moment an uplink appears, and the timer keeps trying
+        # meanwhile. Exiting non-zero here would leave a failed unit sitting on
+        # the monitoring for as long as the van is parked off-grid, which is
+        # exactly when a spurious alert is least welcome.
+        #
+        # A ValueError is deliberately NOT caught: that is candidates() finding
+        # no usable gateway in a response it did parse, which means Riseup
+        # changed something and somebody does need to know.
+        print('offline')
+        return
     remotes = rank(addresses)[:REMOTES_MAX]
     if material is None:
         material = obtain()

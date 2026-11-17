@@ -33,6 +33,25 @@
   when: media_vpn.enabled | bool and media_vpn.riseup | default(false) | bool
   tags: [media, media_acquisition]
 
+- name: Install the NetworkManager dispatcher hook for the Riseup tunnel
+  ansible.builtin.template:
+    src: 88-frey-riseup-renew.j2
+    dest: /etc/NetworkManager/dispatcher.d/88-frey-riseup-renew
+    owner: root
+    group: root
+    # NetworkManager refuses to run dispatcher scripts that are writable by
+    # anyone other than root.
+    mode: "0755"
+  when: media_vpn.enabled | bool and media_vpn.riseup | default(false) | bool
+  tags: [media, media_acquisition]
+
+- name: Remove the Riseup tunnel dispatcher hook when Riseup is off
+  ansible.builtin.file:
+    path: /etc/NetworkManager/dispatcher.d/88-frey-riseup-renew
+    state: absent
+  when: not (media_vpn.enabled | bool and media_vpn.riseup | default(false) | bool)
+  tags: [media, media_acquisition]
+
 - name: Enable Riseup certificate renewal
   ansible.builtin.systemd:
     name: frey-riseup-renew.timer

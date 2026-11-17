@@ -447,6 +447,42 @@ that, and both matter:
 `connect-timeout` is 15s rather than OpenVPN's 120s default, so a silent
 gateway costs seconds instead of stalling the tunnel for minutes.
 
+### Coming back after a long time with no uplink
+
+Two things go stale off-grid, and **neither can repair itself without
+internet** — which is what makes the reconnect a distinct problem from the
+steady state:
+
+- **The certificate expires.** Riseup issues them for about 35 days. Without
+  one the tunnel cannot authenticate at all, however healthy the gateways are.
+- **The gateways can all be retired.** Then OpenVPN's own failover is spent and
+  it retries forever against a profile that cannot work.
+
+In both cases every download client sharing gluetun's namespace stays down, so
+recovery must not wait on a once-a-day timer. Three mechanisms cover it, from
+fastest to most stubborn:
+
+| When | What recovers it | Typical delay |
+| --- | --- | --- |
+| A gateway dies, certificate fine | OpenVPN's own failover across the other remotes | seconds, unaided |
+| An uplink appears | `88-frey-riseup-renew` NetworkManager dispatcher hook | seconds |
+| Internet returns with no NetworkManager event at all | `frey-riseup-renew.timer`, hourly | ≤1 hour |
+
+That third row is the case worth keeping in mind: an uplink that stayed
+associated the whole time while its backhaul was dead may produce no `up`
+event. `connectivity-change` usually catches it — that is also how a captive
+portal sign-in completing shows up — but the hourly timer is what guarantees it.
+
+The renewal margin is the off-grid tolerance. Renewing at 20 days remaining
+rather than 10 means the van is always carrying at least 20 days of validity
+when it loses its uplink, and it costs one certificate fetch every ~15 days.
+
+**Having no uplink is not a failure and is not reported as one.** The run
+prints `offline` and exits 0, because a failed unit sitting on the monitoring
+for as long as the van is parked is a false alarm precisely when it is least
+useful. A gateway list that parses but contains nothing usable is the opposite
+— that means Riseup changed something — and does fail loudly.
+
 Enabling it with no credentials fails the deploy immediately with
 instructions, rather than starting an unconfigured tunnel that looks like a
 broken stack.
