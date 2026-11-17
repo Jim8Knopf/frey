@@ -54,7 +54,17 @@ services:
     container_name: immich_machine_learning
     restart: unless-stopped
     environment:
-      MACHINE_LEARNING_MODEL_REVISION: v2
+      # Selects the per-architecture ONNX models. It also moves the model
+      # cache to <task>/<model>/<revision>/, so changing this throws away
+      # every cached model - see immich.ml.model_revision in defaults.
+      MACHINE_LEARNING_MODEL_REVISION: {{ immich.ml.model_revision }}
+      # The image would otherwise use every core for a single request.
+      MACHINE_LEARNING_REQUEST_THREADS: "{{ immich.ml.request_threads }}"
+      TZ: {{ frey.timezone }}
+    # The gateway and this container share four cores. A detection pass over a
+    # whole library runs for hours, so the ceiling is three - uncapped, face
+    # recognition is what makes FreyHub feel broken.
+    cpus: "{{ immich.ml.cpus }}"
     volumes:
       - {{ (immich.appdata_dir ~ '/model-cache:/cache') | to_json }}
     networks: [internal]

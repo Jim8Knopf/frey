@@ -236,6 +236,26 @@ monitoring_thresholds:
     # which means FreyHub looks connected and does nothing.
     dhcp_broken_for: 10m
 
+  # --- Immich face recognition -----------------------------------------------
+  #
+  # Face detection is the one job in Frey that is lost rather than retried.
+  # When the ML service cannot reach Hugging Face it answers HTTP 500, the
+  # server DISCARDS the job, and nothing ever queues it again - while every
+  # container stays healthy and the only symptom is a People page that never
+  # fills. These two numbers are what make that visible.
+  immich:
+    # Photos still waiting on face detection. A fresh import is legitimately
+    # a large backlog that drains over hours, so this is deliberately slow to
+    # fire: it is reporting "the queue is not draining", not "there is work".
+    face_backlog: 50
+    face_backlog_for: 12h
+    # model.onnx files that must be in the cache: detection + recognition for
+    # faces and for OCR, visual + textual for CLIP. Fewer means the ML
+    # service deleted its own models after a failed Hub lookup, which is the
+    # failure that cancels every job it touches.
+    ml_model_files: 6
+    ml_model_files_for: 15m
+
   # --- Monitoring itself -----------------------------------------------------
   monitoring:
     target_down_for: 10m
@@ -290,6 +310,7 @@ monitoring_host_collectors:
   - gateway     # uplink state, AP clients, DHCP leases, DNS, NAT
   - docker      # container running state and restart counts
   - indexers    # *arr indexer health - see monitoring_indexer_apps below
+  - immich      # face-detection backlog and machine-learning model cache
 
 monitoring_indexer_apps:
   - {name: prowlarr, port: 9696, api_version: v1}

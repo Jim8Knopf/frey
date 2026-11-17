@@ -150,3 +150,8 @@
   when:
     - not ansible_check_mode
     - immich_configuration.results[0].changed
+
+# "Healthy" is not evidence that a single face can be found. See the header of
+# machine-learning.yml for what fails silently without this.
+- name: Verify machine learning can actually find a face
+  ansible.builtin.include_tasks: machine-learning.yml

@@ -8,3 +8,85 @@ immich:
   ml_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}"
   database_image: "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
   redis_image: "docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd"
+
+  # ===========================================================================
+  # MACHINE LEARNING
+  #
+  # Face recognition is the only Immich feature that is pure CPU on this host:
+  # the Pi 5 has no NPU and no usable GPU for onnxruntime, so every face is
+  # found on the same four cores that run the AP, dnsmasq and NAT. A pass over
+  # a full library runs for hours, and FreyHub has to stay responsive through
+  # all of it - which is why the limits below sit deliberately under the core
+  # count rather than at it.
+  # ===========================================================================
+  ml:
+    # Hard ceiling on the ML container: three of four cores. Without this the
+    # container is free to take all four, and the gateway is what suffers.
+    cpus: "3.0"
+
+    # onnxruntime threads per request. The image defaults this to the host's
+    # core count, which oversubscribes the cap above the moment two requests
+    # overlap. Keep it equal to cpus.
+    request_threads: 3
+
+    # NOT the image default, which is "main". "v2" selects the
+    # per-architecture ONNX models - the aarch64 build of buffalo_l is what
+    # makes it tolerable here at all.
+    #
+    # It is also load-bearing in a way that is easy to miss: any value other
+    # than "main" moves the cache to <task>/<model>/<revision>/, so changing
+    # this invalidates every already-downloaded model and forces a fresh
+    # ~2.3 GB pull from Hugging Face. Do not change it without an uplink.
+    model_revision: v2
+
+    # Every model the enabled features need, and the parts of each that have
+    # to be on disk. This is the list the collector checks and the warm-up
+    # exercises; a missing file here is not a degraded feature, it is the ML
+    # service answering every single job with HTTP 500.
+    models:
+      - {task: facial-recognition, name: buffalo_l, parts: [detection, recognition]}
+      - {task: clip, name: ViT-B-32__openai, parts: [visual, textual]}
+      - {task: ocr, name: PP-OCRv5_mobile, parts: [detection, recognition]}
+
+    # How long the warm-up waits for a cold model to load. A warm load is a
+    # couple of seconds; a cold one on a fresh install has to download first,
+    # which is why this is minutes rather than seconds.
+    warm_timeout: 600
+
+    # The listener inside the ML container. Not published on the host - the
+    # firewall drops Docker-bridge-to-host traffic anyway, so everything that
+    # talks to it does so container-to-container.
+    port: 3003
+
+  # ===========================================================================
+  # FACE RECOGNITION
+  #
+  # IMMICH_CONFIG_FILE makes the whole admin UI read-only - no system-config
+  # row is written at all - so every setting absent from config.json is frozen
+  # at the upstream default and cannot be changed from the browser. Restating
+  # the defaults here is what makes them tunable.
+  #
+  # These are the upstream v3.4.1 values. Thresholds are NOT the thing to
+  # reach for first: until a full detection pass has finished, a thin People
+  # page is coverage, not tuning. See README.md.
+  # ===========================================================================
+  face:
+    model: buffalo_l
+    # Detection confidence. Lower finds more faces, including more that are
+    # not faces.
+    min_score: 0.7
+    # Clustering distance. Lower splits one person across several entries;
+    # higher merges different people into one.
+    max_distance: 0.5
+    # Sightings before a cluster becomes a person you can name. Below this it
+    # stays in the unassigned pile.
+    min_faces: 3
+
+  # Jobs run per queue. One each, on purpose: a single request already uses
+  # request_threads cores, so concurrency above 1 does not add throughput on
+  # four cores - it just takes them from the gateway. The upstream defaults
+  # are 2 for faceDetection and smartSearch.
+  concurrency:
+    face_detection: 1
+    smart_search: 1
+    ocr: 1

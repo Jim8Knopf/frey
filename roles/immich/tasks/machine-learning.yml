@@ -1,0 +1,92 @@
+---
+# ============================================================================
+# MACHINE-LEARNING READINESS
+#
+# Face recognition fails in a way nothing else in Frey does: it fails
+# PERMANENTLY AND SILENTLY.
+#
+# The ML container downloads its models from Hugging Face on first use. When
+# that download cannot happen - no uplink, or a captive portal, or a venue
+# that blocks outbound DNS - immich_ml classifies the failure as a corrupt
+# model, deletes the cached copy and retries, and answers the request with
+# HTTP 500. The server does not retry those jobs. It drops them. So one
+# offline window does not postpone face detection for a few thousand photos,
+# it cancels it, and nothing in Immich ever queues them again: nightlyTasks
+# covers missing thumbnails and clustering new faces, never missed detection.
+#
+# Every container stays "healthy" throughout. The only visible symptom is a
+# People page that never fills up.
+#
+# These tasks make that condition loud at deploy time instead. They do not
+# fail the play - an uplink is not something a parked van is entitled to, and
+# aborting here would take the rest of the deploy down with it. They report,
+# and frey-metrics turns the same facts into an alert.
+# ============================================================================
+
+- name: Check that every machine-learning model is on disk
+  ansible.builtin.stat:
+    path: >-
+      {{ immich.appdata_dir }}/model-cache/{{ item.0.task }}/{{ item.0.name }}/{{
+        (immich.ml.model_revision ~ '/') if immich.ml.model_revision != 'main' else '' }}{{ item.1 }}/model.onnx
+  loop: "{{ immich.ml.models | subelements('parts') }}"
+  loop_control:
+    label: "{{ item.0.task }}/{{ item.0.name }}/{{ item.1 }}"
+  register: immich_model_files
+
+- name: Start from no missing models
+  ansible.builtin.set_fact:
+    immich_models_missing: []
+
+- name: Note which machine-learning models are missing
+  ansible.builtin.set_fact:
+    immich_models_missing: "{{ immich_models_missing + [item.item.0.task ~ '/' ~ item.item.0.name ~ '/' ~ item.item.1] }}"
+  loop: "{{ immich_model_files.results | rejectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item.0.task }}/{{ item.item.0.name }}/{{ item.item.1 }}"
+
+- name: Report missing machine-learning models
+  ansible.builtin.debug:
+    msg:
+      - "{{ immich_models_missing | length }} machine-learning model file(s) are not cached:"
+      - "{{ immich_models_missing }}"
+      - >-
+        Until they are, the ML service answers every face-detection,
+        smart-search and OCR job with HTTP 500 and Immich DISCARDS the job.
+        The warm-up below downloads them, which needs a working uplink. Once
+        an uplink is up, re-run this role and then scripts/immich-reprocess.sh
+        to re-queue the photos that were lost.
+  when: immich_models_missing | length > 0
+
+# Forces the first real inference rather than trusting /ping. On a warm cache
+# this is a couple of seconds; on a cold one it is the model download, which
+# is why the timeout is minutes. See templates/ml-warm.py.j2.
+- name: Warm and verify the face-recognition models
+  ansible.builtin.command:
+    argv: [docker, exec, -i, immich_machine_learning, python3, '-']
+    stdin: "{{ lookup('template', 'ml-warm.py.j2') }}"
+  register: immich_ml_warm
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Report the face-recognition verdict
+  ansible.builtin.debug:
+    msg: >-
+      Face recognition inference: {{ 'WORKING' if immich_ml_warm.rc == 0 else 'BROKEN' }} -
+      {{ ((immich_ml_warm.stdout | default('') | trim) or (immich_ml_warm.stderr | default('') | trim)) | truncate(300) }}
+  when:
+    - not ansible_check_mode
+    - immich_ml_warm.rc is defined
+
+- name: Warn that face recognition is not working
+  ansible.builtin.debug:
+    msg: >-
+      The ML service did not complete a face-detection request. Every photo
+      queued while this is true is lost rather than retried. Check
+      `docker logs immich_machine_learning` for "Temporary failure in name
+      resolution" (no uplink or blocked DNS) and fix that first; the backlog
+      is recoverable with scripts/immich-reprocess.sh afterwards.
+  when:
+    - not ansible_check_mode
+    - immich_ml_warm.rc is defined
+    - immich_ml_warm.rc != 0

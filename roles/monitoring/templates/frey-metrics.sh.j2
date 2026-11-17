@@ -803,6 +803,109 @@ collect_indexers() {
   } | emit indexers
 }
 
+# =============================================================================
+# IMMICH - the face-detection backlog, and the models it needs to drain it
+#
+# Face detection is the only job in Frey that is LOST rather than retried.
+# The ML container fetches its models from Hugging Face on first use; when it
+# cannot (no uplink, a captive portal, a venue blocking outbound DNS) it reads
+# the failure as a corrupt download, DELETES the cached model, retries, and
+# answers HTTP 500. The server discards those jobs instead of re-queueing
+# them, and nothing in Immich ever picks them up again - nightly tasks cover
+# missing thumbnails and clustering new faces, never missed detection.
+#
+# Every container stays healthy through all of it. So these two numbers are
+# the only warning you get:
+#
+#   backlog      photos still waiting. Normal and large after an import,
+#                suspicious when it stops going down.
+#   model files  below the expected count means the service wiped its own
+#                models and every job it touches from now on is thrown away.
+# =============================================================================
+collect_immich() {
+  local started ok out cache files bytes
+  started=$(date +%s.%N)
+  ok=1
+  cache="{{ frey.base_dir }}/appdata/immich/model-cache"
+
+  if ! have docker; then
+    { echo "# docker not installed"; collector_meta immich 0 "${started}"; } | emit immich
+    return
+  fi
+
+  {
+    echo "# HELP frey_immich_query_success The collector could read Immich's database at all."
+    echo "# TYPE frey_immich_query_success gauge"
+    echo "# HELP frey_immich_assets Assets Immich holds, excluding trashed ones."
+    echo "# TYPE frey_immich_assets gauge"
+    echo "# HELP frey_immich_faces_pending Assets still waiting for face detection."
+    echo "# TYPE frey_immich_faces_pending gauge"
+    echo "# HELP frey_immich_faces_detected Faces found so far."
+    echo "# TYPE frey_immich_faces_detected gauge"
+    echo "# HELP frey_immich_people_named People that have been given a name."
+    echo "# TYPE frey_immich_people_named gauge"
+    echo "# HELP frey_immich_ml_model_files model.onnx files present in the machine-learning cache."
+    echo "# TYPE frey_immich_ml_model_files gauge"
+    echo "# HELP frey_immich_ml_cache_bytes Size of the machine-learning model cache."
+    echo "# TYPE frey_immich_ml_cache_bytes gauge"
+
+    # Not running is not this collector's problem to report; collect_docker
+    # already covers a container that should be up and is not.
+    if docker inspect -f '{% raw %}{{.State.Running}}{% endraw %}' immich_postgres 2>/dev/null | grep -q true; then
+
+      # The left join is the point: an asset with no job-status row at all has
+      # never been looked at either, and counting only existing rows with a
+      # null timestamp would silently miss those.
+      #
+      # Written to a file inside the container before being read back, because
+      # a `docker exec` whose stdout carries the payload can truncate.
+      out=$(docker exec immich_postgres sh -c '
+          psql -U immich -d immich -At -F" " -c "
+            select
+              (select count(*) from asset where \"deletedAt\" is null),
+              (select count(*) from asset a
+                 left join asset_job_status s on s.\"assetId\" = a.id
+                 where a.\"deletedAt\" is null and s.\"facesRecognizedAt\" is null),
+              (select count(*) from asset_face where \"deletedAt\" is null),
+              (select count(*) from person where length(name) > 0)
+          " > /tmp/frey-immich.txt 2>/dev/null || exit 1
+          cat /tmp/frey-immich.txt
+        ' 2>/dev/null | tr -d '\r')
+
+      local assets pending faces people
+      assets=$(num "$(printf '%s' "${out}" | awk 'NF{print $1; exit}')")
+      pending=$(num "$(printf '%s' "${out}" | awk 'NF{print $2; exit}')")
+      faces=$(num "$(printf '%s' "${out}" | awk 'NF{print $3; exit}')")
+      people=$(num "$(printf '%s' "${out}" | awk 'NF{print $4; exit}')")
+
+      if [[ -z "${assets}" || -z "${pending}" ]]; then
+        # Running but unreadable - a restarting database, or a schema that
+        # moved under us. Report the failure rather than a reassuring zero.
+        echo "frey_immich_query_success 0"
+        ok=0
+      else
+        echo "frey_immich_query_success 1"
+        echo "frey_immich_assets ${assets}"
+        echo "frey_immich_faces_pending ${pending}"
+        [[ -n "${faces}" ]] && echo "frey_immich_faces_detected ${faces}"
+        [[ -n "${people}" ]] && echo "frey_immich_people_named ${people}"
+      fi
+    fi
+
+    # Counted rather than listed against an expected set, so this keeps
+    # working when a model is added or the revision moves. What matters is
+    # that the cache did not just lose its contents.
+    if [[ -d "${cache}" ]]; then
+      files=$(num "$(find "${cache}" -name 'model.onnx' -type f 2>/dev/null | wc -l)")
+      bytes=$(num "$(du -sb "${cache}" 2>/dev/null | awk '{print $1}')")
+      [[ -n "${files}" ]] && echo "frey_immich_ml_model_files ${files}"
+      [[ -n "${bytes}" ]] && echo "frey_immich_ml_cache_bytes ${bytes}"
+    fi
+
+    collector_meta immich "${ok}" "${started}"
+  } | emit immich
+}
+
 collector_meta() {
   local collector="$1" ok="$2" started="$3"
   local duration
@@ -858,6 +961,7 @@ main() {
       gateway) collect_gateway ;;
       docker) collect_docker ;;
       indexers) collect_indexers ;;
+      immich) collect_immich ;;
       *)
         echo "frey-metrics: unknown collector '${collector}'" >&2
         exit 64
