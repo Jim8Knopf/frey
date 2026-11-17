@@ -1,9 +1,18 @@
 [Unit]
-Description=Check Riseup VPN certificate daily
+Description=Check the Riseup VPN certificate and gateways hourly
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=1d
+# Hourly, not daily. The dispatcher hook handles the normal case -- an uplink
+# appearing -- within seconds, but it only fires when NetworkManager reports a
+# change. An uplink that was associated the whole time while its backhaul was
+# dead may produce no event at all, and that is precisely the long-outage case
+# this has to recover from. An hour bounds the worst case without costing
+# anything: the run is a sub-second no-op when the tunnel is healthy, and when
+# there is no uplink it gives up on a timeout and exits 0.
+OnUnitActiveSec=1h
+# Run immediately if the window was missed, which is the normal state after
+# the Pi has been powered down.
 Persistent=true
 
 [Install]

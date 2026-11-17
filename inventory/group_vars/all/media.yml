@@ -190,8 +190,10 @@ media_vpn:
   # feels it more than a single download does, because per-connection
   # throughput is bounded by window/RTT and that is paid once per peer.
   #
-  # With `provider: custom` this list does nothing. The Riseup helper selects
-  # its configured gateway from the provider's authenticated gateway list.
+  # With `provider: custom` this list does nothing. The Riseup helper probes
+  # every gateway in the provider's authenticated list and writes the reachable
+  # ones into the profile nearest-first, so the exit is chosen on measured
+  # latency from wherever the van is actually parked.
   server_countries: []
 
   # ---------------------------------------------------------------------------
