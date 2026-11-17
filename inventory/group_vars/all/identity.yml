@@ -96,6 +96,8 @@ identity_groups:
     description: Full access, including the acquisition stack and admin tools
   - name: media
     description: Watch, listen and request. Family and guests.
+  - name: immich
+    description: Access the photo library
   - name: notes
     description: Access the SilverBullet knowledge base
   - name: guests
@@ -153,6 +155,11 @@ identity_services:
     auth: oidc
     groups: [frey_admins, media, notes]
     hosts: [dashy]
+
+  immich:
+    auth: oidc
+    groups: [frey_admins, immich]
+    hosts: [immich]
 
   silverbullet:
     auth: forward_auth

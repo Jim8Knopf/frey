@@ -68,6 +68,7 @@ frey:
       - frey_pki
       - identity
       - silverbullet
+      - immich
       - local_ai
       - media_acquisition
       - media_library
@@ -129,6 +130,11 @@ frey:
         role: dashy
         tags:
           - dashy
+      immich:
+        role: immich
+        tags:
+          - immich
+          - photos
       silverbullet:
         role: silverbullet
         tags:

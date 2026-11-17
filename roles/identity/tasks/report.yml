@@ -54,6 +54,7 @@
     {{
       (identity_confidential_clients | default([]))
       | reject('in', ['audiobookshelf'] if (identity_abs_configured | default(false)) else [])
+      | reject('in', ['immich'] if 'immich' in (frey.modules.enabled | default([])) else [])
       | list
     }}
   loop_control:

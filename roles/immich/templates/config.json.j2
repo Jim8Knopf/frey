@@ -1,0 +1,15 @@
+{
+  "oauth": {
+    "enabled": true,
+    "issuerUrl": {{ ('https://' ~ identity_hosts.auth ~ '.' ~ frey.service_domain) | to_json }},
+    "clientId": "immich",
+    "clientSecret": {{ immich_oidc_secret | to_json }},
+    "scope": "openid profile email immich_role",
+    "roleClaim": "immich_role",
+    "tokenEndpointAuthMethod": "client_secret_post",
+    "buttonText": "Sign in with Frey",
+    "autoRegister": true,
+    "autoLaunch": false
+  },
+  "server": {"externalDomain": {{ ('https://' ~ immich.host ~ '.' ~ frey.service_domain) | to_json }}}
+}

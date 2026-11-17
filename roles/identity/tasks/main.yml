@@ -221,7 +221,6 @@
     # YAML parser reads as the start of a flow mapping and rejects. The
     # authoritative check is `authelia validate-config` below, which applies
     # the filter first and then validates the result against the real schema.
-  notify: Restart authelia
   when: identity_can_write
   tags: [identity, sso, identity_config]
 
@@ -244,6 +243,16 @@
     state: present
   when: not ansible_check_mode
   tags: [identity, sso]
+
+# A checksum in Compose makes a retry after an interrupted deployment reconcile
+# the running process with the file it has on disk, even if the template task
+# itself reports no change on that retry.
+- name: Check the Authelia configuration checksum
+  ansible.builtin.stat:
+    path: "{{ identity.appdata_dir }}/authelia/configuration.yml"
+    checksum_algorithm: sha256
+  register: identity_authelia_config_stat
+  tags: [identity, sso, identity_config]
 
 - name: Render the identity stack
   ansible.builtin.template:

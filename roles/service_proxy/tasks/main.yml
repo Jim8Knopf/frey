@@ -1,4 +1,8 @@
 ---
+- name: Protect Docker interfaces from the generic Ethernet profile
+  ansible.builtin.import_tasks: networkmanager.yml
+  tags: [services, proxy, docker]
+
 - name: Validate service proxy configuration
   ansible.builtin.assert:
     that:

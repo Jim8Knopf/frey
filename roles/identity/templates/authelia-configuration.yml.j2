@@ -247,6 +247,7 @@ access_control:
 # parse error 80 lines further down. Keep commentary in this header block.
 # ------------------------------------------------------------------------------
 {% set abs_maps_groups = ('audiobookshelf' in (oidc_services | map(attribute='key') | list)) and (identity.audiobookshelf.map_groups | default(false) | bool) %}
+{% set immich_maps_groups = 'immich' in (oidc_services | map(attribute='key') | list) %}
 {% if abs_maps_groups %}
 {% set ns = namespace(expr = '["' ~ identity.audiobookshelf.role_fallback ~ '"]') %}
 {% for entry in identity.audiobookshelf.role_map | reverse %}
@@ -278,7 +279,15 @@ definitions:
   user_attributes:
     audiobookshelf_roles:
       expression: '{{ ns.expr }}'
-
+{% if immich_maps_groups %}
+    immich_role:
+      expression: '"frey_admins" in groups ? "admin" : "user"'
+{% endif %}
+{% elif immich_maps_groups %}
+definitions:
+  user_attributes:
+    immich_role:
+      expression: '"frey_admins" in groups ? "admin" : "user"'
 {% endif %}
 identity_providers:
   oidc:
@@ -295,15 +304,21 @@ identity_providers:
     enforce_pkce: 'public_clients_only'
     enable_client_debug_messages: false
 
-{% if abs_maps_groups %}
+{% if abs_maps_groups or immich_maps_groups %}
     # A scope of its own, because Audiobookshelf appends the name of the claim
     # it wants to the scope it asks for, verbatim. Without this the request
     # names a scope Authelia does not know.
     scopes:
+{% if abs_maps_groups %}
       {{ identity.audiobookshelf.role_claim }}:
         claims:
           - '{{ identity.audiobookshelf.role_claim }}'
-
+{% endif %}
+{% if immich_maps_groups %}
+      immich_role:
+        claims:
+          - 'immich_role'
+{% endif %}
 {% endif %}
 
 {% if 'dashy' in (oidc_services | map(attribute='key') | list) %}
@@ -348,8 +363,15 @@ identity_providers:
         custom_claims:
           {{ identity.audiobookshelf.role_claim }}:
             attribute: 'audiobookshelf_roles'
+{% elif immich_maps_groups and policy == 'immich_roles' %}
+        custom_claims:
+          immich_role:
+            attribute: 'immich_role'
 {% endif %}
         id_token:
+{% if immich_maps_groups and policy == 'immich_roles' %}
+          - 'immich_role'
+{% endif %}
           - 'email'
           - 'email_verified'
           - 'name'

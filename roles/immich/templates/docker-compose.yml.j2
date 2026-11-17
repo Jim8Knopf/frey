@@ -1,0 +1,85 @@
+# Managed by Ansible. Contains secrets; keep private.
+name: immich
+services:
+  immich-server:
+    image: {{ immich.server_image }}
+    container_name: immich_server
+    restart: unless-stopped
+    environment:
+      DB_HOSTNAME: database
+      DB_USERNAME: immich
+      DB_DATABASE_NAME: immich
+      DB_PASSWORD: {{ immich_db_password | to_json }}
+      REDIS_HOSTNAME: redis
+      IMMICH_CONFIG_FILE: /config/immich.json
+      NODE_EXTRA_CA_CERTS: /config/frey-root-ca.crt
+      TZ: {{ frey.timezone }}
+    volumes:
+      - {{ (immich.data_dir ~ ':/data') | to_json }}
+      - {{ (immich.stack_dir ~ '/config.json:/config/immich.json:ro') | to_json }}
+      - {{ (frey.pki_public_dir ~ '/frey-root-ca.crt:/config/frey-root-ca.crt:ro') | to_json }}
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - redis
+      - database
+    networks: [internal, proxy]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.immich.loadbalancer.server.port=2283"
+      - "traefik.http.routers.immich.rule=Host(`{{ immich.host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.immich.entrypoints=websecure"
+      - "traefik.http.routers.immich.tls=true"
+      - "traefik.http.routers.immich.middlewares=secure-headers@file"
+      - "traefik.http.routers.immich-legacy.rule=Host(`{{ immich.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.immich-legacy.entrypoints=websecure"
+      - "traefik.http.routers.immich-legacy.tls=true"
+      - "traefik.http.routers.immich-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.immich-legacy.service=immich"
+      - "traefik.http.routers.immich-http.rule=Host(`{{ immich.host }}.{{ frey.service_domain }}`) || Host(`{{ immich.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.immich-http.entrypoints=web"
+      - "traefik.http.routers.immich-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.immich-http.service=immich"
+      # Restrict first-admin creation to the repository's trusted devices.
+      - "traefik.http.routers.immich-setup.rule=Host(`{{ immich.host }}.{{ frey.service_domain }}`) && Path(`/api/auth/admin-sign-up`)"
+      - "traefik.http.routers.immich-setup.priority=1000"
+      - "traefik.http.routers.immich-setup.entrypoints=websecure"
+      - "traefik.http.routers.immich-setup.tls=true"
+      - "traefik.http.routers.immich-setup.middlewares=immich-setup-allow@docker"
+      - "traefik.http.routers.immich-setup.service=immich"
+      - "traefik.http.middlewares.immich-setup-allow.ipallowlist.sourcerange={{ frey.trusted_devices | map(attribute='address') | join(',') }}"
+      - "frey.module=immich"
+  immich-machine-learning:
+    image: {{ immich.ml_image }}
+    container_name: immich_machine_learning
+    restart: unless-stopped
+    environment:
+      MACHINE_LEARNING_MODEL_REVISION: v2
+    volumes:
+      - {{ (immich.appdata_dir ~ '/model-cache:/cache') | to_json }}
+    networks: [internal]
+  redis:
+    image: {{ immich.redis_image }}
+    container_name: immich_redis
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+    networks: [internal]
+  database:
+    image: {{ immich.database_image }}
+    container_name: immich_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: {{ immich_db_password | to_json }}
+      POSTGRES_USER: immich
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - {{ (immich.appdata_dir ~ '/postgres:/var/lib/postgresql/data') | to_json }}
+    shm_size: 128mb
+    networks: [internal]
+networks:
+  internal:
+  proxy:
+    name: {{ frey.proxy_network }}
+    external: true

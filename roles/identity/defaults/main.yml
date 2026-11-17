@@ -297,11 +297,12 @@ identity:
         - openid
         - profile
         - email
+        - immich_role
       redirect_uris:
         - "https://immich.{{ frey.service_domain }}/auth/login"
         - "https://immich.{{ frey.service_domain }}/user-settings"
         - "app.immich:///oauth-callback"
-      claims_policy: ""
+      claims_policy: immich_roles
 
     grafana:
       client_name: Grafana

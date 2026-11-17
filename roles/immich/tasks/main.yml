@@ -1,0 +1,152 @@
+---
+- name: Validate Immich identity configuration
+  ansible.builtin.assert:
+    that:
+      - identity_services.immich.auth == 'oidc'
+      - immich.host in identity_services.immich.hosts
+      - immich_version is match('^v[0-9]')
+
+- name: Create Immich directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ immich.stack_dir }}", mode: "0700"}
+    - {path: "{{ immich.appdata_dir }}", mode: "0700"}
+    - {path: "{{ immich.data_dir }}", mode: "0755"}
+    - {path: "{{ immich.appdata_dir }}/model-cache", mode: "0755"}
+
+# The pinned PostgreSQL image runs as uid/gid 999 after initialization.
+- name: Create the PostgreSQL data directory
+  ansible.builtin.file:
+    path: "{{ immich.appdata_dir }}/postgres"
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
+- name: Check for an existing database and its credential
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ immich.appdata_dir }}/postgres/PG_VERSION"
+    - "{{ immich.appdata_dir }}/db-password"
+  register: immich_database_state
+
+- name: Refuse to replace a missing database credential
+  ansible.builtin.assert:
+    that:
+      - not immich_database_state.results[0].stat.exists or immich_database_state.results[1].stat.exists
+    fail_msg: Restore the existing Immich database password before deploying; a new password cannot open an existing database.
+
+- name: Create a persistent database password
+  ansible.builtin.command:
+    argv: [openssl, rand, -hex, '32']
+    creates: "{{ immich.appdata_dir }}/db-password"
+  register: immich_new_password
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Store the database password
+  ansible.builtin.copy:
+    content: "{{ immich_new_password.stdout }}"
+    dest: "{{ immich.appdata_dir }}/db-password"
+    owner: root
+    group: root
+    mode: "0600"
+  when: immich_new_password.changed | default(false) and immich_new_password.stdout | default('') | length > 0
+  no_log: true
+  diff: false
+
+- name: Check for required credentials
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ immich.appdata_dir }}/db-password"
+    - "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
+  register: immich_secret_files
+
+- name: Require credentials before deploying
+  ansible.builtin.assert:
+    that:
+      - immich_secret_files.results[0].stat.exists
+      - immich_secret_files.results[1].stat.exists
+    fail_msg: Run the identity role first; check mode on a fresh installation cannot generate credentials.
+  when: not ansible_check_mode
+
+- name: Read credentials
+  ansible.builtin.slurp:
+    src: "{{ item.item }}"
+  loop: "{{ immich_secret_files.results }}"
+  when: item.stat.exists
+  register: immich_secret_blobs
+  no_log: true
+
+- name: Set deployment credentials
+  ansible.builtin.set_fact:
+    immich_db_password: "{{ (immich_secret_blobs.results[0].content | default('') | b64decode) if immich_secret_files.results[0].stat.exists else 'checkmode' }}"
+    immich_oidc_secret: "{{ ((immich_secret_blobs.results[1].content | b64decode | from_json).immich_oidc_secret | default('')) if immich_secret_files.results[1].stat.exists else 'checkmode' }}"
+  no_log: true
+
+- name: Validate the generated database credential
+  ansible.builtin.assert:
+    that: immich_db_password is match('^[0-9a-f]{64}$') or ansible_check_mode
+    fail_msg: The Immich database password is invalid; restore its original credential before continuing.
+  no_log: true
+
+- name: Require the Immich OIDC secret
+  ansible.builtin.assert:
+    that: immich_oidc_secret | length > 0 or ansible_check_mode
+    fail_msg: Deploy the identity tag to register the Immich OIDC client first.
+  no_log: true
+
+- name: Install Immich configuration
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ immich.stack_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - {src: config.json.j2, dest: config.json}
+    - {src: docker-compose.yml.j2, dest: docker-compose.yml}
+  no_log: true
+  diff: false
+  register: immich_configuration
+
+- name: Pull pinned Immich images
+  community.docker.docker_image_pull:
+    name: "{{ item }}"
+    pull: not_present
+  loop:
+    - "{{ immich.server_image }}"
+    - "{{ immich.ml_image }}"
+    - "{{ immich.database_image }}"
+    - "{{ immich.redis_image }}"
+  register: immich_image_pull
+  retries: 5
+  delay: 20
+  until: immich_image_pull is succeeded
+  when: not ansible_check_mode
+
+- name: Start Immich
+  community.docker.docker_compose_v2:
+    project_src: "{{ immich.stack_dir }}"
+    state: present
+    pull: never
+    timeout: 300
+  when: not ansible_check_mode
+
+- name: Recreate Immich after configuration changes
+  community.docker.docker_compose_v2:
+    project_src: "{{ immich.stack_dir }}"
+    services: [immich-server]
+    state: present
+    recreate: always
+    timeout: 300
+  when:
+    - not ansible_check_mode
+    - immich_configuration.results[0].changed
