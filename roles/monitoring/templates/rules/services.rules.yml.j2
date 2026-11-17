@@ -315,6 +315,28 @@ groups:
             away. Get an uplink, re-run the immich tag to re-download them,
             then re-queue the lost work with scripts/immich-reprocess.sh.
 
+      # The floor above catches a cache that never filled. This catches the
+      # one that EMPTIED, which is what a failed Hub lookup actually does -
+      # and it fires while plenty of files are still present, because losing
+      # only the face models still leaves the OCR and CLIP ones behind.
+      - alert: FreyImmichModelsDisappeared
+        expr: >-
+          frey_immich_ml_model_files
+          < max_over_time(frey_immich_ml_model_files[{{ t.immich.ml_model_window }}])
+        for: {{ t.immich.ml_model_files_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Immich deleted machine-learning models ({{ go }} $value {{ og }} left)'
+          description: >-
+            Fewer model files than at any point in the last
+            {{ t.immich.ml_model_window }}. The ML service removes a cached
+            model when it cannot reach Hugging Face to check it, so this is
+            almost always a lost uplink rather than a disk problem - and
+            every job touching the missing model is answered with HTTP 500
+            and thrown away. Re-run the immich tag with an uplink, then
+            scripts/immich-reprocess.sh.
+
       - alert: FreyImmichFaceBacklogStalled
         expr: >-
           frey_immich_faces_pending > {{ t.immich.face_backlog }}

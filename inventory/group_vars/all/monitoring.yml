@@ -249,12 +249,18 @@ monitoring_thresholds:
     # fire: it is reporting "the queue is not draining", not "there is work".
     face_backlog: 50
     face_backlog_for: 12h
-    # model.onnx files that must be in the cache: detection + recognition for
-    # faces and for OCR, visual + textual for CLIP. Fewer means the ML
-    # service deleted its own models after a failed Hub lookup, which is the
-    # failure that cancels every job it touches.
+    # The floor: detection + recognition for faces and for OCR, visual +
+    # textual for CLIP. Below this nothing can run at all. The live count is
+    # higher (both the generic and the per-architecture ONNX builds are
+    # cached), which is why the floor alone is not enough - a wipe of just
+    # the face models would still leave more than six files behind. The
+    # companion alert watches for the count DROPPING, which is what the
+    # failed-Hub-lookup path actually does.
     ml_model_files: 6
     ml_model_files_for: 15m
+    # How far back to compare the file count against. Long enough that a
+    # deploy-time re-download is not read as a loss.
+    ml_model_window: 24h
 
   # --- Monitoring itself -----------------------------------------------------
   monitoring:
