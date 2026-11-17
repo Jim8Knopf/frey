@@ -163,7 +163,7 @@ sleep 20
 printf '%s\n' 'Queue depth now:'
 for queue in "${queues[@]}"; do
   depth=$(ssh_pi "sudo docker exec immich_redis valkey-cli llen immich_bull:${queue}:wait" | tr -d '\r')
-  active=$(ssh_pi "sudo docker exec immich_redis valkey-cli zcard immich_bull:${queue}:active" | tr -d '\r')
+  active=$(ssh_pi "sudo docker exec immich_redis valkey-cli llen immich_bull:${queue}:active" | tr -d '\r')
   printf '  %-20s waiting=%s active=%s\n' "$queue" "${depth:-?}" "${active:-?}"
 done
 
