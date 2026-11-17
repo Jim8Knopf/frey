@@ -72,6 +72,19 @@ services:
     image: {{ immich.redis_image }}
     container_name: immich_redis
     restart: unless-stopped
+    # Upstream runs this purely in memory, on the reasonable assumption that a
+    # lost job queue can simply be re-queued. That assumption does not hold
+    # here: this van cuts power rather than halting (see FreyUnsafeShutdown),
+    # and Immich never re-queues missed face detection by itself - so an
+    # in-memory queue means every unsafe shutdown silently throws away the
+    # whole remaining backlog, with no error anywhere. A full pass is hours of
+    # work, so persisting it is worth a few megabytes of appendonly log.
+    #
+    # aof-load-truncated defaults to yes, so a half-written log on an unclean
+    # stop is truncated and startup continues rather than refusing to boot.
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec", "--dir", "/data"]
+    volumes:
+      - {{ (immich.appdata_dir ~ '/valkey:/data') | to_json }}
     healthcheck:
       test: [CMD, redis-cli, ping]
     networks: [internal]

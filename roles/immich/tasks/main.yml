@@ -28,6 +28,16 @@
     group: "999"
     mode: "0700"
 
+# Valkey also runs as 999, and holds the job queue across an unsafe shutdown -
+# see the comment on the redis service in docker-compose.yml.j2.
+- name: Create the Valkey data directory
+  ansible.builtin.file:
+    path: "{{ immich.appdata_dir }}/valkey"
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
 - name: Check for an existing database and its credential
   ansible.builtin.stat:
     path: "{{ item }}"

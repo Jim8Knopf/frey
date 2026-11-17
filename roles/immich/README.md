@@ -65,6 +65,20 @@ So:
 - `FreyImmichModelsMissing` and `FreyImmichFaceBacklogStalled` are the alerts
   that catch this without you looking.
 
+### The job queue is persisted, unlike upstream
+
+Upstream runs Valkey purely in memory, on the reasonable assumption that a lost
+job queue can just be re-queued. That assumption does not hold here. This van
+cuts power rather than halting — `FreyUnsafeShutdown` exists for that reason —
+and Immich never re-queues missed detection on its own, so an in-memory queue
+means **every unsafe shutdown silently discards the whole remaining backlog**
+with no error anywhere. A full pass is hours of work, so the role turns on
+`appendonly` and gives Valkey a volume under `/opt/frey/appdata/immich/valkey`.
+
+The log lives on the host volume, so the queue now survives a restart, a
+container recreation and a power cut alike. It was lost exactly once: on the
+deploy that first enabled persistence, when the volume was still empty.
+
 ### `model_revision` is the tripwire
 
 `immich.ml.model_revision` is `v2`, not the image default `main`. `v2` selects
