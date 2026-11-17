@@ -14,6 +14,9 @@
 set -euo pipefail
 PI_ADDR="${PI_ADDR:-10.20.0.1}"
 PI_SSH="${PI_SSH:-ansible@${PI_ADDR}}"
+# The key inventory/hosts.yml names. Spelled out rather than left to ssh's
+# defaults, because the ansible account only accepts this one.
+PI_KEY="${PI_KEY:-${HOME}/.ssh/id_rsa_ansible}"
 CA="${CA:-ca/frey-root-ca.crt}"
 HOST="${HOSTNAME_IMMICH:-immich.hub.frey}"
 [[ -r "$CA" ]] || { echo "Cannot read Frey CA: $CA" >&2; exit 1; }
@@ -37,7 +40,7 @@ fi
 
 ssh_pi() {
   ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=10 "$PI_SSH" "$@"
+    -o ConnectTimeout=10 -i "$PI_KEY" "$PI_SSH" "$@"
 }
 
 # -----------------------------------------------------------------------------

@@ -30,9 +30,12 @@ set -euo pipefail
 
 PI_ADDR="${PI_ADDR:-10.20.0.1}"
 PI_SSH="${PI_SSH:-ansible@${PI_ADDR}}"
+# The key inventory/hosts.yml names. Spelled out rather than left to ssh's
+# defaults, because the ansible account only accepts this one.
+PI_KEY="${PI_KEY:-${HOME}/.ssh/id_rsa_ansible}"
 CA="${CA:-ca/frey-root-ca.crt}"
 HOST="${HOSTNAME_IMMICH:-immich.hub.frey}"
-KEY_NAME='frey-reprocess (temporary)'
+KEY_NAME='frey-reprocess-temp'
 
 force=false
 assume_yes=false
@@ -59,17 +62,32 @@ done
 
 ssh_pi() {
   ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=10 "$PI_SSH" "$@"
+    -o ConnectTimeout=10 -i "$PI_KEY" "$PI_SSH" "$@"
 }
 
+# SQL arrives on stdin and is run from a file on the Pi. Not with `psql -c`:
+# this script's statements contain single quotes, and those cannot survive
+# being nested through ssh, then `sh -c`, then `-c`. Output is written to a
+# file inside the container and read back, because a `docker exec` carrying
+# the payload on stdout can truncate.
 psql_pi() {
-  # Written to a file inside the container and read back, because a
-  # `docker exec` carrying the payload on stdout can truncate.
-  ssh_pi "sudo docker exec immich_postgres sh -c 'psql -U immich -d immich -At -F\" \" -c \"$1\" > /tmp/frey-reprocess.txt 2>&1; cat /tmp/frey-reprocess.txt'" | tr -d '\r'
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=10 -i "$PI_KEY" "$PI_SSH" \
+    'cat > /tmp/frey-reprocess.sql \
+      && sudo docker cp /tmp/frey-reprocess.sql immich_postgres:/tmp/frey-reprocess.sql >/dev/null \
+      && sudo docker exec immich_postgres sh -c "psql -U immich -d immich -At -F\" \" -f /tmp/frey-reprocess.sql > /tmp/frey-reprocess.out 2>&1; cat /tmp/frey-reprocess.out"' \
+    | tr -d '\r'
 }
 
 counts() {
-  psql_pi "select (select count(*) from asset where \\\"deletedAt\\\" is null), (select count(*) from asset a left join asset_job_status s on s.\\\"assetId\\\" = a.id where a.\\\"deletedAt\\\" is null and s.\\\"facesRecognizedAt\\\" is null), (select count(*) from asset_face where \\\"deletedAt\\\" is null)" | grep -E '^[0-9]+ ' | tail -1
+  psql_pi <<'SQL' | grep -E '^[0-9]+ ' | tail -1
+select
+  (select count(*) from asset where "deletedAt" is null),
+  (select count(*) from asset a
+     left join asset_job_status s on s."assetId" = a.id
+     where a."deletedAt" is null and s."facesRecognizedAt" is null),
+  (select count(*) from asset_face where "deletedAt" is null);
+SQL
 }
 
 read -r assets pending faces <<< "$(counts)"
@@ -92,13 +110,26 @@ secret="$(openssl rand -hex 32)"
 hash="$(printf '%s' "$secret" | openssl dgst -sha256 | awk '{print $NF}')"
 
 cleanup() {
-  psql_pi "delete from api_key where name = '${KEY_NAME}'" >/dev/null 2>&1 || true
+  psql_pi >/dev/null 2>&1 <<SQL || true
+delete from api_key where name = '${KEY_NAME}';
+SQL
 }
 trap cleanup EXIT
 
-# The oldest surviving user is the local administrator created at setup. The
-# isAdmin test goes through to_jsonb so this keeps working if the column moves.
-inserted=$(psql_pi "insert into api_key (name, key, \\\"userId\\\", permissions) select '${KEY_NAME}', decode('${hash}', 'hex'), u.id, '{job.create,job.read}' from \\\"user\\\" u where u.\\\"deletedAt\\\" is null and coalesce((to_jsonb(u) ->> 'isAdmin')::boolean, true) order by u.\\\"createdAt\\\" limit 1 returning \\\"userId\\\"" | grep -cE '^[0-9a-f-]{36}$' || true)
+# The oldest surviving administrator is the local account created at setup.
+# The isAdmin test goes through to_jsonb so this keeps working if the column
+# is renamed rather than failing with a syntax error.
+inserted=$(psql_pi <<SQL | grep -cE '^[0-9a-f-]{36}$' || true
+insert into api_key (name, key, "userId", permissions)
+select '${KEY_NAME}', decode('${hash}', 'hex'), u.id, '{job.create,job.read}'
+  from "user" u
+ where u."deletedAt" is null
+   and coalesce((to_jsonb(u) ->> 'isAdmin')::boolean, true)
+ order by u."createdAt"
+ limit 1
+returning "userId";
+SQL
+)
 if [[ "${inserted:-0}" -lt 1 ]]; then
   echo 'Could not create a temporary API key - no administrator account found in Immich.' >&2
   echo 'Create the local admin from a trusted device first; see roles/immich/README.md.' >&2
