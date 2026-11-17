@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Acquire and renew a Riseup client certificate without exposing its key."""
+import concurrent.futures
+import datetime
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -12,10 +16,22 @@ import urllib.request
 PROFILE = '{{ media.appdata_dir }}/gluetun/riseup.conf'
 API = 'https://api.black.riseup.net/3/'
 CA_URL = 'https://black.riseup.net/ca.crt'
-GATEWAY = 'vpn02-par.riseup.net'
 PENDING = PROFILE + '.restart-pending'
 STACK = '{{ media_acquisition.stack_dir }}/docker-compose.yml'
 CLIENTS = [{% for name in ['qbittorrent', 'prowlarr', 'slskd', 'jackett', 'byparr'] %}{% if media_acquisition.services[name].enabled %}'{{ name }}',{% endif %}{% endfor %}]
+# Riseup publishes OpenVPN over TCP/80 on every gateway, which is the transport
+# that survives a restrictive uplink.
+REMOTE_PORT = 80
+# How many gateways to write into the profile. OpenVPN walks the list in order,
+# so this is the number of independent failures the tunnel rides out with no
+# help from this script -- which matters because the script only runs daily and
+# a gateway can die at any hour, parked anywhere.
+REMOTES_MAX = 8
+# Seconds to wait for a gateway's TCP handshake, both when probing here and in
+# the profile. OpenVPN's default is 120s per remote; measured 2026-11-17, five
+# of Riseup's sixteen gateways were dead, so that default stalled the tunnel
+# for minutes at a time and every client sharing its namespace stayed down.
+CONNECT_TIMEOUT = 15
 
 
 def fetch(url):
@@ -38,16 +54,145 @@ def pem(text, kind):
     return match.group(0)
 
 
+def profile_text():
+    with open(PROFILE, encoding='utf-8') as profile:
+        return profile.read()
+
+
 def still_valid():
     try:
-        with open(PROFILE, encoding='utf-8') as profile:
-            text = profile.read()
+        text = profile_text()
         client = re.search(r'<cert>\s*(.*?)\s*</cert>', text, re.S)
         if not client:
             return False
         cert = pem(client.group(1), 'CERTIFICATE')
         return subprocess.run(['openssl', 'x509', '-noout', '-checkend', '864000'], input=cert, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except (OSError, ValueError):
+        return False
+
+
+def existing_material():
+    """The CA, certificate and key already in the profile, or None."""
+    try:
+        text = profile_text()
+        parts = []
+        for tag, kind in [('ca', 'CERTIFICATE'), ('cert', 'CERTIFICATE'), ('key', None)]:
+            block = re.search(r'<' + tag + r'>\s*(.*?)\s*</' + tag + r'>', text, re.S)
+            if not block:
+                return None
+            body = block.group(1)
+            if kind:
+                parts.append(pem(body, kind))
+            else:
+                parts.append(pem(body, 'RSA PRIVATE KEY') if 'RSA PRIVATE KEY' in body else pem(body, 'PRIVATE KEY'))
+        return tuple(parts)
+    except (OSError, ValueError):
+        return None
+
+
+def current_remotes():
+    try:
+        return re.findall(r'^remote\s+(\S+)\s', profile_text(), re.M)
+    except OSError:
+        return []
+
+
+def latency(address):
+    """Seconds to complete a TCP handshake to a gateway, or None if it is dead."""
+    start = time.monotonic()
+    try:
+        with socket.create_connection((address, REMOTE_PORT), CONNECT_TIMEOUT):
+            return time.monotonic() - start
+    except OSError:
+        return None
+
+
+def reachable(addresses):
+    if not addresses:
+        return False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(addresses)) as pool:
+        return any(result is not None for result in pool.map(latency, addresses))
+
+
+def candidates():
+    """Every gateway advertising OpenVPN over TCP on REMOTE_PORT."""
+    service = json.loads(fetch(API + 'config/eip-service.json'))
+    found = []
+    for gateway in service['gateways']:
+        transports = gateway['capabilities']['transport']
+        if any(t.get('type') == 'openvpn' and 'tcp' in t.get('protocols', []) and str(REMOTE_PORT) in t.get('ports', []) for t in transports):
+            found.append(str(ipaddress.IPv4Address(gateway['ip_address'])))
+    if not found:
+        raise ValueError('no gateway advertises OpenVPN over TCP')
+    return found
+
+
+def rank(addresses):
+    """Reachable gateways, nearest first.
+
+    Being listed is not being alive -- measured 2026-11-17, the dead gateway
+    this script used to hardcode was still advertised by the API -- so each one
+    is probed. Latency order matters as much as liveness: it is the largest
+    single lever on download throughput, and the gateways are spread across
+    three continents.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(addresses)) as pool:
+        measured = zip(addresses, pool.map(latency, addresses))
+    alive = sorted(((seconds, address) for address, seconds in measured if seconds is not None))
+    # A venue that blocks outbound 80 makes every probe fail. Keep the
+    # advertised list rather than writing a profile with no remote at all.
+    return [address for _, address in alive] or addresses
+
+
+def build(remotes, ca, certificate, key):
+    lines = ['client', 'dev tun', 'proto tcp-client']
+    lines += ['remote ' + address + ' ' + str(REMOTE_PORT) for address in remotes]
+    lines += ['connect-timeout ' + str(CONNECT_TIMEOUT), 'nobind', 'persist-key', 'persist-tun',
+              'cipher AES-256-GCM', 'data-ciphers AES-256-GCM', 'auth SHA512', 'remote-cert-tls server',
+              # Each gateway presents its own CN (vpn23-mia, vpn10-mtl, ...), so
+              # pinning one name is exactly what stopped OpenVPN from failing
+              # over. The prefix still refuses any certificate that is not a
+              # Riseup gateway's, which the embedded CA already constrains.
+              'verify-x509-name vpn name-prefix',
+              'tls-version-min 1.2', 'pull-filter ignore block-outside-dns', 'verb 1']
+    return '\n'.join(lines) + '\n<ca>\n' + ca + '\n</ca>\n<cert>\n' + certificate + '\n</cert>\n<key>\n' + key + '\n</key>\n'
+
+
+def write(profile):
+    os.makedirs(os.path.dirname(PROFILE), exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.riseup-', dir=os.path.dirname(PROFILE))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(profile)
+        os.replace(temporary, PROFILE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def container_exists(name='gluetun'):
+    try:
+        subprocess.check_output(['docker', 'inspect', '-f', '{{ '{{' }}.Id{{ '}}' }}', name], stderr=subprocess.DEVNULL)
+        return True
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def tunnel_is_current():
+    """True when Gluetun started after the profile was last written.
+
+    On a first install the profile is written before the Compose stack exists,
+    so the container comes up already holding it and the marker left behind is
+    stale. Comparing the two timestamps settles that without the deploy having
+    to track which case it is in.
+    """
+    try:
+        started = subprocess.check_output(['docker', 'inspect', '-f', '{{ '{{' }}.State.StartedAt{{ '}}' }}', 'gluetun'], stderr=subprocess.DEVNULL, text=True).strip()
+        # RFC3339 with nanoseconds, which datetime cannot parse past microseconds.
+        started = re.sub(r'(\.\d{6})\d+', r'\1', started).replace('Z', '+00:00')
+        return datetime.datetime.fromisoformat(started).timestamp() >= os.path.getmtime(PROFILE)
+    except (subprocess.SubprocessError, OSError, ValueError):
         return False
 
 
@@ -67,16 +212,7 @@ def restart_vpn_and_clients():
     os.unlink(PENDING)
 
 
-def main():
-    if still_valid():
-        if '--restart' in sys.argv and os.path.exists(PENDING):
-            restart_vpn_and_clients()
-        print('unchanged')
-        return
-    service = json.loads(fetch(API + 'config/eip-service.json'))
-    gateway = next(g for g in service['gateways'] if g['host'] == GATEWAY and any(t.get('type') == 'openvpn' and 'tcp' in t.get('protocols', []) and '80' in t.get('ports', []) for t in g['capabilities']['transport']))
-    import ipaddress
-    address = str(ipaddress.IPv4Address(gateway['ip_address']))
+def obtain():
     material = fetch(API + 'cert').decode()
     certificate = pem(material, 'CERTIFICATE')
     try:
@@ -102,25 +238,55 @@ def main():
         key_pub = subprocess.check_output(['openssl', 'pkey', '-in', key_path, '-pubout'], stderr=subprocess.DEVNULL)
         if cert_pub != key_pub:
             raise ValueError('client certificate and key do not match')
-    profile = ('client\ndev tun\nproto tcp-client\nremote ' + address + ' 80\nnobind\npersist-key\npersist-tun\n'
-               'cipher AES-256-GCM\ndata-ciphers AES-256-GCM\nauth SHA512\nremote-cert-tls server\n'
-               'verify-x509-name vpn02-par name\ntls-version-min 1.2\npull-filter ignore block-outside-dns\nverb 1\n'
-               '<ca>\n' + ca + '\n</ca>\n<cert>\n' + certificate + '\n</cert>\n<key>\n' + key + '\n</key>\n')
-    os.makedirs(os.path.dirname(PROFILE), exist_ok=True)
-    if '--restart' in sys.argv:
-        fd = os.open(PENDING, os.O_WRONLY | os.O_CREAT, 0o600)
-        os.close(fd)
-    fd, temporary = tempfile.mkstemp(prefix='.riseup-', dir=os.path.dirname(PROFILE))
+    return ca, certificate, key
+
+
+def main():
+    material = existing_material() if still_valid() else None
+    # Two independent reasons to rewrite the profile: the certificate is near
+    # expiry, or the gateways in it have gone away. Only ever checking the
+    # first is what left the tunnel pointed at a dead gateway indefinitely.
+    if material and reachable(current_remotes()):
+        if '--restart' in sys.argv and os.path.exists(PENDING):
+            if not container_exists():
+                # A first install, mid-deploy: Compose has not created the
+                # tunnel yet and will start it on this very profile.
+                print('unchanged')
+                return
+            if tunnel_is_current():
+                os.unlink(PENDING)
+                print('unchanged')
+                return
+            restart_vpn_and_clients()
+            print('reconnected')
+            return
+        print('unchanged')
+        return
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(profile)
-        os.replace(temporary, PROFILE)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        addresses = candidates()
+    except (OSError, ValueError, json.JSONDecodeError):
+        # Parked with no uplink, or the API is unreachable. A valid profile is
+        # still the best one available, so this is not a failure to report.
+        if material:
+            print('unchanged')
+            return
+        raise
+    remotes = rank(addresses)[:REMOTES_MAX]
+    if material is None:
+        material = obtain()
+    profile = build(remotes, *material)
+    # Mark before writing, and whether or not --restart was asked for. Gluetun
+    # goes on serving the profile it started with, so a rewritten file changes
+    # nothing until the tunnel is rebuilt -- and the deploy step that rewrites
+    # it runs before the container it would have to restart even exists.
+    # The directory is created here rather than only in write(): on a first
+    # install nothing has made it yet, and the marker lands first.
+    os.makedirs(os.path.dirname(PROFILE), exist_ok=True)
+    fd = os.open(PENDING, os.O_WRONLY | os.O_CREAT, 0o600)
+    os.close(fd)
+    write(profile)
     print('updated')
-    if '--restart' in sys.argv:
+    if '--restart' in sys.argv and container_exists():
         restart_vpn_and_clients()
 
 

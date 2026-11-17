@@ -423,10 +423,29 @@ session. When the VPN is disabled, the interface restriction is cleared.
 The active custom Riseup OpenVPN profile uses TCP to work on restrictive
 uplinks. The root-only renewal helper checks the client certificate daily,
 renews it before expiry, verifies the key pair and reconnects the dependent
-containers after restarting Gluetun. The server certificate and gateway name
-are verified. Renewal uses the working VPN first, then verified direct HTTPS;
-if both paths fail, the existing profile remains in place and the timer retries.
-The earlier Generous WireGuard credentials remain in the Ansible Vault.
+containers after restarting Gluetun. The server certificate is verified against
+Riseup's CA and the gateway name by prefix. Renewal uses the working VPN first,
+then verified direct HTTPS; if both paths fail, the existing profile remains in
+place and the timer retries. The earlier Generous WireGuard credentials remain
+in the Ansible Vault.
+
+**The profile names several gateways, not one.** Being advertised by the API is
+not being alive: measured 2026-11-17, five of Riseup's sixteen gateways refused
+TCP/80 while still listed, and one of them was the gateway the helper had
+hardcoded. The tunnel never came up, so every container sharing its network
+namespace — qBittorrent, Prowlarr, Jackett, Byparr, slskd — sat in `Created` and
+nothing downloaded, with a perfectly healthy uplink. Two things follow from
+that, and both matter:
+
+- The helper probes each advertised gateway and writes the reachable ones
+  nearest-first, so OpenVPN fails over by itself when one dies. That path needs
+  no timer run and nobody in the van, which is the point.
+- A gateway going away now triggers reselection on its own. Checking only the
+  certificate is what left the profile pointed at a dead gateway indefinitely —
+  the certificate was valid the whole time.
+
+`connect-timeout` is 15s rather than OpenVPN's 120s default, so a silent
+gateway costs seconds instead of stalling the tunnel for minutes.
 
 Enabling it with no credentials fails the deploy immediately with
 instructions, rather than starting an unconfigured tunnel that looks like a
