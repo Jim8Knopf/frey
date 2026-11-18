@@ -1,0 +1,108 @@
+# Managed by Ansible. Contains secrets; keep private.
+name: immich
+services:
+  immich-server:
+    image: {{ immich.server_image }}
+    container_name: immich_server
+    restart: unless-stopped
+    environment:
+      DB_HOSTNAME: database
+      DB_USERNAME: immich
+      DB_DATABASE_NAME: immich
+      DB_PASSWORD: {{ immich_db_password | to_json }}
+      REDIS_HOSTNAME: redis
+      IMMICH_CONFIG_FILE: /config/immich.json
+      NODE_EXTRA_CA_CERTS: /config/frey-root-ca.crt
+      TZ: {{ frey.timezone }}
+    volumes:
+      - {{ (immich.data_dir ~ ':/data') | to_json }}
+      - {{ (immich.stack_dir ~ '/config.json:/config/immich.json:ro') | to_json }}
+      - {{ (frey.pki_public_dir ~ '/frey-root-ca.crt:/config/frey-root-ca.crt:ro') | to_json }}
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - redis
+      - database
+    networks: [internal, proxy]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.immich.loadbalancer.server.port=2283"
+      - "traefik.http.routers.immich.rule=Host(`{{ immich.host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.immich.entrypoints=websecure"
+      - "traefik.http.routers.immich.tls=true"
+      - "traefik.http.routers.immich.middlewares=secure-headers@file"
+      - "traefik.http.routers.immich-legacy.rule=Host(`{{ immich.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.immich-legacy.entrypoints=websecure"
+      - "traefik.http.routers.immich-legacy.tls=true"
+      - "traefik.http.routers.immich-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.immich-legacy.service=immich"
+      - "traefik.http.routers.immich-http.rule=Host(`{{ immich.host }}.{{ frey.service_domain }}`) || Host(`{{ immich.host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.immich-http.entrypoints=web"
+      - "traefik.http.routers.immich-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.immich-http.service=immich"
+      # Restrict first-admin creation to the repository's trusted devices.
+      - "traefik.http.routers.immich-setup.rule=Host(`{{ immich.host }}.{{ frey.service_domain }}`) && Path(`/api/auth/admin-sign-up`)"
+      - "traefik.http.routers.immich-setup.priority=1000"
+      - "traefik.http.routers.immich-setup.entrypoints=websecure"
+      - "traefik.http.routers.immich-setup.tls=true"
+      - "traefik.http.routers.immich-setup.middlewares=immich-setup-allow@docker"
+      - "traefik.http.routers.immich-setup.service=immich"
+      - "traefik.http.middlewares.immich-setup-allow.ipallowlist.sourcerange={{ frey.trusted_devices | map(attribute='address') | join(',') }}"
+      - "frey.module=immich"
+  immich-machine-learning:
+    image: {{ immich.ml_image }}
+    container_name: immich_machine_learning
+    restart: unless-stopped
+    environment:
+      # Selects the per-architecture ONNX models. It also moves the model
+      # cache to <task>/<model>/<revision>/, so changing this throws away
+      # every cached model - see immich.ml.model_revision in defaults.
+      MACHINE_LEARNING_MODEL_REVISION: {{ immich.ml.model_revision }}
+      # The image would otherwise use every core for a single request.
+      MACHINE_LEARNING_REQUEST_THREADS: "{{ immich.ml.request_threads }}"
+      TZ: {{ frey.timezone }}
+    # The gateway and this container share four cores. A detection pass over a
+    # whole library runs for hours, so the ceiling is three - uncapped, face
+    # recognition is what makes FreyHub feel broken.
+    cpus: "{{ immich.ml.cpus }}"
+    volumes:
+      - {{ (immich.appdata_dir ~ '/model-cache:/cache') | to_json }}
+    networks: [internal]
+  redis:
+    image: {{ immich.redis_image }}
+    container_name: immich_redis
+    restart: unless-stopped
+    # Upstream runs this purely in memory, on the reasonable assumption that a
+    # lost job queue can simply be re-queued. That assumption does not hold
+    # here: this van cuts power rather than halting (see FreyUnsafeShutdown),
+    # and Immich never re-queues missed face detection by itself - so an
+    # in-memory queue means every unsafe shutdown silently throws away the
+    # whole remaining backlog, with no error anywhere. A full pass is hours of
+    # work, so persisting it is worth a few megabytes of appendonly log.
+    #
+    # aof-load-truncated defaults to yes, so a half-written log on an unclean
+    # stop is truncated and startup continues rather than refusing to boot.
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec", "--dir", "/data"]
+    volumes:
+      - {{ (immich.appdata_dir ~ '/valkey:/data') | to_json }}
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+    networks: [internal]
+  database:
+    image: {{ immich.database_image }}
+    container_name: immich_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: {{ immich_db_password | to_json }}
+      POSTGRES_USER: immich
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - {{ (immich.appdata_dir ~ '/postgres:/var/lib/postgresql/data') | to_json }}
+    shm_size: 128mb
+    networks: [internal]
+networks:
+  internal:
+  proxy:
+    name: {{ frey.proxy_network }}
+    external: true

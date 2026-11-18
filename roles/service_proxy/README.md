@@ -7,6 +7,12 @@ Provides the local service foundation:
 - A shared Docker network, `frey_proxy`.
 - Traefik listening on the private Frey LAN address only.
 
+The role binds the known unbound `netplan-eth0` NetworkManager profile to
+physical `eth0`. Without that binding, NetworkManager can claim and detach
+Docker veth interfaces, interrupting containers even while their own health
+checks report healthy. The change has a timed rollback and leaves Wi-Fi profiles
+alone.
+
 New Docker services should join `frey_proxy` and add Traefik labels. DNS is handled by the gateway wildcard, so a new service does not need a DNS change.
 
 Docker assigns new automatically addressed networks a /24 from

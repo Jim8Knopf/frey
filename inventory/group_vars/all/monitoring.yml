@@ -236,6 +236,38 @@ monitoring_thresholds:
     # which means FreyHub looks connected and does nothing.
     dhcp_broken_for: 10m
 
+  # --- Immich face recognition -----------------------------------------------
+  #
+  # Face detection is the one job in Frey that is lost rather than retried.
+  # When the ML service cannot reach Hugging Face it answers HTTP 500, the
+  # server DISCARDS the job, and nothing ever queues it again - while every
+  # container stays healthy and the only symptom is a People page that never
+  # fills. These two numbers are what make that visible.
+  immich:
+    # Photos still waiting on face detection. A fresh import is legitimately
+    # a large backlog that drains over hours, so this is deliberately slow to
+    # fire: it is reporting "the queue is not draining", not "there is work".
+    face_backlog: 50
+    face_backlog_for: 12h
+    # The floor: detection + recognition for faces and for OCR, visual +
+    # textual for CLIP. Below this nothing can run at all. The live count is
+    # higher (both the generic and the per-architecture ONNX builds are
+    # cached), which is why the floor alone is not enough - a wipe of just
+    # the face models would still leave more than six files behind. The
+    # companion alert watches for the count DROPPING, which is what the
+    # failed-Hub-lookup path actually does.
+    ml_model_files: 6
+    ml_model_files_for: 15m
+    # How far back to compare the file count against. Long enough that a
+    # deploy-time re-download is not read as a loss.
+    ml_model_window: 24h
+    # Assets whose original cannot be decoded get no preview, and every ML
+    # job reads the preview - so they are permanently unsearchable. The count
+    # is a standing fact (68 damaged phone JPEGs here), so the alert watches
+    # for it GROWING rather than for the number itself.
+    no_preview_window: 6h
+    no_preview_for: 30m
+
   # --- Monitoring itself -----------------------------------------------------
   monitoring:
     target_down_for: 10m
@@ -290,6 +322,7 @@ monitoring_host_collectors:
   - gateway     # uplink state, AP clients, DHCP leases, DNS, NAT
   - docker      # container running state and restart counts
   - indexers    # *arr indexer health - see monitoring_indexer_apps below
+  - immich      # face-detection backlog and machine-learning model cache
 
 monitoring_indexer_apps:
   - {name: prowlarr, port: 9696, api_version: v1}
