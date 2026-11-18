@@ -820,7 +820,24 @@ media_acquisition:
       container_name: byparr
       hostname: byparr
       port: 8191
-      mem_limit: 1g
+      # 2g, not 1g. At 1g this cgroup sat permanently against its ceiling:
+      # measured 2026-11-17, memory.peak was exactly 1024.06 MiB with 48,671
+      # allocation-stall events and the browser's `Web Content` child
+      # OOM-killed three times in one hour.
+      #
+      # The cost was not a dead container - Byparr stayed up and healthy, so
+      # nothing alerted on it directly. The cost was that solves slowed to
+      # 212-250s against the 52-66s measured when this limit was chosen,
+      # which overshoots request_timeout below. 1337x then failed its checks
+      # and both Sonarr and Radarr disabled it, while every indexer that does
+      # NOT use Byparr kept working - so it reads as "one flaky tracker"
+      # rather than as a memory limit.
+      #
+      # Raising a cap on this host is not free: the gateway must survive, and
+      # a Pi with no Ethernet and no console cannot be rescued remotely. This
+      # is affordable because the spike is bounded and intermittent - Byparr
+      # idles at ~220 MiB and only reaches for the extra GiB mid-solve.
+      mem_limit: 2g
       cpus: "1.5"
       # Prowlarr applies the proxy only to indexers carrying this tag. Which
       # indexers wear it is declared in media_indexers (media.yml) and applied
