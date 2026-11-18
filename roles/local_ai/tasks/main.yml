@@ -257,6 +257,30 @@
   loop: "{{ local_ai.legacy_containers }}"
   when: not ansible_check_mode
 
+# A component switched off in defaults disappears from the rendered compose
+# file, and `docker compose up` does not remove a service it can no longer
+# see - it becomes an orphan and keeps running forever. Nothing above catches
+# this, because the role only ever adds services behind their profile. So an
+# `enabled: false` that is not paired with a removal here is a flag that
+# silently does nothing, which is exactly the trap the legacy list above
+# exists to clean up after the campaign_ai rename.
+#
+# state: absent on a container that is already gone is not a change, so this
+# stays idempotent once the component is removed.
+- name: Remove the containers of disabled components
+  community.docker.docker_container:
+    name: "{{ item.name }}"
+    state: absent
+  loop:
+    - {name: "{{ local_ai.observer.container_name }}", enabled: "{{ local_ai.observer.enabled }}"}
+    - {name: "{{ local_ai.hermes.container_name }}", enabled: "{{ local_ai.hermes.enabled }}"}
+    - {name: "{{ local_ai.campaign.container_name }}", enabled: "{{ local_ai.campaign.enabled }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - not item.enabled | bool
+    - not ansible_check_mode
+
 - name: Remove the retired campaign assistant network
   community.docker.docker_network:
     name: "{{ local_ai.legacy_network }}"

@@ -274,13 +274,33 @@ local_ai:
       sha256: ee7c5e925a04cd672868959e48d199b66d6dcb9f90afe64f219856189e83b27e
       size_bytes: 5351583328
 
-      # 4.98 GiB of weights against the 4B's 2.71. With the KV cache and
-      # compute buffers that lands near 7 GiB, inside this limit and inside
-      # the ~9.4 GiB the host can spare. The hybrid gated-convolution design
-      # means only some layers hold KV, so 64K should cost less here than the
-      # dense 4B's 64K does.
-      mem_limit: 9g
-      ctx: 65536
+      # 4.98 GiB of weights against the 4B's 2.71.
+      #
+      # ctx WAS 65536 and mem_limit 9g, and the reasoning above was wrong in
+      # the way that matters: it budgeted total RAM and ignored WHICH memory.
+      # The KV cache is anonymous and non-reclaimable; the weights are
+      # file-backed mmap. So the 64K cache won the contest and evicted the
+      # weights it exists to serve - measured 2026-11-18 on the live host:
+      #
+      #   Rss             6,419 MiB
+      #   Private_Dirty   4,687 MiB   KV cache + prompt cache
+      #   Private_Clean   1,731 MiB   of a 4.98 GiB model file
+      #   Swap            1,091 MiB   host swap 100% full
+      #
+      # Most of the weights were re-read from the NVMe on every forward pass,
+      # which showed up not as an error but as prefill decaying 19.4 -> 12.1
+      # tok/s across consecutive identical requests, every container healthy.
+      #
+      # 16384 is chosen, not minimal: at ~19 tok/s prefill a full 16K window is
+      # already ~14 min of prompt, which is far more than any on-demand
+      # question can afford to spend. A window you cannot afford to FILL buys
+      # nothing. 64K was never a preference - it was Hermes's code-enforced
+      # floor, and retiring Hermes is what released it.
+      #
+      # VERIFY after deploying, do not assume: Private_Clean should approach
+      # the 4.98 GiB file size and Swap should be ~0.
+      mem_limit: 6g
+      ctx: 16384
 
       # LiquidAI's own recommended sampling: temperature 0.2, top_k 80,
       # repetition penalty 1.05. top_p and min_p are left neutral rather than
@@ -316,7 +336,13 @@ local_ai:
       # Smaller than the 4B's, because the weights are larger: 4.98 GiB here
       # against 2.71. See the long note on the Qwen entry for what the
       # default 8192 did to that one.
-      cache_ram: 1536
+      #
+      # Cut 1536 -> 512 on 2026-11-18 for the same reason ctx came down: this
+      # buffer is anonymous memory competing with the mmap'd weights, and a
+      # prompt cache that evicts the weights it is caching prompts for is a
+      # net loss. With one on-demand conversation at 16K there is far less
+      # prefix worth holding anyway.
+      cache_ram: 512
 
   image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
   gateway_image: "traefik:{{ traefik_version }}"
@@ -375,8 +401,28 @@ local_ai:
   # UI and the assistant, not a replacement for either: all three share one
   # llama-server slot, and the measurements in
   # docs/LOCAL_AI_AGENT_PLAN.md 6a are what this configuration is built on.
+  #
+  # DISABLED 2026-11-18 - see docs/LOCAL_AI_RIGHTSIZING.md. Not a verdict on
+  # whether it works: it does, and f6444f7 measured it answering correctly in
+  # ~2 min per warm turn. It is a verdict on what it cost against what it was
+  # used for. Measured over 72 h: 0 requests to llama-server, while logging
+  # 457 "system memory pressure is elevated" refusals in 24 h and holding
+  # 347 MiB to do it.
+  #
+  # The cost is min_context below. Hermes enforces a 64,000-token floor in its
+  # own code, so serve.ctx could not drop under 65536 while this was enabled -
+  # and that 64K KV cache is ANONYMOUS memory, which outbid the model's own
+  # file-backed mmap'd weights: only 1.73 GiB of the 4.98 GiB model file stayed
+  # resident, 1.09 GiB went to swap, and prefill decayed 19.4 -> 12.1 tok/s
+  # re-reading weights off the NVMe that already drops off the PCIe bus.
+  #
+  # So this flag is what makes ctx 16384 possible. Re-enabling it means
+  # restoring ctx 65536 and mem_limit 9g in the same change, and accepting the
+  # paging - or finding the RAM elsewhere first. The identity entry, OIDC
+  # client and certificate SAN are deliberately left in place so re-enabling
+  # is one flag.
   hermes:
-    enabled: true
+    enabled: false
     container_name: frey-hermes
     image: "nousresearch/hermes-agent:{{ local_ai_hermes_version }}"
 
@@ -492,8 +538,20 @@ local_ai:
   # explains, and cannot act. There is no broker, no Docker socket and no
   # action verb - the limits are a property of what is mounted and what
   # network it is on, not of the prompt.
+  #
+  # RETIRED 2026-11-18, superseded by LOCAL_AI_AGENT_PLAN.md 7a and measured
+  # in docs/LOCAL_AI_RIGHTSIZING.md. It was the ONLY caller of llama-server:
+  # 91 of 91 requests over 72 h, against 0 from any human. It wrote 302 drafts
+  # between 2026-11-07 and 2026-11-18 and not one was promoted, and each
+  # report cost 3.5-5 min of the single slot AND wiped the prompt cache
+  # (f_keep 0.16), so the next human turn was always a cold one.
+  #
+  # Phase 1 existed to ask whether a small model is good enough at correlation
+  # to be allowed to act. The answer was no, it is recorded, and the component
+  # that asked is not needed to keep the answer. The config stays so the
+  # decision is legible and reversible; /drafts stays on disk as the evidence.
   observer:
-    enabled: true
+    enabled: false
     container_name: frey-local-ai-observer
     # Reuses the pinned Python image the alert relay already runs, so this
     # adds no new image to track. The observer is stdlib-only for the same

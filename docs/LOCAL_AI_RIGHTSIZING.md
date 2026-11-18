@@ -8,6 +8,38 @@ deployed shape delivering it?**
 Measured on the Pi on 2026-11-18, against the live deployment. Every number
 below was read off the running host, not estimated.
 
+## Status — applied in config 2026-11-19, NOT YET DEPLOYED
+
+The recommendation in §3 has been implemented on this branch. A
+`--check --diff` run passes (`failed=0`) and renders exactly:
+
+| Change | From | To |
+| --- | --- | --- |
+| `lfm25-8b-a1b.ctx` | 65536 | **16384** |
+| `lfm25-8b-a1b.mem_limit` | 9g | **6g** |
+| `lfm25-8b-a1b.cache_ram` | 1536 | **512** |
+| `observer.enabled` | true | **false** (service removed from compose) |
+| `hermes.enabled` | true | **false** (service removed from compose) |
+
+Plus a new `Remove the containers of disabled components` task, because an
+`enabled: false` without it leaves a compose **orphan** running forever, and a
+skip guard in `scripts/local-ai-observer-check.sh`.
+
+**The deploy itself has not been run** — it needs a human:
+
+```bash
+ansible-playbook playbooks/site.yml --tags local_ai > /tmp/local-ai-deploy.log 2>&1
+```
+
+Then run it a second time for the 0-changed acceptance test, and confirm the
+memory actually came back with the commands in **Acceptance test** below. The
+projections in §3 are projections until that output exists.
+
+`campaign.enabled` is deliberately left **true**: `frey-campaign-agent` holds
+7.95 MiB, has logged nothing since 2026-11-11, is genuinely on-demand rather
+than a poll loop, and does not pin the context window. It costs nothing worth
+reclaiming and was not part of the measured problem.
+
 ## The verdict in one line
 
 **The hardware is adequate and the model choice was right. The *workload* is
@@ -127,7 +159,7 @@ everything that runs on its own.
 | Keep | Retire |
 | --- | --- |
 | LFM2.5-8B-A1B — prefill ~19 tok/s is 2–3× Qwen3.5-4B; the right call | **The observer** — 100 % of load, 302 unread drafts, wipes the cache |
-| The `mmproj` vision file — one image caption is a genuinely good fit | **Hermes** — 0 requests in 72 h, 457 refusals in 24 h, 347 MiB |
+| The `qwen35-4b` registry entry and its `mmproj` as the vision fallback | **Hermes** — 0 requests in 72 h, 457 refusals in 24 h, 347 MiB |
 | The chat UI at `ai.hub.frey` behind Authelia | The 64K context floor that Hermes alone requires |
 | `/v1` on `frey_proxy` for the laptop when off-grid — the actual use case | `--cache-ram 1536`, which outbids the weights it exists to serve |
 | The broker's read verbs and propose-only writes — good design, keep it idle | |
@@ -216,9 +248,15 @@ git merge-base --is-ancestor 6e1a60c new && echo merged || echo NOT merged
   generation; its only cost was the context it was asked to carry. The 4B's
   2.9 GB file would fit more comfortably, which is the argument for revisiting
   if the host stays this tight after Immich settles.
-- `[DECIDE] Vision.` Keep the `mmproj` — it is one pinned file on a model
-  already loaded, and captioning one uploaded image is the clearest genuinely
-  good fit measured so far (5.8 s for a small image).
+- `[DECIDE] Vision.` **Correction to an earlier draft of this document:** the
+  served MoE carries `enable_vision: false`, because **no projector is
+  published for LFM2.5-8B-A1B**. The `mmproj-F16.gguf` on disk belongs to
+  `qwen35-4b`, so vision is not a free addition to the current model — it means
+  switching `default_model` back to the 4B for that request. Both model files
+  are already downloaded and registered, so the switch is one variable, but it
+  is a switch and not a toggle. Recommended: leave vision off, keep the 4B
+  entry registered as the vision fallback, and revisit only if captioning turns
+  out to be something you actually reach for.
 
 ## 7. What not to do
 

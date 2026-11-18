@@ -127,6 +127,15 @@ sudo systemctl start 'frey-local-ai-download@qwen35-4b.service'
 
 ## The observer
 
+> **RETIRED 2026-11-18 — `observer.enabled` is `false`.** It was the only
+> caller of llama-server (91 of 91 requests over 72 h, 0 from any human), wrote
+> 302 drafts that were never promoted, and wiped the prompt cache on every
+> report so that every human turn was a cold one. Phase 1 existed to ask
+> whether a small model is good enough at correlation to be allowed to act; the
+> answer was no, it is recorded, and the component that asked is not needed to
+> keep the answer. See `docs/LOCAL_AI_RIGHTSIZING.md`. The rest of this section
+> describes it as built and still applies if it is switched back on.
+
 Phase 1 of `docs/LOCAL_AI_AGENT_PLAN.md`: a component that **reads and
 explains, and cannot act**. There is no broker, no Docker socket, no shell and
 no action verb anywhere in it. The limits are a property of what is mounted and
@@ -370,6 +379,16 @@ deliberate: a monitoring component that refuses to run until everything else is
 healthy is useless in exactly the situation it exists for.
 
 ## Hermes Agent
+
+> **DISABLED 2026-11-18 — `hermes.enabled` is `false`.** Not a verdict on
+> whether it works: it does. A verdict on what it cost against what it was used
+> for — 0 requests over 72 h while logging 457 "system memory pressure is
+> elevated" refusals in 24 h. Its 64,000-token context floor (see *The context
+> window is pinned, and must be*) forced `ctx: 65536`, whose KV cache evicted
+> the model's own weights into swap. Retiring it is what let `ctx` drop to
+> 16384. Re-enabling means restoring `ctx: 65536` and `mem_limit: 9g` in the
+> same change. Its identity entry, OIDC client and certificate SAN are left in
+> place so that is one flag. See `docs/LOCAL_AI_RIGHTSIZING.md`.
 
 `https://hermes.hub.frey` runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 against the local model. It is a third interface beside the model's own chat UI
