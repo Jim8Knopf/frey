@@ -261,6 +261,12 @@ monitoring_thresholds:
     # How far back to compare the file count against. Long enough that a
     # deploy-time re-download is not read as a loss.
     ml_model_window: 24h
+    # Assets whose original cannot be decoded get no preview, and every ML
+    # job reads the preview - so they are permanently unsearchable. The count
+    # is a standing fact (68 damaged phone JPEGs here), so the alert watches
+    # for it GROWING rather than for the number itself.
+    no_preview_window: 6h
+    no_preview_for: 30m
 
   # --- Monitoring itself -----------------------------------------------------
   monitoring:

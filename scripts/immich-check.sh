@@ -85,31 +85,61 @@ fi
 # -----------------------------------------------------------------------------
 # COVERAGE
 #
+# The SQL arrives on stdin and runs from a file on the Pi. Not via `psql -c`:
+# it needs string literals ('hidden', 'preview'), and those cannot survive
+# being nested through ssh, then `sh -c`, then `-c` - the single quotes close
+# the outer string. Dollar quoting is no escape either, because $$ is the
+# shell's own PID.
+#
 # The left join matters: an asset with no job-status row has never been looked
 # at either, and counting only existing rows with a null timestamp misses it.
 # -----------------------------------------------------------------------------
-counts=$(ssh_pi "sudo docker exec immich_postgres sh -c '
-  psql -U immich -d immich -At -F\" \" -c \"
-    select
-      (select count(*) from asset where \\\"deletedAt\\\" is null),
-      (select count(*) from asset a
-         left join asset_job_status s on s.\\\"assetId\\\" = a.id
-         where a.\\\"deletedAt\\\" is null and s.\\\"facesRecognizedAt\\\" is null),
-      (select count(*) from asset_face where \\\"deletedAt\\\" is null),
-      (select count(*) from person where length(name) > 0)
-  \" > /tmp/frey-immich-counts.txt 2>&1; cat /tmp/frey-immich-counts.txt'" | tr -d '\r' | grep -E '^[0-9]+ ' | tail -1)
+psql_pi() {
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=10 -i "$PI_KEY" "$PI_SSH" \
+    'cat > /tmp/frey-immich-counts.sql \
+      && sudo docker exec -i immich_postgres psql -U immich -d immich -At -F" " -f - \
+           < /tmp/frey-immich-counts.sql 2>/dev/null' \
+    | tr -d '\r'
+}
 
-read -r assets pending faces people <<< "$counts"
+counts=$(psql_pi <<'SQL' | grep -E '^[0-9]+ ' | tail -1
+select
+  (select count(*) from asset where "deletedAt" is null),
+  (select count(*) from asset a
+     left join asset_job_status s on s."assetId" = a.id
+     where a."deletedAt" is null
+       and s."facesRecognizedAt" is null
+       and a.visibility <> 'hidden'
+       and exists (select 1 from asset_file f
+                    where f."assetId" = a.id and f.type = 'preview')),
+  (select count(*) from asset_face where "deletedAt" is null),
+  (select count(*) from person where length(name) > 0),
+  (select count(*) from asset a
+     where a."deletedAt" is null
+       and a.visibility <> 'hidden'
+       and not exists (select 1 from asset_file f
+                        where f."assetId" = a.id and f.type = 'preview')),
+  (select count(*) from asset_job_status where "facesRecognizedAt" is not null)
+SQL
+)
+
+read -r assets pending faces people nopreview scanned <<< "$counts"
 [[ -n "${assets:-}" && -n "${pending:-}" ]] || { echo "Could not read Immich face-detection counts: ${counts}" >&2; exit 1; }
 
-done_count=$((assets - pending))
-if [[ "$assets" -gt 0 ]]; then
-  percent=$((done_count * 100 / assets))
+# Coverage is reported against what CAN be scanned, not the raw asset count.
+# The library also holds hidden assets - the video half of every motion photo -
+# which Immich never detects faces in by design, so measuring against the total
+# would show a permanent shortfall that is not a fault.
+processable=$((scanned + pending))
+if [[ "$processable" -gt 0 ]]; then
+  percent=$((scanned * 100 / processable))
 else
   percent=100
 fi
-printf 'Face detection: %s of %s assets scanned (%s%%), %s faces found, %s people named.\n' \
-  "$done_count" "$assets" "$percent" "$faces" "$people"
+printf 'Face detection: %s of %s processable assets scanned (%s%%), %s faces found, %s people named.\n' \
+  "$scanned" "$processable" "$percent" "$faces" "$people"
+printf '  (%s assets total; the difference is hidden motion-photo videos and undecodable files.)\n' "$assets"
 
 # A library with assets and no faces at all is the failure this script exists
 # for: healthy containers, a green feature flag, and nothing ever scanned.
@@ -121,5 +151,15 @@ fi
 if [[ "$pending" -gt 50 ]]; then
   printf '%s\n' "${pending} assets are still waiting for face detection. Normal while a pass is running;"
   printf '%s\n' "if it is not going down, the jobs are being discarded - run scripts/immich-reprocess.sh."
+fi
+
+# Reported rather than asserted. These never succeed - every ML job reads the
+# preview, so an asset without one is permanently unsearchable - but the cause
+# is a damaged original, not a Frey fault, and failing the check on it would
+# make this script red forever.
+if [[ "${nopreview:-0}" -gt 0 ]]; then
+  printf '%s\n' "${nopreview} visible assets have no preview, so face detection, search and OCR"
+  printf '%s\n' "can never run on them. Their originals do not decode (look for 'Failed to"
+  printf '%s\n' "decode DCT block' in the server log). Immich retries them nightly and fails."
 fi
 printf '%s\n' 'Immich face recognition passed: models cached, inference working, coverage reported.'

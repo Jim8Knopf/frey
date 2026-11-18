@@ -79,6 +79,34 @@ The log lives on the host volume, so the queue now survives a restart, a
 container recreation and a power cut alike. It was lost exactly once: on the
 deploy that first enabled persistence, when the volume was still empty.
 
+### Not every asset can be scanned, and that is not always a fault
+
+Every ML job — face detection, smart search, OCR — reads the **preview**, not
+the original. So an asset with no preview is permanently unsearchable, and
+there are two very different reasons for that:
+
+- **Hidden assets never get one, by design.** The video half of every motion
+  photo is stored as a separate `visibility = 'hidden'` asset. There are ~441
+  here. Immich never detects faces in them and never will. Counting them as a
+  backlog is what would make an alert fire forever.
+- **Undecodable originals.** ~68 phone JPEGs here have damaged DCT scan data.
+  They are not truncated (they end in a proper `ff d9`) and their metadata
+  reads fine, but libvips refuses them outright at every `failOn` level:
+  `VipsJpeg: ./lib/jpegli/decode_scan.cc:543: Failed to decode DCT block`.
+  Immich retries them nightly via `nightlyTasks.missingThumbnails` and fails
+  every time, which is the only reason they show up in the log at all.
+
+So coverage is measured against what *can* be scanned.
+`frey_immich_faces_pending` and `scripts/immich-check.sh` both exclude hidden
+and preview-less assets, and `frey_immich_assets_no_preview` tracks the second
+group separately — alerting only when it **grows**, since a standing count of
+damaged files is a fact rather than an event.
+
+A damaged file is still partly recoverable: `ffmpeg` decodes one with
+`error count: 69` and writes a usable JPEG, so re-encoding would restore a
+viewable image with artefacts where the data is lost. That rewrites an
+original, so it is a deliberate choice and not something any deploy does.
+
 ### `model_revision` is the tripwire
 
 `immich.ml.model_revision` is `v2`, not the image default `main`. `v2` selects

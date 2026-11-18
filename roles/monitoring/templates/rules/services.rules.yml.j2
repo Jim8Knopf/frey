@@ -354,6 +354,26 @@ groups:
             `docker logs immich_machine_learning` for a name-resolution
             failure first, then re-queue with scripts/immich-reprocess.sh.
 
+      # Alerts on GROWTH, never on the count itself. A pile of assets whose
+      # originals cannot be decoded is a permanent fact - 68 of them here,
+      # phone JPEGs with damaged scan data that libvips refuses outright.
+      # Alerting on the count would fire forever and teach you to ignore it;
+      # alerting on an increase catches the thing worth knowing, which is new
+      # unreadable files arriving.
+      - alert: FreyImmichUnprocessableAssetsRising
+        expr: increase(frey_immich_assets_no_preview[{{ t.immich.no_preview_window }}]) > 0
+        for: {{ t.immich.no_preview_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $value {{ og }} more Immich assets cannot be given a preview'
+          description: >-
+            New assets have no preview image, which means face detection,
+            smart search and OCR will never run on them - all three read the
+            preview, not the original. Usually a damaged upload: check the
+            server log for `Failed to decode DCT block`. Immich retries these
+            nightly and fails every time, so they do not resolve themselves.
+
       - alert: FreyImmichCollectorFailing
         expr: frey_collector_success{collector="immich"} == 0
         for: 30m

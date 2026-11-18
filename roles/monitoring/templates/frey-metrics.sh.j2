@@ -838,12 +838,18 @@ collect_immich() {
     echo "# TYPE frey_immich_query_success gauge"
     echo "# HELP frey_immich_assets Assets Immich holds, excluding trashed ones."
     echo "# TYPE frey_immich_assets gauge"
-    echo "# HELP frey_immich_faces_pending Assets still waiting for face detection."
+    # Only assets Immich would actually queue. Hidden assets (the video half
+    # of every motion photo - 441 of them here) are never detected, and an
+    # asset with no preview cannot be, so counting either would leave this
+    # permanently above zero and the backlog alert firing forever.
+    echo "# HELP frey_immich_faces_pending Processable assets still waiting for face detection."
     echo "# TYPE frey_immich_faces_pending gauge"
     echo "# HELP frey_immich_faces_detected Faces found so far."
     echo "# TYPE frey_immich_faces_detected gauge"
     echo "# HELP frey_immich_people_named People that have been given a name."
     echo "# TYPE frey_immich_people_named gauge"
+    echo "# HELP frey_immich_assets_no_preview Visible assets with no preview image, so no face detection, search or OCR can ever run on them."
+    echo "# TYPE frey_immich_assets_no_preview gauge"
     echo "# HELP frey_immich_ml_model_files model.onnx files present in the machine-learning cache."
     echo "# TYPE frey_immich_ml_model_files gauge"
     echo "# HELP frey_immich_ml_cache_bytes Size of the machine-learning model cache."
@@ -853,30 +859,43 @@ collect_immich() {
     # already covers a container that should be up and is not.
     if docker inspect -f '{% raw %}{{.State.Running}}{% endraw %}' immich_postgres 2>/dev/null | grep -q true; then
 
+      # THE SQL GOES IN A FILE, NOT IN -c. It needs string literals ('hidden',
+      # 'preview'), and those cannot survive being nested through `sh -c` and
+      # then `psql -c`: the single quotes close the outer string and the whole
+      # statement dies. Dollar quoting is no escape either, because $$ is the
+      # shell's own PID. A file has no quoting layers at all.
+      #
       # The left join is the point: an asset with no job-status row at all has
       # never been looked at either, and counting only existing rows with a
       # null timestamp would silently miss those.
-      #
-      # Written to a file inside the container before being read back, because
-      # a `docker exec` whose stdout carries the payload can truncate.
-      out=$(docker exec immich_postgres sh -c '
-          psql -U immich -d immich -At -F" " -c "
-            select
-              (select count(*) from asset where \"deletedAt\" is null),
-              (select count(*) from asset a
-                 left join asset_job_status s on s.\"assetId\" = a.id
-                 where a.\"deletedAt\" is null and s.\"facesRecognizedAt\" is null),
-              (select count(*) from asset_face where \"deletedAt\" is null),
-              (select count(*) from person where length(name) > 0)
-          " > /tmp/frey-immich.txt 2>/dev/null || exit 1
-          cat /tmp/frey-immich.txt
-        ' 2>/dev/null | tr -d '\r')
-
-      local assets pending faces people
+      cat > /tmp/frey-immich.sql <<'SQL'
+select
+  (select count(*) from asset where "deletedAt" is null),
+  (select count(*) from asset a
+     left join asset_job_status s on s."assetId" = a.id
+     where a."deletedAt" is null
+       and s."facesRecognizedAt" is null
+       and a.visibility <> 'hidden'
+       and exists (select 1 from asset_file f
+                    where f."assetId" = a.id and f.type = 'preview')),
+  (select count(*) from asset_face where "deletedAt" is null),
+  (select count(*) from person where length(name) > 0),
+  (select count(*) from asset a
+     where a."deletedAt" is null
+       and a.visibility <> 'hidden'
+       and not exists (select 1 from asset_file f
+                        where f."assetId" = a.id and f.type = 'preview'))
+SQL
+      out=$(docker exec -i immich_postgres \
+              psql -U immich -d immich -At -F' ' -f - \
+              < /tmp/frey-immich.sql 2>/dev/null | tr -d '\r')
+      rm -f /tmp/frey-immich.sql
+      local assets pending faces people nopreview
       assets=$(num "$(printf '%s' "${out}" | awk 'NF{print $1; exit}')")
       pending=$(num "$(printf '%s' "${out}" | awk 'NF{print $2; exit}')")
       faces=$(num "$(printf '%s' "${out}" | awk 'NF{print $3; exit}')")
       people=$(num "$(printf '%s' "${out}" | awk 'NF{print $4; exit}')")
+      nopreview=$(num "$(printf '%s' "${out}" | awk 'NF{print $5; exit}')")
 
       if [[ -z "${assets}" || -z "${pending}" ]]; then
         # Running but unreadable - a restarting database, or a schema that
@@ -889,6 +908,11 @@ collect_immich() {
         echo "frey_immich_faces_pending ${pending}"
         [[ -n "${faces}" ]] && echo "frey_immich_faces_detected ${faces}"
         [[ -n "${people}" ]] && echo "frey_immich_people_named ${people}"
+        # No preview means no face detection, no smart search and no OCR will
+        # ever run on that asset - the ML jobs all read the preview, not the
+        # original. A steady count is the known set of undecodable files;
+        # a RISING one is new ones arriving, which is the alertable event.
+        [[ -n "${nopreview}" ]] && echo "frey_immich_assets_no_preview ${nopreview}"
       fi
     fi
 
