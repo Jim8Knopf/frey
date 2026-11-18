@@ -297,8 +297,28 @@ local_ai:
       # nothing. 64K was never a preference - it was Hermes's code-enforced
       # floor, and retiring Hermes is what released it.
       #
-      # VERIFY after deploying, do not assume: Private_Clean should approach
-      # the 4.98 GiB file size and Swap should be ~0.
+      # DEPLOYED AND MEASURED 2026-11-19. It worked, but not by the mechanism
+      # described above, and the correction matters for sizing this host:
+      #
+      #   llama-server Swap   1,091 -> 118 MiB
+      #   host swap used      2,046 (100%) -> 873 MiB
+      #   host RAM available  2,357 -> 4,488 MiB
+      #   prompt cache        f_keep 0.16 -> f_sim_best 1.000 (reuse works)
+      #
+      # But Private_Dirty only fell 4,687 -> 3,769 MiB and Private_Clean did
+      # NOT approach the file size - it sits at 2,384 MiB. The mappings say
+      # why: the weights occupy a ~5 GiB ANONYMOUS mapping while the gguf's
+      # own file mapping holds under 1 GiB resident. The weights are
+      # swappable anon memory, not file-backed pages, so BOTH terms were anon
+      # and the KV cache simply pushed the total past what the host could
+      # hold. Cutting ctx still removed ~900 MiB and enough pressure to pull
+      # the model out of swap.
+      #
+      # Consequence for anyone changing mem_limit: it must cover the weights
+      # as RESIDENT ANON memory. No page cache will absorb them. Why they are
+      # anon at all is unsettled - no --no-mmap is passed, so the likely cause
+      # is aarch64 tensor repacking at load, and the loader lines that would
+      # confirm it are suppressed at the current log level.
       mem_limit: 6g
       ctx: 16384
 

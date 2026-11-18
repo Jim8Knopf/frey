@@ -8,10 +8,59 @@ deployed shape delivering it?**
 Measured on the Pi on 2026-11-18, against the live deployment. Every number
 below was read off the running host, not estimated.
 
-## Status — applied in config 2026-11-19, NOT YET DEPLOYED
+## Status — DEPLOYED and verified 2026-11-19
 
-The recommendation in §3 has been implemented on this branch. A
-`--check --diff` run passes (`failed=0`) and renders exactly:
+Deployed twice, second run **`changed=0`**, `scripts/local-ai-check.sh` passes.
+Measured outcome on the live host, before → after:
+
+| Reading | Before | After |
+| --- | --- | --- |
+| `llama-server` Swap | 1,091 MiB | **118 MiB** |
+| Host swap used | **2,046 of 2,047 MiB (100 %)** | **873 MiB (43 %)** |
+| Host RAM available | 2,357 MiB | **4,488 MiB** |
+| Prompt cache reuse | `f_keep` 0.16, wiped every request | **`f_sim_best` 1.000**, 4 of 28 tokens re-evaluated |
+| Requests not from a human | 91 of 91 | **0 — the observer is gone** |
+
+A real question answered correctly end to end: *"What is the capital city of
+Japan?"* → *"The capital city of Japan is Tokyo."* in **10.9 s**, 87 completion
+tokens (~8 tok/s), `cached_tokens: 24` of 28 on the second call.
+
+Two findings worth carrying, both of which correct this document as first
+written:
+
+**1. An empty `content` is not a failure on this model.** The first probe
+returned `completion_tokens: 60` with empty content: LFM2.5 is
+reasoning-native, `--reasoning off` only *splits* the chain of thought into
+`reasoning_content` rather than suppressing it, and 60 tokens were consumed
+thinking before any answer began. Budget `max_tokens` for reasoning plus
+answer, or a healthy model looks broken.
+
+**2. The KV cache was NOT the dominant consumer, and §1's mechanism was only
+half right.** `Private_Dirty` fell just 4,687 → 3,769 MiB, and `Private_Clean`
+did **not** approach the 4.98 GiB file size as predicted — it sits at
+2,384 MiB. Reading the mappings directly shows why: the weights occupy a
+**~5 GiB anonymous mapping**, while the gguf's own file mapping holds under
+1 GiB resident. So the weights are **anonymous, swappable memory, not
+file-backed pages**, and the "anon KV outbid file-backed weights" framing in §1
+is wrong in its details — both were anon, and the KV cache simply pushed the
+total past what the host could hold.
+
+That does not change the fix or the result: cutting ctx and `cache_ram`
+removed ~900 MiB of dirty memory and enough total pressure to pull the model
+almost entirely out of swap. But **why the weights are anon rather than mmap'd
+is an open question** — no `--no-mmap` is passed, so the likely cause is
+llama.cpp repacking quantised tensors for aarch64 at load, which copies them
+into anonymous memory. The loader lines that would confirm it are suppressed at
+the current log level. Worth settling before anyone sizes this host again,
+because it means **`mem_limit` must cover the weights as resident anon memory**
+and no amount of page cache will absorb them.
+
+The §3 projection of "~3 GiB back" was therefore optimistic in mechanism and
+roughly right in effect: host available RAM rose 2.1 GiB.
+
+### What was changed
+
+A `--check --diff` run passes (`failed=0`) and renders exactly:
 
 | Change | From | To |
 | --- | --- | --- |
@@ -24,16 +73,6 @@ The recommendation in §3 has been implemented on this branch. A
 Plus a new `Remove the containers of disabled components` task, because an
 `enabled: false` without it leaves a compose **orphan** running forever, and a
 skip guard in `scripts/local-ai-observer-check.sh`.
-
-**The deploy itself has not been run** — it needs a human:
-
-```bash
-ansible-playbook playbooks/site.yml --tags local_ai > /tmp/local-ai-deploy.log 2>&1
-```
-
-Then run it a second time for the 0-changed acceptance test, and confirm the
-memory actually came back with the commands in **Acceptance test** below. The
-projections in §3 are projections until that output exists.
 
 `campaign.enabled` is deliberately left **true**: `frey-campaign-agent` holds
 7.95 MiB, has logged nothing since 2026-11-11, is genuinely on-demand rather
