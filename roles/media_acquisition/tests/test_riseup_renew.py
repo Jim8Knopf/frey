@@ -1,5 +1,7 @@
 import contextlib
+import fcntl
 import io
+import ipaddress
 import pathlib
 import tempfile
 import types
@@ -46,14 +48,21 @@ class CertificateChecks(unittest.TestCase):
             self.assertFalse(self.module.still_valid())
 
     def test_restart_recreates_all_clients_after_vpn_is_healthy(self):
+        pathlib.Path(self.module.PENDING).write_text('')
         with patch.object(self.module.subprocess, 'run') as run, \
-             patch.object(self.module.subprocess, 'check_output', return_value='healthy'), \
-             patch.object(self.module.os, 'unlink') as unlink:
+             patch.object(self.module.subprocess, 'check_output', return_value='healthy'):
             self.module.restart_vpn_and_clients()
         self.assertEqual(run.call_args_list[0].args[0], ['docker', 'restart', 'gluetun'])
         self.assertIn('--force-recreate', run.call_args_list[1].args[0])
         self.assertEqual(run.call_args_list[1].args[0][-5:], self.module.CLIENTS)
-        unlink.assert_called_once_with(self.module.PENDING)
+        # The marker is cleared once the rebuild has actually succeeded.
+        self.assertFalse(pathlib.Path(self.module.PENDING).exists())
+
+    def test_clearing_an_already_gone_marker_is_not_an_error(self):
+        # Dying here would undo a rebuild that already worked.
+        with patch.object(self.module.subprocess, 'run'), \
+             patch.object(self.module.subprocess, 'check_output', return_value='healthy'):
+            self.module.restart_vpn_and_clients()
 
 
 class GatewaySelection(unittest.TestCase):
@@ -79,7 +88,9 @@ class GatewaySelection(unittest.TestCase):
              patch.object(self.module, 'existing_material', return_value=('CA', 'CERT', 'KEY')), \
              patch.object(self.module, 'current_remotes', return_value=current), \
              patch.object(self.module, 'candidates', return_value=advertised), \
-             patch.object(self.module, 'latency', side_effect=lambda address: latencies.get(address)), \
+             patch.object(self.module, 'latency', side_effect=lambda address, port=None: latencies.get(address)), \
+             patch.object(self.module, 'have_internet', return_value=True), \
+             patch.object(self.module, 'restarted_recently', return_value=False), \
              patch.object(self.module, 'obtain') as obtain, \
              patch.object(self.module, 'write') as write, \
              contextlib.redirect_stdout(io.StringIO()) as out:
@@ -288,6 +299,147 @@ class UplinkDispatcherHook(unittest.TestCase):
         # Dispatcher scripts run serially; blocking here delays every other
         # hook and NetworkManager's own event handling.
         self.assertIn('--no-block', self.dispatch('wlan1', 'up'))
+
+
+class ReconnectGuards(unittest.TestCase):
+    """What stops a rebuild from happening when it should not.
+
+    A rebuild is never free: every download client restarts, and while Gluetun
+    is unhealthy Traefik drops the routers whose labels live on it, so
+    qBittorrent and Prowlarr 404 for the duration.
+    """
+
+    def setUp(self):
+        self.module = load()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = pathlib.Path(self.temp.name)
+        self.module.PROFILE = str(root / 'profile')
+        self.module.PENDING = self.module.PROFILE + '.restart-pending'
+        self.module.LOCK = str(root / 'lock')
+        self.module.STAMP = str(root / 'stamp')
+
+    def restart_run(self, exists=True, current=False, recent=False):
+        """A --restart run against a profile whose gateways are reachable."""
+        with patch.object(self.module, 'still_valid', return_value=True), \
+             patch.object(self.module, 'existing_material', return_value=('CA', 'CERT', 'KEY')), \
+             patch.object(self.module, 'current_remotes', return_value=['198.51.100.1']), \
+             patch.object(self.module, 'latency', return_value=0.1), \
+             patch.object(self.module, 'container_exists', return_value=exists), \
+             patch.object(self.module, 'tunnel_is_current', return_value=current), \
+             patch.object(self.module, 'restarted_recently', return_value=recent), \
+             patch.object(self.module, 'restart_vpn_and_clients') as restart, \
+             patch.object(self.module.sys, 'argv', ['frey-riseup-renew', '--restart']), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.module.main()
+        return restart, out.getvalue().strip()
+
+    def test_a_missing_tunnel_is_not_an_error_mid_first_install(self):
+        pathlib.Path(self.module.PENDING).write_text('')
+        restart, printed = self.restart_run(exists=False)
+        restart.assert_not_called()
+        self.assertEqual(printed, 'unchanged')
+        # Nothing to reconnect yet, so the marker must survive for later.
+        self.assertTrue(pathlib.Path(self.module.PENDING).exists())
+
+    def test_a_tunnel_already_holding_the_profile_clears_the_stale_marker(self):
+        pathlib.Path(self.module.PENDING).write_text('')
+        restart, printed = self.restart_run(current=True)
+        restart.assert_not_called()
+        self.assertEqual(printed, 'unchanged')
+        self.assertFalse(pathlib.Path(self.module.PENDING).exists())
+
+    def test_a_stale_tunnel_is_reconnected(self):
+        pathlib.Path(self.module.PENDING).write_text('')
+        restart, printed = self.restart_run()
+        restart.assert_called_once_with()
+        self.assertEqual(printed, 'reconnected')
+
+    def test_a_current_tunnel_with_no_marker_does_not_restart(self):
+        restart, printed = self.restart_run()
+        # The second deploy must report 0 changed and leave the tunnel alone.
+        restart.assert_not_called()
+        self.assertEqual(printed, 'unchanged')
+
+    def test_a_rebuild_just_done_defers_instead_of_repeating(self):
+        pathlib.Path(self.module.PENDING).write_text('')
+        restart, printed = self.restart_run(recent=True)
+        restart.assert_not_called()
+        self.assertEqual(printed, 'deferred')
+        # Deferred, not dropped: the marker is what makes the next run do it.
+        self.assertTrue(pathlib.Path(self.module.PENDING).exists())
+
+    def test_a_flapping_uplink_does_not_look_like_dead_gateways(self):
+        """The fix for 2026-11-18: 47 lease losses, 8 healthy gateways.
+
+        The hook fires the instant the uplink returns, so the gateway probe
+        can fail while the API fetch a moment later succeeds. Believing the
+        probe rewrote the profile and rebuilt the tunnel for nothing.
+        """
+        with patch.object(self.module, 'still_valid', return_value=True), \
+             patch.object(self.module, 'existing_material', return_value=('CA', 'CERT', 'KEY')), \
+             patch.object(self.module, 'current_remotes', return_value=['198.51.100.1']), \
+             patch.object(self.module, 'latency', return_value=None), \
+             patch.object(self.module, 'have_internet', return_value=False), \
+             patch.object(self.module, 'candidates') as candidates, \
+             patch.object(self.module, 'write') as write, \
+             patch.object(self.module, 'restart_vpn_and_clients') as restart, \
+             patch.object(self.module.sys, 'argv', ['frey-riseup-renew', '--restart']), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.module.main()
+        self.assertEqual(out.getvalue().strip(), 'offline')
+        candidates.assert_not_called()
+        write.assert_not_called()
+        restart.assert_not_called()
+
+    def test_unreachable_gateways_with_a_working_uplink_are_really_dead(self):
+        """The other side of that judgement, which must still work."""
+        with patch.object(self.module, 'still_valid', return_value=True), \
+             patch.object(self.module, 'existing_material', return_value=('CA', 'CERT', 'KEY')), \
+             patch.object(self.module, 'current_remotes', return_value=['203.0.113.9']), \
+             patch.object(self.module, 'latency', side_effect=lambda a, port=None: None if a == '203.0.113.9' else 0.1), \
+             patch.object(self.module, 'have_internet', return_value=True), \
+             patch.object(self.module, 'candidates', return_value=['198.51.100.1']), \
+             patch.object(self.module, 'restarted_recently', return_value=False), \
+             patch.object(self.module, 'write') as write, \
+             patch.object(self.module, 'container_exists', return_value=True), \
+             patch.object(self.module, 'restart_vpn_and_clients') as restart, \
+             patch.object(self.module.sys, 'argv', ['frey-riseup-renew', '--restart']), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.module.main()
+        self.assertEqual(out.getvalue().strip(), 'updated')
+        self.assertIn('remote 198.51.100.1 80', write.call_args.args[0])
+        restart.assert_called_once_with()
+
+    def test_internet_is_probed_by_ip_not_hostname(self):
+        # A hostname would make "do we have internet" depend on DNS, which is
+        # one of the things that breaks when the uplink moves.
+        for address in self.module.INTERNET_PROBES:
+            ipaddress.ip_address(address)
+        self.assertNotIn('9.9.9.9', self.module.INTERNET_PROBES)
+
+    def test_only_one_instance_runs_at_a_time(self):
+        """Several invocations land within seconds on a flapping uplink."""
+        holder = open(self.module.LOCK, 'w', encoding='utf-8')
+        self.addCleanup(holder.close)
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with patch.object(self.module, 'main') as inner, \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.module.locked_main()
+        # A duplicate trigger is not a fault, so it says so and exits 0.
+        inner.assert_not_called()
+        self.assertEqual(out.getvalue().strip(), 'busy')
+
+    def test_the_lock_is_released_for_the_next_run(self):
+        with patch.object(self.module, 'main') as inner, contextlib.redirect_stdout(io.StringIO()):
+            self.module.locked_main()
+            self.module.locked_main()
+        self.assertEqual(inner.call_count, 2)
+
+    def test_a_restart_is_stamped_so_the_cooldown_can_see_it(self):
+        self.assertFalse(self.module.restarted_recently())
+        self.module.stamp()
+        self.assertTrue(self.module.restarted_recently())
 
 
 if __name__ == '__main__':

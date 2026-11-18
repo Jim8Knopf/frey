@@ -2,9 +2,11 @@
 """Acquire and renew a Riseup client certificate without exposing its key."""
 import concurrent.futures
 import datetime
+import fcntl
 import ipaddress
 import json
 import os
+import pathlib
 import re
 import socket
 import subprocess
@@ -40,6 +42,26 @@ CONNECT_TIMEOUT = 15
 # down until an uplink comes back no matter how healthy everything else is.
 # 20 days rather than 10 doubles that margin and costs one fetch every ~15 days.
 RENEW_WITHIN = 20 * 24 * 3600
+# Addresses used only to answer "does this van have internet at all right now".
+# IP literals on purpose: a hostname would make the answer depend on DNS, and
+# these are the same two Gluetun's own healthcheck uses, so they are already
+# known to be reachable from here. Not 9.9.9.9 -- venues block it.
+INTERNET_PROBES = ['1.1.1.1', '8.8.8.8']
+INTERNET_PORT = 443
+# One instance at a time. The dispatcher hook fires on every uplink event and
+# the timer fires alongside it, so on a flapping uplink several invocations can
+# start within the same second -- measured 2026-11-18, three in two seconds.
+# Two of them entering the restart path raced to delete the same marker and one
+# died on the file already being gone.
+LOCK = '/run/frey-riseup-renew.lock'
+# Never rebuild the tunnel more often than this. A rebuild costs every download
+# client a restart, and while Gluetun is unhealthy Traefik drops the routers
+# whose labels live on it, so qBittorrent and Prowlarr 404 for the duration.
+# This is a backstop, not the fix: it bounds the damage of any future logic
+# error rather than being load-bearing for correctness. The marker survives a
+# skip, so a genuinely needed reconnect happens on the next run instead.
+RESTART_COOLDOWN = 10 * 60
+STAMP = '/run/frey-riseup-renew.last-restart'
 
 
 def fetch(url):
@@ -105,11 +127,11 @@ def current_remotes():
         return []
 
 
-def latency(address):
-    """Seconds to complete a TCP handshake to a gateway, or None if it is dead."""
+def latency(address, port=REMOTE_PORT):
+    """Seconds to complete a TCP handshake, or None if nothing answers."""
     start = time.monotonic()
     try:
-        with socket.create_connection((address, REMOTE_PORT), CONNECT_TIMEOUT):
+        with socket.create_connection((address, port), CONNECT_TIMEOUT):
             return time.monotonic() - start
     except OSError:
         return None
@@ -120,6 +142,22 @@ def reachable(addresses):
         return False
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(addresses)) as pool:
         return any(result is not None for result in pool.map(latency, addresses))
+
+
+def have_internet():
+    """Whether anything outside this van is reachable at all.
+
+    This is the difference between "Riseup retired our gateways" and "we have
+    no uplink this second", which look identical from a failed probe. Getting
+    it wrong is expensive in one direction only: treating a flapping uplink as
+    dead gateways rewrites the profile and rebuilds the tunnel for nothing,
+    restarting every download client. Measured 2026-11-18, the uplink dropped
+    its DHCP lease 47 times in a day and all eight gateways were healthy
+    throughout.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(INTERNET_PROBES)) as pool:
+        probe = lambda address: latency(address, INTERNET_PORT)
+        return any(result is not None for result in pool.map(probe, INTERNET_PROBES))
 
 
 def candidates():
@@ -217,7 +255,26 @@ def restart_vpn_and_clients():
     # network_mode:service:gluetun client so none remains in the old one.
     if CLIENTS:
         subprocess.run(['docker', 'compose', '-f', STACK, 'up', '-d', '--no-deps', '--force-recreate'] + CLIENTS, check=True, stdout=subprocess.DEVNULL)
-    os.unlink(PENDING)
+    stamp()
+    # missing_ok: the lock makes a concurrent delete impossible now, but dying
+    # here would undo a rebuild that already succeeded, which is the worst
+    # possible moment to fail.
+    pathlib.Path(PENDING).unlink(missing_ok=True)
+
+
+def stamp():
+    try:
+        pathlib.Path(STAMP).write_text(str(time.time()), encoding='utf-8')
+    except OSError:
+        pass
+
+
+def restarted_recently():
+    try:
+        with open(STAMP, encoding='utf-8') as f:
+            return (time.time() - float(f.read().strip())) < RESTART_COOLDOWN
+    except (OSError, ValueError):
+        return False
 
 
 def obtain():
@@ -265,10 +322,22 @@ def main():
                 os.unlink(PENDING)
                 print('unchanged')
                 return
+            if restarted_recently():
+                # Leave the marker: the next run reconnects instead.
+                print('deferred')
+                return
             restart_vpn_and_clients()
             print('reconnected')
             return
         print('unchanged')
+        return
+    # The gateways did not answer. Before believing they are gone -- which
+    # costs a profile rewrite and a rebuild of the tunnel and every client --
+    # establish that this van has internet at all. A flapping uplink fails
+    # exactly the same probes, and the hook fires the instant it comes back,
+    # so the probe can fail while the API fetch a moment later succeeds.
+    if not have_internet():
+        print('offline')
         return
     try:
         addresses = candidates()
@@ -300,13 +369,40 @@ def main():
     os.close(fd)
     write(profile)
     print('updated')
-    if '--restart' in sys.argv and container_exists():
+    # The first rebuild always goes ahead, so a genuine recovery is never
+    # slowed; only a second one inside the cooldown waits for the next run,
+    # which is what turns a storm back into a single rebuild. The marker is
+    # still on disk, so nothing is lost by waiting.
+    if '--restart' in sys.argv and container_exists() and not restarted_recently():
         restart_vpn_and_clients()
+
+
+def locked_main():
+    """Run main() with at most one instance alive.
+
+    The dispatcher hook fires on every uplink event and the timer runs beside
+    it, so on a flapping uplink several invocations start within seconds of
+    each other. Letting two into the restart path at once is what produced the
+    one hard failure seen on 2026-11-18: both rebuilt the tunnel and they
+    raced to delete the same marker.
+    """
+    handle = open(LOCK, 'w', encoding='utf-8')
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another run owns it and is doing the same work. Saying so and
+            # exiting 0 is right: this is a duplicate trigger, not a fault.
+            print('busy')
+            return
+        main()
+    finally:
+        handle.close()
 
 
 if __name__ == '__main__':
     try:
-        main()
+        locked_main()
     except Exception as exc:
         print('Riseup renewal failed: ' + type(exc).__name__, file=sys.stderr)
         sys.exit(1)

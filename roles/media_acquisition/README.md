@@ -483,6 +483,41 @@ for as long as the van is parked is a false alarm precisely when it is least
 useful. A gateway list that parses but contains nothing usable is the opposite
 — that means Riseup changed something — and does fail loudly.
 
+### A flapping uplink must not become a rebuild storm
+
+Every rebuild costs each download client a restart, and while Gluetun is
+unhealthy **Traefik deletes the routers whose labels live on it**, so
+qBittorrent and Prowlarr answer 404 rather than 502 for the duration. So the
+expensive mistake is not failing to rebuild — it is rebuilding when nothing
+was wrong.
+
+Measured 2026-11-18, the uplink lost its DHCP lease **47 times in a day** on a
+weak venue network while all eight gateways stayed healthy the whole time.
+Three things keep that from turning into churn:
+
+- **"No gateway answered" is not "the gateways are gone."** Both look
+  identical from a failed probe, so before re-selecting anything the helper
+  asks whether this van has internet at all, by IP literal so the answer never
+  depends on DNS. No internet means `offline` and nothing is touched. This is
+  the one that matters: the dispatcher hook fires the instant the uplink
+  returns, so a probe can fail while the API fetch a moment later succeeds,
+  and believing the probe rewrote a perfectly good profile.
+- **One instance at a time**, via `flock`. The hook fires per uplink event and
+  the timer runs beside it, so several invocations can start within the same
+  second — three in two seconds, measured. Two of them reaching the restart
+  path raced to delete the same marker and one died on it. A duplicate trigger
+  now prints `busy` and exits 0.
+- **A cooldown between rebuilds.** The first rebuild always proceeds, so a
+  genuine recovery is never slowed; a second one inside the window prints
+  `deferred` and leaves the marker, so the next run does it. This is a
+  backstop that bounds the damage of a future logic error, not something
+  correctness rests on.
+
+Read the outcome from the journal, not by running it by hand:
+`sudo journalctl -u 'frey-riseup-renew*'`. One line per run — `unchanged`,
+`offline`, `busy`, `deferred`, `updated` or `reconnected` — and only the last
+two mean the tunnel actually moved.
+
 Enabling it with no credentials fails the deploy immediately with
 instructions, rather than starting an unconfigured tunnel that looks like a
 broken stack.
