@@ -13,6 +13,14 @@
 # a list of who has is kept on the Pi. Change your password in the directory UI
 # and a later deploy leaves it alone.
 #
+# `manage_password: false` is the escape hatch for ADOPTING an account that
+# already exists in the directory but was never in this file - someone created
+# in the web UI, or left behind by an earlier inventory. Such an account is
+# absent from the seeded list, so without the flag its very first managed
+# deploy would generate a password and overwrite a working one. The flag says
+# "this account predates the inventory; describe it, never touch its
+# credential."
+#
 # DO_CLEANUP stays off. A typo in a username must not be able to delete an
 # account - and more importantly, people added in the web UI (the fast path,
 # and the one actually recommended for guests) are not in this file and must
@@ -39,6 +47,10 @@
         else []
       }}
 
+# An adopted account (manage_password: false) is "new" to this file but not to
+# the directory, and no password is written for it. It must stay out of this
+# list, or the run ends by printing a generated password that was never
+# applied - worse than silence, because it reads as a working credential.
 - name: Work out who is new this run
   ansible.builtin.set_fact:
     identity_new_users: >-
@@ -47,6 +59,13 @@
         | rejectattr('username', 'in', identity_already_seeded)
         | map(attribute='username')
         | list
+        | difference(
+            identity_users
+            | selectattr('manage_password', 'defined')
+            | rejectattr('manage_password')
+            | map(attribute='username')
+            | list
+          )
       }}
 
 # ------------------------------------------------------------------------------
@@ -105,7 +124,8 @@
         }
         | combine(
             {'password': identity_secrets['user_' ~ item.username ~ '_password']}
-            if item.username not in identity_already_seeded
+            if (item.username not in identity_already_seeded
+                and (item.manage_password | default(true) | bool))
             else {}
           )
         | to_nice_json

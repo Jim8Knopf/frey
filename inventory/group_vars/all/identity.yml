@@ -84,6 +84,29 @@ identity_users:
       # directory UI to manage everyone else.
       - lldap_admin
 
+  # Predates this file, and owns the entire Immich photo library - every one of
+  # the ~13,700 assets is on the Immich account linked to this account's OIDC
+  # subject. It was in the directory but not in here, which made it invisible
+  # to a deploy; declaring it is what brings it under management.
+  #
+  # manage_password: false because of that history. The account is not on the
+  # Pi's seeded list, so without the flag its first managed deploy would
+  # generate a password and overwrite the working one - on the account holding
+  # the photos. See the header of roles/identity/tasks/bootstrap.yml.
+  #
+  # Immich access comes from frey_admins, so the `immich` group is not needed
+  # here. Legacy memberships this list does not mention are left alone, because
+  # the bootstrap runs with DO_CLEANUP off.
+  - username: jason
+    name: Jason
+    email: j@k
+    manage_password: false
+    groups:
+      - frey_admins
+      - media
+      - notes
+      - lldap_admin
+
 
 # ==============================================================================
 # GROUPS
