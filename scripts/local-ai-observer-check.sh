@@ -13,6 +13,20 @@ PI_ADDR="${PI_ADDR:-10.20.0.1}"
 PI_USER="${PI_USER:-ansible}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa_ansible}"
 
+# The observer was retired on 2026-11-18 (docs/LOCAL_AI_RIGHTSIZING.md), but
+# this script is kept rather than deleted: its boundaries are the ones any
+# future component reading the same paths will need proved, and the observer
+# is one flag away from returning. Skip rather than fail when it is absent,
+# because a check that reports a missing component as a broken boundary
+# teaches you to ignore it.
+if ! ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY" \
+  "$PI_USER@$PI_ADDR" 'sudo docker inspect frey-local-ai-observer >/dev/null 2>&1'; then
+  echo "SKIP: frey-local-ai-observer is not deployed (observer.enabled is false)."
+  echo "Nothing to prove. Re-enable the observer to run these boundary checks."
+  exit 0
+fi
+
 # Results are written to a file on the Pi and then read back, because output
 # piped straight out of `docker exec` truncates at around 4 KB, intermittently,
 # and looks exactly like a broken service when it does.

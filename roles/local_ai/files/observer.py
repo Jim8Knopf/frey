@@ -280,6 +280,63 @@ be locked out. An empty journal after a freeze is evidence, not a gap.
 two cores by design."""
 
 
+# How many consecutive cycles the observer will stand aside for a human before
+# going ahead anyway. The model has ONE slot: an incident report takes about
+# eight minutes of it, measured, and while it runs a person waiting at
+# ai.hub.frey, campaign.hub.frey or hermes.hub.frey is simply queued behind it
+# - and worse, this prompt evicts theirs, so their next turn re-prefills from
+# scratch. That is what made a one-word message cost six minutes.
+#
+# Not unbounded, because `notify()` happens after the model answers: deferring
+# for ever would also defer the nudge that a report exists. Three cycles caps
+# the delay at POLL_SECONDS x 3 (15 minutes by default) while letting
+# interactive use win in the ordinary case. The phone alert itself does NOT
+# depend on this - Alertmanager and the relay deliver it independently.
+MAX_DEFERRALS = int(os.environ.get("OBSERVER_MAX_DEFERRALS", "3"))
+
+
+def model_busy():
+    """True when llama-server is working on somebody else's request.
+
+    Checked rather than assumed: /slots reports is_processing per slot, and
+    with --parallel 1 any `true` means the only slot is taken. A failure to
+    read it returns False - a monitoring component that stops working because
+    it cannot see a status endpoint is worse than one that occasionally
+    queues.
+    """
+    try:
+        raw = _get_json(f"{MODEL_URL}/slots", timeout=10)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log.debug("cannot read /slots, assuming idle: %s", exc)
+        return False
+    if not isinstance(raw, list):
+        return False
+    return any(bool(slot.get("is_processing")) for slot in raw if isinstance(slot, dict))
+
+
+def defer_for_interactive(state, what):
+    """Stand aside for a human, up to MAX_DEFERRALS cycles. True = skip now."""
+    if not model_busy():
+        if state.get("deferrals"):
+            state["deferrals"] = 0
+        return False
+    count = int(state.get("deferrals", 0)) + 1
+    if count > MAX_DEFERRALS:
+        log.info(
+            "model still busy but %s has waited %d cycles; going ahead",
+            what, count - 1,
+        )
+        state["deferrals"] = 0
+        return False
+    state["deferrals"] = count
+    save_state(state)
+    log.info(
+        "model busy, deferring %s (%d/%d) so an interactive request wins",
+        what, count, MAX_DEFERRALS,
+    )
+    return True
+
+
 def ask_model(title, evidence_text):
     payload = {
         "messages": [
@@ -456,6 +513,10 @@ def run_once(state):
 
     if unseen:
         log.info("new firing alerts: %s", ", ".join(unseen))
+        # Before any model work, and before `seen` is updated: returning here
+        # leaves these alerts unseen, so the next cycle picks them up again.
+        if defer_for_interactive(state, "incident report"):
+            return
         evidence = build_evidence(alerts)
         names = ", ".join(sorted({a["alertname"] for a in alerts}))
         title = f"Incident report: {names}"
@@ -472,6 +533,10 @@ def run_once(state):
 
     today = now.strftime("%Y-%m-%d")
     if now.hour >= DAILY_HOUR and state.get("last_daily") != today:
+        # A summary of the whole day has no deadline, so it always yields.
+        if model_busy():
+            log.info("model busy, postponing the daily summary")
+            return
         log.info("writing daily summary")
         evidence = build_evidence(alerts)
         title = f"Daily health summary for {today}"

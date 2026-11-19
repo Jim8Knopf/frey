@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# =============================================================================
+# frey-notes-commit - keep the notes space revertable
+# Managed by Ansible role: local_ai. Do not edit on the Pi.
+# =============================================================================
+#
+# WHY THIS RUNS ON THE HOST
+#
+# The campaign assistant writes pages, and every write should be undoable. It
+# cannot commit them itself: its image is the pinned Alpine python one, which
+# ships no git binary, and the container has a read-only rootfs and no egress
+# so it cannot acquire one. The first real run proved it - every commit failed
+# with ENOENT while the writes landed anyway, leaving no history at all.
+#
+# So committing happens here. History is a little coarser than one commit per
+# write, and in exchange it also captures edits made by hand in SilverBullet,
+# which the agent would never have committed.
+#
+# The repository is owned by SilverBullet's uid, and git refuses to touch a
+# repo whose owner it does not recognise, hence safe.directory.
+# =============================================================================
+set -uo pipefail
+
+SPACE="{{ frey.notes_data_dir }}/spaces/notes"
+INTENT="${SPACE}/{{ local_ai.campaign.root }}/.agent-intent"
+GIT=(git -c safe.directory="${SPACE}" -C "${SPACE}")
+
+[ -d "${SPACE}/.git" ] || exit 0
+
+# Nothing changed: stay silent and leave no empty commit behind.
+if [ -z "$("${GIT[@]}" status --porcelain 2>/dev/null)" ]; then
+  exit 0
+fi
+
+# The agent leaves a one-line note saying what it was about to do. Use it as
+# the commit subject when it is fresh, so the history reads as intent rather
+# than as "autocommit".
+subject="notes: periodic snapshot"
+if [ -r "${INTENT}" ]; then
+  # Only trust it if written in the last 10 minutes; otherwise it is stale and
+  # would mislabel a hand edit as the agent's work.
+  if [ -n "$(find "${INTENT}" -mmin -10 2>/dev/null)" ]; then
+    note=$(tr -d '\n' < "${INTENT}" | cut -c1-120)
+    [ -n "${note}" ] && subject="notes: ${note}"
+  fi
+fi
+
+changed=$("${GIT[@]}" status --porcelain | wc -l | tr -d ' ')
+
+"${GIT[@]}" add -A >/dev/null 2>&1
+if "${GIT[@]}" -c user.name="frey-notes" -c user.email="notes@frey" \
+     commit -m "${subject}" -m "${changed} path(s) changed" >/dev/null 2>&1; then
+  printf 'committed %s path(s): %s\n' "${changed}" "${subject}"
+else
+  printf 'nothing committed\n'
+fi

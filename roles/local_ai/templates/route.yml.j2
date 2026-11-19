@@ -1,5 +1,47 @@
+# Managed by Ansible. Do not edit on the Pi.
+#
+# ai.hub.frey        llama.cpp's own chat UI - streaming, token counts, a real
+#                    conversation view. It is simply better than anything
+#                    hand-rolled here, so it owns the main hostname.
+# campaign.hub.frey  the assistant, which has the tools: it reads and writes
+#                    the campaign wiki and can check this machine's health.
+# hermes.hub.frey    Hermes Agent's dashboard. Unlike the two above it is NOT
+#                    behind forward auth: it is a real OIDC relying party and
+#                    logs in against Authelia itself, so putting Authelia in
+#                    front of it as well would mean signing in twice. Its
+#                    access list is still identity_services.hermes.groups,
+#                    which Authelia enforces before issuing a token.
+#
+#                    All three share ONE llama-server slot, so using two of
+#                    them alternately evicts the other's cached prompt - see
+#                    docs/LOCAL_AI_AGENT_PLAN.md 6a for what that costs.
+#
+# Dispatched on Host, and the assistant's rule comes first so its origin never
+# falls through to the model.
+#
+# The two are separate ORIGINS for a browser reason as well as a tidiness one:
+# llama.cpp's UI is a PWA that registers a service worker at /sw.js, and a
+# service worker intercepts every request to its origin. Sharing a hostname
+# made the assistant unreachable no matter what the routing said.
+#
+# NOTE: Traefik's file provider does not reliably pick up edits to this file
+# through the bind mount, so the role restarts the gateway whenever it
+# changes. Without that, fixes here sit unused and Traefik answers with its
+# own 404 - recognisable because the response carries no Server header.
 http:
   routers:
+{% if local_ai.campaign.enabled | bool %}
+    campaign:
+      rule: Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)
+      service: campaign
+{% endif %}
+{% if local_ai.hermes.enabled | bool %}
+    hermes:
+      rule: Host(`{{ local_ai.hermes_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.hermes_host }}.{{ frey.local_domain }}`)
+      service: hermes
+{% endif %}
+    # Everything else, including / and /v1, goes to the model - which is what
+    # serves its own web UI.
     model:
       rule: PathPrefix(`/`)
       service: model
@@ -8,3 +50,15 @@ http:
       loadBalancer:
         servers:
           - url: http://model:8080
+{% if local_ai.campaign.enabled | bool %}
+    campaign:
+      loadBalancer:
+        servers:
+          - url: http://campaign:{{ local_ai.campaign.port }}
+{% endif %}
+{% if local_ai.hermes.enabled | bool %}
+    hermes:
+      loadBalancer:
+        servers:
+          - url: http://hermes:{{ local_ai.hermes.port }}
+{% endif %}

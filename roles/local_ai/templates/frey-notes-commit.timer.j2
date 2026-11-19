@@ -1,0 +1,15 @@
+[Unit]
+# Managed by Ansible role: local_ai
+Description=Periodically commit the notes space
+
+[Timer]
+# Short, because the granularity of this interval is the granularity of your
+# undo. A campaign turn takes minutes, so two minutes keeps one revert close
+# to one turn.
+OnBootSec=3min
+OnUnitActiveSec={{ local_ai.campaign.commit_interval }}
+AccuracySec=20s
+Unit=frey-notes-commit.service
+
+[Install]
+WantedBy=timers.target
