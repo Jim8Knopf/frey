@@ -304,9 +304,16 @@ So the stack resolves through its own dnsmasq with `filter-AAAA`, which also
 means a campground's broken or filtering DNS can no longer disable indexers —
 the reason this used to come back at every new parking spot.
 
+Prowlarr shares Gluetun's network namespace and uses Gluetun's encrypted DNS
+instead, so its queries remain inside the VPN. Gluetun can install IPv6 routes
+even when the tunnel has no IPv6 address; in that case AAAA answers can still
+send searches to unreachable addresses. `media_vpn.ipv6_enabled: false`
+disables IPv6 in that namespace. Only enable it after setting up and testing a
+dual-stack VPN. DNS itself remains encrypted through Gluetun.
+
 ```bash
 # Is it up, and is it actually stripping AAAA?
-docker exec prowlarr getent ahostsv6 thepiratebay.org
+docker exec sonarr getent ahostsv6 thepiratebay.org
 #   ::ffff:162.159.136.6  -> correct: an IPv4-mapped address, no real AAAA
 #   2606:4700:7::a29f:8906 -> the resolver is being bypassed
 ```
@@ -374,6 +381,13 @@ frey-media-gate resume     # force a resume
 `nmcli` reporting `portal` counts as **not** usable. That is the point: a
 captive portal looks online to an application, and left alone the *arrs will
 burn through search attempts against a sign-in page and collect indexer bans.
+
+When the uplink returns, the gate also checks applications reporting indexer
+failures. It tests their enabled sources individually, with bounded
+concurrency and timeouts, so a slow browser challenge cannot prevent a
+working source from clearing its backoff. Sources that still fail are retried
+after 30 minutes; a successful test cannot guarantee that a later search will
+return a release with peers.
 
 Modes are set by `media_acquisition.uplink_gating.mode`: `pause` (default),
 `stop` (also stops the *arr containers after a grace period, to save power

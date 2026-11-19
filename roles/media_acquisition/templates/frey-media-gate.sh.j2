@@ -158,7 +158,7 @@ qbt_set_alt_mode() {
 }
 
 # Query from inside the container so API keys never enter host command lines or
-# logs. HTTP success alone is insufficient: testall can return isValid=false.
+# logs.
 servarr_request() {
   local service="$1" port="$2" api_version="$3" method="$4" endpoint="$5"
   local request_timeout=10
@@ -171,6 +171,64 @@ servarr_request() {
         -H "X-Api-Key: ${key}" \
         "http://127.0.0.1:${API_PORT}/api/${API_VERSION}/${API_ENDPOINT}"
     ' 2>/dev/null
+}
+
+# Test independently: testall waits for every source and a single slow browser
+# challenge can exceed its timeout before it reports any successful sources.
+# Bound each request and run at most four at once. Provider configurations may
+# contain credentials, so pass them over stdin and never print them.
+retry_indexers() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import concurrent.futures
+import json
+import subprocess
+import sys
+
+service, port, version = sys.argv[1:]
+script = r'''key=$(sed -n "s#.*<ApiKey>\(.*\)</ApiKey>.*#\1#p" /config/config.xml)
+[ -n "$key" ] || exit 1
+if [ "$API_METHOD" = POST ]; then
+  curl -fsS --max-time 45 -X POST -H "X-Api-Key: $key" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "http://127.0.0.1:${API_PORT}/api/${API_VERSION}/${API_ENDPOINT}"
+else
+  curl -fsS --max-time 10 -H "X-Api-Key: $key" \
+    "http://127.0.0.1:${API_PORT}/api/${API_VERSION}/${API_ENDPOINT}"
+fi'''
+
+def request(method, endpoint, body=None):
+    command = ['docker', 'exec', '-i', '-e', 'API_PORT=' + port,
+               '-e', 'API_VERSION=' + version, '-e', 'API_METHOD=' + method,
+               '-e', 'API_ENDPOINT=' + endpoint, service, 'sh', '-c', script]
+    result = subprocess.run(command, input=body, text=True, capture_output=True,
+                            timeout=55 if method == 'POST' else 15, check=True)
+    return json.loads(result.stdout)
+
+def test(indexer):
+    try:
+        response = request('POST', 'indexer/test', json.dumps(indexer))
+        # These endpoints return {} on success; reject validation errors even
+        # if an implementation returns them with HTTP 200.
+        return isinstance(response, dict) and not response.get('validationFailures') and response.get('isValid', True) is True
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+try:
+    indexers = request('GET', 'indexer')
+    if not isinstance(indexers, list):
+        raise ValueError('invalid indexer list')
+    enabled = [x for x in indexers if isinstance(x, dict) and
+               x.get('enable', True) and
+               (x.get('enableAutomaticSearch', True) or x.get('enableInteractiveSearch', False)
+                or x.get('enableRss', False))]
+    if not enabled:
+        raise ValueError('no enabled indexers')
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(test, enabled))
+    sys.exit(0 if all(results) else 1)
+except (OSError, subprocess.SubprocessError, ValueError):
+    sys.exit(1)
+PY
 }
 
 refresh_indexer_health() {
@@ -200,15 +258,7 @@ except (ValueError, TypeError, AttributeError):
     [[ "${last}" =~ ^[0-9]+$ ]] || last=0
     [ $((now - last)) -ge "${INDEXER_RETRY_SECONDS}" ] || continue
     printf '%s\n' "${now}" > "${STATE_DIR}/${service}-last-test"
-    if servarr_request "${service}" "${port}" "${api_version}" POST indexer/testall | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    if not isinstance(data, list) or not all(isinstance(x, dict) and x.get("isValid") is True for x in data):
-        sys.exit(1)
-except (ValueError, TypeError):
-    sys.exit(1)
-'; then
+    if retry_indexers "${service}" "${port}" "${api_version}"; then
       : > "${STATE_DIR}/${service}-validated"
       log "${service} indexers revalidated"
     else

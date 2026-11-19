@@ -165,6 +165,10 @@ media_enable:
 
 media_vpn:
   enabled: true
+  # Riseup's current tunnel has no usable IPv6 address. Disable IPv6 in the
+  # VPN namespace so search clients do not try unreachable AAAA records.
+  # Enable only after configuring and verifying a dual-stack VPN tunnel.
+  ipv6_enabled: false
 
   # Your provider's name as Gluetun spells it: mullvad, protonvpn, nordvpn,
   # airvpn, ivpn, surfshark, windscribe, privateinternetaccess, custom, ...
