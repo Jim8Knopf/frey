@@ -147,11 +147,15 @@ registers Sonarr, Radarr and Lidarr with the same API keys Ansible seeded them
 with, and switches the queue cleaner on. Defaults live under
 `media_acquisition.cleanuparr_wiring`.
 
-The queue cleaner's stalled rule is a nested list on that same endpoint
-(`stallRules`), not a separate one, and Cleanuparr assigns each rule an `id`
-when it first creates it. The role merges its desired fields onto whatever
-rule is already there so that id survives; replace the list outright and the
-task reports changed on every run forever.
+**The stalled rule is not part of the queue cleaner configuration**, even
+though the database keeps it as a child of that config and the UI draws it
+inside the same panel. It has its own controller, `/api/queue-rules/stall`
+(`POST` to create, returning a server-assigned id; `PUT /stall/<id>` to
+update). Sending it as a `stallRules` list inside the `queue_cleaner` body
+instead is the trap: Cleanuparr answers 200, reloads the QueueCleaner job, and
+silently drops the rule. Verified 2026-11-19 — after that PUT, `stall_rules`
+held zero rows and `GET /api/queue-rules/stall` still returned `[]`. A 200
+from `queue_cleaner` is not evidence the rule exists; ask the rule endpoint.
 
 Three things that are easy to get wrong:
 

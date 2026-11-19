@@ -289,14 +289,16 @@ media_acquisition:
       #
       # reset_strikes_on_progress is the real safety net: any progress at all
       # clears the count, so a merely slow download is never at risk no matter
-      # how long it takes. Leave minimum_progress empty so that stays true --
-      # a threshold here would start striking torrents that ARE moving.
+      # how long it takes. minimum_progress must stay null for that to hold --
+      # a threshold here would start striking torrents that ARE moving, just
+      # not fast enough. Null is also what the API stores and returns, so
+      # anything else here reports changed on every run.
       stall_rule:
         name: Stalled with a live swarm
         enabled: true
         max_strikes: 144
         reset_strikes_on_progress: true
-        minimum_progress: ""
+        minimum_progress: null
         # Public only, matching the seeding rule below and for the same
         # reason: every indexer this stack uses is public, and giving up on a
         # private tracker's download risks a hit-and-run penalty.

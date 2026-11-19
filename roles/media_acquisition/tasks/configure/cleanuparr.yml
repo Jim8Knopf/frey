@@ -573,36 +573,6 @@
           changed_when: false
           no_log: true
 
-        # Cleanuparr assigns the stalled rule an id of its own the first time
-        # it is created. Carry that id forward, or the desired list differs
-        # from the live one by exactly that field on every subsequent run and
-        # the task reports changed forever. Merging onto the existing entry
-        # also preserves any field this role does not manage.
-        - name: Define the desired Cleanuparr stalled rule
-          ansible.builtin.set_fact:
-            cleanuparr_stall_rule_want: >-
-              {{
-                (cleanuparr_queue.json.stallRules | default([]) | first | default({}))
-                | combine({
-                    'name': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.name,
-                    'enabled': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.enabled,
-                    'maxStrikes': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.max_strikes,
-                    'resetStrikesOnProgress':
-                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.reset_strikes_on_progress,
-                    'minimumProgress':
-                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.minimum_progress,
-                    'privacyType': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.privacy_type,
-                    'minCompletionPercentage':
-                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.min_completion_percentage,
-                    'maxCompletionPercentage':
-                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.max_completion_percentage,
-                    'deletePrivateTorrentsFromClient':
-                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.delete_private_torrents_from_client,
-                    'changeCategory':
-                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.change_category,
-                  })
-              }}
-
         - name: Define the desired Cleanuparr queue cleaner configuration
           ansible.builtin.set_fact:
             cleanuparr_queue_want: >-
@@ -619,7 +589,6 @@
                   'errored': {
                     'maxStrikes': media_acquisition.cleanuparr_wiring.queue_cleaner.errored_max_strikes,
                   },
-                  'stallRules': [cleanuparr_stall_rule_want],
                 }, recursive=True)
               }}
 
@@ -633,6 +602,98 @@
             status_code: [200, 204]
             timeout: "{{ media_acquisition.configure.api_timeout }}"
           when: cleanuparr_queue_want != cleanuparr_queue.json
+          no_log: true
+
+        # ----------------------------------------------------------------------
+        # THE STALLED RULE
+        #
+        # NOT part of the queue cleaner configuration, despite belonging to it
+        # in the database and appearing beside it in the UI. It has its own
+        # controller at /api/queue-rules/stall, and that distinction is not
+        # cosmetic: sending `stallRules` inside the queue_cleaner body is
+        # accepted with a 200, reports success, reloads the QueueCleaner job
+        # -- and silently discards the rule. Verified 2026-11-19: after that
+        # PUT, `stall_rules` still held zero rows and GET /api/queue-rules/stall
+        # still returned []. So a 200 from queue_cleaner proves nothing about
+        # this rule; check the endpoint below instead.
+        #
+        # POST creates and returns 201 with a server-assigned id; PUT needs
+        # that id in the path. Hence read first, then branch.
+        # ----------------------------------------------------------------------
+        - name: Read the Cleanuparr stalled rules
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/queue-rules/stall"
+            method: GET
+            headers: "{{ cleanuparr_headers }}"
+            status_code: 200
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_stall
+          changed_when: false
+          no_log: true
+
+        # Match on name rather than position, so a rule added by hand in the
+        # UI is left alone instead of being overwritten by index.
+        - name: Define the desired Cleanuparr stalled rule
+          ansible.builtin.set_fact:
+            cleanuparr_stall_have: >-
+              {{
+                cleanuparr_stall.json
+                | selectattr('name', 'equalto', media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.name)
+                | first | default({})
+              }}
+            cleanuparr_stall_want: >-
+              {{
+                {
+                  'name': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.name,
+                  'enabled': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.enabled,
+                  'maxStrikes': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.max_strikes,
+                  'resetStrikesOnProgress':
+                    media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.reset_strikes_on_progress,
+                  'minimumProgress':
+                    media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.minimum_progress,
+                  'privacyType': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.privacy_type,
+                  'minCompletionPercentage':
+                    media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.min_completion_percentage,
+                  'maxCompletionPercentage':
+                    media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.max_completion_percentage,
+                  'deletePrivateTorrentsFromClient':
+                    media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.delete_private_torrents_from_client,
+                  'changeCategory':
+                    media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.change_category,
+                }
+              }}
+
+        - name: Create the Cleanuparr stalled rule
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/queue-rules/stall"
+            method: POST
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_stall_want }}"
+            status_code: [200, 201]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_stall_created
+          changed_when: cleanuparr_stall_created.status | default(0) in [200, 201]
+          when: not cleanuparr_stall_have
+          no_log: true
+
+        # The id is the one field the desired state cannot know, so compare
+        # without it and keep it only for the URL.
+        - name: Align the Cleanuparr stalled rule
+          ansible.builtin.uri:
+            url: "{{ cleanuparr_api }}/queue-rules/stall/{{ cleanuparr_stall_have.id }}"
+            method: PUT
+            headers: "{{ cleanuparr_headers }}"
+            body_format: json
+            body: "{{ cleanuparr_stall_want | combine({'id': cleanuparr_stall_have.id}) }}"
+            status_code: [200, 204]
+            timeout: "{{ media_acquisition.configure.api_timeout }}"
+          register: cleanuparr_stall_aligned
+          changed_when: cleanuparr_stall_aligned.status | default(0) in [200, 204]
+          when:
+            - cleanuparr_stall_have | length > 0
+            - cleanuparr_stall_want != (cleanuparr_stall_have | dict2items
+                | rejectattr('key', 'equalto', 'id') | items2dict)
           no_log: true
 
         # ----------------------------------------------------------------------
