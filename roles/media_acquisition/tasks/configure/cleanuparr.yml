@@ -573,6 +573,36 @@
           changed_when: false
           no_log: true
 
+        # Cleanuparr assigns the stalled rule an id of its own the first time
+        # it is created. Carry that id forward, or the desired list differs
+        # from the live one by exactly that field on every subsequent run and
+        # the task reports changed forever. Merging onto the existing entry
+        # also preserves any field this role does not manage.
+        - name: Define the desired Cleanuparr stalled rule
+          ansible.builtin.set_fact:
+            cleanuparr_stall_rule_want: >-
+              {{
+                (cleanuparr_queue.json.stallRules | default([]) | first | default({}))
+                | combine({
+                    'name': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.name,
+                    'enabled': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.enabled,
+                    'maxStrikes': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.max_strikes,
+                    'resetStrikesOnProgress':
+                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.reset_strikes_on_progress,
+                    'minimumProgress':
+                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.minimum_progress,
+                    'privacyType': media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.privacy_type,
+                    'minCompletionPercentage':
+                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.min_completion_percentage,
+                    'maxCompletionPercentage':
+                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.max_completion_percentage,
+                    'deletePrivateTorrentsFromClient':
+                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.delete_private_torrents_from_client,
+                    'changeCategory':
+                      media_acquisition.cleanuparr_wiring.queue_cleaner.stall_rule.change_category,
+                  })
+              }}
+
         - name: Define the desired Cleanuparr queue cleaner configuration
           ansible.builtin.set_fact:
             cleanuparr_queue_want: >-
@@ -589,6 +619,7 @@
                   'errored': {
                     'maxStrikes': media_acquisition.cleanuparr_wiring.queue_cleaner.errored_max_strikes,
                   },
+                  'stallRules': [cleanuparr_stall_rule_want],
                 }, recursive=True)
               }}
 

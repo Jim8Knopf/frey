@@ -147,6 +147,12 @@ registers Sonarr, Radarr and Lidarr with the same API keys Ansible seeded them
 with, and switches the queue cleaner on. Defaults live under
 `media_acquisition.cleanuparr_wiring`.
 
+The queue cleaner's stalled rule is a nested list on that same endpoint
+(`stallRules`), not a separate one, and Cleanuparr assigns each rule an `id`
+when it first creates it. The role merges its desired fields onto whatever
+rule is already there so that id survives; replace the list outright and the
+task reports changed on every run forever.
+
 Three things that are easy to get wrong:
 
 - **The API key is the inverse of the *arr keys.** Ansible chooses those and
@@ -694,6 +700,40 @@ first.
 **5. Only now, the torrents themselves.** `stalledDL` with `num_complete: 0`
 is a dead torrent and no amount of tuning fixes it. Check that the queue is
 not simply starved of sources before changing the connection budget.
+
+**`stalledDL` with a HIGH `num_complete` is the opposite diagnosis**, and it
+is the one that actually recurs here. The swarm is fine and this stack cannot
+reach it, which means the connection budget, not the torrent. Measured
+2026-11-19: 95 of 100 global slots in use, the 13 moving torrents holding 89
+of them and the 17 stalled ones holding six between them, while their trackers
+answered normally and offered up to 157 seeds. Sum the connected peers and
+compare against the cap before concluding anything:
+
+```bash
+docker exec qbittorrent sh -c 'curl -fsS \
+  "http://127.0.0.1:8080/api/v2/torrents/info" > /tmp/all.json'
+docker exec qbittorrent python3 -c 'import json;d=json.load(open("/tmp/all.json"));
+print(sum((t.get("num_leechs") or 0)+(t.get("num_seeds") or 0) for t in d))'
+```
+
+At or near `media_qbittorrent_max_connections` the cap is the fault. Note that
+qBittorrent is outbound-only here — Riseup offers no port forwarding, so
+`media_vpn.forwarded_port` is empty and no peer can dial us — which makes the
+outbound budget the only way to reach a swarm.
+
+Two separate mechanisms clear these, and they catch different faults:
+
+| Fault | Mechanism | Bar |
+| --- | --- | --- |
+| Swarm has NO seeders | `download_cleaner.dead_torrents` + seeding rule | 24h of zero seeders, complete torrents only |
+| Swarm is alive, unreachable | `queue_cleaner.stall_rule` | 12h of zero progress, any completion % |
+
+The stalled rule is what covers an incomplete torrent, which the dead-torrent
+reaper never sees: that reaper evaluates only COMPLETE torrents, and requires
+zero seeders, so a 20%-complete torrent with 12 seeds it cannot reach resets
+its strikes forever and is never tagged. Before the rule existed, 16 such
+torrents had been wedged for 11 to 17 days. Striking one hands the release
+back to the *arr, which blocklists it and searches for a replacement.
 
 ## Known Gaps
 

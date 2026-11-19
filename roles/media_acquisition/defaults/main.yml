@@ -252,6 +252,64 @@ media_acquisition:
       # the queue cleaner on through the API fails. Exclude with no patterns
       # is the honest spelling of "strike every failed import".
       failed_import_pattern_mode: Exclude
+
+      # -----------------------------------------------------------------------
+      # STALLED RULE -- the gap the dead-torrent reaper cannot close
+      #
+      # The reaper below tags a torrent whose swarm has NO seeders. That is a
+      # different fault from the one that actually accumulates here: a swarm
+      # with plenty of seeders that this stack cannot open a connection to.
+      # Measured 2026-11-19 at Hobbiton Tours Free Wifi: 17 torrents stalled,
+      # 16 of them incomplete and between 11 and 17 DAYS old, while their
+      # trackers reported "working" and offered up to 157 seeds. One sat at
+      # 90.3% with 157 seeds in the swarm and one connected peer.
+      #
+      # Nothing reaped them, and nothing could:
+      #   - dead_torrents needs zero seeders, and these swarms have seeders,
+      #     so every strike reset and not one torrent was ever tagged;
+      #   - the download cleaner only evaluates COMPLETE torrents (35 of 82
+      #     here), and these are incomplete, so it never looked at them;
+      #   - the queue cleaner struck only metadata, errored and failed-import,
+      #     and a stalled download with a healthy tracker is none of those.
+      #
+      # So they sat in the active set forever, holding slots and competing for
+      # the global connection budget, which is what starved the torrents that
+      # could otherwise have finished. Striking them hands the release back to
+      # the *arr, which blocklists it and searches for another one -- the
+      # outcome wanted all along.
+      #
+      # ONE RUN IS ONE STRIKE and the cron above is every five minutes, so
+      # 144 strikes is TWELVE HOURS of continuous zero progress. Deliberately
+      # patient, for the same reason the reaper's 24 hours are: this van loses
+      # its uplink and rebuilds its tunnel routinely (three rebuilds in nine
+      # hours on the day this was measured), and every torrent looks stalled
+      # while that happens. Twelve hours cannot be reached by an outage of
+      # that shape, and still clears a genuinely wedged torrent inside half a
+      # day rather than a fortnight.
+      #
+      # reset_strikes_on_progress is the real safety net: any progress at all
+      # clears the count, so a merely slow download is never at risk no matter
+      # how long it takes. Leave minimum_progress empty so that stays true --
+      # a threshold here would start striking torrents that ARE moving.
+      stall_rule:
+        name: Stalled with a live swarm
+        enabled: true
+        max_strikes: 144
+        reset_strikes_on_progress: true
+        minimum_progress: ""
+        # Public only, matching the seeding rule below and for the same
+        # reason: every indexer this stack uses is public, and giving up on a
+        # private tracker's download risks a hit-and-run penalty.
+        privacy_type: Public
+        # The whole range. A torrent wedged at 0% and one wedged at 99% are
+        # the same fault and both were measured here.
+        min_completion_percentage: 0
+        max_completion_percentage: 100
+        # Never reach into a private tracker's client entry, same as above.
+        delete_private_torrents_from_client: false
+        # Removal, not a category move: a category change would relocate the
+        # save path, and the hardlink arrangement depends on that path.
+        change_category: false
     # -------------------------------------------------------------------------
     # MALWARE BLOCKER
     #
