@@ -369,6 +369,14 @@ services:
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
+{% if not (media_vpn.ipv6_enabled | default(false) | bool) %}
+    # The VPN namespace has no IPv6 tunnel address. Gluetun can still install
+    # IPv6 routes, making .NET prefer unreachable AAAA answers. Disable IPv6
+    # in this namespace while keeping its DNS and IPv4 traffic inside the VPN.
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+{% endif %}
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:

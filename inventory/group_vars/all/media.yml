@@ -119,12 +119,29 @@ media_indexers:
 # wants a handshake, and on a 300 ms+ path with packet loss most of them time
 # out and are retried. Raise all of these on a venue with real bandwidth; the
 # numbers below are the floor that keeps a bad link usable.
+#
+# Re-measured at the SAME venue on 2026-11-19, and it is a different link now:
+# 400-600 KiB/s sustained through the tunnel, five to eight times the 72 KB/s
+# above. So the global cap was raised 100 -> 200 and the per-torrent cap
+# 30 -> 40, because at 100 the cap itself had become the fault:
+#
+#   Measured 95 of 100 global slots in use. The 13 torrents that were moving
+#   held 89 of them; the 17 stalled ones held SIX between them. Their trackers
+#   were answering and offering up to 157 seeds, and there was no slot left to
+#   dial any of them. A torrent at 90.3% with 157 seeds in its swarm had one
+#   connected peer.
+#
+# Still well short of qBittorrent's 500/100 default, and deliberately: RTT to
+# the VPN endpoint on this link still swings 206-751 ms with 173 ms mdev, which
+# is the same queue-filling signature as before. The bandwidth improved; the
+# latency did not. Raise further only with a measurement, and drop back to
+# 100/30 on a link as poor as the one first measured here.
 # ==============================================================================
 media_qbittorrent_max_active_downloads: 15
 # Leave room for stalled torrents and uploads alongside the 15 downloads.
 media_qbittorrent_max_active_torrents: 30
-media_qbittorrent_max_connections: 100
-media_qbittorrent_max_connections_per_torrent: 30
+media_qbittorrent_max_connections: 200
+media_qbittorrent_max_connections_per_torrent: 40
 media_qbittorrent_max_uploads: 8
 media_qbittorrent_max_uploads_per_torrent: 3
 
@@ -165,6 +182,10 @@ media_enable:
 
 media_vpn:
   enabled: true
+  # Riseup's current tunnel has no usable IPv6 address. Disable IPv6 in the
+  # VPN namespace so search clients do not try unreachable AAAA records.
+  # Enable only after configuring and verifying a dual-stack VPN tunnel.
+  ipv6_enabled: false
 
   # Your provider's name as Gluetun spells it: mullvad, protonvpn, nordvpn,
   # airvpn, ivpn, surfshark, windscribe, privateinternetaccess, custom, ...

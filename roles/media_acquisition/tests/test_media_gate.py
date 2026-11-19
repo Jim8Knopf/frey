@@ -35,9 +35,11 @@ case "$*" in
   inspect*) printf true ;;
   stop*|start*) echo "$*" >> "{self.docker_calls}" ;;
   *API_ENDPOINT=health*) printf '%s' '[{{"source":"IndexerSearchCheck"}}]' ;;
-  *API_ENDPOINT=indexer/testall*)
-    echo test >> "{self.calls}"
-    printf '[{{"isValid":%s}}]' "$(cat "{self.valid}")" ;;
+  *API_ENDPOINT=indexer/test*)
+    body=$(cat)
+    echo "$body" >> "{self.calls}"
+    case "$body" in *slow*) printf '{{"isValid":%s}}' "$(cat "{self.valid}")" ;; *) printf '{{}}' ;; esac ;;
+  *API_ENDPOINT=indexer*) printf '%s' '[{{"name":"slow","enable":true}},{{"name":"working","enable":true}},{{"name":"interactive","enableAutomaticSearch":false,"enableInteractiveSearch":true}},{{"name":"disabled","enable":false}}]' ;;
 esac
 ''',
         }
@@ -74,10 +76,13 @@ esac
     def test_failed_result_is_retried_and_outage_resets_cooldown(self):
         self.apply()
         self.assertFalse((self.state / "prowlarr-validated").exists())
-        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 6)
+        self.assertEqual(sum('working' in line for line in self.calls.read_text().splitlines()), 2)
+        self.assertEqual(sum('interactive' in line for line in self.calls.read_text().splitlines()), 2)
+        self.assertNotIn('disabled', self.calls.read_text())
         self.assertFalse((self.state / "lidarr-validated").exists())
         self.apply()
-        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 6)
         self.connectivity.write_text("none")
         self.apply()
         self.valid.write_text("true")
@@ -85,7 +90,7 @@ esac
         self.apply()
         self.assertTrue((self.state / "prowlarr-validated").exists())
         self.assertTrue((self.state / "lidarr-validated").exists())
-        self.assertEqual(len(self.calls.read_text().splitlines()), 4)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 12)
 
     def test_metered_soulseek_is_stopped_and_resumed(self):
         self.metered.write_text("yes")

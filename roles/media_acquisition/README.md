@@ -147,6 +147,16 @@ registers Sonarr, Radarr and Lidarr with the same API keys Ansible seeded them
 with, and switches the queue cleaner on. Defaults live under
 `media_acquisition.cleanuparr_wiring`.
 
+**The stalled rule is not part of the queue cleaner configuration**, even
+though the database keeps it as a child of that config and the UI draws it
+inside the same panel. It has its own controller, `/api/queue-rules/stall`
+(`POST` to create, returning a server-assigned id; `PUT /stall/<id>` to
+update). Sending it as a `stallRules` list inside the `queue_cleaner` body
+instead is the trap: Cleanuparr answers 200, reloads the QueueCleaner job, and
+silently drops the rule. Verified 2026-11-19 — after that PUT, `stall_rules`
+held zero rows and `GET /api/queue-rules/stall` still returned `[]`. A 200
+from `queue_cleaner` is not evidence the rule exists; ask the rule endpoint.
+
 Three things that are easy to get wrong:
 
 - **The API key is the inverse of the *arr keys.** Ansible chooses those and
@@ -304,9 +314,16 @@ So the stack resolves through its own dnsmasq with `filter-AAAA`, which also
 means a campground's broken or filtering DNS can no longer disable indexers —
 the reason this used to come back at every new parking spot.
 
+Prowlarr shares Gluetun's network namespace and uses Gluetun's encrypted DNS
+instead, so its queries remain inside the VPN. Gluetun can install IPv6 routes
+even when the tunnel has no IPv6 address; in that case AAAA answers can still
+send searches to unreachable addresses. `media_vpn.ipv6_enabled: false`
+disables IPv6 in that namespace. Only enable it after setting up and testing a
+dual-stack VPN. DNS itself remains encrypted through Gluetun.
+
 ```bash
 # Is it up, and is it actually stripping AAAA?
-docker exec prowlarr getent ahostsv6 thepiratebay.org
+docker exec sonarr getent ahostsv6 thepiratebay.org
 #   ::ffff:162.159.136.6  -> correct: an IPv4-mapped address, no real AAAA
 #   2606:4700:7::a29f:8906 -> the resolver is being bypassed
 ```
@@ -374,6 +391,13 @@ frey-media-gate resume     # force a resume
 `nmcli` reporting `portal` counts as **not** usable. That is the point: a
 captive portal looks online to an application, and left alone the *arrs will
 burn through search attempts against a sign-in page and collect indexer bans.
+
+When the uplink returns, the gate also checks applications reporting indexer
+failures. It tests their enabled sources individually, with bounded
+concurrency and timeouts, so a slow browser challenge cannot prevent a
+working source from clearing its backoff. Sources that still fail are retried
+after 30 minutes; a successful test cannot guarantee that a later search will
+return a release with peers.
 
 Modes are set by `media_acquisition.uplink_gating.mode`: `pause` (default),
 `stop` (also stops the *arr containers after a grace period, to save power
@@ -680,6 +704,40 @@ first.
 **5. Only now, the torrents themselves.** `stalledDL` with `num_complete: 0`
 is a dead torrent and no amount of tuning fixes it. Check that the queue is
 not simply starved of sources before changing the connection budget.
+
+**`stalledDL` with a HIGH `num_complete` is the opposite diagnosis**, and it
+is the one that actually recurs here. The swarm is fine and this stack cannot
+reach it, which means the connection budget, not the torrent. Measured
+2026-11-19: 95 of 100 global slots in use, the 13 moving torrents holding 89
+of them and the 17 stalled ones holding six between them, while their trackers
+answered normally and offered up to 157 seeds. Sum the connected peers and
+compare against the cap before concluding anything:
+
+```bash
+docker exec qbittorrent sh -c 'curl -fsS \
+  "http://127.0.0.1:8080/api/v2/torrents/info" > /tmp/all.json'
+docker exec qbittorrent python3 -c 'import json;d=json.load(open("/tmp/all.json"));
+print(sum((t.get("num_leechs") or 0)+(t.get("num_seeds") or 0) for t in d))'
+```
+
+At or near `media_qbittorrent_max_connections` the cap is the fault. Note that
+qBittorrent is outbound-only here — Riseup offers no port forwarding, so
+`media_vpn.forwarded_port` is empty and no peer can dial us — which makes the
+outbound budget the only way to reach a swarm.
+
+Two separate mechanisms clear these, and they catch different faults:
+
+| Fault | Mechanism | Bar |
+| --- | --- | --- |
+| Swarm has NO seeders | `download_cleaner.dead_torrents` + seeding rule | 24h of zero seeders, complete torrents only |
+| Swarm is alive, unreachable | `queue_cleaner.stall_rule` | 12h of zero progress, any completion % |
+
+The stalled rule is what covers an incomplete torrent, which the dead-torrent
+reaper never sees: that reaper evaluates only COMPLETE torrents, and requires
+zero seeders, so a 20%-complete torrent with 12 seeds it cannot reach resets
+its strikes forever and is never tagged. Before the rule existed, 16 such
+torrents had been wedged for 11 to 17 days. Striking one hands the release
+back to the *arr, which blocklists it and searches for a replacement.
 
 ## Known Gaps
 
