@@ -18,7 +18,7 @@ local_ai:
   # model's origin cannot shadow it. Must also appear in
   # identity_services.local_ai.hosts, or it has no certificate and no
   # Authelia rule.
-  campaign_host: campaign
+  assistant_host: assistant
   # Hermes Agent's own hostname. Must also appear in
   # identity_services.hermes.hosts, or it has no certificate and no OIDC
   # client - and its redirect_uri in identity.oidc_catalog.hermes is built
@@ -387,20 +387,68 @@ local_ai:
     uid: 10001
     gid: 10001
 
-    root: Campaigns/Pirate
-    chat_page: Campaigns/Pirate/Chat.md
+    # Empty = the WHOLE notes space. Widened from Campaigns/Pirate on
+    # 2026-11-20: this is a general notes assistant, not a campaign one.
+    # Setting a subtree here narrows writes back in one line, and
+    # roles/local_ai/tests/test_assistant_write_scope.py pins that it still
+    # works - the mount is read-write across the space now, so this knob and
+    # readonly_subdirs are the only scope controls left.
+    root: ""
+
+    # The chat transcript, deliberately OUTSIDE the notes space. It used to be
+    # a page (Campaigns/Pirate/Chat.md), which made every conversation a note
+    # nobody asked for. The window is the interface; this is just its history.
+    state_dir: "{{ frey.base_dir }}/appdata/local-ai/assistant"
+    transcript_file: transcript.md
     # Refused by the agent's own code. The templates define the structure of
     # every page made from them, and the rules draft is where this model has
     # been measured contradicting itself. This pair is the one boundary here
     # enforced by code rather than by a mount, with git as the backstop.
-    readonly_subdirs: [Templates, Rules]
+    # Paths relative to the SPACE now, not to root. They were bare names while
+    # root was the campaign subtree; with root empty a bare "Templates" would
+    # have started meaning a top-level folder that does not exist, silently
+    # dropping the protection. Matched as path prefixes, so subtrees are
+    # covered.
+    readonly_subdirs:
+      - Campaigns/Pirate/Templates
+      - Campaigns/Pirate/Rules
+      # .git used to be a separate mount; it is now inside the read-write
+      # space mount, so name it here. The agent can only ever create `.md`
+      # files, which makes this cheap insurance rather than a live hole - but
+      # the repository that is the undo mechanism should not be writable by
+      # the thing being undone.
+      - .git
 
     poll_seconds: 20
     # A turn can legitimately take many minutes on this hardware.
     model_timeout: 1800
-    max_tokens: 500
+
+    # 2000, not 500. The served model (LFM2.5) is REASONING-NATIVE and that
+    # cannot be switched off - `--reasoning off` only splits the chain of
+    # thought into reasoning_content, it does not stop it being generated, and
+    # it is charged against this budget like any other token.
+    #
+    # Measured 2026-11-20 on the first real turn after generalising this
+    # agent: n_gen reached 484 of a 500 cap and the reply written to the
+    # transcript was literally "_(no answer)_" - the whole budget went to
+    # thinking and none was left for the answer, so the agent looked broken
+    # while the model was working perfectly. A short question put straight to
+    # the model's own UI needs only ~90 tokens, so this is specific to the
+    # agent's larger prompt: more context means more thinking.
+    #
+    # The cost is bounded by generation speed, ~6.8 tok/s measured, so a turn
+    # that really used the whole budget would be ~5 min. Most stop far
+    # earlier, and an empty answer after 2 min is worse than a real one
+    # after 3.
+    max_tokens: 2000
     # Each step is a full model round-trip, so this is a time budget.
-    max_steps: 4
+    # 7, not 4. One step is consumed by each tool round-trip AND one more is
+    # needed to compose the final answer, so at 4 a real run spent all four on
+    # tools and then replied "I stopped after using my tool budget" even
+    # though it had already created the page - which reads as a failure. The
+    # script's own default was raised to 7 for that reason; this line was
+    # still passing 4 and silently overriding it.
+    max_steps: 7
     # Every character of a tool result is prefill latency. See the measured
     # curve in files/campaign.py - time doubles as tokens double.
     tool_result_budget: 2500

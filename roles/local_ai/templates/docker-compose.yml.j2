@@ -45,20 +45,20 @@ services:
 {% if local_ai.campaign.enabled | bool %}
       # The assistant's own hostname, same gateway, same auth. route.yml
       # dispatches on Host so this reaches the assistant rather than the model.
-      - "traefik.http.routers.campaign.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`)"
-      - "traefik.http.routers.campaign.entrypoints=websecure"
-      - "traefik.http.routers.campaign.tls=true"
-      - "traefik.http.routers.campaign.middlewares=secure-headers@file,authelia@file"
-      - "traefik.http.routers.campaign.service=local-ai"
-      - "traefik.http.routers.campaign-legacy.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
-      - "traefik.http.routers.campaign-legacy.entrypoints=websecure"
-      - "traefik.http.routers.campaign-legacy.tls=true"
-      - "traefik.http.routers.campaign-legacy.middlewares=to-canonical@file"
-      - "traefik.http.routers.campaign-legacy.service=local-ai"
-      - "traefik.http.routers.campaign-http.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
-      - "traefik.http.routers.campaign-http.entrypoints=web"
-      - "traefik.http.routers.campaign-http.middlewares=to-canonical@file"
-      - "traefik.http.routers.campaign-http.service=local-ai"
+      - "traefik.http.routers.assistant.rule=Host(`{{ local_ai.assistant_host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.assistant.entrypoints=websecure"
+      - "traefik.http.routers.assistant.tls=true"
+      - "traefik.http.routers.assistant.middlewares=secure-headers@file,authelia@file"
+      - "traefik.http.routers.assistant.service=local-ai"
+      - "traefik.http.routers.assistant-legacy.rule=Host(`{{ local_ai.assistant_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.assistant-legacy.entrypoints=websecure"
+      - "traefik.http.routers.assistant-legacy.tls=true"
+      - "traefik.http.routers.assistant-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.assistant-legacy.service=local-ai"
+      - "traefik.http.routers.assistant-http.rule=Host(`{{ local_ai.assistant_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.assistant_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.assistant-http.entrypoints=web"
+      - "traefik.http.routers.assistant-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.assistant-http.service=local-ai"
 {% endif %}
 {% if local_ai.hermes.enabled | bool %}
       # Hermes's hostname, same gateway, and DELIBERATELY WITHOUT
@@ -267,7 +267,7 @@ services:
       - MODEL_NAME=/models/{{ m.file }}
       - CAMPAIGN_SPACE=/notes
       - CAMPAIGN_ROOT={{ c.root }}
-      - CAMPAIGN_CHAT_PAGE={{ c.chat_page }}
+      - CAMPAIGN_TRANSCRIPT=/state/{{ c.transcript_file }}
       - CAMPAIGN_READONLY={{ c.readonly_subdirs | join(',') }}
       - CAMPAIGN_POLL_SECONDS={{ c.poll_seconds }}
       - CAMPAIGN_MODEL_TIMEOUT={{ c.model_timeout }}
@@ -280,16 +280,24 @@ services:
       - BROKER_RES_DIR=/broker/res
 {% endif %}
     volumes:
-      # Nested mounts on purpose, so the WRITE scope is enforced by the mount
-      # table rather than only by the agent's own path checks:
-      #   the space itself is read-only,
-      #   the campaign subtree is read-write,
-      #   .git is read-write because committing needs it and it lives at the
-      #   space root - without this nesting, enabling commits would have meant
-      #   mounting the entire space read-write.
-      - "{{ frey.notes_data_dir }}/spaces/notes:/notes:ro"
-      - "{{ frey.notes_data_dir }}/spaces/notes/{{ c.root }}:/notes/{{ c.root }}"
-      - "{{ frey.notes_data_dir }}/spaces/notes/.git:/notes/.git"
+      # The WHOLE space, read-write, since 2026-11-20. It used to be nested -
+      # space read-only with only the campaign subtree writable - so the
+      # kernel enforced the write scope. Generalising this from a campaign
+      # assistant to a notes assistant gave that up deliberately.
+      #
+      # What that means for anyone reading this later: the write boundary is
+      # now `root` and `readonly_subdirs` INSIDE the agent process, not the
+      # mount table, and git (frey-notes-commit.timer) is the primary backstop
+      # rather than a secondary one. roles/local_ai/tests/
+      # test_assistant_write_scope.py exists because of this move.
+      #
+      # Setting `root` back to a subtree re-narrows the agent but NOT the
+      # mount; restoring the kernel-enforced version means restoring the
+      # nested mounts here too.
+      - "{{ frey.notes_data_dir }}/spaces/notes:/notes"
+      # Its own state, holding the chat transcript. Outside the notes space on
+      # purpose: a conversation log is not a note anyone asked for.
+      - "{{ c.state_dir }}:/state"
       - "{{ local_ai.stack_dir }}/campaign.py:{{ c.script_path }}:ro"
 {% if local_ai.broker.enabled | bool %}
       # The only channel to anything privileged, and read verbs only. Requests

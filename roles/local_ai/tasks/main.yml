@@ -363,6 +363,19 @@
     - not ansible_check_mode or local_ai_stack_stat.stat.exists
   notify: Restart local AI observer
 
+# The transcript lives here rather than in the notes space, so a conversation
+# is not a note nobody asked for. Owned by the agent's uid because the agent
+# is the only writer; its rootfs is read-only, so without this directory the
+# window would start and then fail to record anything.
+- name: Create the assistant state directory
+  ansible.builtin.file:
+    path: "{{ local_ai.campaign.state_dir }}"
+    state: directory
+    owner: "{{ local_ai.campaign.uid }}"
+    group: "{{ local_ai.campaign.gid }}"
+    mode: "0750"
+  when: local_ai.campaign.enabled | bool
+
 - name: Install the notes committer
   # On the host because the agent's image has no git binary and its rootfs is
   # read-only, so it cannot commit its own writes. This also captures edits

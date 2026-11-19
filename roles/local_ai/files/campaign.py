@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""frey-campaign - a tool-using assistant that maintains the campaign wiki.
+"""A tool-using assistant for Frey's notes and Frey's own health.
 
-You talk to it inside SilverBullet: write under the last separator in the chat
-page and it appends its reply, naming every page it touched. Async by design,
-because this hardware cannot do live chat (see CONTEXT DISCIPLINE below).
+GENERAL, NOT CAMPAIGN-SPECIFIC since 2026-11-20. It started as a campaign wiki
+assistant and the campaign pages are still most of what exists, but ROOT now
+defaults to the whole notes space and the prompt is subject-neutral. It routes
+per turn between notes tools, system-health tools, and plain conversation,
+loading only one domain's definitions - see CONTEXT DISCIPLINE.
+
+You talk to it in its own web window, which is the interface. Type, and the
+reply appears there. The transcript is a file in the agent's own state
+directory, deliberately NOT a page in the notes space - a chat log is not a
+note you asked for. Async by design, because this hardware cannot do live
+chat (see CONTEXT DISCIPLINE below).
 
 WHY A LOOP AND NOT HERMES
 
@@ -33,19 +41,26 @@ your message is even added.
 
 WHAT IT MAY CHANGE
 
-Writes are confined to the campaign subtree by the MOUNT - nothing else in the
-notes space is mounted read-write. Within that, Templates/ and Rules/ are
-refused by this code: the templates define the structure of every page made
-from them, and the rules draft is where this model has already been measured
-contradicting itself. That pair is the one boundary here enforced by code
-rather than by the filesystem.
+The whole notes space is now mounted read-write, so the mount is no longer the
+boundary it used to be - that was a deliberate decision on 2026-11-20 to make
+this a general notes assistant rather than a campaign one. What remains:
 
-Git is the real backstop, but it is committed from the HOST, by
-frey-notes-commit.timer - this container's image ships no git binary, which
-the first real run discovered the hard way by failing every commit with ENOENT
-while the writes went through anyway. History is therefore a little coarser
-than one commit per write, and it also captures edits you make by hand in
-SilverBullet, which is a bonus.
+  - READONLY_SUBDIRS is refused by this code, as path prefixes relative to the
+    space. It defaults to the campaign Templates/ and Rules/, because the
+    templates define the structure of every page made from them and the rules
+    draft is where this model has been measured contradicting itself.
+  - ROOT can narrow writes back to one subtree in a single config change, if
+    the wider scope ever proves to be a mistake.
+
+Note what this costs: with the space mounted read-write, the refusals above
+live in THIS PROCESS rather than in the kernel, so git is now the PRIMARY
+backstop rather than a secondary one.
+
+And git is committed from the HOST, by frey-notes-commit.timer - this
+container's image ships no git binary, which the first real run discovered the
+hard way by failing every commit with ENOENT while the writes went through
+anyway. History is therefore a little coarser than one commit per write, and
+it also captures edits you make by hand in SilverBullet, which is a bonus.
 """
 
 import datetime
@@ -71,10 +86,28 @@ log = logging.getLogger("campaign")
 MODEL_URL = os.environ.get("MODEL_URL", "http://model:8080")
 MODEL_NAME = os.environ.get("MODEL_NAME", "")
 SPACE = pathlib.Path(os.environ.get("CAMPAIGN_SPACE", "/notes"))
-ROOT = os.environ.get("CAMPAIGN_ROOT", "Campaigns/Pirate")
-CHAT_PAGE = os.environ.get("CAMPAIGN_CHAT_PAGE", "Campaigns/Pirate/Chat.md")
+# Empty means the whole space: this is a general notes assistant, not a
+# campaign one. ROOT survives as a knob because narrowing it again is the
+# cheapest way to put the blast radius back if that is ever wanted.
+ROOT = os.environ.get("CAMPAIGN_ROOT", "").strip("/")
+
+# The transcript deliberately lives OUTSIDE the notes space. It used to be a
+# page in SilverBullet, which made every conversation a note you had not asked
+# for. The window is the interface; this file is only where its history is
+# kept, so it belongs with the agent's own state.
+TRANSCRIPT = pathlib.Path(os.environ.get("CAMPAIGN_TRANSCRIPT", "/state/transcript.md"))
+
+# Paths relative to the SPACE, not to ROOT, because ROOT is now the whole
+# space and a bare "Templates" would have silently started meaning a
+# top-level folder that does not exist - quietly dropping the protection.
+# Matched as a path prefix, so a subtree is covered, not just an exact path.
 READONLY_SUBDIRS = tuple(
-    p.strip() for p in os.environ.get("CAMPAIGN_READONLY", "Templates,Rules").split(",") if p.strip()
+    p.strip().strip("/")
+    for p in os.environ.get(
+        "CAMPAIGN_READONLY",
+        "Campaigns/Pirate/Templates,Campaigns/Pirate/Rules,.git",
+    ).split(",")
+    if p.strip()
 )
 
 POLL_SECONDS = int(os.environ.get("CAMPAIGN_POLL_SECONDS", "20"))
@@ -105,9 +138,9 @@ BROKER_TIMEOUT = int(os.environ.get("BROKER_TIMEOUT", "90"))
 # returned 200.
 #
 # A turn takes minutes, so the browser must not wait on it. Posting a message
-# only APPENDS it to the chat page and returns immediately; the worker thread
-# picks it up exactly as it would a message typed in SilverBullet, and the
-# page polls for the reply. One code path, two front ends.
+# only APPENDS it to the transcript and returns 202 immediately; the worker
+# thread picks it up on its next poll, and the window polls /chat/history for
+# the reply. That is why the window feels asynchronous rather than broken.
 
 
 
@@ -117,7 +150,9 @@ BROKER_TIMEOUT = int(os.environ.get("BROKER_TIMEOUT", "90"))
 def _safe(rel):
     """Resolve a page path inside the space, or refuse.
 
-    Refuses traversal, absolute paths, and anything outside the campaign root.
+    Refuses traversal and absolute paths. Everything inside the space is
+    readable; whether it may be WRITTEN is _writable's decision, not this
+    one.
     """
     rel = str(rel or "").strip().lstrip("/")
     if not rel.endswith(".md"):
@@ -125,22 +160,28 @@ def _safe(rel):
     target = (SPACE / rel).resolve()
     if not str(target).startswith(str(SPACE.resolve()) + os.sep):
         return None, "path escapes the notes space"
-    try:
-        inside = target.relative_to((SPACE / ROOT).resolve())
-    except ValueError:
-        return target, None  # readable, but write checks below will refuse
-    del inside
     return target, None
 
 
 def _writable(target):
+    """Everything in the space except the declared reference subtrees.
+
+    The mount is read-write across the whole space now, so this check is the
+    only thing standing between the model and a reference page - and it is
+    advisory in the sense that it lives in this process. The real backstop is
+    git: frey-notes-commit.timer commits the space, so any single turn can be
+    reverted.
+    """
     try:
-        rel = target.relative_to((SPACE / ROOT).resolve())
+        rel = target.relative_to(SPACE.resolve())
     except ValueError:
+        return False, "only pages inside the notes space may be changed"
+    if ROOT and not (str(rel) == ROOT or str(rel).startswith(ROOT + "/")):
         return False, f"only pages under {ROOT} may be changed"
-    first = rel.parts[0] if rel.parts else ""
-    if first in READONLY_SUBDIRS:
-        return False, f"{first}/ is reference material and is not writable"
+    rel_str = str(rel)
+    for ro in READONLY_SUBDIRS:
+        if rel_str == ro or rel_str.startswith(ro + "/"):
+            return False, f"{ro}/ is reference material and is not writable"
     return True, None
 
 
@@ -160,7 +201,7 @@ def _commit(message):
     SilverBullet.
     """
     try:
-        marker = SPACE / ROOT / ".agent-intent"
+        marker = SPACE / ROOT / ".agent-intent" if ROOT else SPACE / ".agent-intent"
         marker.write_text(
             f"{datetime.datetime.now().isoformat(timespec='seconds')} {message}\n"
         )
@@ -400,21 +441,25 @@ SYSTEM_WORDS = (
     "fix", "wrong",
 )
 
-SYSTEM_PROMPT = f"""You are Frey's assistant. You do two jobs: you keep a \
-tabletop campaign wiki in SilverBullet, with pages under {ROOT}, and you \
-answer questions about this machine's own health. You are also happy to just \
-talk. Use the tools when a question needs facts; do not guess at page \
-contents or system state.
+SYSTEM_PROMPT = f"""You are Frey's assistant. You do two jobs: you work with \
+the notes in SilverBullet - any subject, not one project - and you answer \
+questions about this machine's own health. You are also happy to just talk. \
+Use the tools when a question needs facts; do not guess at page contents or \
+system state.
 
 Rules:
-- Make new pages from the matching page in {ROOT}/Templates (read it first).
+- If the folder you are writing into has a Templates/ folder, read the
+  matching template first and follow its structure.
 - Link pages with [[wiki links]].
-- {', '.join(READONLY_SUBDIRS)} are reference only and cannot be written.
+- These paths are reference only and cannot be written:
+  {', '.join(READONLY_SUBDIRS) or '(none)'}.
 
-INVENTING CANON IS THE WORST THING YOU CAN DO HERE. On its first real run
+INVENTING CONTENT IS THE WORST THING YOU CAN DO HERE. On its first real run
 this model filled a heading called "Established events" with events that never
 happened, invented a faction, and linked to characters and sessions that do
-not exist. A wiki polluted with confident fiction is worse than an empty one.
+not exist. Notes polluted with confident fiction are worse than empty ones,
+and this applies to every subject, not only fiction - an invented date, name
+or figure in a real note is the same failure.
 So:
 
 - Write ONLY what the user told you in this message, or what you read from a
@@ -423,8 +468,8 @@ So:
   "_TODO_". Do NOT fill it to look complete. An empty section is correct.
 - NEVER write anything under a heading like "Established events", "Sessions"
   or "History" unless the user stated that event.
-- NEVER invent a name - no people, factions, ships, places or session
-  numbers.
+- NEVER invent a name, date, number or source - no people, places, factions,
+  ships, session numbers, prices, measurements or citations.
 - Only use a [[wiki link]] to a page you have actually seen via list_pages or
   read_page, or that the user named. A link to an invented page is a lie that
   looks like structure.
@@ -461,10 +506,18 @@ So:
 # tools out of the other domain's prompt is worth it for that reason alone.
 # Whether tool COUNT also degrades tool CHOICE on this model is untested.
 # These are nouns from the campaign domain only.
-CAMPAIGN_WORDS = (
+NOTES_WORDS = (
+    # General notes vocabulary - this is a notes assistant for any subject.
+    "note", "notes", "page", "pages", "wiki", "write", "draft", "document",
+    "journal", "log book", "checklist", "list of", "summar", "outline",
+    "heading", "section", "link", "template", "folder", "index", "rename",
+    "append", "record",
+    # The campaign vocabulary stays: those pages still exist and are still
+    # the bulk of the space, so these remain real signals rather than
+    # leftovers.
     "npc", "character", "faction", "ship", "species", "place", "session",
     "thread", "campaign", "world", "pirate", "harbour", "harbor", "crew",
-    "quest", "wiki", "template", "lore", "story", "recap", "page", "note",
+    "quest", "lore", "story", "recap",
 )
 
 
@@ -487,7 +540,7 @@ def wants_index(message, names):
     a false negative costs a wasted tool step, which is far more expensive.
     """
     low = message.lower()
-    if any(word in low for word in CAMPAIGN_WORDS):
+    if any(word in low for word in NOTES_WORDS):
         return True
     # Any mention of a real page name counts, however the question is phrased.
     return any(n.rsplit("/", 1)[-1][:-3].lower() in low for n in names if len(n) > 4)
@@ -536,7 +589,7 @@ def run_turn(user_text):
     # more choice measurably degraded tool use.
     if about_wiki and about_system:
         # Keep whichever signal is stronger rather than loading everything.
-        wiki_hits = sum(1 for w in CAMPAIGN_WORDS if w in low)
+        wiki_hits = sum(1 for w in NOTES_WORDS if w in low)
         system_hits = sum(1 for w in SYSTEM_WORDS if w in low)
         if system_hits > wiki_hits:
             about_wiki = False
@@ -624,7 +677,7 @@ def run_turn(user_text):
 
 
 def chat_path():
-    return SPACE / CHAT_PAGE
+    return TRANSCRIPT
 
 
 def ensure_chat_page():
@@ -633,18 +686,25 @@ def ensure_chat_page():
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        scope = f"pages under `{ROOT}`" if ROOT else "any page in the notes space"
         path.write_text(
-            "# Campaign chat\n\n"
-            "Write below the last line of dashes and save. The assistant "
-            "replies here, and says which pages it changed.\n\n"
-            "It reads the whole campaign and may edit pages under "
-            f"`{ROOT}`, except `{'`, `'.join(READONLY_SUBDIRS)}`. Every change "
-            "is committed, so any single turn can be reverted.\n"
+            "# Assistant transcript\n\n"
+            "This file is the chat window's history. It is NOT a note - it "
+            "lives in the agent's own state directory so conversations do not "
+            "clutter the notes space.\n\n"
+            f"The assistant reads the whole space and may edit {scope}"
+            + (
+                f", except `{'`, `'.join(READONLY_SUBDIRS)}`"
+                if READONLY_SUBDIRS
+                else ""
+            )
+            + ". The notes space is committed by frey-notes-commit.timer, so "
+            "any single turn can be reverted.\n"
             + SEPARATOR
         )
-        log.info("created %s", CHAT_PAGE)
+        log.info("created the transcript at %s", TRANSCRIPT)
     except OSError as exc:
-        log.error("cannot create the chat page: %s", exc)
+        log.error("cannot create the transcript: %s", exc)
 
 
 def pending_message():
@@ -669,7 +729,9 @@ def reply(answer, touched):
         path.write_text(path.read_text(errors="replace").rstrip() + "".join(parts))
     except OSError as exc:
         log.error("cannot write the reply: %s", exc)
-    _commit(f"campaign agent: replied in {CHAT_PAGE}")
+    # No _commit here any more: the transcript lives outside the notes space,
+    # so a reply on its own changes nothing git needs to record. Page writes
+    # still call _commit themselves.
 
 
 SW_KILL = """// Retire the previous service worker and its caches, then stand aside.
@@ -709,7 +771,7 @@ button:disabled{opacity:.5;cursor:default}
 <small>Ask about your world or about this machine. It reads and edits pages under <code>%ROOT%</code>, and can check system health. Replies take minutes &mdash; it is a 4B model on a Pi.</small></header>
 <main>
 <div id="log">loading&hellip;</div>
-<form id="f"><textarea id="m" placeholder="Ask anything \u2014 about your world, or how Frey is doing"></textarea>
+<form id="f"><textarea id="m" placeholder="Ask anything \u2014 about your notes, or how Frey is doing"></textarea>
 <button id="b">Send</button></form>
 <div id="status"></div>
 </main>
@@ -763,7 +825,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._send(200, chat_path().read_text(errors="replace"))
             except OSError as exc:
-                self._send(500, f"cannot read the chat page: {exc}")
+                self._send(500, f"cannot read the transcript: {exc}")
         elif path == "/sw.js":
             # Evict llama.cpp's service worker. Its web UI is a PWA that
             # registers one at exactly this path, and a service worker
@@ -819,8 +881,9 @@ def serve():
 
 
 def main():
-    log.info("campaign agent starting: root=%s chat=%s readonly=%s port=%d",
-             ROOT, CHAT_PAGE, ",".join(READONLY_SUBDIRS), LISTEN_PORT)
+    log.info("assistant starting: root=%s transcript=%s readonly=%s port=%d",
+             ROOT or "(whole space)", TRANSCRIPT,
+             ",".join(READONLY_SUBDIRS) or "(none)", LISTEN_PORT)
     ensure_chat_page()
     threading.Thread(target=serve, daemon=True).start()
     while True:

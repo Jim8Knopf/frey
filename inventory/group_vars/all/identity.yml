@@ -204,7 +204,12 @@ identity_services:
   local_ai:
     auth: forward_auth
     groups: [frey_admins, notes]
-    hosts: [ai, campaign]
+    # `assistant` replaced `campaign` on 2026-11-20 when the agent stopped
+    # being campaign-specific. Renaming a host here changes the certificate
+    # SAN and the Authelia rule, so pki and identity must be deployed with (or
+    # before) local_ai - the module order in main.yml already guarantees that
+    # on a full run.
+    hosts: [ai, assistant]
 
   # Preserve the active Hermes OIDC registration when applying this inventory.
   hermes:

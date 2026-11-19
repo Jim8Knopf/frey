@@ -125,6 +125,62 @@ purpose** in Dockge. Retry immediately with:
 sudo systemctl start 'frey-local-ai-download@qwen35-4b.service'
 ```
 
+## The assistant — `assistant.hub.frey`
+
+**This is the agent window, and it is the thing to use.** `ai.hub.frey` is
+llama.cpp's own chat UI and has no tools: llama-server emits a tool call but
+never executes one, so a plain chat client cannot read a note. This component
+is the loop that executes them.
+
+It is **general, not campaign-specific** (since 2026-11-20 — it began as a
+campaign wiki assistant). Per turn it routes between three things and loads
+only one domain's tool definitions, because every definition is prompt tokens
+and prompt size is this machine's binding constraint:
+
+| Domain | Tools |
+| --- | --- |
+| Notes | `list_pages`, `read_page`, `search_notes`, `append_page`, `write_page` |
+| This machine | `system_check`, `system_unit`, `container_log`, `propose_repair` |
+| Neither | plain conversation, no tools, no index — costs nothing |
+
+### Why it has its own hostname
+
+It cannot live on `ai.hub.frey`. llama.cpp's UI is a PWA that registers a
+service worker at `/sw.js`, and a service worker intercepts every request to
+its origin — sharing the hostname made this window unreachable no matter what
+the routing said. The role serves a self-unregistering worker at that path to
+evict the stale one. Two origins is a browser constraint, not tidiness.
+
+### What it may change
+
+- **Reads** the whole notes space.
+- **Writes** anywhere in it, except `readonly_subdirs` — the campaign
+  `Templates/` and `Rules/`, and `.git`.
+- `root` narrows writes back to a single subtree in one line if that is ever
+  wanted.
+
+The write scope used to be enforced by the **mount** (space read-only, campaign
+subtree read-write). Widening it to the whole space moved that boundary into
+this process, so **git is now the primary backstop**, committed from the host
+by `frey-notes-commit.timer`. `tests/test_assistant_write_scope.py` exists for
+exactly that reason and runs in CI.
+
+### The transcript is not a note
+
+Conversation history lives in
+`/opt/frey/appdata/local-ai/assistant/transcript.md`, outside the notes space. It used to be a page (`Campaigns/Pirate/Chat.md`),
+which turned every conversation into a note nobody asked for. The window reads
+and writes it over `/chat/history` and `/chat/send`; you never open it.
+
+### Expect it to be asynchronous
+
+A turn is several model round-trips and each one costs minutes here, so
+`POST /chat/send` returns **202** immediately and the window polls for the
+reply. That is the design, not a stall. `max_steps` is **7**: one step per tool
+round-trip plus one to compose the answer — at 4, a real run spent all four on
+tools and then said *"I stopped after using my tool budget"* having already
+done the work, which reads as a failure.
+
 ## The observer
 
 > **RETIRED 2026-11-18 — `observer.enabled` is `false`.** It was the only
