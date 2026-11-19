@@ -1,0 +1,64 @@
+# Managed by Ansible (role: immich). Run inside the immich_machine_learning
+# container; it talks to that container's own listener.
+#
+# WHY THIS EXISTS
+#
+# "The ML container is up and healthy" says nothing about whether a single
+# face can be found. The service answers /ping from the moment it boots, but
+# the models are loaded lazily, on the first real request - and if a model is
+# not already on disk it is fetched from Hugging Face at that moment. With no
+# uplink that fetch fails, and Immich's own handler treats the failure as a
+# corrupt download: it deletes the cached model and tries again. Every job in
+# flight then gets HTTP 500, and Immich discards them rather than retrying, so
+# the loss is permanent and completely silent.
+#
+# So this does the first real request itself, at deploy time, where the result
+# can be reported: it forces both face models to load and run on a synthetic
+# image. A 200 means face detection genuinely works. Anything else means the
+# next thousand photos would have failed one by one.
+import io
+import json
+import sys
+
+import httpx
+from PIL import Image
+
+ENDPOINT = "http://127.0.0.1:{{ immich.ml.port | default(3003) }}/predict"
+TIMEOUT = {{ immich.ml.warm_timeout | int }}
+
+# Mid-grey rather than black: a uniform frame still exercises the whole
+# detection graph, and finding no face in it is the correct answer.
+buffer = io.BytesIO()
+Image.new("RGB", (640, 640), (128, 128, 128)).save(buffer, format="JPEG")
+
+# Exactly the shape the server sends, so this loads the same model instances
+# the real jobs will use rather than a second set under different options.
+entries = {
+    "facial-recognition": {
+        "detection": {
+            "modelName": {{ immich.face.model | to_json }},
+            "options": {"minScore": {{ immich.face.min_score | float }}},
+        },
+        "recognition": {"modelName": {{ immich.face.model | to_json }}},
+    }
+}
+
+try:
+    response = httpx.post(
+        ENDPOINT,
+        data={"entries": json.dumps(entries)},
+        files={"image": ("warm.jpg", buffer.getvalue(), "image/jpeg")},
+        timeout=TIMEOUT,
+    )
+except Exception as error:  # noqa: BLE001 - any failure here is the same verdict
+    print(f"unreachable: {type(error).__name__}: {error}")
+    sys.exit(1)
+
+if response.status_code != 200:
+    # The body carries the model name and the underlying cause, which is the
+    # difference between "no uplink" and "wrong model name".
+    print(f"http {response.status_code}: {response.text[:400]}")
+    sys.exit(1)
+
+faces = response.json().get("facial-recognition")
+print(f"ok: models loaded and ran, {len(faces) if faces is not None else 0} faces in a blank frame")

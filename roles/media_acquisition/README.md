@@ -126,7 +126,11 @@ sudo python3 -c 'import json; print(json.load(
 | qBittorrent | `http://qbittorrent.frey` | Torrent client |
 | Cleanuparr | `http://cleanuparr.frey` | Stuck-download cleanup |
 
-Byparr, Recyclarr and Unpackerr have no web UI and are not routed.
+Soularr's administrator-only interface is at `https://soularr.hub.frey`.
+Its configuration is managed by Ansible and edits made in the UI are replaced
+on the next deploy. Recyclarr has no web interface; `https://recyclarr.hub.frey`
+opens the media acquisition stack in Dockge for status and logs. Byparr and
+Unpackerr have no web UI.
 
 ## Cleanuparr
 
@@ -142,6 +146,16 @@ in the `media`-owned config directory.
 registers Sonarr, Radarr and Lidarr with the same API keys Ansible seeded them
 with, and switches the queue cleaner on. Defaults live under
 `media_acquisition.cleanuparr_wiring`.
+
+**The stalled rule is not part of the queue cleaner configuration**, even
+though the database keeps it as a child of that config and the UI draws it
+inside the same panel. It has its own controller, `/api/queue-rules/stall`
+(`POST` to create, returning a server-assigned id; `PUT /stall/<id>` to
+update). Sending it as a `stallRules` list inside the `queue_cleaner` body
+instead is the trap: Cleanuparr answers 200, reloads the QueueCleaner job, and
+silently drops the rule. Verified 2026-11-19 — after that PUT, `stall_rules`
+held zero rows and `GET /api/queue-rules/stall` still returned `[]`. A 200
+from `queue_cleaner` is not evidence the rule exists; ask the rule endpoint.
 
 Three things that are easy to get wrong:
 
@@ -300,9 +314,16 @@ So the stack resolves through its own dnsmasq with `filter-AAAA`, which also
 means a campground's broken or filtering DNS can no longer disable indexers —
 the reason this used to come back at every new parking spot.
 
+Prowlarr shares Gluetun's network namespace and uses Gluetun's encrypted DNS
+instead, so its queries remain inside the VPN. Gluetun can install IPv6 routes
+even when the tunnel has no IPv6 address; in that case AAAA answers can still
+send searches to unreachable addresses. `media_vpn.ipv6_enabled: false`
+disables IPv6 in that namespace. Only enable it after setting up and testing a
+dual-stack VPN. DNS itself remains encrypted through Gluetun.
+
 ```bash
 # Is it up, and is it actually stripping AAAA?
-docker exec prowlarr getent ahostsv6 thepiratebay.org
+docker exec sonarr getent ahostsv6 thepiratebay.org
 #   ::ffff:162.159.136.6  -> correct: an IPv4-mapped address, no real AAAA
 #   2606:4700:7::a29f:8906 -> the resolver is being bypassed
 ```
@@ -371,6 +392,13 @@ frey-media-gate resume     # force a resume
 captive portal looks online to an application, and left alone the *arrs will
 burn through search attempts against a sign-in page and collect indexer bans.
 
+When the uplink returns, the gate also checks applications reporting indexer
+failures. It tests their enabled sources individually, with bounded
+concurrency and timeouts, so a slow browser challenge cannot prevent a
+working source from clearing its backoff. Sources that still fail are retried
+after 30 minutes; a successful test cannot guarantee that a later search will
+return a release with peers.
+
 Modes are set by `media_acquisition.uplink_gating.mode`: `pause` (default),
 `stop` (also stops the *arr containers after a grace period, to save power
 off-grid), or `off`.
@@ -408,19 +436,121 @@ UIs through Gluetun, and Docker network aliases preserve the existing service
 names. Local access is limited to the configured media and FreyHub subnets and
 the actual proxy network subnet.
 
-The custom Generous WireGuard endpoint hostname is resolved at deployment; if
-its address changes, rerun the media acquisition deployment to refresh it.
-The private key and peer settings are stored in the Ansible Vault. The free
-provider's P2P policy and availability on a particular uplink should be
-checked before relying on it.
+With the VPN enabled, qBittorrent's BitTorrent interface is bound to `tun0`.
+The shared namespace also has Docker interfaces, and their source-specific
+routes can send attempted peer connections toward the killswitch instead of
+the tunnel. The WebUI remains available through Gluetun. If peer discovery
+stays at zero after the tunnel has recovered, check the interface and DHT
+status in qBittorrent; a qBittorrent restart may be needed to rebuild its
+session. When the VPN is disabled, the interface restriction is cleared.
+
+The active custom Riseup OpenVPN profile uses TCP to work on restrictive
+uplinks. The root-only renewal helper checks the client certificate daily,
+renews it before expiry, verifies the key pair and reconnects the dependent
+containers after restarting Gluetun. The server certificate is verified against
+Riseup's CA and the gateway name by prefix. Renewal uses the working VPN first,
+then verified direct HTTPS; if both paths fail, the existing profile remains in
+place and the timer retries. The earlier Generous WireGuard credentials remain
+in the Ansible Vault.
+
+**The profile names several gateways, not one.** Being advertised by the API is
+not being alive: measured 2026-11-17, five of Riseup's sixteen gateways refused
+TCP/80 while still listed, and one of them was the gateway the helper had
+hardcoded. The tunnel never came up, so every container sharing its network
+namespace — qBittorrent, Prowlarr, Jackett, Byparr, slskd — sat in `Created` and
+nothing downloaded, with a perfectly healthy uplink. Two things follow from
+that, and both matter:
+
+- The helper probes each advertised gateway and writes the reachable ones
+  nearest-first, so OpenVPN fails over by itself when one dies. That path needs
+  no timer run and nobody in the van, which is the point.
+- A gateway going away now triggers reselection on its own. Checking only the
+  certificate is what left the profile pointed at a dead gateway indefinitely —
+  the certificate was valid the whole time.
+
+`connect-timeout` is 15s rather than OpenVPN's 120s default, so a silent
+gateway costs seconds instead of stalling the tunnel for minutes.
+
+### Coming back after a long time with no uplink
+
+Two things go stale off-grid, and **neither can repair itself without
+internet** — which is what makes the reconnect a distinct problem from the
+steady state:
+
+- **The certificate expires.** Riseup issues them for about 35 days. Without
+  one the tunnel cannot authenticate at all, however healthy the gateways are.
+- **The gateways can all be retired.** Then OpenVPN's own failover is spent and
+  it retries forever against a profile that cannot work.
+
+In both cases every download client sharing gluetun's namespace stays down, so
+recovery must not wait on a once-a-day timer. Three mechanisms cover it, from
+fastest to most stubborn:
+
+| When | What recovers it | Typical delay |
+| --- | --- | --- |
+| A gateway dies, certificate fine | OpenVPN's own failover across the other remotes | seconds, unaided |
+| An uplink appears | `88-frey-riseup-renew` NetworkManager dispatcher hook | seconds |
+| Internet returns with no NetworkManager event at all | `frey-riseup-renew.timer`, hourly | ≤1 hour |
+
+That third row is the case worth keeping in mind: an uplink that stayed
+associated the whole time while its backhaul was dead may produce no `up`
+event. `connectivity-change` usually catches it — that is also how a captive
+portal sign-in completing shows up — but the hourly timer is what guarantees it.
+
+The renewal margin is the off-grid tolerance. Renewing at 20 days remaining
+rather than 10 means the van is always carrying at least 20 days of validity
+when it loses its uplink, and it costs one certificate fetch every ~15 days.
+
+**Having no uplink is not a failure and is not reported as one.** The run
+prints `offline` and exits 0, because a failed unit sitting on the monitoring
+for as long as the van is parked is a false alarm precisely when it is least
+useful. A gateway list that parses but contains nothing usable is the opposite
+— that means Riseup changed something — and does fail loudly.
+
+### A flapping uplink must not become a rebuild storm
+
+Every rebuild costs each download client a restart, and while Gluetun is
+unhealthy **Traefik deletes the routers whose labels live on it**, so
+qBittorrent and Prowlarr answer 404 rather than 502 for the duration. So the
+expensive mistake is not failing to rebuild — it is rebuilding when nothing
+was wrong.
+
+Measured 2026-11-18, the uplink lost its DHCP lease **47 times in a day** on a
+weak venue network while all eight gateways stayed healthy the whole time.
+Three things keep that from turning into churn:
+
+- **"No gateway answered" is not "the gateways are gone."** Both look
+  identical from a failed probe, so before re-selecting anything the helper
+  asks whether this van has internet at all, by IP literal so the answer never
+  depends on DNS. No internet means `offline` and nothing is touched. This is
+  the one that matters: the dispatcher hook fires the instant the uplink
+  returns, so a probe can fail while the API fetch a moment later succeeds,
+  and believing the probe rewrote a perfectly good profile.
+- **One instance at a time**, via `flock`. The hook fires per uplink event and
+  the timer runs beside it, so several invocations can start within the same
+  second — three in two seconds, measured. Two of them reaching the restart
+  path raced to delete the same marker and one died on it. A duplicate trigger
+  now prints `busy` and exits 0.
+- **A cooldown between rebuilds.** The first rebuild always proceeds, so a
+  genuine recovery is never slowed; a second one inside the window prints
+  `deferred` and leaves the marker, so the next run does it. This is a
+  backstop that bounds the damage of a future logic error, not something
+  correctness rests on.
+
+Read the outcome from the journal, not by running it by hand:
+`sudo journalctl -u 'frey-riseup-renew*'`. One line per run — `unchanged`,
+`offline`, `busy`, `deferred`, `updated` or `reconnected` — and only the last
+two mean the tunnel actually moved.
 
 Enabling it with no credentials fails the deploy immediately with
 instructions, rather than starting an unconfigured tunnel that looks like a
 broken stack.
 
 **No published ports, including the torrent listen port.** Behind a venue's
-NAT there is no inbound path to forward, so publishing it would open the
-uplink side for nothing. Outbound peer connections work regardless.
+NAT there is no inbound path to forward, so publishing it on the *host* would
+open the uplink side for nothing. With the tunnel up the inbound path, if
+there is one at all, comes from the provider instead - see
+`media_vpn.forwarded_port` under [Download speed](#download-speed).
 
 **Auth is `External`.** Servarr local users cannot be seeded without writing
 the app's database, so the *arr UIs are open to anyone on the FreyHub LAN and
@@ -438,6 +568,176 @@ deliberately:
 # connection. Needs the explicit flag: a plain deploy never pulls.
 ansible-playbook ... --tags media_update -e media_update=true
 ```
+
+## Download Speed
+
+Diagnose in this order. Measured figures below are from 2026-11-09 on a
+public venue uplink, and they are what the defaults in
+`inventory/group_vars/all/media.yml` are tuned against.
+
+**1. The uplink, before anything else.** Nothing in this role can beat the
+radio. Check what the link actually negotiated, not whether it is "connected":
+
+```bash
+sudo iw dev wlan1 link        # signal, rx/tx bitrate
+curl -o /dev/null -w '%{speed_download} B/s\n' \
+  --max-time 30 "https://speed.cloudflare.com/__down?bytes=8000000"
+```
+
+`signal: -72 dBm` with `rx bitrate: 13.0 MBit/s MCS 1` delivered 72 KB/s. At
+that point the ceiling is physical: park closer, or use a different network.
+
+Two things on the Pi make a weak uplink worse. FreyHub's own AP shares the
+2.4 GHz band with the uplink radio, and if `network.wifi.channel` overlaps the
+venue's channel the AP's transmitter deafens the uplink's receiver - they are
+inches apart. Compare `sudo iw dev wlan0 info` against `wlan1 link` and move
+the AP to a non-overlapping channel (1 / 6 / 11) if they collide. Switching
+the AP to `band: a` removes the conflict entirely, at the cost of range
+through the van body. **Both are `network_gateway` changes, so they arm the
+deadman rollback - read `docs/GATEWAY.md` first.**
+
+**2. How far away the VPN exit is.** This dwarfs every qBittorrent setting:
+
+```bash
+ping -c 5 <wireguard_endpoint_ip>     # base RTT to the exit
+docker exec qbittorrent curl -o /dev/null -w '%{speed_download} B/s\n' \
+  --max-time 60 "https://speed.cloudflare.com/__down?bytes=2000000"
+```
+
+How much this costs depends on the link underneath it, and the two measurements
+are worth knowing apart:
+
+| Uplink | Host | Through the tunnel | Exit cost |
+| --- | --- | --- | --- |
+| Venue, -72 dBm 2.4 GHz, lossy | 72 KB/s | 11.6 KB/s | ~6x |
+| Home, -37 dBm 5 GHz | 1.2 MB/s | 735 KB/s | ~40% |
+
+The same 315 ms exit, an hour apart. A long path costs ~40% on a clean link,
+which is the ordinary price of a distant exit - but on a narrow lossy one the
+two multiply, because every lost packet now costs a 315 ms recovery and the
+window never opens. So a distant exit is a nuisance at home and close to fatal
+at a campground. For scale from New Zealand, Australia is ~30 ms and the US
+west coast ~150 ms, so 315 ms is most of a planet.
+
+A steady RTT with `mdev` in single-digit milliseconds is genuine distance;
+spikes to 1940 ms like the venue produced are a queue filling up, which is
+what the overhead limits below are for. BitTorrent suffers more than a single download does, because
+per-connection throughput is bounded by window/RTT and that penalty is paid
+once per peer. If the two numbers differ by much, move the exit closer before
+touching anything else; with `provider: custom` that means repointing
+`media_vpn.credentials.wireguard_endpoint`, as `server_countries` is ignored.
+
+**3. Whether peers can reach you.**
+
+```bash
+docker exec qbittorrent curl -s -b /tmp/c \
+  http://127.0.0.1:8080/api/v2/transfer/info
+```
+
+`"connection_status":"firewalled"` with `"dht_nodes":0` means no incoming
+connections and no peer discovery. Both recovered on their own once the uplink
+was good -- 363 DHT nodes and `"connected"` within minutes, with no config
+change -- so treat this as a symptom of steps 1 and 2 before treating it as a
+fault of its own. If it persists on a healthy link, the tunnel has no inbound
+path: set `media_vpn.forwarded_port` to the port your provider forwards and
+the role opens it on the tunnel and makes it qBittorrent's listen port
+together, since a forwarded port only helps if the application listens on that
+exact number. Confirm with:
+
+```bash
+docker exec gluetun iptables -S | grep tun0
+```
+
+Many providers, free ones especially, forward nothing. Leave it empty then;
+you stay limited to connectable peers, which is a real loss but not a fault.
+
+### "Operation not permitted" on every udp:// tracker
+
+Worth its own note, because the error is thoroughly misleading. It is `EPERM`
+-- what the kernel returns to a socket whose packet the local firewall
+dropped, so it reads like a deliberate block rather than a network problem,
+and the obvious suspects are both innocent:
+
+- **It is not an AAAA fault**, though everything points that way. The tunnel
+  really is IPv4-only (`tun0` carries a single /32, no IPv6 route),
+  `ip6tables` inside Gluetun really is policy `OUTPUT DROP`, and containers
+  in this namespace really do resolve through Gluetun's own DoT server at
+  `127.0.0.1` rather than through `frey-media-dns`, so they really do get the
+  AAAA records the *arrs have filtered out. All true, and none of it is the
+  cause: the same trackers answered normally on a better uplink with that
+  configuration untouched.
+- **`DNS_BLOCK_IP_PREFIXES` is not the cure.** It reads like an answer filter
+  and is not -- measured 2026-11-09, `::/0` drops the whole record rather than
+  the IPv6 half, so every dual-stack hostname stopped resolving and the stack
+  lost DNS entirely. The test suite asserts it stays out.
+
+What it actually is: `HEALTH_RESTART_VPN=on` means Gluetun tears the tunnel
+down and rebuilds it whenever its health check fails, which on a weak uplink
+is often. While `tun0` is absent, the `-A OUTPUT -o tun0 -j ACCEPT` rule
+matches nothing, the `OUTPUT DROP` policy applies, and every send fails
+`EPERM` until the tunnel is back. So it is the uplink reported in the voice of
+a firewall. Check Gluetun's log for restart churn before changing anything:
+
+```bash
+docker logs --tail 50 gluetun | grep -iE "healthy|unhealthy|restart"
+```
+
+`Host not found (authoritative)` on a handful of trackers is unrelated and
+usually genuine -- public tracker lists rot, and dead hostnames are normal.
+
+**4. Whether the queue is deadlocked.** A small `max_active_downloads` and
+`dont_count_slow_torrents: false` together are a trap, and this role hit it:
+
+```bash
+docker exec qbittorrent python3 -c 'import json,collections;print(
+  collections.Counter(t["state"] for t in json.load(open("/tmp/t.json"))))'
+```
+
+44 torrents in `queuedDL` while the handful of active slots all sit on
+`stalledDL`/`metaDL` means dead torrents are holding the slots and nothing
+behind them will ever start. qBittorrent counts a stalled torrent as active
+unless told not to, so the fewer slots there are, the more easily a few dead
+ones block everything. The role sets `dont_count_slow_torrents: true` for
+exactly this; if downloads stop dead after a concurrency change, check this
+first.
+
+**5. Only now, the torrents themselves.** `stalledDL` with `num_complete: 0`
+is a dead torrent and no amount of tuning fixes it. Check that the queue is
+not simply starved of sources before changing the connection budget.
+
+**`stalledDL` with a HIGH `num_complete` is the opposite diagnosis**, and it
+is the one that actually recurs here. The swarm is fine and this stack cannot
+reach it, which means the connection budget, not the torrent. Measured
+2026-11-19: 95 of 100 global slots in use, the 13 moving torrents holding 89
+of them and the 17 stalled ones holding six between them, while their trackers
+answered normally and offered up to 157 seeds. Sum the connected peers and
+compare against the cap before concluding anything:
+
+```bash
+docker exec qbittorrent sh -c 'curl -fsS \
+  "http://127.0.0.1:8080/api/v2/torrents/info" > /tmp/all.json'
+docker exec qbittorrent python3 -c 'import json;d=json.load(open("/tmp/all.json"));
+print(sum((t.get("num_leechs") or 0)+(t.get("num_seeds") or 0) for t in d))'
+```
+
+At or near `media_qbittorrent_max_connections` the cap is the fault. Note that
+qBittorrent is outbound-only here — Riseup offers no port forwarding, so
+`media_vpn.forwarded_port` is empty and no peer can dial us — which makes the
+outbound budget the only way to reach a swarm.
+
+Two separate mechanisms clear these, and they catch different faults:
+
+| Fault | Mechanism | Bar |
+| --- | --- | --- |
+| Swarm has NO seeders | `download_cleaner.dead_torrents` + seeding rule | 24h of zero seeders, complete torrents only |
+| Swarm is alive, unreachable | `queue_cleaner.stall_rule` | 12h of zero progress, any completion % |
+
+The stalled rule is what covers an incomplete torrent, which the dead-torrent
+reaper never sees: that reaper evaluates only COMPLETE torrents, and requires
+zero seeders, so a 20%-complete torrent with 12 seeds it cannot reach resets
+its strikes forever and is never tagged. Before the rule existed, 16 such
+torrents had been wedged for 11 to 17 days. Striking one hands the release
+back to the *arr, which blocklists it and searches for a replacement.
 
 ## Known Gaps
 

@@ -86,6 +86,20 @@ media_acquisition:
         'gluetun' if (media_vpn.enabled | bool)
         else media_acquisition.services.qbittorrent.hostname
       }}
+    # The port qBittorrent actually listens on for incoming peers.
+    #
+    # A forwarded port is only worth anything if the application listens on
+    # that exact number, so when media_vpn.forwarded_port is set it wins over
+    # the role's own listen_port. Unset - the default, and the case for every
+    # provider that does not offer forwarding - leaves the role default
+    # untouched, and qBittorrent stays outbound-only exactly as before.
+    qbittorrent_listen_port: >-
+      {{
+        media_vpn.forwarded_port | int
+        if (media_vpn.enabled | bool
+            and (media_vpn.forwarded_port | default('') | string | length > 0))
+        else media_acquisition.services.qbittorrent.listen_port
+      }}
 
   # ---------------------------------------------------------------------------
   # UPLINK GATING
@@ -148,6 +162,10 @@ media_acquisition:
       - sonarr
       - radarr
       - lidarr
+      - slskd_api
+      - slskd_web_password
+      - soulseek_account
+      - soulseek_password
       - chaptarr
       - bazarr
       - qbittorrent_password
@@ -234,14 +252,169 @@ media_acquisition:
       # the queue cleaner on through the API fails. Exclude with no patterns
       # is the honest spelling of "strike every failed import".
       failed_import_pattern_mode: Exclude
-    # Left off on purpose. The malware blocker fetches blocklists from the
-    # internet, and the download cleaner only acts on seeding rules that do
-    # not exist until someone defines them -- so both would be either broken
-    # or inert in a van. Flip them in media.yml once there is a reason to.
+
+      # -----------------------------------------------------------------------
+      # STALLED RULE -- the gap the dead-torrent reaper cannot close
+      #
+      # The reaper below tags a torrent whose swarm has NO seeders. That is a
+      # different fault from the one that actually accumulates here: a swarm
+      # with plenty of seeders that this stack cannot open a connection to.
+      # Measured 2026-11-19 at Hobbiton Tours Free Wifi: 17 torrents stalled,
+      # 16 of them incomplete and between 11 and 17 DAYS old, while their
+      # trackers reported "working" and offered up to 157 seeds. One sat at
+      # 90.3% with 157 seeds in the swarm and one connected peer.
+      #
+      # Nothing reaped them, and nothing could:
+      #   - dead_torrents needs zero seeders, and these swarms have seeders,
+      #     so every strike reset and not one torrent was ever tagged;
+      #   - the download cleaner only evaluates COMPLETE torrents (35 of 82
+      #     here), and these are incomplete, so it never looked at them;
+      #   - the queue cleaner struck only metadata, errored and failed-import,
+      #     and a stalled download with a healthy tracker is none of those.
+      #
+      # So they sat in the active set forever, holding slots and competing for
+      # the global connection budget, which is what starved the torrents that
+      # could otherwise have finished. Striking them hands the release back to
+      # the *arr, which blocklists it and searches for another one -- the
+      # outcome wanted all along.
+      #
+      # ONE RUN IS ONE STRIKE and the cron above is every five minutes, so
+      # 144 strikes is TWELVE HOURS of continuous zero progress. Deliberately
+      # patient, for the same reason the reaper's 24 hours are: this van loses
+      # its uplink and rebuilds its tunnel routinely (three rebuilds in nine
+      # hours on the day this was measured), and every torrent looks stalled
+      # while that happens. Twelve hours cannot be reached by an outage of
+      # that shape, and still clears a genuinely wedged torrent inside half a
+      # day rather than a fortnight.
+      #
+      # reset_strikes_on_progress is the real safety net: any progress at all
+      # clears the count, so a merely slow download is never at risk no matter
+      # how long it takes. minimum_progress must stay null for that to hold --
+      # a threshold here would start striking torrents that ARE moving, just
+      # not fast enough. Null is also what the API stores and returns, so
+      # anything else here reports changed on every run.
+      stall_rule:
+        name: Stalled with a live swarm
+        enabled: true
+        max_strikes: 144
+        reset_strikes_on_progress: true
+        minimum_progress: null
+        # Public only, matching the seeding rule below and for the same
+        # reason: every indexer this stack uses is public, and giving up on a
+        # private tracker's download risks a hit-and-run penalty.
+        privacy_type: Public
+        # The whole range. A torrent wedged at 0% and one wedged at 99% are
+        # the same fault and both were measured here.
+        min_completion_percentage: 0
+        max_completion_percentage: 100
+        # Never reach into a private tracker's client entry, same as above.
+        delete_private_torrents_from_client: false
+        # Removal, not a category move: a category change would relocate the
+        # save path, and the hardlink arrangement depends on that path.
+        change_category: false
+    # -------------------------------------------------------------------------
+    # MALWARE BLOCKER
+    #
+    # Still off, and still for the reason it always was: it fetches its
+    # blocklist over the internet, and what it does with a list it could not
+    # fetch is not something this stack has established. In a van that is a
+    # question you get to find out the answer to at a campground.
+    #
+    # Now fully configured, so enabling it is one flag in media.yml rather
+    # than research. Chaptarr is absent because Cleanuparr has no Chaptarr
+    # application type at all -- the same reason it is missing from
+    # `instances` below.
+    # -------------------------------------------------------------------------
     malware_blocker:
       enabled: false
+      cron_expression: "0/5 * * * * ?"
+      blocklist_type: Blacklist
+      # Upstream's own list, which it refreshes every five minutes.
+      blocklist_path: https://cleanuparr.pages.dev/static/blacklist
+      # Remove the whole download when ANY file matches -- which is the point,
+      # since malware arrives as one extra file beside legitimate media.
+      delete_if_any_file_blocked: true
+      apps:
+        - sonarr
+        - radarr
+        - lidarr
+
+    # -------------------------------------------------------------------------
+    # DOWNLOAD CLEANER -- now on, because the rule it needs exists
+    #
+    # This was off on the grounds that it "only acts on seeding rules that do
+    # not exist until someone defines them". That was true. The rule below is
+    # that definition, so the reason has been removed rather than overruled.
+    #
+    # What it adds is the one case the queue cleaner cannot see. The queue
+    # cleaner strikes downloads stuck on metadata, errored, or failing to
+    # import; it has no rule for a torrent that downloads happily and then
+    # loses every seeder. That one sits in the *arr queue indefinitely,
+    # holding an active-download slot, and Sonarr will not look for a
+    # replacement while it is still queued. Measured 2026-11-09: 37 of 48
+    # incomplete torrents had zero seeds AND zero peers.
+    #
+    # TWO PARTS, BOTH REQUIRED. dead_torrents only TAGS a torrent; the
+    # seeding rule matching that tag is what removes it. Each is a separate
+    # endpoint keyed by the download client id, neither of them under
+    # api/configuration/download_cleaner -- see tasks/configure/cleanuparr.yml.
+    # -------------------------------------------------------------------------
     download_cleaner:
-      enabled: false
+      enabled: true
+      # Hourly, and ONE RUN IS ONE STRIKE, so max_strikes below is in hours.
+      cron_expression: "0 0 * * * ?"
+
+      # Categories to police. The *arr ones are derived from this role's own
+      # services so they cannot drift; these are the ones owned elsewhere.
+      extra_categories:
+        - audiobookrequest
+        - readmeabook
+
+      dead_torrents:
+        enabled: true
+        # Tag rather than recategorise: a category change would also move the
+        # torrent's save path, and the hardlink arrangement depends on that
+        # path staying exactly where it is.
+        use_tag: true
+        tag: cleanuparr-dead
+        # 24 hourly runs of zero seeders before it is tagged.
+        #
+        # Deliberately patient. EVERY torrent reports zero seeders while the
+        # uplink is down or the tunnel is rebuilding itself, and this van does
+        # both -- so a short count deletes healthy torrents during an outage.
+        # Strikes reset as soon as a torrent looks alive again, which makes
+        # the real bar a full day of CONTINUOUS deadness. Upstream permits as
+        # low as 3; do not go near that here.
+        max_strikes: 24
+
+      # The rule that does the removing. Only dead torrents are touched.
+      # Healthy ones seed on indefinitely: there is no space pressure to
+      # justify stopping them -- 3.2 TB free, measured 2026-11-10 -- and
+      # stopping them would only take upload away from the swarms we took
+      # from.
+      seeding_rule:
+        name: Dead torrents
+        # Public only. Every indexer this stack uses is public, and deleting
+        # from a private tracker risks a hit-and-run penalty, so the narrower
+        # setting is also the safer one.
+        privacy_type: Public
+        # RATIO IS USELESS AS A TRIGGER HERE and must stay disabled. Measured
+        # 2026-11-10 across 52 completed torrents: median ratio 0.00, maximum
+        # 0.07, because qBittorrent reported `firewalled` and no peer could
+        # open a connection to us. A ratio rule would never once have fired.
+        # Upstream rejects having both this and max_seed_time at -1.
+        max_ratio: -1
+        min_seed_time: 0
+        # Zero hours: by the time it is tagged it has had its 24 hours.
+        max_seed_time: 0
+        # No "keep it while the swarm is thin" guard -- the swarm is empty,
+        # which is the whole reason it was tagged.
+        min_seeders: 0
+        # Safe because imports are hardlinks: the library keeps the bytes and
+        # only the torrent's reference goes. Left false, the torrent would be
+        # removed and its files stranded under /data/torrents forever.
+        delete_source_files: true
+        action: Delete
     general:
       # Both of these phone home. With no uplink the status check fails every
       # few minutes and fills the log with connection stack traces that look
@@ -426,6 +599,35 @@ media_acquisition:
   # audiobook pipeline silently did nothing.
   # ---------------------------------------------------------------------------
   indexers:
+    # -------------------------------------------------------------------------
+    # THE SEEDER FLOOR ON THE GENERAL PROFILE
+    #
+    # Prowlarr ships one profile, id 1, named Standard, and every indexer
+    # except the audiobook sources is attached to it. Prowlarr pushes this
+    # number down into each *arr's copy of the indexer, so it is what stops
+    # Sonarr and Radarr grabbing a release nobody is seeding.
+    #
+    # The role never set it, so it sat at whatever Prowlarr defaults to, and
+    # whatever that is it was permissive enough to let unseeded releases
+    # through. Measured 2026-11-09 with it unset: 37 of 48 incomplete
+    # torrents had zero seeds AND zero peers,
+    # holding 42.9 GB of partial downloads, and every one had been added
+    # within the previous seven days. Cleanuparr can remove them afterwards;
+    # this is what stops them arriving.
+    #
+    # Three, not higher. A floor also costs downloads: a thin-but-live swarm
+    # is skipped along with the dead ones, and in a van the niche release is
+    # often the only one that exists. Three is enough that a single seeder
+    # going offline does not strand the torrent, while still grabbing most of
+    # what a public tracker carries. Raise it if the queue still fills with
+    # stalls; lower it if searches start coming back empty.
+    # -------------------------------------------------------------------------
+    default_profile:
+      # Prowlarr's own name for the built-in profile. Matched by name rather
+      # than by id for the reason given in tasks/configure/indexers.yml: the
+      # list has a second profile in it now, so position proves nothing.
+      name: Standard
+      minimum_seeders: 3
     audiobook_profile:
       name: Audiobook requests
       enable_rss: false
@@ -438,7 +640,7 @@ media_acquisition:
       # Follows byparr's switch only in spirit: this one is not optional while
       # anything in the stack needs to reach an indexer, so it tracks whether
       # the acquisition stack itself is doing anything.
-      enabled: "{{ media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool }}"
+      enabled: "{{ media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool or media_enable.lidarr | bool }}"
       image: dockurr/dnsmasq:{{ media_versions.dnsmasq }}
       container_name: frey-media-dns
       hostname: frey-media-dns
@@ -529,6 +731,18 @@ media_acquisition:
         - path: /data/media/movies
       language_scoring: true
 
+    slskd:
+      enabled: "{{ media_enable.slskd | default(false) | bool }}"
+      image: "slskd/slskd:{{ media_versions.slskd }}"
+      container_name: slskd
+      mem_limit: 512m
+
+    soularr:
+      enabled: "{{ media_enable.soularr | default(false) | bool }}"
+      image: "mrusse08/soularr:{{ media_versions.soularr }}"
+      container_name: soularr
+      mem_limit: 384m
+
     lidarr:
       # Honest warning: Lidarr's metadata server has been unreliable through
       # 2026, so adding artists and library imports break periodically. This
@@ -556,7 +770,7 @@ media_acquisition:
         - name: Music
           path: /data/media/music
           quality_field: defaultQualityProfileId
-          quality_profile: Standard
+          quality_profile: Frey Music
           metadata_field: defaultMetadataProfileId
           metadata_profile: Standard
 
@@ -666,7 +880,24 @@ media_acquisition:
       container_name: byparr
       hostname: byparr
       port: 8191
-      mem_limit: 1g
+      # 2g, not 1g. At 1g this cgroup sat permanently against its ceiling:
+      # measured 2026-11-17, memory.peak was exactly 1024.06 MiB with 48,671
+      # allocation-stall events and the browser's `Web Content` child
+      # OOM-killed three times in one hour.
+      #
+      # The cost was not a dead container - Byparr stayed up and healthy, so
+      # nothing alerted on it directly. The cost was that solves slowed to
+      # 212-250s against the 52-66s measured when this limit was chosen,
+      # which overshoots request_timeout below. 1337x then failed its checks
+      # and both Sonarr and Radarr disabled it, while every indexer that does
+      # NOT use Byparr kept working - so it reads as "one flaky tracker"
+      # rather than as a memory limit.
+      #
+      # Raising a cap on this host is not free: the gateway must survive, and
+      # a Pi with no Ethernet and no console cannot be rescued remotely. This
+      # is affordable because the spike is bounded and intermittent - Byparr
+      # idles at ~220 MiB and only reaches for the extra GiB mid-solve.
+      mem_limit: 2g
       cpus: "1.5"
       # Prowlarr applies the proxy only to indexers carrying this tag. Which
       # indexers wear it is declared in media_indexers (media.yml) and applied

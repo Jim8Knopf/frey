@@ -279,6 +279,114 @@ groups:
             The container is running but its health API did not answer. The
             indexer alerts above are blind for this app until it does.
 
+
+  # ============================================================================
+  # IMMICH FACE RECOGNITION
+  #
+  # The one job in Frey that is LOST rather than retried. The ML container
+  # fetches its models from Hugging Face on first use; when it cannot, it
+  # reads the failure as a corrupt download, deletes the cached model, and
+  # answers HTTP 500. The server DISCARDS those jobs rather than re-queueing
+  # them, and nothing in Immich picks them up afterwards - the nightly tasks
+  # cover missing thumbnails and clustering new faces, never missed detection.
+  #
+  # Every container stays healthy throughout, which is why this needs alerts
+  # of its own: without them the only symptom is a People page that quietly
+  # never fills up. Both are warnings - photos are not the gateway.
+  #
+  # Neither is fixed by redeploying. The backlog is recovered by re-queueing
+  # it: scripts/immich-reprocess.sh.
+  # ============================================================================
+  - name: frey_immich
+    rules:
+
+      - alert: FreyImmichModelsMissing
+        expr: frey_immich_ml_model_files < {{ t.immich.ml_model_files }}
+        for: {{ t.immich.ml_model_files_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Immich is missing machine-learning models ({{ go }} $value {{ og }} of {{ t.immich.ml_model_files }} present)'
+          description: >-
+            The machine-learning cache has fewer model files than it needs,
+            which means the service deleted its own models after failing to
+            reach Hugging Face. Until they are back, every face-detection,
+            smart-search and OCR job is answered with HTTP 500 and thrown
+            away. Get an uplink, re-run the immich tag to re-download them,
+            then re-queue the lost work with scripts/immich-reprocess.sh.
+
+      # The floor above catches a cache that never filled. This catches the
+      # one that EMPTIED, which is what a failed Hub lookup actually does -
+      # and it fires while plenty of files are still present, because losing
+      # only the face models still leaves the OCR and CLIP ones behind.
+      - alert: FreyImmichModelsDisappeared
+        expr: >-
+          frey_immich_ml_model_files
+          < max_over_time(frey_immich_ml_model_files[{{ t.immich.ml_model_window }}])
+        for: {{ t.immich.ml_model_files_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Immich deleted machine-learning models ({{ go }} $value {{ og }} left)'
+          description: >-
+            Fewer model files than at any point in the last
+            {{ t.immich.ml_model_window }}. The ML service removes a cached
+            model when it cannot reach Hugging Face to check it, so this is
+            almost always a lost uplink rather than a disk problem - and
+            every job touching the missing model is answered with HTTP 500
+            and thrown away. Re-run the immich tag with an uplink, then
+            scripts/immich-reprocess.sh.
+
+      - alert: FreyImmichFaceBacklogStalled
+        expr: >-
+          frey_immich_faces_pending > {{ t.immich.face_backlog }}
+          and delta(frey_immich_faces_pending[{{ t.immich.face_backlog_for }}]) >= 0
+        for: {{ t.immich.face_backlog_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $value {{ og }} photos are waiting for face detection and the queue is not draining'
+          description: >-
+            The backlog has not gone down in {{ t.immich.face_backlog_for }}.
+            A large backlog on its own is normal after an import and drains
+            over hours; one that stops moving means the jobs are failing and
+            being discarded, so nothing will retry them. Check
+            `docker logs immich_machine_learning` for a name-resolution
+            failure first, then re-queue with scripts/immich-reprocess.sh.
+
+      # Alerts on GROWTH, never on the count itself. A pile of assets whose
+      # originals cannot be decoded is a permanent fact - 68 of them here,
+      # phone JPEGs with damaged scan data that libvips refuses outright.
+      # Alerting on the count would fire forever and teach you to ignore it;
+      # alerting on an increase catches the thing worth knowing, which is new
+      # unreadable files arriving.
+      - alert: FreyImmichUnprocessableAssetsRising
+        expr: increase(frey_immich_assets_no_preview[{{ t.immich.no_preview_window }}]) > 0
+        for: {{ t.immich.no_preview_for }}
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ go }} $value {{ og }} more Immich assets cannot be given a preview'
+          description: >-
+            New assets have no preview image, which means face detection,
+            smart search and OCR will never run on them - all three read the
+            preview, not the original. Usually a damaged upload: check the
+            server log for `Failed to decode DCT block`. Immich retries these
+            nightly and fails every time, so they do not resolve themselves.
+
+      - alert: FreyImmichCollectorFailing
+        expr: frey_collector_success{collector="immich"} == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The Immich collector cannot read the photo database'
+          description: >-
+            frey-metrics reached the Postgres container but could not read
+            the counts, so the two alerts above are blind. Usually a
+            restarting database; if it persists, the schema moved and the
+            collector's query needs updating.
+
   # ============================================================================
   # TRAEFIK
   #

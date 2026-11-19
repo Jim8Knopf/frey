@@ -64,7 +64,7 @@ code_and_target() { # scheme host path
 # Services behind Authelia's FORWARD AUTH. Traefik bounces an anonymous
 # request to the login page before the app is ever reached, so 302 is the
 # assertion. Keep in step with identity_services.
-PROTECTED=(sonarr radarr lidarr chaptarr prowlarr bazarr
+PROTECTED=(sonarr radarr lidarr soularr chaptarr prowlarr bazarr
            qbittorrent maintainerr jellystat audiobookrequest readmeabook navidrome)
 # Services that log in against Authelia THEMSELVES - `auth: oidc` in
 # identity_services. Traefik does not redirect these, and must not: the app
@@ -99,6 +99,30 @@ for svc in "${PROTECTED[@]}"; do
         pass "${svc}.${DOMAIN}" "302 -> login"
     fi
 done
+
+echo
+echo "Soularr configuration must require sign-in:"
+read -r c target <<<"$(code_and_target https "soularr.${DOMAIN}" /api/config)"
+if [[ "$c" == "302" && "$target" == "https://auth.${DOMAIN}/"* ]]; then
+    pass "soularr.${DOMAIN}/api/config" "302 -> login"
+else
+    fail "soularr.${DOMAIN}/api/config" "expected login redirect, got ${c:-no answer} ${target:-}"
+fi
+read -r c target <<<"$(code_and_target http "soularr.${DOMAIN}" /api/config)"
+if [[ "$c" =~ ^30[1278]$ && "$target" == "https://soularr.${DOMAIN}/api/config" ]]; then
+    pass "soularr HTTP configuration" "redirect -> HTTPS"
+else
+    fail "soularr HTTP configuration" "expected HTTPS redirect, got ${c:-no answer} ${target:-}"
+fi
+
+echo
+echo "Recyclarr should open its Dockge stack:"
+read -r c target <<<"$(code_and_target https "recyclarr.${DOMAIN}" /)"
+if [[ "$c" =~ ^30[1278]$ && "$target" == "https://dockge.${DOMAIN}/compose/media_acquisition" ]]; then
+    pass "recyclarr.${DOMAIN}" "redirect -> Dockge media stack"
+else
+    fail "recyclarr.${DOMAIN}" "expected Dockge redirect, got ${c:-no answer} ${target:-}"
+fi
 
 echo
 echo "OIDC services serve their own page, but their API must refuse anonymously:"

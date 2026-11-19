@@ -1,0 +1,56 @@
+---
+- name: Install terminal tools
+  ansible.builtin.apt:
+    name: '{{ terminal_packages }}'
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install interactive Bash settings
+  ansible.builtin.copy:
+    src: frey-terminal.bash
+    dest: /etc/frey-terminal.bash
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Remove obsolete command spelling helper
+  ansible.builtin.file:
+    dest: /usr/local/bin/frey-command-suggest
+    state: absent
+
+- name: Install Ghostty terminal description
+  ansible.builtin.copy:
+    src: xterm-ghostty.terminfo
+    dest: /usr/local/share/frey-xterm-ghostty.terminfo
+    owner: root
+    group: root
+    mode: '0644'
+  register: terminal_ghostty_source
+
+- name: Check Ghostty terminal description is compiled
+  ansible.builtin.stat:
+    path: /usr/share/terminfo/x/xterm-ghostty
+  register: terminal_ghostty_compiled
+
+- name: Compile Ghostty terminal description
+  ansible.builtin.command:
+    argv:
+      - tic
+      - -x
+      - -o
+      - /usr/share/terminfo
+      - /usr/local/share/frey-xterm-ghostty.terminfo
+  when:
+    - not ansible_check_mode
+    - terminal_ghostty_source.changed or not terminal_ghostty_compiled.stat.exists
+  changed_when: true
+
+- name: Load terminal settings for interactive Bash sessions
+  ansible.builtin.blockinfile:
+    path: /etc/bash.bashrc
+    marker: '# {mark} ANSIBLE MANAGED FREY TERMINAL'
+    block: |
+      if [ -r /etc/frey-terminal.bash ]; then
+        . /etc/frey-terminal.bash
+      fi

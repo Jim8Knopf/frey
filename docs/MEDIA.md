@@ -201,11 +201,41 @@ from the repo instead, set `vault_media_api_keys` in
 | Prowlarr | Byparr | Cloudflare solver. Applied only to indexers carrying the `cloudflare` tag, which `media_indexers` declares and Ansible applies — the tag existing is not enough |
 | Every *arr, Byparr, qBittorrent | `frey-media-dns` | All external DNS, with AAAA stripped. See below |
 | Sonarr, Radarr, Lidarr, Chaptarr | qBittorrent | Download client with the right category |
+| Lidarr | Soularr → slskd → Soulseek | Searches missing albums separately from torrent indexers, downloads through Gluetun and requests Lidarr imports |
 | Sonarr, Radarr, Lidarr, Chaptarr | — | Root folders under `/data/media` |
 | Bazarr | Sonarr, Radarr | Templated `config.yaml` |
 | Ansible | Sonarr, Radarr | Language custom formats and their scores, on every quality profile |
 | Recyclarr | Sonarr, Radarr | TRaSH quality profiles and custom formats, nightly — *when it can reach the guides* |
 | Unpackerr | Sonarr, Radarr, Lidarr | Archive extraction |
+
+Soularr searches monitored missing albums periodically and matches track names;
+it is separate from Lidarr's interactive torrent search and queue. Downloads
+and incomplete files are under `/data/slskd`, on the same filesystem as the
+music library. Soulseek transfers stop when the uplink is unavailable or
+explicitly metered and resume on an unmetered link. The generated Soulseek
+account and API credentials live in `/opt/frey/appdata/.media-keys.json`;
+back this file up securely to retain the account across a rebuild. No music
+folder is shared by default, so some peers may decline transfers. Soulseek
+uses the VPN without an inbound forwarded port, which may limit reachable
+peers. Use `docker logs soularr` and `docker logs slskd` to troubleshoot.
+Each cycle looks for up to two albums, preferring 320 kbps MP3, then 256 or
+192 kbps MP3, with FLAC as a fallback. Soularr matches reported bitrates
+exactly, so MP3s with missing or different bitrate metadata may be skipped.
+A cycle waits for its transfers to finish,
+and the next begins 30 minutes later; config changes take effect on the next
+cycle. Peer queues, the uplink and available formats still determine speed.
+Lidarr's `Frey Music` profile accepts 192 kbps and better lossy audio, with
+lossless as a fallback ranked below lossy formats. It does not automatically
+upgrade existing files. Artists using the unrestricted `Any` profile are
+switched to `Frey Music`; explicitly selected profiles are left alone.
+The `frey-lidarr-quality` timer also checks newly added artists every ten
+minutes, because Lidarr's add-artist UI can select `Any` despite the music
+folder's default.
+The `frey-soulseek-recover` timer checks older completed folders for albums
+left behind by an interrupted Soularr run. It asks Lidarr to import only a
+fully matched, complete album with no existing tracks when no transfers are active,
+and keeps the downloaded files. Check `journalctl -u frey-soulseek-recover`
+for recovery results.
 
 For audiobook requests, select `de` or an English region in the search form.
 AudioBookRequest marks a request as downloaded when Prowlarr accepts it, not
@@ -488,7 +518,7 @@ catches transitions that produce no event, such as signing into a portal from
 a phone on FreyHub, which flips the Pi's verdict without any interface
 changing state.
 
-When the uplink returns, the gate tests Prowlarr, Sonarr and Radarr indexers
+When the uplink returns, the gate tests Prowlarr, Sonarr, Radarr and Lidarr indexers
 to clear stale failures. It also checks their health while online and retries
 failed tests at most every 30 minutes. Unavailable indexers or credentials
 still need attention if they do not recover; check the gate's journal with

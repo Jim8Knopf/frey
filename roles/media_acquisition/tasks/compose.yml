@@ -1,4 +1,30 @@
 ---
+- name: Check Soulseek configuration directories in check mode
+  ansible.builtin.stat:
+    path: "{{ media.appdata_dir }}/{{ item }}"
+  loop: [slskd, soularr]
+  register: soulseek_config_dirs
+  when: ansible_check_mode
+  tags: [media, media_acquisition, soulseek_tuning]
+
+- name: Configure Soulseek client and Lidarr bridge
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ media.appdata_dir }}/{{ item.dest }}"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "0600"
+  loop:
+    - {src: slskd.yml.j2, dest: slskd/slskd.yml}
+    - {src: soularr.ini.j2, dest: soularr/config.ini}
+  when:
+    - media_acquisition.services.slskd.enabled | bool
+    - media_acquisition.services.soularr.enabled | bool
+    - not ansible_check_mode or (soulseek_config_dirs.results | default([]) | selectattr('stat.isdir', 'defined') | selectattr('stat.isdir') | list | length == 2)
+  no_log: true
+  register: soulseek_configuration
+  tags: [media, media_acquisition, soulseek_tuning]
+
 - name: Deploy Recyclarr configuration
   # Ansible owns this one outright: it is the config-as-code definition of the
   # quality profiles, so drift should be corrected, not preserved.
@@ -167,6 +193,41 @@
   tags:
     - media
     - media_acquisition
+
+- name: Restart Soulseek client after configuration changes
+  community.docker.docker_container:
+    name: slskd
+    state: started
+    restart: true
+  when:
+    - not ansible_check_mode
+    - soulseek_configuration.results | default([]) | selectattr('item.src', 'equalto', 'slskd.yml.j2') | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0
+    - media_acquisition.services.slskd.enabled | bool
+  tags: [media, media_acquisition]
+
+- name: Wait for the Soulseek client after configuration changes
+  community.docker.docker_container_info:
+    name: slskd
+  register: slskd_after_restart
+  until: slskd_after_restart.container.State.Health.Status | default('') == 'healthy'
+  retries: 30
+  delay: 5
+  when:
+    - not ansible_check_mode
+    - soulseek_configuration.results | default([]) | selectattr('item.src', 'equalto', 'slskd.yml.j2') | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0
+    - media_acquisition.services.soularr.enabled | bool
+  tags: [media, media_acquisition]
+
+- name: Restart Soularr after configuration changes
+  community.docker.docker_container:
+    name: soularr
+    state: started
+    restart: true
+  when:
+    - not ansible_check_mode
+    - soulseek_configuration.changed | default(false)
+    - media_acquisition.services.soularr.enabled | bool
+  tags: [media, media_acquisition]
 
 - name: Pull and recreate pinned media acquisition images
   community.docker.docker_compose_v2:

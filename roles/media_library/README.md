@@ -199,4 +199,4 @@ curl -sS -H "Host: jellyfin.frey" http://10.20.0.1/Library/VirtualFolders \
   `frey_proxy`. Turn the pair off with
   `media_library.services.jellystat.enabled: false` if you want the RAM back.
 - There is no HTTPS yet, so everything is plain `http://`. Some mobile apps
-  insist on TLS; that waits on the Frey root CA noted in `docs/IMPROVEMENTS.md`.
+  insist on TLS; clients must trust the Frey root CA.

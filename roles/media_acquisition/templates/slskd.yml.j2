@@ -1,0 +1,25 @@
+directories:
+  downloads: /data/slskd/complete
+  incomplete: /data/slskd/incomplete
+shares:
+  directories: []
+transfers:
+  download:
+    slots: 32
+  upload:
+    slots: 2
+    speed_limit: 32
+web:
+  authentication:
+    username: frey
+    password: {{ media_secrets.slskd_web_password | to_json }}
+    api_keys:
+      soularr:
+        key: {{ media_secrets.slskd_api | to_json }}
+        role: readwrite
+        cidr: 0.0.0.0/0,::/0
+soulseek:
+  username: {{ ('frey' ~ media_secrets.soulseek_account[:12]) | to_json }}
+  password: {{ media_secrets.soulseek_password | to_json }}
+  distributed_network:
+    disable_children: true

@@ -140,7 +140,7 @@ data onto the SD card.
 
 `/opt/frey/docker` (set by `service_proxy`) and `/opt/frey/appdata` land on
 NVMe automatically, because the whole root filesystem is now NVMe. That is
-what `docs/ARCHITECTURE.md` assumes.
+what `README.md` assumes.
 
 Swap stays on `zram` (compressed RAM) rather than moving to disk, which avoids
 pointless NVMe write wear.

@@ -24,7 +24,7 @@ sections:
 {% set entries = section.services | select('in', identity_services) | list %}
 {% set visible = [] %}
 {% for name in entries %}
-{% set enabled = media_enable.get(name, monitoring_switches.get(name, true)) %}
+{% set enabled = media_enable.get(name, monitoring_switches.get(name, true)) and (name != 'recyclarr' or monitoring_enable.dockge) %}
 {% if enabled %}{% set _ = visible.append(name) %}{% endif %}
 {% endfor %}
 {% if visible | length > 0 %}

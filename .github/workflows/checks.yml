@@ -44,25 +44,25 @@ jobs:
         # no change to this file.
         run: |
           for dir in tests roles/*/tests; do
-            # A tests directory with no PYTHON tests is not a failure, and
-            # saying so is now necessary: Python 3.12+ exits 5 from
-            # `unittest discover` when nothing ran, and roles/media_library/tests
-            # holds JavaScript. Globbing roles/*/tests is what makes a new
-            # role's tests run with no edit here, so the guard belongs beside
-            # the glob rather than in it.
+            # A tests directory holding no Python tests is not a failure, and
+            # must be skipped rather than discovered: since Python 3.12
+            # `unittest discover` exits 5 when it finds nothing, so globbing
+            # the directories turned the FIRST such directory into a red CI
+            # run. roles/media_library/tests is exactly that - four
+            # JavaScript tests and no Python - and it broke every build from
+            # the commit that added it until this one, on a step whose output
+            # says only "NO TESTS RAN".
             if compgen -G "$dir/test_*.py" > /dev/null; then
               python3 -m unittest discover -s "$dir" -p 'test_*.py'
             else
-              echo "no Python tests in $dir - skipping"
+              echo "no Python tests in $dir"
             fi
           done
-          # The Node tests, for exactly the reason the Python ones are
-          # globbed: they were in the tree and ran nowhere. Plain `assert`,
-          # no package.json, no install step - node is preinstalled on
-          # ubuntu-latest.
-          for file in roles/*/tests/test_*.js tests/test_*.js; do
+          # The JavaScript half, globbed for the same reason the Python half
+          # is: these four had never run in CI at all. They need only Node
+          # built-ins, which ubuntu-latest already has.
+          for file in tests/test_*.js roles/*/tests/test_*.js; do
             [ -e "$file" ] || continue
-            echo "node $file"
             node "$file"
           done
           # Offline test scripts: these take no arguments and need no host.

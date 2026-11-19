@@ -1,0 +1,25 @@
+---
+# Gluetun serves the profile it was started with, so rewriting that profile
+# changes nothing by itself -- the trap this repo keeps meeting, where a
+# setting correct on disk is not the setting actually running.
+#
+# THIS MUST RUN BEFORE compose.yml. The download clients declare
+# `depends_on: gluetun: service_healthy`, so a Compose run against a tunnel
+# still holding a dead gateway fails outright with "dependency failed to start:
+# container gluetun is unhealthy" and leaves every client in `Created`. That is
+# the same symptom the stale profile caused in the first place.
+#
+# The helper decides for itself whether anything is needed: it reconnects only
+# when the profile is newer than the running tunnel, skips cleanly when Compose
+# has not created the tunnel yet (a first install), and clears its own marker
+# otherwise -- so this is a no-op whenever nothing changed and the second
+# deploy reports 0 changed.
+- name: Reconnect the VPN after a Riseup profile change
+  ansible.builtin.command: /usr/local/bin/frey-riseup-renew --restart
+  register: riseup_reconnect
+  changed_when: "'reconnected' in riseup_reconnect.stdout or 'updated' in riseup_reconnect.stdout"
+  when:
+    - media_vpn.enabled | bool
+    - media_vpn.riseup | default(false) | bool
+    - not ansible_check_mode
+  tags: [media, media_acquisition]

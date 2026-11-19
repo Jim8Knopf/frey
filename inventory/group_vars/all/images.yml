@@ -1,4 +1,5 @@
 ---
+immich_version: "v3.4.1"
 silverbullet_version: "2.12.1"
 # b12019, published 2026-10-31, is the first pin verified against the served
 # model: it maps architecture "qwen35" and the "qwen3vl_merger" projector that
@@ -11,7 +12,7 @@ local_ai_llama_version: "server-b12019"
 # size that decides whether it is usable at all is a property of the release.
 local_ai_hermes_version: "v0.23.0"
 # Container image tags for every active Frey service.
-# Edit the tag here, then deploy the affected role (see docs/IMAGES.md).
+# Edit the tag here, then deploy the affected role (see README.md).
 # Quote new tags, especially tags that resemble numbers.
 # Confirm ARM64 support and review migration notes before upgrading.
 
@@ -53,6 +54,8 @@ media_versions:
   sonarr: "version-4.0.20.3014"
   radarr: "version-6.4.4.10685"
   lidarr: "version-3.1.6.5079"
+  slskd: "0.26.2"
+  soularr: "v1.2.3"
   bazarr: "version-v1.6.2"
   qbittorrent: "version-5.3.0_v2.1.2"
   # Chaptarr: successor to Readarr, which was retired in June 2025.

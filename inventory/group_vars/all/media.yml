@@ -98,10 +98,52 @@ media_indexers:
     definition: internetarchive
     audiobooks: true
 
-# Permit 15 concurrent downloads and reserve three more active-torrent slots
-# for the existing upload limit. qBittorrent's global limit applies to both.
+# ==============================================================================
+# QBITTORRENT CONCURRENCY AND CONNECTION BUDGET
+#
+# Keep a bounded connection budget for a mobile link while allowing more
+# downloads to make progress concurrently.
+#
+# Measured on the uplink at Hobbiton Tours Free Wifi, 2026-11-09: 2.4 GHz at
+# -72 dBm, negotiated 13 Mbit/s MCS 1, which delivered 72 KB/s host-side and
+# RTT to the VPN endpoint swinging between 315 ms and 1940 ms. That jitter is
+# the tell - it is a queue filling up, not distance.
+#
+# On that particular link fifteen simultaneous downloads shared 72 KB/s and
+# none finished quickly. The requested setting below allows fifteen; on a weak
+# uplink that trades time to finish each item for more simultaneous progress.
+#
+# The connection caps exist for the same reason. qBittorrent's defaults - 500
+# global connections, 100 per torrent - are a sensible home-fibre figure and a
+# denial of service against a 0.6 Mbit/s radio: every one of those sockets
+# wants a handshake, and on a 300 ms+ path with packet loss most of them time
+# out and are retried. Raise all of these on a venue with real bandwidth; the
+# numbers below are the floor that keeps a bad link usable.
+#
+# Re-measured at the SAME venue on 2026-11-19, and it is a different link now:
+# 400-600 KiB/s sustained through the tunnel, five to eight times the 72 KB/s
+# above. So the global cap was raised 100 -> 200 and the per-torrent cap
+# 30 -> 40, because at 100 the cap itself had become the fault:
+#
+#   Measured 95 of 100 global slots in use. The 13 torrents that were moving
+#   held 89 of them; the 17 stalled ones held SIX between them. Their trackers
+#   were answering and offering up to 157 seeds, and there was no slot left to
+#   dial any of them. A torrent at 90.3% with 157 seeds in its swarm had one
+#   connected peer.
+#
+# Still well short of qBittorrent's 500/100 default, and deliberately: RTT to
+# the VPN endpoint on this link still swings 206-751 ms with 173 ms mdev, which
+# is the same queue-filling signature as before. The bandwidth improved; the
+# latency did not. Raise further only with a measurement, and drop back to
+# 100/30 on a link as poor as the one first measured here.
+# ==============================================================================
 media_qbittorrent_max_active_downloads: 15
-media_qbittorrent_max_active_torrents: 18
+# Leave room for stalled torrents and uploads alongside the 15 downloads.
+media_qbittorrent_max_active_torrents: 30
+media_qbittorrent_max_connections: 200
+media_qbittorrent_max_connections_per_torrent: 40
+media_qbittorrent_max_uploads: 8
+media_qbittorrent_max_uploads_per_torrent: 3
 
 media_enable:
 
@@ -125,6 +167,9 @@ media_enable:
   # Lidarr's upstream metadata server has been unreliable through 2026, so
   # adding artists and imports break periodically. Not a configuration fault.
   lidarr: true
+  # Soulseek searches supplement the torrent indexers for missing albums.
+  slskd: true
+  soularr: true
   chaptarr: true
   bazarr: true
   qbittorrent: true
@@ -137,6 +182,10 @@ media_enable:
 
 media_vpn:
   enabled: true
+  # Riseup's current tunnel has no usable IPv6 address. Disable IPv6 in the
+  # VPN namespace so search clients do not try unreachable AAAA records.
+  # Enable only after configuring and verifying a dual-stack VPN tunnel.
+  ipv6_enabled: false
 
   # Your provider's name as Gluetun spells it: mullvad, protonvpn, nordvpn,
   # airvpn, ivpn, surfshark, windscribe, privateinternetaccess, custom, ...
@@ -144,12 +193,55 @@ media_vpn:
   provider: custom
 
   # wireguard or openvpn
-  type: wireguard
+  type: openvpn
+  # Riseup's OpenVPN over TCP works on restrictive uplinks. The helper
+  # obtains and renews a short-lived client certificate through the VPN.
+  riseup: true
 
-  # Where to exit. Leave empty to let the provider choose.
-  # Keep this in mind for a van: an exit far from where you are parked makes
-  # every download slower.
+  # This setting applies to built-in providers, not the custom Riseup profile.
+  #
+  # THIS IS THE LARGEST SINGLE LEVER ON DOWNLOAD SPEED, and it has already
+  # cost us once. Measured 2026-11-09, parked in New Zealand: the configured
+  # endpoint answered at 315 ms base RTT, so it is most of a planet away --
+  # Australia would be ~30 ms and the US west coast ~150 ms. On the venue's
+  # weak uplink that cost a factor of six (72 KB/s host, 11.6 KB/s tunnelled);
+  # on a clean 5 GHz link an hour later the same exit cost ~40% (1.2 MB/s
+  # against 735 KB/s). Distance and a bad link multiply rather than add: every
+  # lost packet costs a 315 ms recovery, so the window never opens. BitTorrent
+  # feels it more than a single download does, because per-connection
+  # throughput is bounded by window/RTT and that is paid once per peer.
+  #
+  # With `provider: custom` this list does nothing. The Riseup helper probes
+  # every gateway in the provider's authenticated list and writes the reachable
+  # ones into the profile nearest-first, so the exit is chosen on measured
+  # latency from wherever the van is actually parked.
   server_countries: []
+
+  # ---------------------------------------------------------------------------
+  # INBOUND PORT
+  #
+  # Gluetun's killswitch drops everything arriving on the tunnel unless a port
+  # is explicitly opened, so qBittorrent reports `firewalled` and can only
+  # reach peers that are themselves connectable.
+  #
+  # Do not reach for this on the strength of `firewalled` alone. Measured
+  # 2026-11-09, that status sat alongside zero connected seeds and zero DHT
+  # nodes on a weak uplink, and both recovered by themselves on a good one --
+  # 363 DHT nodes and `connected` within minutes, nothing here changed. Fix
+  # the link first and only set this if it persists afterwards.
+  #
+  # Set this to the port your provider forwards to you and qBittorrent starts
+  # accepting incoming peers: the port is opened on the tunnel AND becomes
+  # qBittorrent's listen port, because a forwarded port only helps if the
+  # application is actually listening on that exact number.
+  #
+  # Leave empty if your provider does not offer port forwarding - many do not,
+  # and nothing here breaks without it. You simply stay connectable-peers-only.
+  # Note that Gluetun cannot negotiate this for a `custom` provider; it has an
+  # automatic path for PIA and ProtonVPN only, so for anything else the port
+  # comes from the provider's control panel and is pasted here.
+  # ---------------------------------------------------------------------------
+  forwarded_port: ""
 
   credentials:
     wireguard_private_key: "{{ vault_generous_wireguard_private_key | default('') }}"

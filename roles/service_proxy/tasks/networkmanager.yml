@@ -1,0 +1,215 @@
+---
+# Some images ship an Ethernet connection with match: {}. NetworkManager can
+# apply it to Docker veth devices and detach them from their bridges.
+- name: Check the netplan Ethernet profile
+  ansible.builtin.command:
+    argv: [nmcli, -g, connection.interface-name, connection, show, netplan-eth0]
+  register: service_proxy_eth0_binding
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Read the Ethernet profile UUID
+  ansible.builtin.command:
+    argv: [nmcli, -g, connection.uuid, connection, show, netplan-eth0]
+  register: service_proxy_eth0_uuid
+  changed_when: false
+  check_mode: false
+  when: service_proxy_eth0_binding.rc == 0
+
+- name: Set the netplan Ethernet profile path
+  ansible.builtin.set_fact:
+    service_proxy_eth0_netplan: "/etc/netplan/90-NM-{{ service_proxy_eth0_uuid.stdout | trim }}.yaml"
+  when: service_proxy_eth0_binding.rc == 0
+
+- name: Inspect the Ethernet netplan source
+  ansible.builtin.slurp:
+    src: "{{ service_proxy_eth0_netplan }}"
+  register: service_proxy_eth0_source
+  when: service_proxy_eth0_binding.rc == 0
+
+- name: Check the Frey Ethernet override
+  ansible.builtin.stat:
+    path: /etc/netplan/99-frey-eth0-match.yaml
+  register: service_proxy_eth0_override
+  when: service_proxy_eth0_binding.rc == 0
+
+- name: Inspect an existing Frey Ethernet override
+  ansible.builtin.slurp:
+    src: /etc/netplan/99-frey-eth0-match.yaml
+  register: service_proxy_eth0_override_source
+  when:
+    - service_proxy_eth0_binding.rc == 0
+    - service_proxy_eth0_override.stat.exists
+
+- name: Verify the existing Ethernet override
+  ansible.builtin.assert:
+    that:
+      - "'Managed by Ansible. Keep the generic Ethernet profile off Docker veths.' in (service_proxy_eth0_override_source.content | b64decode)"
+      - "(service_proxy_eth0_override_source.content | b64decode | from_yaml).network.ethernets.eth0.match.name == 'eth0'"
+    fail_msg: The Frey Ethernet override has unexpected contents; refusing to replace it.
+  when:
+    - service_proxy_eth0_binding.rc == 0
+    - service_proxy_eth0_override.stat.exists
+
+- name: Verify the known Ethernet profile
+  ansible.builtin.assert:
+    that:
+      - service_proxy_eth0_uuid.stdout | trim is match('^[0-9a-f-]{36}$')
+      - "'    eth0:' in (service_proxy_eth0_source.content | b64decode)"
+      - service_proxy_eth0_binding.stdout | trim in ['', 'eth0']
+    fail_msg: The netplan-eth0 profile has an unexpected source or binding; refusing to change it.
+  when: service_proxy_eth0_binding.rc == 0
+
+- name: Preview the Ethernet profile repair
+  ansible.builtin.debug:
+    msg: Persist the eth0-only match and reload the profile if it is unbound.
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - service_proxy_eth0_binding.rc == 0
+    - service_proxy_eth0_binding.stdout | trim == '' or not service_proxy_eth0_override.stat.exists
+
+- name: Repair the Ethernet profile with timed rollback
+  when:
+    - not ansible_check_mode
+    - service_proxy_eth0_binding.rc == 0
+    - service_proxy_eth0_binding.stdout | trim == '' or not service_proxy_eth0_override.stat.exists
+  block:
+    - name: Ensure the netplan rollback directory exists
+      ansible.builtin.file:
+        path: /var/lib/frey/netplan-disabled
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Back up the original netplan profile
+      ansible.builtin.copy:
+        src: "{{ service_proxy_eth0_netplan }}"
+        dest: /var/lib/frey/netplan-disabled/frey-unbound-eth0.yaml.backup
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0600'
+        force: false
+
+    - name: Snapshot the current netplan profile for this repair
+      ansible.builtin.copy:
+        src: "{{ service_proxy_eth0_netplan }}"
+        dest: /run/frey-eth0-before.yaml
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Install the temporary Ethernet profile rollback script
+      ansible.builtin.copy:
+        dest: /run/frey-eth0-profile-rollback.sh
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          #!/bin/sh
+          set -e
+          cp -p /run/frey-eth0-before.yaml {{ service_proxy_eth0_netplan | quote }}
+          {% if not service_proxy_eth0_override.stat.exists %}
+          rm -f /etc/netplan/99-frey-eth0-match.yaml
+          {% endif %}
+          netplan generate
+          nmcli connection reload
+
+    - name: Arm the Ethernet profile rollback timer
+      ansible.builtin.command:
+        argv: [systemd-run, --unit=frey-eth0-profile-rollback, --on-active=180s, /bin/sh, /run/frey-eth0-profile-rollback.sh]
+      changed_when: false
+
+    - name: Persist the physical Ethernet match separately from NetworkManager's file
+      ansible.builtin.copy:
+        dest: /etc/netplan/99-frey-eth0-match.yaml
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          # Managed by Ansible. Keep the generic Ethernet profile off Docker veths.
+          network:
+            version: 2
+            ethernets:
+              eth0:
+                match:
+                  name: eth0
+
+    - name: Check which device is using the unbound Ethernet profile
+      ansible.builtin.command:
+        argv: [nmcli, -g, GENERAL.DEVICES, connection, show, netplan-eth0]
+      register: service_proxy_eth0_active_device
+      changed_when: false
+      when: service_proxy_eth0_binding.stdout | trim == ''
+
+    - name: Refuse to alter a profile attached to a physical device
+      ansible.builtin.assert:
+        that: service_proxy_eth0_active_device.stdout | trim == '' or service_proxy_eth0_active_device.stdout | trim is match('^veth')
+        fail_msg: The Ethernet profile is active on a non-Docker interface; refusing to replace it.
+      when: service_proxy_eth0_binding.stdout | trim == ''
+
+    - name: Remove the stale unbound NetworkManager connection
+      ansible.builtin.command:
+        argv: [nmcli, connection, delete, uuid, "{{ service_proxy_eth0_uuid.stdout | trim }}"]
+      changed_when: false
+      when: service_proxy_eth0_binding.stdout | trim == ''
+
+    - name: Restore the original profile source after removing the stale connection
+      ansible.builtin.copy:
+        src: /run/frey-eth0-before.yaml
+        dest: "{{ service_proxy_eth0_netplan }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0600'
+      when: service_proxy_eth0_binding.stdout | trim == ''
+
+    - name: Generate the merged NetworkManager profile
+      ansible.builtin.command:
+        argv: [netplan, generate]
+      changed_when: false
+
+    - name: Verify the generated Ethernet profile is bound to eth0
+      ansible.builtin.command:
+        argv: [grep, -x, interface-name=eth0, /run/NetworkManager/system-connections/netplan-eth0.nmconnection]
+      changed_when: false
+
+    - name: Load the corrected Ethernet profile if it was unbound
+      ansible.builtin.command:
+        argv: [nmcli, connection, load, /run/NetworkManager/system-connections/netplan-eth0.nmconnection]
+      changed_when: false
+      when: service_proxy_eth0_binding.stdout | trim == ''
+
+    - name: Verify the live Ethernet profile binding
+      ansible.builtin.command:
+        argv: [nmcli, -g, connection.interface-name, connection, show, netplan-eth0]
+      register: service_proxy_eth0_verify
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: service_proxy_eth0_verify.stdout | trim == 'eth0'
+
+    - name: Disarm the Ethernet profile rollback timer
+      ansible.builtin.command:
+        argv: [systemctl, stop, frey-eth0-profile-rollback.timer]
+      changed_when: false
+  rescue:
+    - name: Restore the original Ethernet profile
+      ansible.builtin.command:
+        argv: [/bin/sh, /run/frey-eth0-profile-rollback.sh]
+      register: service_proxy_eth0_rollback
+      changed_when: false
+      failed_when: false
+    - name: Stop the Ethernet profile rollback timer after successful restoration
+      ansible.builtin.command:
+        argv: [systemctl, stop, frey-eth0-profile-rollback.timer]
+      changed_when: false
+      failed_when: false
+      when: service_proxy_eth0_rollback.rc == 0
+    - name: Report the unsuccessful Ethernet profile repair
+      ansible.builtin.fail:
+        msg: Could not safely bind netplan-eth0; rollback was attempted.

@@ -7,6 +7,12 @@ Provides the local service foundation:
 - A shared Docker network, `frey_proxy`.
 - Traefik listening on the private Frey LAN address only.
 
+The role binds the known unbound `netplan-eth0` NetworkManager profile to
+physical `eth0`. Without that binding, NetworkManager can claim and detach
+Docker veth interfaces, interrupting containers even while their own health
+checks report healthy. The change has a timed rollback and leaves Wi-Fi profiles
+alone.
+
 New Docker services should join `frey_proxy` and add Traefik labels. DNS is handled by the gateway wildcard, so a new service does not need a DNS change.
 
 Docker assigns new automatically addressed networks a /24 from
@@ -20,16 +26,4 @@ older `local-ai_ai_private` network on `172.20.0.0/16` can capture the APNK
 Library DNS servers at `172.20.1.15` and `172.20.1.16`. The legacy local AI
 stack must be assessed and migrated separately if it is still present.
 
-Example labels for `immich.frey`:
-
-```yaml
-labels:
-  traefik.enable: "true"
-  traefik.docker.network: frey_proxy
-  traefik.http.routers.immich.rule: Host(`immich.frey`)
-  traefik.http.routers.immich.entrypoints: web
-  traefik.http.routers.immich.middlewares: secure-headers@file
-  traefik.http.services.immich.loadbalancer.server.port: "2283"
-networks:
-  - frey_proxy
-```
+See [Adding Modules](../../docs/ADDING_MODULES.md) for service routing and authentication.

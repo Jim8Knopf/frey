@@ -64,9 +64,11 @@ frey:
       - rpi_nvme
       - service_proxy
       - security_baseline
+      - terminal
       - frey_pki
       - identity
       - silverbullet
+      - immich
       - local_ai
       - media_acquisition
       - media_library
@@ -94,6 +96,10 @@ frey:
         role: security_baseline
         tags:
           - security
+      terminal:
+        role: terminal
+        tags:
+          - terminal
       frey_pki:
         role: frey_pki
         tags:
@@ -124,6 +130,11 @@ frey:
         role: dashy
         tags:
           - dashy
+      immich:
+        role: immich
+        tags:
+          - immich
+          - photos
       silverbullet:
         role: silverbullet
         tags:
