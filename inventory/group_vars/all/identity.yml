@@ -70,8 +70,9 @@ identity_hosts:
 # Removing someone here does NOT delete their account, deliberately: a typo
 # should not be able to destroy a directory. Delete them in LLDAP's web UI.
 #
-# Emails are @frey on purpose. They are login identifiers, nothing sends mail,
-# and there is no reason to commit real external addresses to a git repository.
+# Emails are @hub.frey on purpose. They are login identifiers, nothing sends
+# mail, and there is no reason to commit real external addresses to a git
+# repository - but they still have to PARSE as addresses. See the note below.
 # ==============================================================================
 # A NOTE ON THE EMAIL DOMAIN, because it was wrong here until 2026-11-20.
 #
