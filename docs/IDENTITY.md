@@ -523,14 +523,13 @@ The old stack ran Authentik, and the reason it was replaced is maintenance, not
 features.
 
 Authentik's only infrastructure-as-code path is blueprints, and blueprints were
-what failed. `archive/legacy-stack/roles/infrastructure/tasks/main.yml` runs to
-947 lines, much of it machinery to force blueprints to re-apply — including SQL
+what failed. The old stack's infrastructure role ran to 947 lines, much of it
+machinery to force blueprints to re-apply — including SQL
 against Authentik's own Postgres to find and delete rows in the
 `blueprintinstance` table — plus five Django ORM scripts under
 `authentik-ensure/` for the things blueprints could not express at all.
-Jellyfin's LDAP auth never worked; see
-`archive/legacy-stack/LDAP_SSO_ISSUES.md`, still open, root cause being that an
-Authentik service account cannot do a password bind. Audiobookshelf and Immich
+Jellyfin's LDAP auth never worked, the root cause being that an Authentik
+service account cannot do a password bind. Audiobookshelf and Immich
 needed manual clicking anyway. Secrets had to be hand-generated before the
 first deploy.
 

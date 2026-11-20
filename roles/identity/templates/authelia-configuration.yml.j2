@@ -107,8 +107,7 @@ identity_validation:
 # The bind account is a normal read-only user, NOT the LLDAP admin. The old
 # stack's equivalent is the single thing that broke it: an Authentik service
 # account cannot do a password bind at all, so Jellyfin's LDAP auth failed with
-# "Invalid Credentials" and was never fixed. See
-# archive/legacy-stack/LDAP_SSO_ISSUES.md.
+# "Invalid Credentials" and was never fixed.
 # ------------------------------------------------------------------------------
 authentication_backend:
   password_reset:

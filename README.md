@@ -27,7 +27,8 @@ All settings below live in `inventory/group_vars/all/`.
 Roles contain implementation defaults, templates and tasks. Monitoring and
 media acquisition have short `tasks/main.yml` entry points; follow their imports
 to edit a particular part. Generated files under `/opt/frey` belong to Ansible.
-The old stack in `archive/legacy-stack/` is reference-only.
+The old stack is not in the tree. It is in git history:
+`git log -- archive/legacy-stack`.
 
 ## Stack layout
 

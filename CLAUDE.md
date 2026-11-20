@@ -353,8 +353,12 @@ A pure Jinja reference like `"{{ vault_x | default('') }}"` is fine.
   are running. `playbooks/nvme_migrate.yml` is destructive and not part of a
   normal deploy; on an already-migrated Pi it detects that and ends cleanly, so
   sweeping every playbook in `playbooks/` is safe.
-- Don't reference anything under `archive/legacy-stack/`. It is the previous
-  stack, kept for reference, and is not on the role path.
+- **The previous stack is no longer in the tree.** `archive/legacy-stack/`
+  was 167 files - a third of everything tracked - of a stack built on
+  Authentik that nothing on the role path could load. It is in git history
+  (`git log -- archive/legacy-stack`) if a post-mortem is ever needed; the
+  conclusions that still matter were already copied into the live comments
+  that used to cite it.
 - Don't pin a `:latest` image. Everything is version-pinned because an
   unattended pull on campground WiFi can hand you a broken container with no
   internet left to fix it. `identity_versions.authelia` especially: Authelia's

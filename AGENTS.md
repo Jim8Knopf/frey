@@ -8,7 +8,8 @@ loads enabled modules from the registry in `inventory/group_vars/all/main.yml`.
 Roles live in `roles/<module>/` with the usual `tasks/`, `defaults/`,
 `templates/`, `files/`, and `handlers/` layout. Day-to-day module settings live
 in `inventory/group_vars/all/{identity,media,monitoring}.yml`; host inventory is
-`inventory/hosts.yml`. `archive/legacy-stack/` is reference-only and must not be
+`inventory/hosts.yml`. The previous stack is no longer in the tree; it is in
+git history (`git log -- archive/legacy-stack`) and must not be
 used by active roles. See `docs/ADDING_MODULES.md` before creating a module.
 
 ## Build, Test, and Development Commands

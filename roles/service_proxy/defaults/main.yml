@@ -56,8 +56,8 @@ service_proxy:
     # the same percentage, and that small files upload fine.
     #
     # This is the same bug the previous stack hit on Audiobookshelf and
-    # Immich; see archive/legacy-stack/LDAP_SSO_ISSUES.md, issue 3. Half of
-    # that fix was removing a `buffering` middleware, which this stack never
+    # Immich. Half of that fix there was removing a `buffering` middleware,
+    # which this stack never
     # had - templates/traefik-dynamic.yml.j2 defines only secure-headers and
     # to-canonical. This is the other half.
     #

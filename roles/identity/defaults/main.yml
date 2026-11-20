@@ -22,12 +22,13 @@
 # WHY NOT AUTHENTIK, WHICH THE OLD STACK USED
 #
 # Authentik's only infrastructure-as-code path is blueprints, and blueprints
-# are what failed. archive/legacy-stack/roles/infrastructure/tasks/main.yml
-# ran to 947 lines, much of it machinery to force blueprints to re-apply -
+# are what failed. The old stack's infrastructure role ran to 947 lines,
+# much of it machinery to force blueprints to re-apply -
 # including SQL against Authentik's own Postgres to find and delete rows in
 # the blueprintinstance table - plus five Django ORM scripts under
 # authentik-ensure/ for the things blueprints could not express at all.
-# Jellyfin LDAP never worked; see archive/legacy-stack/LDAP_SSO_ISSUES.md.
+# Jellyfin LDAP never worked at all: an Authentik service account cannot do
+# a password bind, and that was never resolved.
 #
 # Authelia's entire state is this one YAML file. There is no API to call, no
 # database to reconcile and nothing to re-apply: render the file, validate it,
