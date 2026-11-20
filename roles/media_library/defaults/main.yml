@@ -14,6 +14,61 @@
 media_library:
   stack_dir: "{{ frey.base_dir }}/stacks/media_library"
 
+  # ----------------------------------------------------------------------------
+  # NAVIDROME SMART PLAYLISTS
+  #
+  # A smart playlist is a set of rules, not a list of tracks: Navidrome
+  # re-evaluates it on every open, so it never goes stale as Lidarr imports
+  # more music. Each entry here becomes a `<name>.nsp` file in the root of the
+  # music library, which the scanner imports.
+  #
+  # Declared here rather than dropped on the Pi by hand for the usual reason -
+  # a file nothing records is a file a rebuild loses. `rules` is written out
+  # verbatim as the .nsp body, so anything Navidrome's syntax accepts can go
+  # in it.
+  #
+  # TWO TRAPS, both from upstream's own documentation:
+  #
+  #   - The examples on navidrome.org are JSON with `// comments` in them, and
+  #     a .nsp file is parsed as strict JSON. Pasting a doc example verbatim
+  #     gives you a playlist that never appears, with the reason only in
+  #     Navidrome's log. Writing the rules as YAML here means Ansible emits
+  #     valid JSON and that whole class of mistake cannot happen.
+  #
+  #   - Removing an entry from this list does NOT delete the .nsp file from the
+  #     Pi, deliberately: this directory holds the music library, and a module
+  #     that sweeps files it does not recognise out of the media tree is a
+  #     worse idea than an orphaned playlist. Delete the file by hand.
+  # ----------------------------------------------------------------------------
+  navidrome:
+    smart_playlists:
+      # Everything, shuffled, capped at 500 tracks. `playCount > -1` is
+      # upstream's idiom for "match every track", since no track can have
+      # played a negative number of times, and `sort: random` is re-rolled
+      # each time the playlist is opened rather than fixed at import.
+      #
+      # `0` would NOT mean the same as `-1`: it would select only what someone
+      # has already played, which on a fresh library is an empty playlist.
+      #
+      # The limit matters more than it looks. Random ordering over a whole
+      # library is the case upstream calls expensive, and this one is served
+      # by a Pi 5 off a van's battery.
+      #
+      # This playlist was hand-written on the Pi first, as `random.nsp`
+      # holding `limit: 500` - unquoted, with no comma, copied from the
+      # documentation's commented-out line. Navidrome re-imported it, dropped
+      # that one malformed line and kept the rest, so the playlist worked and
+      # showed 431 tracks while the cap did nothing at all. Nothing was
+      # logged. Declaring it here is what makes the limit real: the name is
+      # kept so the existing playlist is updated rather than duplicated.
+      - name: random
+        rules:
+          all:
+            - gt:
+                playCount: -1
+          sort: random
+          limit: 500
+
   configure:
     enabled: true
     # Same persisted secret file the acquisition module uses, so Seerr can be
