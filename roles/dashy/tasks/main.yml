@@ -3,7 +3,7 @@
   ansible.builtin.assert:
     that:
       - identity_services.dashy.auth == 'oidc'
-      - dashy_version | length > 0
+      - frey_images.dashy | length > 0
 
 - name: Ensure Dashy directories exist
   ansible.builtin.file:

@@ -40,7 +40,7 @@ datasources:
       # needs longer than the 30s default to answer.
       queryTimeout: 120s
       prometheusType: Prometheus
-      prometheusVersion: "{{ monitoring_versions.prometheus | regex_replace('^v', '') }}"
+      prometheusVersion: "{{ frey_images.prometheus.split(':') | last | regex_replace('^v', '') }}"
       # Lets a panel link straight from a metric to the matching logs.
       exemplarTraceIdDestinations: []
 {% endif %}

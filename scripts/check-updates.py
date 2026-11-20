@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""Compare every pinned image version against upstream, and optionally bump it.
+"""Compare every container image against upstream, and optionally bump it.
 
-This replaces scripts/media-check-updates.sh, which covered only
-`media_versions` and kept its own list of where to look upstream - a list that
-had to be edited in a second place every time an image was added, and silently
-reported "no upstream source configured" when it was not. There were eleven
-such pins when this script was written, including every one of monitoring's.
+inventory/group_vars/all/images.yml holds one line per image, registry and
+tag together, and `frey_images` is the only place an image is named. This
+script reads that file, asks each image's upstream where it is now, and can
+rewrite the tags in place.
 
-Now the upstream source lives on the pin's own line in
-inventory/group_vars/all/images.yml as an `# upstream:` marker, and
-tests/test_image_versions.py fails the build if a pin has no marker. One file,
-one place, and a missing source is a red CI run instead of a quiet omission.
+It replaced two overlapping checkers that each knew about some of the images
+and neither knew about eleven: a media-only shell script, and an 88-line
+Python block inside scripts/monitoring-check.sh with its own registry of ten
+repositories. The cause was that the upstream source lived in the script while
+the image lived in images.yml, so adding one meant editing two files and
+forgetting the second produced silence rather than an error.
 
-    scripts/check-updates.py              # what has moved
-    scripts/check-updates.py --apply      # rewrite the pins that moved
-    scripts/check-updates.py --offline    # no network: pins and owners only
-    scripts/check-updates.py --only media # one group or pin
+The source now lives on the image's own line as an `# upstream:` marker, and
+tests/test_image_versions.py fails the build if one is missing.
+
+    scripts/check-updates.py                # what has moved
+    scripts/check-updates.py --apply        # rewrite the tags that moved
+    scripts/check-updates.py --offline      # no network: images and owners
+    scripts/check-updates.py --only jelly   # one image, or any name substring
+
+Only the TAG is ever rewritten; the registry path, the marker and any prose on
+the line survive untouched.
 
 Nothing is deployed. --apply edits one file; it tells you what to run next.
 
@@ -59,19 +66,52 @@ GROUP_RE = re.compile(r'^(?P<key>[a-z0-9_]+):\s*$')
 # --------------------------------------------------------------------------
 # Reading the pins
 # --------------------------------------------------------------------------
+def split_image(reference):
+    """"repo:tag[@sha256:...]" -> (repo, tag, digest).
+
+    The tag is everything after the LAST colon that is not inside a digest and
+    not part of a registry host:port. A reference with no tag at all yields "".
+    """
+    digest = ""
+    body = reference or ""
+    if "@" in body:
+        body, _, digest = body.partition("@")
+    repo, sep, tail = body.rpartition(":")
+    if not sep or "/" in tail:
+        # No tag: either no colon at all, or the colon belonged to a
+        # registry host:port and what followed was a path.
+        return body, "", digest
+    return repo, tail, digest
+
+
+def join_image(repo, tag, digest=""):
+    out = f"{repo}:{tag}" if tag else repo
+    return f"{out}@{digest}" if digest else out
+
+
 class Pin:
-    """One pinned image tag, and where its line is so --apply can rewrite it."""
+    """One image entry, and where its line is so --apply can rewrite it."""
 
     def __init__(self, name, value, marker, lineno, group):
-        self.name = name          # dotted: "media_versions.jellyfin"
-        self.value = value        # "version-2.7.0.5723"
+        self.name = name          # "jellyfin"
+        self.image = value        # "lscr.io/linuxserver/jellyfin:12.3ubu2604-ls56"
+        self.repo, self.value, self.digest = split_image(value)
+        # self.value is the TAG - what is compared against upstream. Named
+        # `value` because every comparison helper below speaks in tags.
         self.marker = marker      # "lsio:prowlarr" or "hold - reason" or None
         self.lineno = lineno      # 0-based index into the file's lines
-        self.group = group        # "media_versions" or "" for a flat pin
+        self.group = group        # "frey_images"
         self.latest = None        # upstream version as upstream spells it
         self.proposed = None      # that version respelled in this pin's shape
         self.state = "unknown"    # held | current | behind | major | unknown
         self.detail = ""
+
+    @property
+    def proposed_image(self):
+        """The full reference --apply would write."""
+        if not self.proposed:
+            return self.image
+        return join_image(self.repo, self.proposed, self.digest)
 
     @property
     def no_apply(self):
@@ -128,7 +168,10 @@ def read_pins(path=IMAGES):
         if not m:
             continue
         key = m.group("key")
-        name = f"{group}.{key}" if group and indent > 0 else key
+        # Everything lives under the single `frey_images:` mapping, so the
+        # group name adds nothing to a pin's identity - "jellyfin" reads
+        # better than "frey_images.jellyfin" in a table and in --only.
+        name = key if group in ("", "frey_images") else f"{group}.{key}"
         marker = (m.group("marker") or "").strip() or None
         pins.append(Pin(name, m.group("value"), marker, i, group if indent else ""))
     return lines, pins
@@ -310,7 +353,7 @@ def owners(pins):
 
     result = {}
     for pin in pins:
-        needle = pin.name  # "media_versions.jellyfin" or "traefik_version"
+        needle = "frey_images.%s" % pin.name
         tags = set()
         for role, blob in searchable.items():
             if needle in blob:
@@ -334,9 +377,9 @@ MARK = {
 
 def report(pins, deploy, show_current):
     width = max((len(p.name) for p in pins), default=10)
-    vwidth = max((len(p.value) for p in pins), default=10)
+    vwidth = min(max((len(p.image) for p in pins), default=10), 58)
     print()
-    print("%s  %s     upstream" % ("pin".ljust(width), "pinned".ljust(vwidth)))
+    print("%s  %s     upstream" % ("image".ljust(width), "deployed".ljust(vwidth)))
     print("-" * (width + vwidth + 30))
     for pin in pins:
         if pin.state == "current" and not show_current:
@@ -350,7 +393,7 @@ def report(pins, deploy, show_current):
             "unknown": lambda: "could not check: %s" % pin.detail,
         }[pin.state]()
         print("%s  %s  %s %s" % (
-            pin.name.ljust(width), pin.value.ljust(vwidth), MARK[pin.state], shown))
+            pin.name.ljust(width), pin.image.ljust(vwidth), MARK[pin.state], shown))
 
     behind = [p for p in pins if p.state == "behind" and not p.no_apply]
     watched = [p for p in pins if p.state == "behind" and p.no_apply]
@@ -373,7 +416,7 @@ def report(pins, deploy, show_current):
               % len(watched))
         print("  version number alone cannot say whether to take them:")
         for pin in watched:
-            print("    %s %s -> %s" % (pin.name, pin.value, pin.proposed))
+            print("    %s %s -> %s" % (pin.name, pin.image, pin.proposed_image))
         print("  Read the release notes and the comment above the pin, then")
         print("  edit inventory/group_vars/all/images.yml by hand.")
     if major:
@@ -381,7 +424,7 @@ def report(pins, deploy, show_current):
         print("%d pin(s) have a new MAJOR version. --apply will not touch these:"
               % len(major))
         for pin in major:
-            print("    %s %s -> %s" % (pin.name, pin.value, pin.proposed))
+            print("    %s %s -> %s" % (pin.name, pin.image, pin.proposed_image))
         print("  A major is a migration, not a bump. Read the release notes,")
         print("  then edit images.yml by hand, or pass --allow-major.")
     if unknown:
@@ -411,12 +454,13 @@ def apply_changes(lines, pins, allow_major):
             continue
         if pin.state == "behind" or (pin.state == "major" and allow_major):
             line = lines[pin.lineno]
-            # Replace only the quoted value, so the trailing marker and any
-            # prose on the line survive exactly as written.
+            # Replace only the TAG inside the quoted reference, so the
+            # registry path, the trailing `# upstream:` marker and any prose
+            # on the line survive exactly as written.
             new_line, count = re.subn(
                 r'(%s:\s*["\']?)%s(["\']?)' % (
-                    re.escape(pin.name.split(".")[-1]), re.escape(pin.value)),
-                lambda m: m.group(1) + pin.proposed + m.group(2),
+                    re.escape(pin.name), re.escape(pin.image)),
+                lambda m: m.group(1) + pin.proposed_image + m.group(2),
                 line, count=1,
             )
             if count != 1:
@@ -469,14 +513,17 @@ def main(argv=None):
     if args.offline:
         if args.json:
             print(json.dumps([
-                {"pin": p.name, "pinned": p.value, "upstream": p.marker,
+                {"image": p.name, "reference": p.image, "tag": p.value,
+                 "upstream": p.marker,
                  "deploy_tags": deploy.get(p.name, [])} for p in pins], indent=2))
         else:
             width = max(len(p.name) for p in pins)
+            iwidth = min(max(len(p.image) for p in pins), 62)
             print()
             for pin in pins:
-                print("%s  %-26s  %-52s  %s" % (
-                    pin.name.ljust(width), pin.value, pin.marker or "NO MARKER",
+                print("%s  %-*s  %-52s  %s" % (
+                    pin.name.ljust(width), iwidth, pin.image,
+                    pin.marker or "NO MARKER",
                     ",".join(deploy.get(pin.name, [])) or "-"))
             print("\n%d pins." % len(pins))
         return 1 if missing else 0
@@ -494,8 +541,10 @@ def main(argv=None):
 
     if args.json:
         print(json.dumps([
-            {"pin": p.name, "pinned": p.value, "upstream_latest": p.latest,
-             "proposed": p.proposed, "state": p.state, "detail": p.detail,
+            {"image": p.name, "reference": p.image, "tag": p.value,
+             "upstream_latest": p.latest, "proposed_tag": p.proposed,
+             "proposed_reference": p.proposed_image if p.proposed else None,
+             "state": p.state, "detail": p.detail,
              "deploy_tags": deploy.get(p.name, [])} for p in pins], indent=2))
     else:
         report(pins, deploy, show_current=args.all)
@@ -510,7 +559,7 @@ def main(argv=None):
         print("Rewrote %d pin(s) in %s:"
               % (len(changed), IMAGES.relative_to(ROOT)))
         for pin in changed:
-            print("    %s  %s -> %s" % (pin.name, pin.value, pin.proposed))
+            print("    %s  %s -> %s" % (pin.name, pin.image, pin.proposed_image))
         print()
         print("Review the diff, then deploy:")
         print("    git diff -- %s" % IMAGES.relative_to(ROOT))

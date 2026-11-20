@@ -27,35 +27,35 @@ monitoring:
   services:
     dockge:
       enabled: "{{ monitoring_enable.dockge | bool }}"
-      image: "louislam/dockge:{{ monitoring_versions.dockge }}"
+      image: "{{ frey_images.dockge }}"
       container_name: dockge
       port: 5001
       mem_limit: 768m
 
     prometheus:
       enabled: "{{ monitoring_enable.metrics | bool }}"
-      image: "prom/prometheus:{{ monitoring_versions.prometheus }}"
+      image: "{{ frey_images.prometheus }}"
       container_name: prometheus
       port: 9090
       mem_limit: 1536m
 
     alertmanager:
       enabled: "{{ monitoring_enable.alerting | bool }}"
-      image: "prom/alertmanager:{{ monitoring_versions.alertmanager }}"
+      image: "{{ frey_images.alertmanager }}"
       container_name: alertmanager
       port: 9093
       mem_limit: 256m
 
     alert_relay:
       enabled: "{{ monitoring_enable.alerting | bool }}"
-      image: "python:{{ monitoring_versions.relay_base }}"
+      image: "{{ frey_images.python_stdlib }}"
       container_name: alert-relay
       port: 8080
       mem_limit: 128m
 
     node_exporter:
       enabled: "{{ monitoring_enable.metrics and monitoring_enable.node_exporter }}"
-      image: "prom/node-exporter:{{ monitoring_versions.node_exporter }}"
+      image: "{{ frey_images.node_exporter }}"
       container_name: node-exporter
       port: 9100
       mem_limit: 192m
@@ -64,28 +64,28 @@ monitoring:
       enabled: "{{ monitoring_enable.metrics and monitoring_enable.cadvisor }}"
       # Not on Docker Hub. v0.53.0 and v0.54.0 do not exist as tags at all, so
       # do not assume the next number up is available - check first.
-      image: "gcr.io/cadvisor/cadvisor:{{ monitoring_versions.cadvisor }}"
+      image: "{{ frey_images.cadvisor }}"
       container_name: cadvisor
       port: 8080
       mem_limit: 384m
 
     blackbox:
       enabled: "{{ monitoring_enable.metrics and monitoring_enable.blackbox }}"
-      image: "prom/blackbox-exporter:{{ monitoring_versions.blackbox_exporter }}"
+      image: "{{ frey_images.blackbox_exporter }}"
       container_name: blackbox
       port: 9115
       mem_limit: 128m
 
     loki:
       enabled: "{{ monitoring_enable.logs | bool }}"
-      image: "grafana/loki:{{ monitoring_versions.loki }}"
+      image: "{{ frey_images.loki }}"
       container_name: loki
       port: 3100
       mem_limit: 768m
 
     alloy:
       enabled: "{{ monitoring_enable.logs | bool }}"
-      image: "grafana/alloy:{{ monitoring_versions.alloy }}"
+      image: "{{ frey_images.alloy }}"
       container_name: alloy
       port: 12345
       # Measured at 264 MiB on this Pi, which left only 120 MiB of headroom.
@@ -96,7 +96,7 @@ monitoring:
 
     grafana:
       enabled: "{{ monitoring_enable.grafana | bool }}"
-      image: "grafana/grafana:{{ monitoring_versions.grafana }}"
+      image: "{{ frey_images.grafana }}"
       container_name: grafana
       port: 3000
       mem_limit: 1536m

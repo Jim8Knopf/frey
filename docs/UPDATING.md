@@ -64,12 +64,25 @@ to believe a pin is current.
 
 ## Adding a new image
 
-One line, in `images.yml`, with an `# upstream:` marker saying where to look:
+One line, in `images.yml`, with the full reference and an `# upstream:` marker
+saying where to look:
 
 ```yaml
-media_versions:
-  mynewthing: "1.2.3"  # upstream: github:owner/repo
+frey_images:
+  mynewthing: "ghcr.io/owner/mynewthing:1.2.3"  # upstream: github:owner/repo
 ```
+
+Then reference it from the role, and never spell the image out again:
+
+```yaml
+image: "{{ frey_images.mynewthing }}"
+```
+
+`tests/test_image_versions.py` fails the build if any role names a registry
+path directly, which is what keeps this file the only place to look. Before,
+the tag lived here and `lscr.io/linuxserver/...` was repeated across ten role
+defaults — so answering "what is actually deployed" meant opening eleven
+files, and Immich's database and Redis images were in none of them.
 
 | Marker | Means |
 | --- | --- |
@@ -79,12 +92,17 @@ media_versions:
 | `watch <any of the above>` | report a new version, but never apply it |
 | `hold - reason` | not checked at all; a human decides |
 
-`tests/test_image_versions.py` fails the build if a pin has no marker, if the
-marker names an unknown source, or if a `hold` does not say why. That test is
-the point of the design: the four pins added before it existed — immich,
-silverbullet and the two local_ai ones — were never checked by anything,
-because adding a pin and remembering to register it somewhere else are two
-separate acts and the second is easy to forget. Now there is no second act.
+The same test fails the build if an entry has no marker, if the marker names
+an unknown source, or if a `hold` does not say why. That is the point of the
+design: the four images added before it existed — immich, silverbullet and the
+two local_ai ones — were never checked by anything, because adding an image
+and remembering to register it somewhere else are two separate acts and the
+second is easy to forget. Now there is no second act.
+
+It also asserts the couplings that are not independent: `immich_server` and
+`immich_ml` must share a version (they are one application), and
+`readmeabook_bilingual` — which this repo builds *from* `readmeabook` — must
+carry the upstream version in its own tag.
 
 The same test also asserts that every pin is read by some role and that no
 role references a pin that does not exist, so a pin left behind by a deleted

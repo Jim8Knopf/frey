@@ -7,7 +7,7 @@ silverbullet:
   identity_network: identity_internal
   sync_admin_username: note_admin
   space_prefix: /notes
-  image: "ghcr.io/silverbulletmd/silverbullet:{{ silverbullet_version }}"
+  image: "{{ frey_images.silverbullet }}"
   host: silverbullet
   port: 3000
   mem_limit: 768m

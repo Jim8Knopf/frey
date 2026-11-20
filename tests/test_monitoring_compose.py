@@ -26,7 +26,7 @@ class MonitoringComposeTest(unittest.TestCase):
 
     def test_dockge_preserves_data_and_requires_authenticated_https(self):
         dockge = self.compose()['services']['dockge']
-        self.assertEqual(dockge['image'], 'louislam/dockge:' + self.variables['monitoring_versions']['dockge'])
+        self.assertEqual(dockge['image'], self.variables['frey_images']['dockge'])
         self.assertIn('/opt/frey/appdata/dockge:/app/data', dockge['volumes'])
         self.assertIn('/opt/frey/stacks:/opt/frey/stacks:ro', dockge['volumes'])
         self.assertIn('DOCKGE_STACKS_DIR=/opt/frey/stacks', dockge['environment'])

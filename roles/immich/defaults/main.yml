@@ -4,10 +4,10 @@ immich:
   appdata_dir: "{{ frey.base_dir }}/appdata/immich"
   data_dir: "{{ frey.base_dir }}/data/photos"
   host: immich
-  server_image: "ghcr.io/immich-app/immich-server:{{ immich_version }}"
-  ml_image: "ghcr.io/immich-app/immich-machine-learning:{{ immich_version }}"
-  database_image: "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
-  redis_image: "docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd"
+  server_image: "{{ frey_images.immich_server }}"
+  ml_image: "{{ frey_images.immich_ml }}"
+  database_image: "{{ frey_images.immich_db }}"
+  redis_image: "{{ frey_images.immich_redis }}"
 
   # ===========================================================================
   # MACHINE LEARNING

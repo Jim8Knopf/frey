@@ -2,7 +2,7 @@
 dashy:
   stack_dir: "{{ frey.base_dir }}/stacks/dashy"
   config_dir: "{{ frey.base_dir }}/appdata/dashy"
-  image: "lissy93/dashy:{{ dashy_version }}"
+  image: "{{ frey_images.dashy }}"
   host: dashy
   port: 8080
   mem_limit: 512m

@@ -1,4 +1,4 @@
-FROM ghcr.io/kikootwo/readmeabook:{{ media_versions.readmeabook }}
+FROM {{ frey_images.readmeabook }}
 COPY readmeabook-bilingual.js /tmp/frey-readmeabook-bilingual.js
 COPY readmeabook-german-library-match.cjs /app/frey-german-library-match.cjs
 COPY readmeabook-author-language.cjs /app/frey-author-language.cjs

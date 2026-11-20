@@ -115,7 +115,7 @@ media_library:
       #   - plugins must be REMOVED before migrating an existing 10.x config
       # This deployment is greenfield, so none of that bites - but do not
       # point it at an old 10.x config directory without reading README.md.
-      image: lscr.io/linuxserver/jellyfin:{{ media_versions.jellyfin }}
+      image: "{{ frey_images.jellyfin }}"
       container_name: jellyfin
       hostname: jellyfin
       port: 8096
@@ -148,7 +148,7 @@ media_library:
 
     navidrome:
       enabled: "{{ media_enable.navidrome | bool }}"
-      image: navidrome/navidrome:{{ media_versions.navidrome }}
+      image: "{{ frey_images.navidrome }}"
       container_name: navidrome
       hostname: navidrome
       port: 4533
@@ -166,7 +166,7 @@ media_library:
 
     audiobookshelf:
       enabled: "{{ media_enable.audiobookshelf | bool }}"
-      image: ghcr.io/advplyr/audiobookshelf:{{ media_versions.audiobookshelf }}
+      image: "{{ frey_images.audiobookshelf }}"
       container_name: audiobookshelf
       hostname: audiobookshelf
       # Audiobookshelf listens on 80 inside the container.
@@ -184,7 +184,7 @@ media_library:
       # were merged upstream into Seerr, which is the maintained line and the
       # only one that keeps working with Jellyfin's reworked authentication.
       enabled: "{{ media_enable.seerr | bool }}"
-      image: seerr/seerr:{{ media_versions.seerr }}
+      image: "{{ frey_images.seerr }}"
       container_name: seerr
       hostname: seerr
       port: 5055
@@ -203,7 +203,7 @@ media_library:
       # Port 8000, not the 5432 the archived role had - that is PostgreSQL's
       # port and was plainly a copy-paste slip.
       enabled: "{{ media_enable.audiobookrequest | bool }}"
-      image: markbeep/audiobookrequest:{{ media_versions.audiobookrequest }}
+      image: "{{ frey_images.audiobookrequest }}"
       container_name: audiobookrequest
       hostname: audiobookrequest
       port: 8000
@@ -214,8 +214,8 @@ media_library:
 
     readmeabook:
       enabled: "{{ media_enable.readmeabook | default(false) | bool }}"
-      upstream_image: ghcr.io/kikootwo/readmeabook:{{ media_versions.readmeabook }}
-      image: frey/readmeabook:{{ media_versions.readmeabook }}-bilingual7
+      upstream_image: "{{ frey_images.readmeabook }}"
+      image: "{{ frey_images.readmeabook_bilingual }}"
       container_name: readmeabook
       hostname: readmeabook
       port: 3030
@@ -229,7 +229,7 @@ media_library:
       # months", and so on. A 4TB disk shared with Immich fills up quietly
       # otherwise.
       enabled: "{{ media_enable.maintainerr | bool }}"
-      image: ghcr.io/jorenn92/maintainerr:{{ media_versions.maintainerr }}
+      image: "{{ frey_images.maintainerr }}"
       container_name: maintainerr
       hostname: maintainerr
       port: 6246
@@ -245,7 +245,7 @@ media_library:
       # Playback statistics. Costs a PostgreSQL container, which is the main
       # reason it is easy to turn off.
       enabled: "{{ media_enable.jellystat | bool }}"
-      image: ghcr.io/cyfershepard/jellystat:{{ media_versions.jellystat }}
+      image: "{{ frey_images.jellystat }}"
       container_name: jellystat
       hostname: jellystat
       port: 3000
@@ -254,7 +254,7 @@ media_library:
     jellystat_db:
       # Follows the jellystat flag: this database exists only to serve it.
       enabled: "{{ media_enable.jellystat | bool }}"
-      image: postgres:{{ media_versions.jellystat_db }}
+      image: "{{ frey_images.jellystat_db }}"
       container_name: jellystat-db
       hostname: jellystat-db
       mem_limit: 512m

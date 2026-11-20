@@ -4,7 +4,7 @@
     that:
       - identity_services.immich.auth == 'oidc'
       - immich.host in identity_services.immich.hosts
-      - immich_version is match('^v[0-9]')
+      - frey_images.immich_server.split(':') | last is match('^v[0-9]')
 
 - name: Create Immich directories
   ansible.builtin.file:

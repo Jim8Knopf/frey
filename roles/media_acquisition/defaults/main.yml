@@ -76,7 +76,7 @@ media_acquisition:
     enabled: "{{ media_vpn.enabled | bool }}"
     container_name: gluetun
     hostname: gluetun
-    image: "qmcgaw/gluetun:{{ media_versions.gluetun }}"
+    image: "{{ frey_images.gluetun }}"
     mem_limit: 512m
     # The host the *arrs use to reach qBittorrent. With the tunnel on,
     # qBittorrent has no hostname of its own - it lives inside Gluetun's
@@ -641,7 +641,7 @@ media_acquisition:
       # anything in the stack needs to reach an indexer, so it tracks whether
       # the acquisition stack itself is doing anything.
       enabled: "{{ media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool or media_enable.lidarr | bool }}"
-      image: dockurr/dnsmasq:{{ media_versions.dnsmasq }}
+      image: "{{ frey_images.media_dns }}"
       container_name: frey-media-dns
       hostname: frey-media-dns
       port: 53
@@ -649,7 +649,7 @@ media_acquisition:
 
     prowlarr:
       enabled: "{{ media_enable.prowlarr | bool }}"
-      image: lscr.io/linuxserver/prowlarr:{{ media_versions.prowlarr }}
+      image: "{{ frey_images.prowlarr }}"
       container_name: prowlarr
       hostname: prowlarr
       port: 9696
@@ -674,7 +674,7 @@ media_acquisition:
 
     jackett:
       enabled: "{{ media_enable.jackett | default(false) | bool }}"
-      image: lscr.io/linuxserver/jackett:{{ media_versions.jackett }}
+      image: "{{ frey_images.jackett }}"
       container_name: jackett
       hostname: jackett
       port: 9117
@@ -683,7 +683,7 @@ media_acquisition:
 
     sonarr:
       enabled: "{{ media_enable.sonarr | bool }}"
-      image: lscr.io/linuxserver/sonarr:{{ media_versions.sonarr }}
+      image: "{{ frey_images.sonarr }}"
       container_name: sonarr
       hostname: sonarr
       port: 8989
@@ -714,7 +714,7 @@ media_acquisition:
 
     radarr:
       enabled: "{{ media_enable.radarr | bool }}"
-      image: lscr.io/linuxserver/radarr:{{ media_versions.radarr }}
+      image: "{{ frey_images.radarr }}"
       container_name: radarr
       hostname: radarr
       port: 7878
@@ -733,13 +733,13 @@ media_acquisition:
 
     slskd:
       enabled: "{{ media_enable.slskd | default(false) | bool }}"
-      image: "slskd/slskd:{{ media_versions.slskd }}"
+      image: "{{ frey_images.slskd }}"
       container_name: slskd
       mem_limit: 512m
 
     soularr:
       enabled: "{{ media_enable.soularr | default(false) | bool }}"
-      image: "mrusse08/soularr:{{ media_versions.soularr }}"
+      image: "{{ frey_images.soularr }}"
       container_name: soularr
       mem_limit: 384m
 
@@ -748,7 +748,7 @@ media_acquisition:
       # 2026, so adding artists and library imports break periodically. This
       # is upstream, not configuration. Jellyfin plays music fine regardless.
       enabled: "{{ media_enable.lidarr | bool }}"
-      image: lscr.io/linuxserver/lidarr:{{ media_versions.lidarr }}
+      image: "{{ frey_images.lidarr }}"
       container_name: lidarr
       hostname: lidarr
       port: 8686
@@ -779,7 +779,7 @@ media_acquisition:
       # Handles audiobooks and ebooks from one instance. Not a linuxserver
       # image, so it takes PUID/PGID but no lsio-specific environment.
       enabled: "{{ media_enable.chaptarr | bool }}"
-      image: chaptarr/chaptarr:{{ media_versions.chaptarr }}
+      image: "{{ frey_images.chaptarr }}"
       container_name: chaptarr
       hostname: chaptarr
       port: 8789
@@ -824,7 +824,7 @@ media_acquisition:
 
     bazarr:
       enabled: "{{ media_enable.bazarr | bool }}"
-      image: lscr.io/linuxserver/bazarr:{{ media_versions.bazarr }}
+      image: "{{ frey_images.bazarr }}"
       container_name: bazarr
       hostname: bazarr
       port: 6767
@@ -833,7 +833,7 @@ media_acquisition:
 
     qbittorrent:
       enabled: "{{ media_enable.qbittorrent | bool }}"
-      image: lscr.io/linuxserver/qbittorrent:{{ media_versions.qbittorrent }}
+      image: "{{ frey_images.qbittorrent }}"
       container_name: qbittorrent
       hostname: qbittorrent
       port: 8080
@@ -876,7 +876,7 @@ media_acquisition:
       # It drives a real browser engine, hence the hard memory cap - this is
       # the one container most likely to balloon and threaten the gateway.
       enabled: "{{ media_enable.byparr | bool }}"
-      image: ghcr.io/thephaseless/byparr:{{ media_versions.byparr }}
+      image: "{{ frey_images.byparr }}"
       container_name: byparr
       hostname: byparr
       port: 8191
@@ -922,7 +922,7 @@ media_acquisition:
       # TRaSH-guide quality profiles and custom formats as code, on a timer.
       # Better than hand-maintaining profiles in each UI.
       enabled: "{{ media_enable.recyclarr | bool }}"
-      image: ghcr.io/recyclarr/recyclarr:{{ media_versions.recyclarr }}
+      image: "{{ frey_images.recyclarr }}"
       container_name: recyclarr
       mem_limit: 256m
       # Runs once on start, then on this cron schedule (container-local).
@@ -933,7 +933,7 @@ media_acquisition:
       # blocks the release and tells the *arr to search again. On an
       # intermittent uplink this matters far more than on a home server.
       enabled: "{{ media_enable.cleanuparr | bool }}"
-      image: ghcr.io/cleanuparr/cleanuparr:{{ media_versions.cleanuparr }}
+      image: "{{ frey_images.cleanuparr }}"
       container_name: cleanuparr
       hostname: cleanuparr
       port: 11011
@@ -942,7 +942,7 @@ media_acquisition:
     unpackerr:
       # Extracts archived releases so imports do not silently stall.
       enabled: "{{ media_enable.unpackerr | bool }}"
-      image: ghcr.io/unpackerr/unpackerr:{{ media_versions.unpackerr }}
+      image: "{{ frey_images.unpackerr }}"
       container_name: unpackerr
       mem_limit: 256m
 

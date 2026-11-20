@@ -369,8 +369,8 @@ local_ai:
       # prefix worth holding anyway.
       cache_ram: 512
 
-  image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
-  gateway_image: "traefik:{{ traefik_version }}"
+  image: "{{ frey_images.llama_cpp }}"
+  gateway_image: "{{ frey_images.traefik }}"
 
   # llama.cpp's OWN web UI, restored on ai.hub.frey.
   #
@@ -413,7 +413,7 @@ local_ai:
   chat:
     enabled: true
     container_name: frey-openwebui
-    image: "ghcr.io/open-webui/open-webui:{{ local_ai_openwebui_version }}"
+    image: "{{ frey_images.open_webui }}"
     data_dir: "{{ frey.base_dir }}/appdata/local-ai/openwebui"
     port: 8080
 
@@ -459,7 +459,7 @@ local_ai:
     container_name: frey-campaign-agent
     # Reuses the pinned Python image the relay and observer already run, and
     # is stdlib-only, so there is nothing to fetch at runtime.
-    image: "python:{{ monitoring_versions.relay_base }}"
+    image: "{{ frey_images.python_stdlib }}"
     script_path: /opt/frey-campaign/campaign.py
 
     # SilverBullet's OWN uid, deliberately. The observer gets its own uid
@@ -574,7 +574,7 @@ local_ai:
   hermes:
     enabled: false
     container_name: frey-hermes
-    image: "nousresearch/hermes-agent:{{ local_ai_hermes_version }}"
+    image: "{{ frey_images.hermes }}"
 
     # SILVERBULLET'S OWN uid, changed from a private 10003 on 2026-11-09 when
     # Hermes was given write access to the campaign. The campaign assistant

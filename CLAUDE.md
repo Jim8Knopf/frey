@@ -146,7 +146,7 @@ then register it in `available` and list it in `enabled`. See
 | `roles/<m>/defaults/main.yml` | everything specific to that module — the default home |
 | `inventory/group_vars/all/main.yml` | module registry, and only choices *two or more* modules must agree on |
 | `.../{network,system,security,proxy,media,identity,monitoring}.yml` | operational settings by responsibility |
-| `.../images.yml` | all pinned image versions |
+| `.../images.yml` | **every container image**, full reference — the only place one is named |
 | `.../secrets.yml` | vault ciphertext, nothing else |
 
 Two subtleties that have bitten:

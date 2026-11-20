@@ -2,7 +2,7 @@
 - name: Validate SilverBullet configuration
   ansible.builtin.assert:
     that:
-      - silverbullet_version | length > 0
+      - frey_images.silverbullet | length > 0
       - silverbullet.host in identity_services.silverbullet.hosts
       - identity_services.silverbullet.auth == 'forward_auth'
       - identity_services.silverbullet.oidc_client | bool

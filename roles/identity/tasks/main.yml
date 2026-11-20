@@ -290,7 +290,7 @@
       - "{{ identity.appdata_dir }}/secrets:/secrets:ro"
       - --env
       - X_AUTHELIA_CONFIG_FILTERS=template
-      - "authelia/authelia:{{ identity_versions.authelia }}"
+      - "{{ frey_images.authelia }}"
       - authelia
       - validate-config
       - --config

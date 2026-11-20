@@ -38,7 +38,7 @@ services:
   # it and then stays out of the way.
   # ============================================================================
   lldap:
-    image: lldap/lldap:{{ identity_versions.lldap }}
+    image: {{ frey_images.lldap }}
     container_name: lldap
     hostname: lldap
     restart: unless-stopped
@@ -147,7 +147,7 @@ services:
   # the readable config free of them.
   # ============================================================================
   authelia:
-    image: authelia/authelia:{{ identity_versions.authelia }}
+    image: {{ frey_images.authelia }}
     container_name: authelia
     hostname: authelia
     restart: unless-stopped

@@ -1,28 +1,38 @@
 ---
-# Container image tags for every active Frey service.
+# EVERY container image Frey runs. One file, one line each, registry and tag
+# together. Nothing else in the repository may name an image.
 #
-# Edit the tag here, then deploy the affected role. You do not have to work out
-# which role that is: `scripts/check-updates.py` prints the exact
-# `--tags` for every pin it reports, because it derives them from the role that
-# reads the variable.
+# This used to be split: the TAG lived here and the REGISTRY PATH lived in
+# whichever role ran the container, so answering "what is actually deployed"
+# meant opening this file and then ten role defaults - and Immich's database
+# and Redis images were never here at all. A full reference per line is the
+# whole point: what you read here is what Docker pulls.
 #
 #   scripts/check-updates.py              # what has moved upstream
-#   scripts/check-updates.py --apply      # rewrite the pins below
-#   scripts/check-updates.py --offline    # no network: just pins and owners
+#   scripts/check-updates.py --apply      # rewrite the tags below
+#   scripts/check-updates.py --offline    # no network: images and owners
+#
+# A role refers to an entry and never spells out an image:
+#
+#   image: "{{ frey_images.jellyfin }}"
+#
+# Where something needs the bare TAG rather than the reference - Grafana's
+# `prometheusVersion`, for instance - take it off the end:
+#
+#   {{ frey_images.prometheus.split(':') | last | regex_replace('^v', '') }}
 #
 # Rules for this file:
-#   - Quote new tags, especially tags that resemble numbers.
-#   - Confirm ARM64 support and review migration notes before upgrading.
-#   - Never pin `:latest`. An unattended pull on campground WiFi can hand you a
-#     broken container with no internet left to fix it.
+#   - Quote every value. Tags like "9" or "18.1" are not numbers.
+#   - Confirm ARM64 support and read migration notes before upgrading.
+#   - Never use `:latest`. An unattended pull on campground WiFi can hand you
+#     a broken container with no internet left to fix it.
 #
 # `# upstream:` markers
 # ---------------------
-# Every pin carries one, and `tests/test_image_versions.py` fails the build if
+# Every entry carries one, and tests/test_image_versions.py fails the build if
 # one is missing - that is what stops a new image from silently going
-# unchecked, which is what happened to the four pins that used to sit above
-# this header. The marker lives on the pin's own line so there is exactly one
-# place to edit when adding an image.
+# unchecked, which is what happened to four pins that had been appended above
+# this header.
 #
 #   # upstream: github:owner/repo   latest GitHub release tag
 #   # upstream: lsio:name           linuxserver.io's published version
@@ -30,125 +40,129 @@
 #   # upstream: watch <any above>   report a new version, never apply it
 #   # upstream: hold - reason       not checked at all; a human decides
 #
-# `hold` is not "unknown". It means the upstream version is not the thing that
-# decides this pin - a date-stamped tag, a compound tag, or a move that is a
-# migration rather than a bump.
+# `hold` means the upstream version is not the thing that decides this entry -
+# a date-stamped tag, a digest pin, a compound tag, a local build.
 #
-# `watch` is for a pin where you want to KNOW a release exists but the version
-# number alone cannot tell you whether to take it: the served model has to
-# still be mapped, the login header has to still auto-register. --apply never
-# touches one.
+# `watch` means tell me, but never bump it for me: the version number alone
+# cannot say whether to take it.
 
-# --- Core services -----------------------------------------------------------
-traefik_version: "v3.7.16"  # upstream: github:traefik/traefik
-dashy_version: "4.7.0"  # upstream: github:Lissy93/dashy
+frey_images:
 
-# --- Notes, photos -----------------------------------------------------------
-immich_version: "v3.4.1"  # upstream: github:immich-app/immich
-silverbullet_version: "2.12.1"  # upstream: github:silverbulletmd/silverbullet
+  # --- Core ------------------------------------------------------------------
+  # Traefik is also the local_ai stack's own gateway, so this one entry is
+  # read by two roles.
+  traefik: "traefik:v3.7.16"  # upstream: github:traefik/traefik
+  dashy: "lissy93/dashy:4.7.0"  # upstream: github:Lissy93/dashy
 
-# --- Local AI ----------------------------------------------------------------
-# b12019, published 2026-10-31, is the first pin verified against the served
-# model: it maps architecture "qwen35" and the "qwen3vl_merger" projector that
-# Qwen3.5's mmproj declares. Check both before moving this tag - which is why
-# this is a hold and not github:ggml-org/llama.cpp.
-local_ai_llama_version: "server-b12019"  # upstream: watch github:ggml-org/llama.cpp
-# Hermes Agent. arm64/linux confirmed; 3.21 GB on disk, digest
-# sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002.
-# Measured on this Pi 2026-11-08: usable only with a trimmed toolset - see
-# docs/LOCAL_AI_AGENT_PLAN.md 6a before changing this tag, because the prompt
-# size that decides whether it is usable at all is a property of the release.
-local_ai_hermes_version: "v0.23.0"  # upstream: watch github:NousResearch/hermes-agent
-# Open WebUI - the chat harness at chat.hub.frey. linux/arm64 confirmed in the
-# manifest from this Pi on 2026-11-20. Released 2026-11-08.
-#
-# Check two things before moving this tag, because both are load-bearing here
-# and neither is obvious from a changelog:
-#   - it still renders llama.cpp's `reasoning_content` as a Thinking block.
-#     That is the whole reason it was chosen over the hand-rolled window.
-#   - WEBUI_AUTH_TRUSTED_EMAIL_HEADER still auto-registers and logs in from a
-#     header. Frey has no second login, so a regression there locks you out
-#     rather than showing a form.
-#
-# Hence `watch`: report a new release, never apply one unattended. A silent
-# bump here is a lockout, and this is the window you would use to diagnose it.
-local_ai_openwebui_version: "v0.13.3"  # upstream: watch github:open-webui/open-webui
-
-identity_versions:
+  # --- Identity --------------------------------------------------------------
   # Authelia's config schema moves between minor releases, which is why the
   # role runs `authelia validate-config` before restarting anything. Checked,
   # but read the release notes before applying.
-  authelia: "4.39.28"  # upstream: github:authelia/authelia
+  authelia: "authelia/authelia:4.39.28"  # upstream: github:authelia/authelia
   # Date-stamped image tags, which no release feed reports. Check Docker Hub's
   # tag list by hand.
-  lldap: "2026-09-22-alpine"  # upstream: hold - date-stamped image tags, not releases
+  lldap: "lldap/lldap:2026-09-22-alpine"  # upstream: hold - date-stamped image tags, not releases
 
-media_versions:
+  # --- Notes and photos ------------------------------------------------------
+  silverbullet: "ghcr.io/silverbulletmd/silverbullet:2.12.1"  # upstream: github:silverbulletmd/silverbullet
+  # These two MUST move together - they are one application. The checker
+  # reports them separately because they are separate images; bump both.
+  immich_server: "ghcr.io/immich-app/immich-server:v3.4.1"  # upstream: github:immich-app/immich
+  immich_ml: "ghcr.io/immich-app/immich-machine-learning:v3.4.1"  # upstream: github:immich-app/immich
+  # Digest-pinned, and both are Immich's own builds rather than upstream
+  # Postgres and Valkey: the database carries the pgvecto.rs / VectorChord
+  # extensions Immich's schema needs. Take these from Immich's own compose
+  # file for the release you are moving to, never from a tag guess.
+  immich_db: "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"  # upstream: hold - digest pinned; copy from Immich's release compose file
+  immich_redis: "docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd"  # upstream: hold - digest pinned; copy from Immich's release compose file
 
-  # --- Library (works with no internet) --------------------------------------
+  # --- Local AI --------------------------------------------------------------
+  # b12019, published 2026-10-31, is the first build verified against the
+  # served model: it maps architecture "qwen35" and the "qwen3vl_merger"
+  # projector that Qwen3.5's mmproj declares. Check both before moving.
+  llama_cpp: "ghcr.io/ggml-org/llama.cpp:server-b12019"  # upstream: watch github:ggml-org/llama.cpp
+  # The chat harness at chat.hub.frey. Two things are load-bearing and neither
+  # is obvious from a changelog:
+  #   - it still renders llama.cpp's `reasoning_content` as a Thinking block,
+  #     which is why it was chosen over the hand-rolled window.
+  #   - WEBUI_AUTH_TRUSTED_EMAIL_HEADER still auto-registers and logs in from
+  #     a header. Frey has no second login, so a regression there is a LOCKOUT
+  #     from the window you would use to diagnose it - hence `watch`.
+  open_webui: "ghcr.io/open-webui/open-webui:v0.13.3"  # upstream: watch github:open-webui/open-webui
+  # Hermes Agent. Whether it is usable at all is a property of the release's
+  # prompt size, not its version number - see docs/LOCAL_AI_AGENT_PLAN.md 6a.
+  hermes: "nousresearch/hermes-agent:v0.23.0"  # upstream: watch github:NousResearch/hermes-agent
+
+  # --- Shared base image -----------------------------------------------------
+  # The alert relay and the campaign assistant both run on it, and both are
+  # Python standard library only - no pip, no requirements file, nothing to
+  # resolve at build time, so neither ever needs to be online.
+  # A compound python+alpine tag that no release feed reports.
+  python_stdlib: "python:3.14.10-alpine3.24"  # upstream: hold - compound python+alpine tag, pick it by hand
+
+  # --- Media library (works with no internet) --------------------------------
   # Jellyfin 12.x. Upgrading from 10.x is a ONE-WAY database migration and
   # plugins must be uninstalled first - see roles/media_library/README.md.
-  jellyfin: "12.3ubu2604-ls56"  # upstream: lsio:jellyfin
-  navidrome: "0.64.2"  # upstream: github:navidrome/navidrome
-  audiobookshelf: "2.37.2"  # upstream: github:advplyr/audiobookshelf
+  jellyfin: "lscr.io/linuxserver/jellyfin:12.3ubu2604-ls56"  # upstream: lsio:jellyfin
+  navidrome: "navidrome/navidrome:0.64.2"  # upstream: github:navidrome/navidrome
+  audiobookshelf: "ghcr.io/advplyr/audiobookshelf:2.37.2"  # upstream: github:advplyr/audiobookshelf
   # Seerr: the maintained continuation of Overseerr and Jellyseerr, both of
   # which are discontinued.
-  seerr: "v3.5.1"  # upstream: github:seerr-team/seerr
-  audiobookrequest: "1.11.0"  # upstream: dockerhub:markbeep/audiobookrequest
-  readmeabook: "1.2.13"  # upstream: github:kikootwo/ReadMeABook
-  # Held at 2.19.0 deliberately: the project's latest GitHub release is
-  # v3.31.0 but no matching container image is published, so the newer tag
-  # cannot be pulled. The checker will keep reporting this until upstream
-  # publishes one - it is a real gap, not a stale pin, so it stays checked.
-  maintainerr: "2.19.0"  # upstream: github:jorenn92/Maintainerr
-  jellystat: "1.1.12"  # upstream: github:CyferShepard/Jellystat
+  seerr: "seerr/seerr:v3.5.1"  # upstream: github:seerr-team/seerr
+  audiobookrequest: "markbeep/audiobookrequest:1.11.0"  # upstream: dockerhub:markbeep/audiobookrequest
+  readmeabook: "ghcr.io/kikootwo/readmeabook:1.2.13"  # upstream: github:kikootwo/ReadMeABook
+  # Built ON the image above by roles/media_library (readmeabook.Dockerfile.j2)
+  # to add bilingual matching. Its tag embeds the upstream version, so these
+  # two lines must agree - tests/test_image_versions.py asserts they do, and
+  # bumping readmeabook means bumping the `-bilingualN` suffix here too.
+  readmeabook_bilingual: "frey/readmeabook:1.2.13-bilingual7"  # upstream: hold - built locally from readmeabook above
+  # The project's latest GitHub release is v3.x but no matching container
+  # image is published, so the newer tag cannot be pulled. The checker will
+  # keep reporting it - that is a real gap, not a stale pin, so it stays
+  # checked rather than held.
+  maintainerr: "ghcr.io/jorenn92/maintainerr:2.19.0"  # upstream: github:jorenn92/Maintainerr
+  jellystat: "ghcr.io/cyfershepard/jellystat:1.1.12"  # upstream: github:CyferShepard/Jellystat
   # PostgreSQL major upgrades are NOT automatic - a new major refuses to start
   # on an old cluster's data. Treat a change here as a migration, not a bump.
-  jellystat_db: "18.1"  # upstream: hold - a major is a cluster migration, not a bump
+  jellystat_db: "postgres:18.1"  # upstream: hold - a major is a cluster migration, not a bump
 
-  # --- Acquisition (needs an uplink) -----------------------------------------
-  # linuxserver images use `version-<upstream version>` tags.
-  prowlarr: "version-2.7.0.5723"  # upstream: lsio:prowlarr
-  jackett: "0.24.3014"  # upstream: lsio:jackett
-  sonarr: "version-4.0.20.3014"  # upstream: lsio:sonarr
-  radarr: "version-6.4.4.10685"  # upstream: lsio:radarr
-  lidarr: "version-3.1.6.5079"  # upstream: lsio:lidarr
-  slskd: "0.26.2"  # upstream: github:slskd/slskd
-  soularr: "v1.2.3"  # upstream: github:mrusse/soularr
-  bazarr: "version-v1.6.2"  # upstream: lsio:bazarr
-  qbittorrent: "version-5.3.0_v2.1.2"  # upstream: lsio:qbittorrent
+  # --- Media acquisition (needs an uplink) -----------------------------------
+  # Gluetun, used only when media_vpn.enabled is true.
+  gluetun: "qmcgaw/gluetun:v3.41.3"  # upstream: github:qdm12/gluetun
+  # dnsmasq, the acquisition stack's own resolver. It exists to strip AAAA
+  # records: the van's uplink has no working IPv6, but campground resolvers
+  # hand out AAAA for Cloudflare-fronted trackers anyway, and the *arrs then
+  # fail every search. See roles/media_acquisition/README.md.
+  media_dns: "dockurr/dnsmasq:2.93"  # upstream: dockerhub:dockurr/dnsmasq
+  prowlarr: "lscr.io/linuxserver/prowlarr:version-2.7.0.5723"  # upstream: lsio:prowlarr
+  jackett: "lscr.io/linuxserver/jackett:0.24.3014"  # upstream: lsio:jackett
+  sonarr: "lscr.io/linuxserver/sonarr:version-4.0.20.3014"  # upstream: lsio:sonarr
+  radarr: "lscr.io/linuxserver/radarr:version-6.4.4.10685"  # upstream: lsio:radarr
+  lidarr: "lscr.io/linuxserver/lidarr:version-3.1.6.5079"  # upstream: lsio:lidarr
+  bazarr: "lscr.io/linuxserver/bazarr:version-v1.6.2"  # upstream: lsio:bazarr
+  qbittorrent: "lscr.io/linuxserver/qbittorrent:version-5.3.0_v2.1.2"  # upstream: lsio:qbittorrent
+  slskd: "slskd/slskd:0.26.2"  # upstream: github:slskd/slskd
+  soularr: "mrusse08/soularr:v1.2.3"  # upstream: github:mrusse/soularr
   # Chaptarr: successor to Readarr, which was retired in June 2025.
-  chaptarr: "0.9.965"  # upstream: dockerhub:chaptarr/chaptarr
+  chaptarr: "chaptarr/chaptarr:0.9.965"  # upstream: dockerhub:chaptarr/chaptarr
   # Byparr: replaces FlareSolverr, archived upstream and no longer able to
   # clear current Cloudflare challenges.
-  byparr: "3.0.4"  # upstream: github:ThePhaseless/Byparr
-  # dnsmasq, used as the acquisition stack's own resolver. It exists to strip
-  # AAAA records: the van's uplink has no working IPv6, but campground
-  # resolvers hand out AAAA for Cloudflare-fronted trackers anyway, and the
-  # *arrs then fail every search. See roles/media_acquisition/README.md.
-  dnsmasq: "2.93"  # upstream: dockerhub:dockurr/dnsmasq
-  recyclarr: "8.8.0"  # upstream: github:recyclarr/recyclarr
-  cleanuparr: "2.10.12"  # upstream: github:Cleanuparr/Cleanuparr
-  unpackerr: "1.0.0"  # upstream: github:Unpackerr/unpackerr
-  # Gluetun, used only when media_vpn.enabled is true.
-  gluetun: "v3.41.3"  # upstream: github:qdm12/gluetun
+  byparr: "ghcr.io/thephaseless/byparr:3.0.4"  # upstream: github:ThePhaseless/Byparr
+  recyclarr: "ghcr.io/recyclarr/recyclarr:8.8.0"  # upstream: github:recyclarr/recyclarr
+  cleanuparr: "ghcr.io/cleanuparr/cleanuparr:2.10.12"  # upstream: github:Cleanuparr/Cleanuparr
+  unpackerr: "ghcr.io/unpackerr/unpackerr:1.0.0"  # upstream: github:Unpackerr/unpackerr
 
-monitoring_versions:
-  dockge: "1.5.0"  # upstream: github:louislam/dockge
-  prometheus: "v3.15.1"  # upstream: github:prometheus/prometheus
-  alertmanager: "v0.34.1"  # upstream: github:prometheus/alertmanager
-  node_exporter: "v1.12.1"  # upstream: github:prometheus/node_exporter
-  blackbox_exporter: "v0.29.1"  # upstream: github:prometheus/blackbox_exporter
+  # --- Monitoring ------------------------------------------------------------
+  dockge: "louislam/dockge:1.5.0"  # upstream: github:louislam/dockge
+  prometheus: "prom/prometheus:v3.15.1"  # upstream: github:prometheus/prometheus
+  alertmanager: "prom/alertmanager:v0.34.1"  # upstream: github:prometheus/alertmanager
+  node_exporter: "prom/node-exporter:v1.12.1"  # upstream: github:prometheus/node_exporter
+  blackbox_exporter: "prom/blackbox-exporter:v0.29.1"  # upstream: github:prometheus/blackbox_exporter
   # cAdvisor's published tags are NOT contiguous - v0.53.0 and v0.54.0 were
-  # never published as images - so "bump to the next release" is not safe
-  # here. Confirm the tag exists before deploying:
+  # never published as images - so "bump to the next release" is not safe.
+  # Confirm the tag exists first:
   #   docker manifest inspect gcr.io/cadvisor/cadvisor:<tag>
-  cadvisor: "v0.55.1"  # upstream: github:google/cadvisor
-  grafana: "13.2.4"  # upstream: github:grafana/grafana
-  loki: "3.7.9"  # upstream: github:grafana/loki
-  alloy: "v1.21.2"  # upstream: github:grafana/alloy
-  # Base image for the notification relay in roles/monitoring/files/.
-  # The relay is Python standard library only - no pip, no requirements file,
-  # nothing to resolve at build time, so this never needs to be online.
-  # A compound python+alpine tag that no release feed reports.
-  relay_base: "3.14.10-alpine3.24"  # upstream: hold - compound python+alpine tag, pick it by hand
+  cadvisor: "gcr.io/cadvisor/cadvisor:v0.55.1"  # upstream: github:google/cadvisor
+  grafana: "grafana/grafana:13.2.4"  # upstream: github:grafana/grafana
+  loki: "grafana/loki:3.7.9"  # upstream: github:grafana/loki
+  alloy: "grafana/alloy:v1.21.2"  # upstream: github:grafana/alloy
