@@ -209,6 +209,12 @@ services:
       # stops anyone setting one and believing it means something.
       - ND_ENABLEUSEREDITING=false
 {% endif %}
+      # Pinned because Frey ships smart playlists as .nsp files in the music
+      # library (media_library.navidrome.smart_playlists) and this is the
+      # setting that imports them. It defaults to true upstream, so leaving it
+      # implicit works right up until that default changes, and the symptom
+      # then is a playlist that silently never appears.
+      - ND_AUTOIMPORTPLAYLISTS=true
       # The brute-force limiter on failed logins. Pinned, not inherited - see
       # roles/media_library/defaults/main.yml.
       - ND_AUTHREQUESTLIMIT={{ svc.navidrome.auth_request_limit }}

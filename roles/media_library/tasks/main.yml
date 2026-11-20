@@ -91,6 +91,27 @@
     - media
     - media_library
 
+- name: Install the Navidrome smart playlists
+  # Written into the root of the music library, which is the one place the
+  # scanner looks by default and the one path Navidrome has mounted. A .nsp
+  # file anywhere else is simply never read, with nothing logged to say so.
+  #
+  # The music mount is read-only inside the container, which is fine: a smart
+  # playlist is rules, evaluated on open, so Navidrome never writes it back.
+  ansible.builtin.copy:
+    content: "{{ item.rules | to_nice_json }}\n"
+    dest: "{{ media.data_dir }}/media/music/{{ item.name }}.nsp"
+    owner: "{{ media.user.name }}"
+    group: "{{ media.user.name }}"
+    mode: "0664"
+  loop: "{{ media_library.navidrome.smart_playlists }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: media_enable.navidrome | bool
+  tags:
+    - media
+    - media_library
+
 - name: Ensure library stack and appdata directories exist
   ansible.builtin.file:
     path: "{{ item }}"
