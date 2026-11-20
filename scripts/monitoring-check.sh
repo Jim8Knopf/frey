@@ -464,81 +464,13 @@ fi
 if (( DO_UPDATES )); then
   echo
   echo "Image versions"
-  python3 - "${REPO_ROOT}/inventory/group_vars/all/images.yml" <<'PYTHON'
-import json, re, sys, urllib.error, urllib.request
-
-try:
-    import yaml
-except ImportError:
-    sys.exit("  python3 yaml module is required (pip install pyyaml)")
-
-pinned = (yaml.safe_load(open(sys.argv[1])) or {}).get("monitoring_versions", {})
-if not pinned:
-    sys.exit("  no monitoring_versions found")
-
-# Where each pinned key actually lives. cAdvisor is not on Docker Hub, and its
-# tags are not contiguous - v0.53.0 and v0.54.0 were never published - so
-# "bump to the next number" is not safe for it.
-REPOS = {
-    "dockge": ("hub", "louislam/dockge", r"\d+\.\d+\.\d+"),
-    "prometheus": ("hub", "prom/prometheus", r"v\d+\.\d+\.\d+"),
-    "alertmanager": ("hub", "prom/alertmanager", r"v\d+\.\d+\.\d+"),
-    "node_exporter": ("hub", "prom/node-exporter", r"v\d+\.\d+\.\d+"),
-    "blackbox_exporter": ("hub", "prom/blackbox-exporter", r"v\d+\.\d+\.\d+"),
-    "grafana": ("hub", "grafana/grafana", r"\d+\.\d+\.\d+"),
-    "loki": ("hub", "grafana/loki", r"\d+\.\d+\.\d+"),
-    "alloy": ("hub", "grafana/alloy", r"v\d+\.\d+\.\d+"),
-    "cadvisor": ("gcr", "cadvisor/cadvisor", r"v\d+\.\d+\.\d+"),
-    "relay_base": ("hub", "library/python", r"3\.\d+\.\d+-alpine3\.\d+"),
-}
-
-
-def fetch(url):
-    with urllib.request.urlopen(url, timeout=20) as response:
-        return json.load(response)
-
-
-def key(tag):
-    return [int(n) for n in re.findall(r"\d+", tag)]
-
-
-def latest(kind, repo, pattern):
-    tags = []
-    if kind == "hub":
-        url = ("https://hub.docker.com/v2/repositories/%s/tags/"
-               "?page_size=100&ordering=last_updated" % repo)
-        for page in (1, 2, 3):
-            data = fetch(url + "&page=%d" % page)
-            tags += [t["name"] for t in data.get("results", [])]
-            if not data.get("next"):
-                break
-    else:
-        tags = fetch("https://gcr.io/v2/%s/tags/list" % repo).get("tags", [])
-    matching = [t for t in tags if re.fullmatch(pattern, t)]
-    return max(matching, key=key) if matching else None
-
-
-for name, current in sorted(pinned.items()):
-    spec = REPOS.get(name)
-    if not spec:
-        continue
-    try:
-        newest = latest(*spec)
-    except (urllib.error.URLError, OSError) as exc:
-        print("  \033[33mwarn\033[0m  %-24s %-22s could not check (%s)"
-              % (name, current, exc))
-        continue
-    if not newest:
-        print("  \033[33mwarn\033[0m  %-24s %-22s no matching tags" % (name, current))
-    elif newest == current:
-        print("  \033[32mok\033[0m    %-24s %s" % (name, current))
-    else:
-        print("  \033[33mnew\033[0m   %-24s %-22s -> %s" % (name, current, newest))
-
-print()
-print("  Edit monitoring_versions in inventory/group_vars/all/images.yml,")
-print("  then: ansible-playbook ... --tags monitoring -e monitoring_update=true")
-PYTHON
+  # Delegated to the one checker, rather than carrying a second copy of it.
+  # This block used to be 88 lines of Python with its OWN registry of ten
+  # repositories - a third place to edit when an image was added, after
+  # images.yml and the media-only script. The upstream source now lives on
+  # the pin's own line in images.yml and tests/test_image_versions.py fails
+  # the build if one is missing.
+  "${REPO_ROOT}/scripts/check-updates.py" --only monitoring_versions || true
 fi
 
 echo

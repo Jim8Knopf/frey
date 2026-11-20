@@ -47,13 +47,20 @@ address that never changes. Reaching the Pi over its public-WiFi uplink needs
 ### Verification scripts
 
 There is no lint config, and `ansible-lint` and `yamllint` are not installed.
-There IS CI: `.github/workflows/checks.yml` runs on every push and pull
-request and covers everything that does not need the Pi — `--syntax-check` on
-both playbooks, `scripts/check-repository-files.py`, `bash -n` and
-`shellcheck` over every shell script and git hook, the two offline test
-scripts, the vault hook's own regression tests, and every `test_*.py` under
-`tests/` and `roles/*/tests/`. Run it locally before pushing and nothing in
-it will surprise you.
+There IS CI, and **one command runs all of it locally**:
+
+```bash
+scripts/run-checks.sh                  # exactly what CI runs; needs no Pi
+```
+
+`.github/workflows/checks.yml` installs the dependencies and then calls that
+same script, so the two cannot drift. It covers everything that does not need
+the Pi — `--syntax-check` on every playbook, `scripts/check-repository-files.py`,
+`bash -n` and `shellcheck` over every shell script and git hook, the two
+offline test scripts, the vault hook's own regression tests, and every
+`test_*.py` and `test_*.js` under `tests/` and `roles/*/tests/`. Everything is
+globbed, never listed: every listing that used to be in the workflow had, at
+some point, silently excluded something real.
 
 What CI cannot do is reach the van. These scripts are that half of the test
 suite, and they are the ones that decide whether a change actually worked.
@@ -63,7 +70,8 @@ Run from the repo root on a machine that can reach the Pi:
 scripts/monitoring-check.sh            # every target up, rules loaded, collectors fresh
 scripts/monitoring-check.sh --test     # prove a notification reaches the phone
 scripts/identity-check.sh              # assert SSO is actually enforcing
-scripts/media-check-updates.sh         # pinned image versions vs upstream (needs internet)
+scripts/check-updates.py               # every pinned image vs upstream (needs internet)
+scripts/check-updates.py --offline     # pins, upstream sources and owning tags, offline
 scripts/test-portal-logic.py           # captive-portal accept logic, offline
 scripts/test-media-dns-upstream.py     # media resolver upstream selection, offline
 git-hooks/test-pre-commit.sh           # regression tests for the vault hook
@@ -339,6 +347,11 @@ A pure Jinja reference like `"{{ vault_x | default('') }}"` is fine.
 
 ## Docs map
 
+This list is complete — every file in `docs/` appears here. If you add one,
+add it here too.
+
+`docs/UPDATING.md` **how to move the whole stack to current versions**, the
+pins, the holds and what is deliberately not automated ·
 `docs/GATEWAY.md` radios, captive portals, deadman rollback, two-phase migration ·
 `docs/IDENTITY.md` SSO, the `hub` label, certificates ·
 `docs/MEDIA.md` · `docs/MONITORING.md` · `docs/SSH_ACCESS.md` the lockouts and the
@@ -349,4 +362,9 @@ whitelist · `roles/security_baseline/README.md` · `docs/NVME_MIGRATION.md` ·
 `campaign_ai`, and the model/runtime verdicts behind it ·
 `docs/LOCAL_AI_AGENT_PLAN.md` the self-healing agent, its broker, and the
 six mechanisms that hard-limit it ·
+`docs/LOCAL_AI_RIGHTSIZING.md` what local AI is for, measured against what it
+actually did — the evidence that retired the observer ·
+`docs/CAMPAIGN_ASSISTANT_PLAN.md`, `docs/CAMPAIGN_AGENT_EVALUATION.md`,
+`docs/CAMPAIGN_IDEA_WORKFLOW.md` the earlier record, kept because the
+`LOCAL_AI_*` docs cite them as the prior baseline — superseded, not current ·
 plus a `README.md` in every role.

@@ -33,13 +33,15 @@ roles. You should not need to open them to run the stack.
 ### Updating images
 
 ```bash
-scripts/media-check-updates.sh      # what has moved upstream
-# edit inventory/group_vars/all/images.yml
-ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-  --tags media --vault-password-file .vault_pass
+scripts/check-updates.py --only media    # what has moved upstream
+scripts/check-updates.py --only media --apply
+ansible-playbook playbooks/site.yml --tags media
 ```
 
-The script skips linuxserver's `-lsNNN` build suffix and treats a short pin
+See [UPDATING.md](UPDATING.md) for the whole stack; `--only media` just narrows
+it to these two roles.
+
+The checker skips linuxserver's `-lsNNN` build suffix and treats a short pin
 like `"1"` as deliberately tracking a major line, so it only reports real
 moves. It compares against each project's latest **release**, and a few
 projects tag releases differently from their published images — Maintainerr

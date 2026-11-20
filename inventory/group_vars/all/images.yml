@@ -1,16 +1,64 @@
 ---
-immich_version: "v3.4.1"
-silverbullet_version: "2.12.1"
+# Container image tags for every active Frey service.
+#
+# Edit the tag here, then deploy the affected role. You do not have to work out
+# which role that is: `scripts/check-updates.py` prints the exact
+# `--tags` for every pin it reports, because it derives them from the role that
+# reads the variable.
+#
+#   scripts/check-updates.py              # what has moved upstream
+#   scripts/check-updates.py --apply      # rewrite the pins below
+#   scripts/check-updates.py --offline    # no network: just pins and owners
+#
+# Rules for this file:
+#   - Quote new tags, especially tags that resemble numbers.
+#   - Confirm ARM64 support and review migration notes before upgrading.
+#   - Never pin `:latest`. An unattended pull on campground WiFi can hand you a
+#     broken container with no internet left to fix it.
+#
+# `# upstream:` markers
+# ---------------------
+# Every pin carries one, and `tests/test_image_versions.py` fails the build if
+# one is missing - that is what stops a new image from silently going
+# unchecked, which is what happened to the four pins that used to sit above
+# this header. The marker lives on the pin's own line so there is exactly one
+# place to edit when adding an image.
+#
+#   # upstream: github:owner/repo   latest GitHub release tag
+#   # upstream: lsio:name           linuxserver.io's published version
+#   # upstream: dockerhub:repo      newest semver-looking tag on Docker Hub
+#   # upstream: watch <any above>   report a new version, never apply it
+#   # upstream: hold - reason       not checked at all; a human decides
+#
+# `hold` is not "unknown". It means the upstream version is not the thing that
+# decides this pin - a date-stamped tag, a compound tag, or a move that is a
+# migration rather than a bump.
+#
+# `watch` is for a pin where you want to KNOW a release exists but the version
+# number alone cannot tell you whether to take it: the served model has to
+# still be mapped, the login header has to still auto-register. --apply never
+# touches one.
+
+# --- Core services -----------------------------------------------------------
+traefik_version: "v3.7.16"  # upstream: github:traefik/traefik
+dashy_version: "4.7.0"  # upstream: github:Lissy93/dashy
+
+# --- Notes, photos -----------------------------------------------------------
+immich_version: "v3.4.1"  # upstream: github:immich-app/immich
+silverbullet_version: "2.12.1"  # upstream: github:silverbulletmd/silverbullet
+
+# --- Local AI ----------------------------------------------------------------
 # b12019, published 2026-10-31, is the first pin verified against the served
 # model: it maps architecture "qwen35" and the "qwen3vl_merger" projector that
-# Qwen3.5's mmproj declares. Check both before moving this tag.
-local_ai_llama_version: "server-b12019"
+# Qwen3.5's mmproj declares. Check both before moving this tag - which is why
+# this is a hold and not github:ggml-org/llama.cpp.
+local_ai_llama_version: "server-b12019"  # upstream: watch github:ggml-org/llama.cpp
 # Hermes Agent. arm64/linux confirmed; 3.21 GB on disk, digest
 # sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002.
 # Measured on this Pi 2026-11-08: usable only with a trimmed toolset - see
 # docs/LOCAL_AI_AGENT_PLAN.md 6a before changing this tag, because the prompt
 # size that decides whether it is usable at all is a property of the release.
-local_ai_hermes_version: "v0.23.0"
+local_ai_hermes_version: "v0.23.0"  # upstream: watch github:NousResearch/hermes-agent
 # Open WebUI - the chat harness at chat.hub.frey. linux/arm64 confirmed in the
 # manifest from this Pi on 2026-11-20. Released 2026-11-08.
 #
@@ -21,81 +69,86 @@ local_ai_hermes_version: "v0.23.0"
 #   - WEBUI_AUTH_TRUSTED_EMAIL_HEADER still auto-registers and logs in from a
 #     header. Frey has no second login, so a regression there locks you out
 #     rather than showing a form.
-local_ai_openwebui_version: "v0.13.3"
-# Container image tags for every active Frey service.
-# Edit the tag here, then deploy the affected role (see README.md).
-# Quote new tags, especially tags that resemble numbers.
-# Confirm ARM64 support and review migration notes before upgrading.
-
-# Core services
-traefik_version: "v3.7.16"
-dashy_version: "4.7.0"
+#
+# Hence `watch`: report a new release, never apply one unattended. A silent
+# bump here is a lockout, and this is the window you would use to diagnose it.
+local_ai_openwebui_version: "v0.13.3"  # upstream: watch github:open-webui/open-webui
 
 identity_versions:
-  authelia: "4.39.28"
-  lldap: "2026-09-22-alpine"
+  # Authelia's config schema moves between minor releases, which is why the
+  # role runs `authelia validate-config` before restarting anything. Checked,
+  # but read the release notes before applying.
+  authelia: "4.39.28"  # upstream: github:authelia/authelia
+  # Date-stamped image tags, which no release feed reports. Check Docker Hub's
+  # tag list by hand.
+  lldap: "2026-09-22-alpine"  # upstream: hold - date-stamped image tags, not releases
 
 media_versions:
 
   # --- Library (works with no internet) --------------------------------------
   # Jellyfin 12.x. Upgrading from 10.x is a ONE-WAY database migration and
   # plugins must be uninstalled first - see roles/media_library/README.md.
-  jellyfin: "12.3ubu2604-ls56"
-  navidrome: "0.64.2"
-  audiobookshelf: "2.37.2"
+  jellyfin: "12.3ubu2604-ls56"  # upstream: lsio:jellyfin
+  navidrome: "0.64.2"  # upstream: github:navidrome/navidrome
+  audiobookshelf: "2.37.2"  # upstream: github:advplyr/audiobookshelf
   # Seerr: the maintained continuation of Overseerr and Jellyseerr, both of
   # which are discontinued.
-  seerr: "v3.5.1"
-  audiobookrequest: "1.11.0"
-  readmeabook: "1.2.13"
+  seerr: "v3.5.1"  # upstream: github:seerr-team/seerr
+  audiobookrequest: "1.11.0"  # upstream: dockerhub:markbeep/audiobookrequest
+  readmeabook: "1.2.13"  # upstream: github:kikootwo/ReadMeABook
   # Held at 2.19.0 deliberately: the project's latest GitHub release is
   # v3.31.0 but no matching container image is published, so the newer tag
-  # cannot be pulled. scripts/media-check-updates.sh will keep reporting this
-  # until upstream publishes one.
-  maintainerr: "2.19.0"
-  jellystat: "1.1.12"
+  # cannot be pulled. The checker will keep reporting this until upstream
+  # publishes one - it is a real gap, not a stale pin, so it stays checked.
+  maintainerr: "2.19.0"  # upstream: github:jorenn92/Maintainerr
+  jellystat: "1.1.12"  # upstream: github:CyferShepard/Jellystat
   # PostgreSQL major upgrades are NOT automatic - a new major refuses to start
   # on an old cluster's data. Treat a change here as a migration, not a bump.
-  jellystat_db: "18.1"
+  jellystat_db: "18.1"  # upstream: hold - a major is a cluster migration, not a bump
 
   # --- Acquisition (needs an uplink) -----------------------------------------
   # linuxserver images use `version-<upstream version>` tags.
-  prowlarr: "version-2.7.0.5723"
-  jackett: "0.24.3014"
-  sonarr: "version-4.0.20.3014"
-  radarr: "version-6.4.4.10685"
-  lidarr: "version-3.1.6.5079"
-  slskd: "0.26.2"
-  soularr: "v1.2.3"
-  bazarr: "version-v1.6.2"
-  qbittorrent: "version-5.3.0_v2.1.2"
+  prowlarr: "version-2.7.0.5723"  # upstream: lsio:prowlarr
+  jackett: "0.24.3014"  # upstream: lsio:jackett
+  sonarr: "version-4.0.20.3014"  # upstream: lsio:sonarr
+  radarr: "version-6.4.4.10685"  # upstream: lsio:radarr
+  lidarr: "version-3.1.6.5079"  # upstream: lsio:lidarr
+  slskd: "0.26.2"  # upstream: github:slskd/slskd
+  soularr: "v1.2.3"  # upstream: github:mrusse/soularr
+  bazarr: "version-v1.6.2"  # upstream: lsio:bazarr
+  qbittorrent: "version-5.3.0_v2.1.2"  # upstream: lsio:qbittorrent
   # Chaptarr: successor to Readarr, which was retired in June 2025.
-  chaptarr: "0.9.965"
+  chaptarr: "0.9.965"  # upstream: dockerhub:chaptarr/chaptarr
   # Byparr: replaces FlareSolverr, archived upstream and no longer able to
   # clear current Cloudflare challenges.
-  byparr: "3.0.4"
+  byparr: "3.0.4"  # upstream: github:ThePhaseless/Byparr
   # dnsmasq, used as the acquisition stack's own resolver. It exists to strip
   # AAAA records: the van's uplink has no working IPv6, but campground
   # resolvers hand out AAAA for Cloudflare-fronted trackers anyway, and the
   # *arrs then fail every search. See roles/media_acquisition/README.md.
-  dnsmasq: "2.93"
-  recyclarr: "8.8.0"
-  cleanuparr: "2.10.12"
-  unpackerr: "1.0.0"
+  dnsmasq: "2.93"  # upstream: dockerhub:dockurr/dnsmasq
+  recyclarr: "8.8.0"  # upstream: github:recyclarr/recyclarr
+  cleanuparr: "2.10.12"  # upstream: github:Cleanuparr/Cleanuparr
+  unpackerr: "1.0.0"  # upstream: github:Unpackerr/unpackerr
   # Gluetun, used only when media_vpn.enabled is true.
-  gluetun: "v3.41.3"
+  gluetun: "v3.41.3"  # upstream: github:qdm12/gluetun
 
 monitoring_versions:
-  dockge: "1.5.0"
-  prometheus: "v3.15.1"
-  alertmanager: "v0.34.1"
-  node_exporter: "v1.12.1"
-  blackbox_exporter: "v0.29.1"
-  cadvisor: "v0.55.1"
-  grafana: "13.2.4"
-  loki: "3.7.9"
-  alloy: "v1.21.2"
+  dockge: "1.5.0"  # upstream: github:louislam/dockge
+  prometheus: "v3.15.1"  # upstream: github:prometheus/prometheus
+  alertmanager: "v0.34.1"  # upstream: github:prometheus/alertmanager
+  node_exporter: "v1.12.1"  # upstream: github:prometheus/node_exporter
+  blackbox_exporter: "v0.29.1"  # upstream: github:prometheus/blackbox_exporter
+  # cAdvisor's published tags are NOT contiguous - v0.53.0 and v0.54.0 were
+  # never published as images - so "bump to the next release" is not safe
+  # here. Confirm the tag exists before deploying:
+  #   docker manifest inspect gcr.io/cadvisor/cadvisor:<tag>
+  cadvisor: "v0.55.1"  # upstream: github:google/cadvisor
+  grafana: "13.2.4"  # upstream: github:grafana/grafana
+  loki: "3.7.9"  # upstream: github:grafana/loki
+  alloy: "v1.21.2"  # upstream: github:grafana/alloy
   # Base image for the notification relay in roles/monitoring/files/.
   # The relay is Python standard library only - no pip, no requirements file,
   # nothing to resolve at build time, so this never needs to be online.
-  relay_base: "3.14.10-alpine3.24"
+  # A compound python+alpine tag that no release feed reports.
+  relay_base: "3.14.10-alpine3.24"  # upstream: hold - compound python+alpine tag, pick it by hand

@@ -24,7 +24,7 @@ used by active roles. See `docs/ADDING_MODULES.md` before creating a module.
   password settings.
 - Run the relevant acceptance check after deployment:
   `scripts/monitoring-check.sh`, `scripts/identity-check.sh`, or
-  `scripts/media-check-updates.sh`. Use `git-hooks/test-pre-commit.sh` to test
+  `scripts/check-updates.py`. Use `git-hooks/test-pre-commit.sh` to test
   the vault hook.
 
 ## Coding Style & Naming Conventions

@@ -70,11 +70,19 @@ Move storage before deploying services: [NVME_MIGRATION](docs/NVME_MIGRATION.md)
 
 ## Maintenance
 
-- Edit quoted image tags in `images.yml`, review upstream migration notes, then
-  deploy and verify the owning module. `scripts/media-check-updates.sh` and
-  `scripts/monitoring-check.sh --updates` report available updates without
-  changing pins. Confirm ARM64 availability and back up data before major
-  database or application upgrades; downgrades may require a restore.
+- To update the stack, see **[docs/UPDATING.md](docs/UPDATING.md)**. The short
+  version is three commands:
+
+  ```bash
+  scripts/check-updates.py           # what has moved upstream
+  scripts/check-updates.py --apply   # rewrite the pins it reported
+  ansible-playbook playbooks/site.yml --tags <the tags it printed>
+  ```
+
+  It covers every pinned image, refuses to cross a major version on its own,
+  and tells you which module owns each pin. Confirm ARM64 availability and back
+  up data before major database or application upgrades; downgrades may require
+  a restore.
   Media and monitoring normally use cached images; to re-pull
   an unchanged tag use `--tags media_update -e media_update=true` or
   `--tags monitoring_update -e monitoring_update=true` respectively.

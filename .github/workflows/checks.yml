@@ -22,50 +22,11 @@ jobs:
           sudo apt-get install -y shellcheck
           python -m pip install 'ansible-core>=2.19,<2.22' PyYAML Jinja2
           ansible-galaxy collection install -r requirements.yml
-      - name: Validate playbook syntax
-        run: |
-          printf '%s\n' ci-placeholder > "$RUNNER_TEMP/vault-password"
-          export ANSIBLE_VAULT_PASSWORD_FILE="$RUNNER_TEMP/vault-password"
-          ansible-playbook playbooks/site.yml --syntax-check
-          ansible-playbook playbooks/nvme_migrate.yml --syntax-check
-      - name: Validate YAML, JSON, and shell scripts
-        run: |
-          python3 scripts/check-repository-files.py
-          for file in scripts/*.sh git-hooks/pre-commit git-hooks/post-commit git-hooks/test-pre-commit.sh; do
-            bash -n "$file"
-          done
-          shellcheck --severity=warning scripts/*.sh git-hooks/pre-commit git-hooks/post-commit git-hooks/test-pre-commit.sh
-      - name: Run focused tests
-        # Globbed, not listed. The four directories named here before this
-        # silently excluded roles/silverbullet/tests and roles/wifi_portal/tests
-        # - fourteen passing tests that had never run in CI, because adding a
-        # role's tests and adding a line here are two separate acts and the
-        # second is easy to forget. A new roles/<m>/tests is now picked up with
-        # no change to this file.
-        run: |
-          for dir in tests roles/*/tests; do
-            # A tests directory holding no Python tests is not a failure, and
-            # must be skipped rather than discovered: since Python 3.12
-            # `unittest discover` exits 5 when it finds nothing, so globbing
-            # the directories turned the FIRST such directory into a red CI
-            # run. roles/media_library/tests is exactly that - four
-            # JavaScript tests and no Python - and it broke every build from
-            # the commit that added it until this one, on a step whose output
-            # says only "NO TESTS RAN".
-            if compgen -G "$dir/test_*.py" > /dev/null; then
-              python3 -m unittest discover -s "$dir" -p 'test_*.py'
-            else
-              echo "no Python tests in $dir"
-            fi
-          done
-          # The JavaScript half, globbed for the same reason the Python half
-          # is: these four had never run in CI at all. They need only Node
-          # built-ins, which ubuntu-latest already has.
-          for file in tests/test_*.js roles/*/tests/test_*.js; do
-            [ -e "$file" ] || continue
-            node "$file"
-          done
-          # Offline test scripts: these take no arguments and need no host.
-          python3 scripts/test-portal-logic.py
-          python3 scripts/test-media-dns-upstream.py
-          git-hooks/test-pre-commit.sh
+      # Everything that does not need the Pi lives in one script, so that what
+      # CI runs and what you can run locally before pushing are the same
+      # thing by construction rather than by remembering to update both.
+      # It globs playbooks, test directories and shell scripts rather than
+      # listing them: every listing in this file had, at some point, silently
+      # excluded something real.
+      - name: Run the offline checks
+        run: scripts/run-checks.sh

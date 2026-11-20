@@ -560,8 +560,8 @@ nothing here changes.
 
 **Image tags** are configured in `inventory/group_vars/all/images.yml`. An unattended pull on a campground Wi-Fi
 must not be able to hand you a broken stack with no internet left to fix it
-with. `scripts/media-check-updates.sh` reports what has moved upstream. Bump
-deliberately:
+with. `scripts/check-updates.py --only media` reports what has moved upstream,
+and `--apply` rewrites the pins. Bump deliberately:
 
 ```bash
 # Re-pull the pinned tags and recreate what moved, while you still have a
