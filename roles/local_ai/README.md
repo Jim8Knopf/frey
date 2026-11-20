@@ -181,104 +181,23 @@ round-trip plus one to compose the answer — at 4, a real run spent all four on
 tools and then said *"I stopped after using my tool budget"* having already
 done the work, which reads as a failure.
 
-## The observer
+## The observer — removed
 
-> **RETIRED 2026-11-18 — `observer.enabled` is `false`.** It was the only
-> caller of llama-server (91 of 91 requests over 72 h, 0 from any human), wrote
-> 302 drafts that were never promoted, and wiped the prompt cache on every
-> report so that every human turn was a cold one. Phase 1 existed to ask
-> whether a small model is good enough at correlation to be allowed to act; the
-> answer was no, it is recorded, and the component that asked is not needed to
-> keep the answer. See `docs/LOCAL_AI_RIGHTSIZING.md`. The rest of this section
-> describes it as built and still applies if it is switched back on.
-
-Phase 1 of `docs/LOCAL_AI_AGENT_PLAN.md`: a component that **reads and
-explains, and cannot act**. There is no broker, no Docker socket, no shell and
-no action verb anywhere in it. The limits are a property of what is mounted and
-which networks it is on, not of the prompt.
-
-It polls Alertmanager every five minutes. When an alert it has not seen before
-is firing, it gathers evidence from Prometheus, Loki and the textfile
-collectors, asks the local model to explain it, and writes a Markdown report
-into its drafts directory. It also writes one daily summary. A report about a
-**critical** alert is pushed to your phone; a warning is written silently,
-matching Frey's two-severity convention.
-
-Alertmanager is **polled, not configured to push here.** Adding a receiver
-would put this component in the path of the notifications Frey already depends
-on, and polling cannot break them.
-
-### Its boundaries
-
-The rule is **read broadly, write only to explicitly named paths**. Reading is
-safe here because there is no egress; writing is what is capped.
-
-| | |
-| --- | --- |
-| **writes** | exactly two: `/drafts` for reports, and `broker/req`, the only channel to anything privileged. Both as uid 10002 |
-| reads | notes, media, photos, the stacks tree, textfile collectors, Prometheus, Loki, and `broker/res` — all `:ro` |
-| networks | `ai_private` and `ai_observe`, **both internal** |
-| never mounted | `/opt/frey/pki`, `.vault_pass`, the vaulted `secrets.yml`, `/etc/shadow`, the per-service `.*-keys.json` files, `docker.sock`, host `/etc` |
-
-Photos are mounted read-only and listed before Immich exists, so the boundary
-precedes the thing it guards: the agent can look at a photo and can never edit
-or delete one. A read path that does not exist yet is skipped rather than
-mounted, since Docker would otherwise create an empty directory for it.
-
-One residual risk, stated plainly because it was a deliberate choice: the
-rendered compose files under `/stacks` **do** contain *arr API keys, Authelia
-secrets and the LLDAP admin password. Nothing can be exfiltrated — there is no
-egress — but the model could quote one into a draft, and drafts are read on a
-phone. Removing the single `/stacks` entry from `local_ai.observer.read_paths`
-closes it; nothing else depends on it.
-
-It has **no internet egress at all**, which is what makes broad read access
-safe: there is nowhere to send anything, and its only output is a file you
-read. Notifications therefore go through the existing alert relay, which
-already owns ntfy delivery and queues messages on disk until an uplink
-appears — rather than punching a hole in the network boundary.
-
-`monitoring_internal` is **not** internal despite its name, which is why
-`ai_observe` exists: Prometheus, Loki, Alertmanager and the relay join it as a
-second network so the observer can reach them without inheriting their egress.
-`local_ai` creates it and runs earlier in `frey.modules.enabled`; monitoring
-joins it as external, guarded on `local_ai` being enabled so monitoring still
-deploys with the module switched off.
-
-Reports are deliberately **not** written into the notes space. The write
-boundary is enforced by the read-only mount rather than by a path check, and
-the observer has its own uid so a future read-write mount cannot silently
-grant it notes access. Promote a report by hand when you want it in Notes.
-
-### Reading the notes needs an ACL
-
-The notes directory is mode 0700 owned by SilverBullet (uid 10001) and the note
-files are 0600, so a read-only mount alone is not enough — the inode
-permissions block it regardless of the mount. The role installs the `acl`
-package and grants `u:10002:rX` recursively, plus a **default** ACL on
-directories so notes created later inherit the grant. An ACL is used rather
-than widening the mode because the mode is shared with everyone and the grant
-should not be.
-
-Capital `X` grants execute only on directories, so note files do not pick up a
-pointless execute bit.
-
-### How long a report takes, and why the evidence is trimmed
-
-Measured 2026-11-07: an incident report took **9.5 minutes** end to end. Prompt
-processing is the cost, not generation — it runs at **8.4–9.25 tokens/s** on
-this Pi, and the untrimmed evidence came to about **5500 tokens**, which is ten
-minutes before a single output token.
-
-So the model's copy of the evidence is capped by a character budget
-(`EVIDENCE_BUDGET_CHARS`, default 6000 ≈ 1500 tokens) and trimmed from the end,
-where the long tail of log lines sits. **The report still records the full
-evidence** — only the model's copy is cut, and the trim is stated in the
-report rather than left silent.
-
-One practical consequence: **restarting the observer cancels an in-flight
-request.** `llama-server` logs `cancel task` and the report is lost. Redeploying
-the role restarts it, so avoid redeploying while a report is generating.
+> The read-only observer was retired on 2026-11-18 and **removed outright**
+> on 2026-11-20, along with `observer.py`, its check script, its compose
+> service, its uid and ACL, and the `ai_observe` network that existed only
+> to carry it. `roles/local_ai` deletes the container and that network from
+> the Pi by name, via `legacy_containers` / `legacy_networks`.
+>
+> It was the only caller of llama-server — 91 of 91 requests over 72 h, none
+> from a human — wrote 302 drafts nobody promoted, and wiped the prompt cache
+> on every report so each human turn started cold. Phase 1 existed to ask
+> whether a small model is good enough at correlation to be allowed to act.
+> The answer was no, it is recorded in `docs/LOCAL_AI_RIGHTSIZING.md`, and
+> keeping the component that asked is not needed to keep the answer.
+>
+> `/drafts` is deliberately left on disk: it is the evidence. Delete it by
+> hand when you have read enough of it.
 
 ## The broker
 
@@ -615,17 +534,15 @@ reclaims about 2 GiB.
 From the Frey project directory on the admin computer:
 
 ```sh
-bash scripts/local-ai-ready-check.sh     # download, readiness and isolation; exit 2 = still downloading
-bash scripts/local-ai-check.sh           # anonymous access is redirected
-bash scripts/local-ai-observer-check.sh  # tries to break every observer boundary
-bash scripts/local-ai-broker-check.sh    # asks the broker for things it must refuse
+bash scripts/local-ai-ready-check.sh   # download, readiness and isolation; exit 2 = still downloading
+bash scripts/local-ai-check.sh         # anonymous access is redirected
+bash scripts/local-ai-broker-check.sh  # asks the broker for things it must refuse
 ```
 
-`local-ai-observer-check.sh` is the important one. It attempts egress, attempts
-to write outside `/drafts`, attempts a traversal out of the notes mount and
-stats every forbidden path — and requires each attempt to fail. Forbidden paths
-must report **ENOENT, not EACCES**: that is the difference between "not
-mounted" and "mounted but denied", and only the first is a real boundary.
+`local-ai-broker-check.sh` is the important one. It asks the broker for things
+it must refuse and requires each refusal. It drives the queue from inside the
+agent container, so it exercises the real mount and the real uid rather than a
+convenient shortcut from the host.
 
 Neither tests sign-in, vision, or the quality of an answer. The real
 acceptance test is a second deploy reporting **0 changed**, then these scripts,

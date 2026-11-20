@@ -1,6 +1,4 @@
 ---
-# The observer program is bind-mounted read-only into the container, so a new
-# version on disk is not picked up until the process restarts.
 # Traefik's file provider did NOT pick up changes to route.yml through the
 # bind mount, so routing fixes sat unused while the gateway served a stale
 # config - and the symptom was Traefik's own 404 on paths that should have
@@ -31,17 +29,6 @@
     pull: never
   when:
     - local_ai.campaign.enabled | bool
-    - not ansible_check_mode
-
-- name: Restart local AI observer
-  community.docker.docker_compose_v2:
-    project_src: "{{ local_ai.stack_dir }}"
-    profiles: [observer]
-    services: [observer]
-    state: restarted
-    pull: never
-  when:
-    - local_ai.observer.enabled | bool
     - not ansible_check_mode
 
 # Hermes reads config.yaml once at startup, and it is bind-mounted read-only,

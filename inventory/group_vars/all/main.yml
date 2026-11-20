@@ -16,26 +16,13 @@ frey:
     traefik_ip: 172.31.250.2
     navidrome_ip: 172.31.250.3
   pki_public_dir: '{{ frey.base_dir }}/pki-public'
-  # An internal-only network where the local_ai and monitoring modules meet: a
-  # reader on it can reach Prometheus, Loki, Alertmanager and the alert relay
-  # without gaining internet egress, because broad read access is only safe
-  # while there is nowhere to send anything. monitoring_internal is NOT
-  # internal despite the name, which is why this exists separately.
+  # No ai_observe_network. It was an internal-only network on which the
+  # local-AI observer read Prometheus, Loki, Alertmanager and the relay
+  # without gaining egress; the observer was retired and removed, and the
+  # network went with it. roles/local_ai removes it from the Pi by name.
   #
-  # Declared here, not read out of roles/local_ai, because monitoring attaches
-  # containers to it and a role's defaults are only in scope while it runs.
-  # local_ai creates it and runs first; monitoring joins it as external.
-  #
-  # Its only consumer was the observer, retired 2026-11-18. It is still
-  # created and still joined - re-enabling the observer is meant to be one
-  # flag, and the two sides must agree on whether the network exists. See the
-  # comment on "Create the internal observation network" in
-  # roles/local_ai/tasks/main.yml for what broke when they disagreed.
-  ai_observe_network: ai_observe
-  # The notes space. Owned by silverbullet (uid 10001, mode 700), so another
-  # uid that needs to read it is granted access by ACL rather than by widening
-  # the mode for everyone - how the observer read it, and how the campaign
-  # assistant reaches it now.
+  # The notes space. Owned by silverbullet (uid 10001, mode 700), so the
+  # campaign assistant shares that uid rather than being granted an ACL.
   notes_data_dir: '{{ frey.base_dir }}/appdata/silverbullet'
   # node-exporter's textfile directory: the documented seam for everything the
   # Pi knows about itself that no exporter reports. monitoring writes it and

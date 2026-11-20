@@ -685,91 +685,6 @@ local_ai:
     # client secret for `hermes` lives in this file under `hermes_oidc_secret`.
     identity_key_file: "{{ frey.base_dir }}/appdata/identity/.identity-keys.json"
 
-  # Phase 1 of docs/LOCAL_AI_AGENT_PLAN.md: an observer that reads and
-  # explains, and cannot act. There is no broker, no Docker socket and no
-  # action verb - the limits are a property of what is mounted and what
-  # network it is on, not of the prompt.
-  #
-  # RETIRED 2026-11-18, superseded by LOCAL_AI_AGENT_PLAN.md 7a and measured
-  # in docs/LOCAL_AI_RIGHTSIZING.md. It was the ONLY caller of llama-server:
-  # 91 of 91 requests over 72 h, against 0 from any human. It wrote 302 drafts
-  # between 2026-11-07 and 2026-11-18 and not one was promoted, and each
-  # report cost 3.5-5 min of the single slot AND wiped the prompt cache
-  # (f_keep 0.16), so the next human turn was always a cold one.
-  #
-  # Phase 1 existed to ask whether a small model is good enough at correlation
-  # to be allowed to act. The answer was no, it is recorded, and the component
-  # that asked is not needed to keep the answer. The config stays so the
-  # decision is legible and reversible; /drafts stays on disk as the evidence.
-  observer:
-    enabled: false
-    container_name: frey-local-ai-observer
-    # Reuses the pinned Python image the alert relay already runs, so this
-    # adds no new image to track. The observer is stdlib-only for the same
-    # reason: no pip, no wheels, nothing to fetch at runtime.
-    image: "python:{{ monitoring_versions.relay_base }}"
-    script_path: /opt/frey-local-ai-observer/observer.py
-
-    # Its own identity, owning exactly one directory. Not SilverBullet's uid:
-    # sharing that would mean a future read-write mount silently granted it
-    # notes write access.
-    uid: 10002
-    gid: 10002
-    user_name: frey_local_ai
-
-    # The only read-write mount it has. Reports land here for you to promote
-    # by hand; nothing in the notes space is writable by the observer.
-    drafts_dir: "{{ frey.base_dir }}/appdata/local-ai/drafts"
-
-    mem_limit: 256m
-    cpus: 0.5
-
-    # Alertmanager is polled rather than configured to push here, so this
-    # component can never break the notification path Frey depends on. Five
-    # minutes is well inside the time it takes anyone to react from a phone.
-    poll_seconds: 300
-    # Local hour after which the daily summary is written, once per day.
-    daily_hour: 7
-    # A token budget is a time budget at ~3.5 tokens/s: 500 is about 2.5 min.
-    max_tokens: 500
-    model_timeout: 900
-    # Matches Frey's two severities: critical buzzes, warning stays silent.
-    notify_severity: critical
-    log_level: INFO
-
-    # A page in the notes space, relative to the notes root, holding your own
-    # "what to check first" guidance. Handed to the model as instructions from
-    # you, which beats anything a 4B knows about Frey - and the advice improves
-    # when you write, not when the model changes.
-    #
-    # This is the one use of the read-only notes mount that earns its place in
-    # a health reporter. An absent file is normal and silent, so this can be
-    # set before the page exists. Set to "" to not read the notes at all.
-    # The deployed space is spaces/notes (lowercase), holding index.md.
-    runbook_page: "spaces/notes/Frey/Runbook.md"
-
-    # Read broadly, write narrowly. Each entry is mounted READ-ONLY, and a
-    # path that does not exist yet is skipped rather than mounted - otherwise
-    # Docker would helpfully create an empty directory for it.
-    #
-    # The write surface is unaffected by anything here: only the drafts
-    # directory and the broker's request queue are read-write, and they are
-    # named explicitly in the compose file rather than coming from this list.
-    #
-    # Worth knowing about the stacks entry: the rendered compose files under
-    # it DO contain *arr API keys, Authelia secrets and the LLDAP admin
-    # password. There is no egress, so nothing can be exfiltrated - but the
-    # model could quote one into a draft, and drafts are read on a phone.
-    # Remove that single line to close it; nothing else depends on it.
-    read_paths:
-      - {src: "{{ frey.metrics_textfile_dir }}", dest: /textfile}
-      - {src: "{{ frey.notes_data_dir }}", dest: /notes}
-      - {src: "{{ frey.base_dir }}/data", dest: /media}
-      - {src: "{{ frey.base_dir }}/stacks", dest: /stacks}
-      # Immich is not deployed yet - only its OIDC client exists. Listed so
-      # the boundary precedes the thing it guards: readable, never writable.
-      - {src: "{{ frey.base_dir }}/data/photos", dest: /photos}
-
   # Phase 3 of docs/LOCAL_AI_AGENT_PLAN.md: the only privileged thing the
   # assistant can reach. Read verbs only - there is no write verb yet.
   #
@@ -787,13 +702,10 @@ local_ai:
     # The group that owns the request queue, and that the agent container is
     # added to so it can write there.
     #
-    # Declared HERE, not read out of the observer block, even though the gid
-    # is the same 10002 it has always been. It used to be
-    # `local_ai.observer.gid`, which made live broker code depend on a value
-    # inside a retired component - and the group itself was created only
-    # `when: local_ai.observer.enabled`, which is now never. On the Pi this
-    # survived because the group already existed from before the retirement;
-    # on a rebuild from scratch it would not have.
+    # The gid is 10002 because that is what it has always been on this Pi -
+    # it was the retired observer's gid, and the broker's queue borrowed it.
+    # Keeping the number means the directory on disk does not change owner.
+    # Do not renumber it without chowning the queue in the same change.
     queue_group: frey_local_ai
     queue_gid: 10002
     base_dir: "{{ frey.base_dir }}/appdata/local-ai/broker"
@@ -948,4 +860,16 @@ local_ai:
   legacy_containers:
     - frey-campaign-ai-model
     - frey-campaign-ai-gateway
-  legacy_network: campaign-ai_ai_private
+    # The read-only observer, retired 2026-11-18 and REMOVED outright on
+    # 2026-11-20. It has to be listed here rather than handled by "Remove the
+    # containers of disabled components", because that task reads a
+    # container_name out of the component's own config block - and there is no
+    # longer an observer block to read. Without this line the container would
+    # keep running on an already-deployed Pi forever, which is exactly the
+    # orphan the rest of this list exists to clean up after.
+    - frey-local-ai-observer
+  legacy_networks:
+    - campaign-ai_ai_private
+    # Existed only so the observer could read Prometheus, Loki, Alertmanager
+    # and the relay without egress. Nothing joins it now.
+    - ai_observe

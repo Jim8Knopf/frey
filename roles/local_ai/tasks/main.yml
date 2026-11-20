@@ -38,53 +38,13 @@
     - "{{ local_ai.stack_dir }}/models.d"
     - "{{ local_ai.model_dir }}"
 
-# --- Observer identity and boundaries --------------------------------------
-
-- name: Install ACL tooling for the observer's notes access
-  ansible.builtin.apt:
-    name: acl
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
-  when: local_ai.observer.enabled | bool
-
-- name: Create the observer group
-  ansible.builtin.group:
-    name: "{{ local_ai.observer.user_name }}"
-    gid: "{{ local_ai.observer.gid }}"
-    system: true
-  when: local_ai.observer.enabled | bool
-
-# Its own identity, owning exactly one directory. Deliberately not
-# SilverBullet's uid: sharing that would mean a future read-write mount
-# silently granted the observer write access to the notes.
-- name: Create the observer user
-  ansible.builtin.user:
-    name: "{{ local_ai.observer.user_name }}"
-    uid: "{{ local_ai.observer.uid }}"
-    group: "{{ local_ai.observer.user_name }}"
-    system: true
-    shell: /usr/sbin/nologin
-    create_home: false
-    home: "{{ local_ai.observer.drafts_dir }}"
-  when: local_ai.observer.enabled | bool
-
-- name: Create the observer drafts directory
-  ansible.builtin.file:
-    path: "{{ local_ai.observer.drafts_dir }}"
-    state: directory
-    owner: "{{ local_ai.observer.uid }}"
-    group: "{{ local_ai.observer.gid }}"
-    mode: "0750"
-  when: local_ai.observer.enabled | bool
-
 # --- Broker -----------------------------------------------------------------
 
-# Same name and same gid as the observer group above, so this is idempotent
-# whichever of the two is enabled - but gated on the broker, because the
-# broker's request queue is group-owned by it and the broker outlived the
-# observer. Without this, a rebuild with the observer disabled created the
-# queue with a group that did not exist.
+# The group that owns the broker's request queue, and that the agent
+# container joins so it can write there. It used to be created only when
+# the retired observer was enabled - which was never - so a rebuild from
+# scratch created the queue owned by a group that did not exist. Gated on
+# the component that actually needs it instead.
 - name: Create the broker queue group
   ansible.builtin.group:
     name: "{{ local_ai.broker.queue_group }}"
@@ -215,63 +175,6 @@
     - local_ai.broker.enabled | bool
     - not ansible_check_mode
 
-# --- Observer read surface --------------------------------------------------
-#
-# Mount only the paths that actually exist. Docker creates a missing bind
-# source as an empty directory, which would litter /opt/frey with stubs for
-# services that are not deployed yet - Immich being the current example.
-- name: Check which observer read paths exist
-  ansible.builtin.stat:
-    path: "{{ item.src }}"
-  loop: "{{ local_ai.observer.read_paths }}"
-  loop_control:
-    label: "{{ item.src }}"
-  register: local_ai_read_path_stat
-  when: local_ai.observer.enabled | bool
-
-- name: Keep only the read paths present on this host
-  ansible.builtin.set_fact:
-    local_ai_observer_read_paths: >-
-      {{
-        local_ai_read_path_stat.results
-        | selectattr('stat.exists', 'defined')
-        | selectattr('stat.exists')
-        | map(attribute='item')
-        | list
-      }}
-  when: local_ai.observer.enabled | bool
-
-# Internal-only, so the observer can reach Prometheus, Loki, Alertmanager and
-# the alert relay without gaining egress. monitoring_internal is NOT internal
-# despite its name, which is why this network exists at all. local_ai runs
-# before monitoring, so creating it here means monitoring can join it as an
-# external network.
-- name: Create the internal observation network
-  community.docker.docker_network:
-    name: "{{ frey.ai_observe_network }}"
-    internal: true
-    state: present
-  when:
-    # NOT gated on local_ai.observer.enabled, which is what this used to be.
-    #
-    # monitoring declares this network `external: true` and attaches
-    # Prometheus, Loki, Alertmanager and the relay to it whenever
-    # 'local_ai' is in frey.modules.enabled - it cannot gate on the observer
-    # flag, because a role's defaults are not in scope while another role
-    # runs. So once the observer was retired the two conditions disagreed:
-    # nothing created the network and four containers still asked for it.
-    #
-    # The live Pi survived only because the network already existed from
-    # before the retirement. A rebuild from scratch would have failed the
-    # ENTIRE monitoring stack on
-    # "network ai_observe declared as external, but could not be found" -
-    # losing metrics, logs and alerting at the moment you have least else to
-    # diagnose with.
-    #
-    # Creating it whenever this role runs matches exactly what monitoring
-    # tests for. It is internal, so it grants no egress to anything on it.
-    - not ansible_check_mode
-
 # --- Retire the campaign_ai deployment -------------------------------------
 #
 # Renaming a template does not remove what a previous deploy installed. The
@@ -301,7 +204,6 @@
     name: "{{ item.name }}"
     state: absent
   loop:
-    - {name: "{{ local_ai.observer.container_name }}", enabled: "{{ local_ai.observer.enabled }}"}
     - {name: "{{ local_ai.hermes.container_name }}", enabled: "{{ local_ai.hermes.enabled }}"}
     - {name: "{{ local_ai.campaign.container_name }}", enabled: "{{ local_ai.campaign.enabled }}"}
     - {name: "{{ local_ai.chat.container_name }}", enabled: "{{ local_ai.chat.enabled }}"}
@@ -311,10 +213,13 @@
     - not item.enabled | bool
     - not ansible_check_mode
 
-- name: Remove the retired campaign assistant network
+- name: Remove retired networks
   community.docker.docker_network:
-    name: "{{ local_ai.legacy_network }}"
+    name: "{{ item }}"
     state: absent
+  loop: "{{ local_ai.legacy_networks }}"
+  loop_control:
+    label: "{{ item }}"
   when: not ansible_check_mode
 
 - name: Remove the retired campaign assistant stack directory
@@ -466,18 +371,6 @@
   when: not ansible_check_mode or local_ai_stack_stat.stat.exists
   notify: Restart local AI gateway
 
-- name: Install the observer program
-  ansible.builtin.copy:
-    src: observer.py
-    dest: "{{ local_ai.stack_dir }}/observer.py"
-    owner: root
-    group: root
-    mode: "0644"
-  when:
-    - local_ai.observer.enabled | bool
-    - not ansible_check_mode or local_ai_stack_stat.stat.exists
-  notify: Restart local AI observer
-
 # The transcript lives here rather than in the notes space, so a conversation
 # is not a note nobody asked for. Owned by the agent's uid because the agent
 # is the only writer; its rootfs is read-only, so without this directory the
@@ -545,26 +438,6 @@
     - local_ai.campaign.enabled | bool
     - not ansible_check_mode or local_ai_stack_stat.stat.exists
   notify: Restart campaign assistant
-
-- name: Install the notes ACL helper
-  ansible.builtin.template:
-    src: grant-notes-acl.sh.j2
-    dest: "{{ local_ai.stack_dir }}/grant-notes-acl.sh"
-    owner: root
-    group: root
-    mode: "0755"
-  when:
-    - local_ai.observer.enabled | bool
-    - not ansible_check_mode or local_ai_stack_stat.stat.exists
-
-- name: Grant the observer read access to the notes space
-  ansible.builtin.command:
-    cmd: "{{ local_ai.stack_dir }}/grant-notes-acl.sh"
-  register: local_ai_notes_acl
-  changed_when: "'CHANGED' in local_ai_notes_acl.stdout"
-  when:
-    - local_ai.observer.enabled | bool
-    - not ansible_check_mode
 
 - name: Install a download manifest for every registered model
   ansible.builtin.template:
@@ -825,17 +698,6 @@
     - local_ai.hermes.enabled | bool
     - not ansible_check_mode
     - local_ai_model_restarted | default(false) | bool
-
-- name: Start the read-only observer
-  community.docker.docker_compose_v2:
-    project_src: "{{ local_ai.stack_dir }}"
-    profiles: [observer]
-    services: [observer]
-    state: present
-    pull: never
-  when:
-    - local_ai.observer.enabled | bool
-    - not ansible_check_mode
 
 # --- Models ----------------------------------------------------------------
 
