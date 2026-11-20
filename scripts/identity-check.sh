@@ -26,6 +26,12 @@
 #
 #   4. The certificate is not about to expire, and covers what it should.
 #
+#   5. Navidrome's Subsonic API is exempt from the session check - a music
+#      player cannot answer a 302 - and is still refusing credentials it does
+#      not know. Both halves are assertions: the exemption disappearing breaks
+#      every player in the van, and the exemption opening the library to
+#      anonymous callers is worse.
+#
 # Exits non-zero if any assertion fails, so it is usable from a cron job.
 
 set -uo pipefail
@@ -113,6 +119,47 @@ if [[ "$c" =~ ^30[1278]$ && "$target" == "https://soularr.${DOMAIN}/api/config" 
     pass "soularr HTTP configuration" "redirect -> HTTPS"
 else
     fail "soularr HTTP configuration" "expected HTTPS redirect, got ${c:-no answer} ${target:-}"
+fi
+
+echo
+echo "Navidrome's Subsonic API answers the client itself, and must refuse a guess:"
+# /rest/ bypasses Authelia on purpose - identity_services.navidrome.subsonic_bypass.
+# Two things have to be true at once and either alone is a fault: the request
+# must REACH Navidrome (a 302 to the login page means the exemption is gone and
+# every Subsonic player in the van is broken), and Navidrome must still turn
+# away a password it does not know (an `ok` here would mean the exemption
+# handed the library to anyone on FreyHub).
+#
+# The username is deliberately one that cannot exist. Navidrome rate-limits
+# failed logins per address AND per username, so probing with a real account's
+# name would spend that account's own allowance - five per twenty seconds.
+sub=$(curl -sS -w '\n%{http_code} %{redirect_url}' --max-time 10 --cacert "$CA" \
+    --resolve "navidrome.${DOMAIN}:443:${PI_ADDR}" \
+    "https://navidrome.${DOMAIN}/rest/ping.view?u=frey-check-nobody&p=wrong&v=1.16.1&c=frey-check&f=json" \
+    2>/dev/null)
+read -r c target <<<"$(tail -n1 <<<"$sub")"
+body=$(sed '$d' <<<"$sub")
+if [[ "$c" =~ ^30[0-9]$ ]]; then
+    fail "navidrome.${DOMAIN}/rest" "redirected to ${target:-nowhere} - the exemption is gone"
+elif [[ "$body" == *'"status":"ok"'* ]]; then
+    fail "navidrome.${DOMAIN}/rest" "answered ok to a password that cannot be right"
+elif [[ "$body" == *'"status":"failed"'* && "$body" == *'"code":40'* ]]; then
+    pass "navidrome.${DOMAIN}/rest" "reached Navidrome, wrong password refused"
+elif [[ "$c" == "401" ]]; then
+    # Some versions answer the HTTP status rather than a Subsonic error body.
+    pass "navidrome.${DOMAIN}/rest" "reached Navidrome, 401"
+elif [[ -z "$body" && -z "$c" ]]; then
+    fail "navidrome.${DOMAIN}/rest" "no answer"
+else
+    fail "navidrome.${DOMAIN}/rest" "${c:-no code}, not a Subsonic refusal: ${body:0:100}"
+fi
+# A Subsonic client sends the password on every request, and older ones put it
+# in the query string. Plain HTTP must therefore redirect and never serve.
+read -r c target <<<"$(code_and_target http "navidrome.${DOMAIN}" /rest/ping.view)"
+if [[ "$c" =~ ^30[1278]$ && "$target" == "https://navidrome.${DOMAIN}/rest/ping.view" ]]; then
+    pass "navidrome HTTP /rest" "redirect -> HTTPS"
+else
+    fail "navidrome HTTP /rest" "expected HTTPS redirect, got ${c:-no answer} ${target:-}"
 fi
 
 echo
