@@ -30,15 +30,24 @@
 #}
 
 {#
-  Docker's json-file log rotation. Identical everywhere on purpose: these are
-  the only limits between a chatty container and a full NVMe.
+  Docker's json-file log rotation. The only limits between a chatty container
+  and a full NVMe.
+
+  The defaults are READ from service_proxy.docker, which is the same pair of
+  values that daemon.json.j2 writes as Docker's own daemon-wide default - so
+  the policy is defined once and a container's explicit block cannot silently
+  disagree with the daemon's. They were duplicated as literal '10m'/'3' here
+  when this macro was extracted.
+
+  service_proxy.docker is declared in inventory/group_vars/all/proxy.yml, so
+  it is in scope in every role rather than only while service_proxy runs.
 #}
-{% macro logging(max_size='10m', max_file='3') %}
+{% macro logging(max_size=None, max_file=None) %}
     logging:
       driver: json-file
       options:
-        max-size: "{{ max_size }}"
-        max-file: "{{ max_file }}"
+        max-size: "{{ max_size or service_proxy.docker.log_max_size }}"
+        max-file: "{{ max_file or service_proxy.docker.log_max_file }}"
 {%- endmacro %}
 
 {#
