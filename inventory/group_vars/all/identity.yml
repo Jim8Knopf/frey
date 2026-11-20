@@ -186,6 +186,39 @@ identity_groups:
 # why media_acquisition.auth.required is pinned to Enabled. Do NOT set it on a
 # service whose API has no authentication of its own - Maintainerr, which can
 # delete media, deliberately does not have it.
+#
+# `subsonic_bypass: true` is the same idea narrowed to one route: Navidrome's
+# Subsonic API under /rest/. A Subsonic client sends a username and a password
+# or token on every single request and cannot answer a 302 to a login page, so
+# forward auth across the whole host means no music player in the van works at
+# all. With the flag the web interface stays behind Authelia and Navidrome
+# authenticates /rest/ itself - the arrangement Navidrome documents for proxies
+# whose browser login a client cannot complete.
+#
+# api_bypass does NOT cover this. It exempts /api, /feed and /ping, and the
+# Subsonic API is none of them.
+#
+# Four things make it safe, and all four have to hold:
+#
+#   - /rest/ is still HTTPS only. The service stays in identity_protect, so its
+#     plain-HTTP router redirects to the canonical name rather than serving.
+#   - Traefik blanks any client-supplied Remote-User before Authelia is asked
+#     (drop-remote-user@file, applied to Navidrome's router in
+#     roles/media_library/templates/docker-compose.yml.j2), so a request that
+#     skips the session check cannot name itself an SSO user instead.
+#   - Navidrome accepts proxy identity only from Traefik's pinned address on a
+#     private /29 of its own (frey.navidrome_network in
+#     inventory/group_vars/all/main.yml). Nothing else can reach the container.
+#   - Navidrome rate-limits failed /rest/ logins, which is what
+#     media_library navidrome.auth_request_limit pins on. Before Navidrome
+#     0.64.1 the Subsonic API had no limit whatsoever and every /rest/ request
+#     was a free password guess (GHSA-p994-r776-mw52). The pinned image is
+#     0.64.2; do not go below it with this flag set.
+#
+# The flag also turns Navidrome's user editing back on, because a Subsonic
+# client needs a password the account holder has actually chosen - the one
+# Navidrome generates at SSO account creation is random and unknowable. See
+# roles/media_library/README.md.
 # ==============================================================================
 identity_services:
 
@@ -257,6 +290,11 @@ identity_services:
     auth: forward_auth
     groups: [frey_admins]
     hosts: [navidrome]
+    # Subsonic clients - Cliamp, Symfonium, substreamer, play:Sub - cannot
+    # complete an Authelia login. /rest/ is theirs and Navidrome checks it
+    # itself; the web player and everything else stay behind SSO. Read the
+    # four conditions in the header above before copying this anywhere.
+    subsonic_bypass: true
 
   audiobookshelf:
     # The only `oidc` service configured end to end by the deploy: it has an

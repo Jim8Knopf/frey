@@ -99,6 +99,15 @@ media_library:
       port: 4533
       mem_limit: 512m
       cpus: "1.0"
+      # Failed logins allowed per window, counted per client address and
+      # username. Upstream's own defaults, pinned rather than inherited
+      # because /rest/ is deliberately exempt from Authelia when
+      # identity_services.navidrome.subsonic_bypass is set, and this limiter
+      # is then the only thing between a FreyHub client and an unlimited run
+      # of guesses at a Navidrome password. Navidrome treats 0 as "disabled";
+      # do not set it.
+      auth_request_limit: 5
+      auth_window_length: 20s
 
     audiobookshelf:
       enabled: "{{ media_enable.audiobookshelf | bool }}"

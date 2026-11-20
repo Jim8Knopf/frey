@@ -77,9 +77,9 @@ handles web authentication; the first authenticated user becomes Navidrome
 administrator. Access is initially limited to `frey_admins` to make this safe.
 After an administrator signs in, add `media` to Navidrome's groups in
 `inventory/group_vars/all/identity.yml` and deploy the `identity,dashy` tags
-if other media users should have access. Navidrome creates user records with
-random passwords but no separate login is needed for the web player. Subsonic
-clients are not configured for single sign-on. It scans the shared
+if other media users should have access. No separate login is needed for the
+web player; Subsonic clients are a different matter and are covered below. It
+scans the shared
 `/data/media/music` library through a read-only `/music` mount and keeps its
 database and cache in `/opt/frey/appdata/navidrome`. Lidarr imports into that
 same library using the existing Prowlarr and qBittorrent configuration.
@@ -88,6 +88,49 @@ Navidrome continues to play local music while acquisition is stopped or offline.
 Traefik and Navidrome use fixed, distinct addresses on their private proxy
 network. This keeps Docker startup order from assigning Traefik's trusted
 address to Navidrome after a reboot.
+
+### Subsonic clients - Cliamp, Symfonium, substreamer
+
+A Subsonic client sends a username and a password on every request and cannot
+complete a browser login, so single sign-on cannot cover it. Navidrome's own
+answer is to let the proxy exempt the Subsonic API and have Navidrome
+authenticate that one route itself, and that is what Frey does: `/rest/` is
+exempt from Authelia and every other path on `navidrome.hub.frey` stays behind
+it. The web player is unchanged.
+
+The exemption is one line - `subsonic_bypass: true` on the `navidrome` entry in
+`inventory/group_vars/all/identity.yml` - and the four conditions that keep it
+safe are written out directly above it. Read them before copying it anywhere
+else. The generic `api_bypass` does not cover this: `/rest/` is not `/api`,
+`/feed` or `/ping`.
+
+Once per person:
+
+1. Sign in to `https://navidrome.hub.frey` with your Frey account. That is the
+   SSO login, and signing in is also what creates the Navidrome account.
+2. Open the account menu, change the password, and set one. **Not your Frey SSO
+   password.** `/rest/` accepts this one without Authelia, and older Subsonic
+   clients put it in the query string, so it is deliberately a weaker
+   credential than the one that opens everything else in the van.
+3. In the client - `cliamp setup`, then Navidrome / Subsonic - give the server
+   as `https://navidrome.hub.frey`, with that username and that password.
+4. `https://`, not `http://`. Plain HTTP does redirect and the client will
+   follow it, but the first request carries the password in cleartext before it
+   does. The device also needs the Frey root certificate, the same one
+   `docs/IDENTITY.md` has you install for every other service; a client that
+   cannot be given a CA has no safe way in here.
+
+Step 2 is only possible because the exemption also turns Navidrome's user
+editing back on. The two are a pair and the compose template derives one from
+the other: with SSO covering every path there is nothing a Navidrome password
+could be used for, so editing stays off and nobody sets one believing it means
+something. Switching `subsonic_bypass` off therefore stops Subsonic clients
+working *and* takes the password field away again, which is the honest
+behaviour but will look like two faults.
+
+`scripts/identity-check.sh` asserts both halves of this from a laptop: that
+`/rest/` reaches Navidrome rather than the login page, and that Navidrome still
+refuses a password it does not know.
 
 ## The Pi 5 Cannot Transcode
 

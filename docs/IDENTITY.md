@@ -206,6 +206,57 @@ The result, verified:
 can delete media and has no authentication of its own — deliberately does not
 have it.
 
+## Navidrome's Subsonic API — the other exemption
+
+A Subsonic client — Cliamp, Symfonium, substreamer — sends a username and a
+password on every request and cannot answer a 302 to a login page. Forward auth
+across the whole Navidrome host therefore means no music player in the van
+works at all, and `api_bypass` does not help: `/rest/` is not `/api`, `/feed`
+or `/ping`.
+
+`subsonic_bypass: true` on the `navidrome` entry exempts `^/rest([/?].*)?$` and
+nothing else. Navidrome then authenticates the Subsonic API itself, which is
+the arrangement [Navidrome documents](https://www.navidrome.org/docs/usage/integration/authentication/)
+for proxies whose browser login a client cannot complete.
+
+| Request | Result |
+| --- | --- |
+| `/rest/...` with a valid Navidrome password | `200`, no Authelia session needed |
+| `/rest/...` with the wrong password | Subsonic error 40, rate limited to five failures per 20s |
+| `/` (the web player) | `302` to the login page, `frey_admins` only |
+| `http://navidrome...` anything | `301` to the canonical HTTPS name |
+
+Four things make that safe, and the point of listing them is that no single one
+of them is enough:
+
+- **The route is HTTPS only.** Navidrome stays in `identity_protect`, so its
+  plain-HTTP router redirects rather than serving. A Subsonic password would
+  otherwise cross FreyHub in the clear on every request.
+- **Traefik blanks a client-supplied `Remote-User` before Authelia is asked.**
+  That is `drop-remote-user@file`, attached to Navidrome's router in
+  `roles/media_library/templates/docker-compose.yml.j2`. Without it a request
+  that skips the session check could simply name itself an SSO user.
+- **Navidrome trusts proxy identity only from Traefik.** `ND_EXTAUTH_TRUSTEDSOURCES`
+  is a single pinned address on a private `/29` (`frey.navidrome_network`), and
+  both ends of that network are pinned so Docker's startup order cannot hand
+  Traefik's trusted address to something else after a reboot.
+- **Failed Subsonic logins are rate limited.** `ND_AUTHREQUESTLIMIT` /
+  `ND_AUTHWINDOWLENGTH`, pinned in `roles/media_library/defaults/main.yml`
+  rather than inherited. Before Navidrome 0.64.1 the Subsonic API had no limit
+  at all and every `/rest/` request was a free password guess
+  ([GHSA-p994-r776-mw52](https://github.com/navidrome/navidrome/security/advisories/GHSA-p994-r776-mw52));
+  the pinned image is 0.64.2, and this flag is not safe below it.
+
+The flag also turns `ND_ENABLEUSEREDITING` back on, because an account created
+by SSO gets a random password nobody can know and a Subsonic client has nothing
+but a password to offer. The two settings are derived together on purpose: with
+SSO covering every path, user editing stays off so that nobody sets a password
+believing it does something.
+
+Per-person setup, and the warning that goes with it, are in
+`roles/media_library/README.md`. The short version: the Navidrome password must
+not be the Frey SSO password.
+
 ## Audiobookshelf SSO — automatic, with four traps
 
 This used to be a manual step, documented here as "it has no API and no

@@ -217,6 +217,22 @@ access_control:
         - '^/ping$'
 
 {% endif %}
+{% if item.value.subsonic_bypass | default(false) %}
+    # The Subsonic API, and only it. A Subsonic client sends its credentials on
+    # every request and cannot answer a 302, so Navidrome authenticates this one
+    # route itself. Ordered ahead of the policy rule below because the first
+    # matching rule wins - behind it, this would never be reached.
+    #
+    # The route is still HTTPS only, Traefik still blanks a client-supplied
+    # Remote-User on it, and Navidrome still rate-limits failed logins. All
+    # three are load-bearing; see identity_services in
+    # inventory/group_vars/all/identity.yml.
+    - domain: '{{ host }}.{{ frey.service_domain }}'
+      policy: 'bypass'
+      resources:
+        - '^/rest([/?].*)?$'
+
+{% endif %}
     - domain: '{{ host }}.{{ frey.service_domain }}'
       policy: '{{ item.value.policy | default(identity.authelia.default_policy) }}'
 {% if item.value.groups | length > 0 %}
