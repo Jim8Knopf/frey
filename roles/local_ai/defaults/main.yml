@@ -417,10 +417,16 @@ local_ai:
     data_dir: "{{ frey.base_dir }}/appdata/local-ai/openwebui"
     port: 8080
 
-    # Reported upstream at ~300-500 MB. 1g leaves headroom without being the
-    # kind of cap that throttles silently - see the mem_limit note on the
-    # served model for what a tight cap does on this host.
-    mem_limit: 1g
+    # Upstream says ~300-500 MB. MEASURED HERE 2026-11-20: 670 MiB after two
+    # hours with one user and light use, so the commonly quoted figure is low
+    # for this build. 1g was the first value and left only a third spare.
+    #
+    # 1.5g because of what a tight cap does on this host specifically: it does
+    # not kill, it throttles, and the symptom turns up somewhere else entirely
+    # (see mem-limits lesson - Byparr sat "Up (healthy)" at its ceiling while
+    # solves went 52s -> 250s). The host has ~4.3 GiB available, so the
+    # headroom is affordable and a silently throttled chat UI is not.
+    mem_limit: 1.5g
     cpus: 1.0
 
     # OFFLINE_MODE and HF_HUB_OFFLINE. true is the end state and the right
