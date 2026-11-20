@@ -1,3 +1,8 @@
+{#
+  Shared log-rotation macro. WITH CONTEXT for consistency with the
+  other imports of this file; the macro itself takes no globals.
+#}
+{% from 'frey_proxy.j2' import logging with context %}
 # Managed by Ansible. Do not edit on the Pi.
 services:
   silverbullet:
@@ -12,11 +17,7 @@ services:
     networks:
       - {{ frey.proxy_network }}
     mem_limit: {{ silverbullet.mem_limit }}
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+{{ logging() }}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network={{ frey.proxy_network }}"

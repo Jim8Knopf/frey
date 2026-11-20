@@ -13,6 +13,11 @@
   Same rules as the media stacks: no published ports, pinned images, every
   container capped, all traffic through Traefik.
 #}
+{#
+  Shared log-rotation macro. WITH CONTEXT for consistency with the
+  other imports of this file; the macro itself takes no globals.
+#}
+{% from 'frey_proxy.j2' import logging with context %}
 {% set i = identity %}
 {% set tz = frey.timezone %}
 {% set run_as = i.user.uid ~ ':' ~ i.user.gid %}
@@ -118,11 +123,7 @@ services:
       - "traefik.http.routers.lldap-http.service=lldap"
       - "frey.module=identity"
     mem_limit: {{ i.lldap_mem_limit }}
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+{{ logging() }}
     healthcheck:
       # LLDAP ships its own check, which verifies the LDAP and HTTP listeners
       # rather than just that the process exists.
@@ -193,11 +194,7 @@ services:
       - "traefik.http.routers.authelia-http.service=authelia"
       - "frey.module=identity"
     mem_limit: {{ i.authelia_mem_limit }}
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+{{ logging() }}
     healthcheck:
       # The script the image ships, NOT `authelia healthcheck` - there is no
       # such subcommand in 4.39, and using it gives a container that is

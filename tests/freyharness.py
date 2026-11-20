@@ -85,23 +85,40 @@ def inventory_vars(*roles, **extra):
     return variables
 
 
-def templar(variables):
+#: Where a role template's `{% import %}` can find shared macros. Ansible
+#: resolves a template name against the running role's own templates/ and then
+#: the playbook's, which is why playbooks/templates/ is the one directory
+#: every role can import from - see playbooks/templates/frey_proxy.j2.
+SHARED_TEMPLATES = ROOT / 'playbooks/templates'
+
+
+def templar(variables, searchpath=None):
     """A Templar with every string in `variables` marked trusted.
 
     For tests that template an expression they built themselves - a `vars:`
     value lifted out of a task file, say - rather than a whole file.
+
+    `searchpath` must include playbooks/templates for any template that
+    imports the shared macros, or the render fails with TemplateNotFound.
     """
-    return Templar(variables=trusted(variables))
+    base = Templar(variables=trusted(variables))
+    paths = [str(SHARED_TEMPLATES)] + [str(p) for p in (searchpath or [])]
+    return base.copy_with_new_env(searchpath=paths)
 
 
-def render_string(text, variables):
+def render_string(text, variables, searchpath=None):
     """Render a template string against `variables`."""
-    return templar(variables).template(trust_as_template(text))
+    return templar(variables, searchpath).template(trust_as_template(text))
 
 
 def render_template(path, variables):
-    """Render a real template from the repo, by path relative to the root."""
-    return render_string((ROOT / path).read_text(), variables)
+    """Render a real template from the repo, by path relative to the root.
+
+    The template's own directory is put on the search path first, matching
+    how Ansible resolves a role template, then playbooks/templates.
+    """
+    full = ROOT / path
+    return render_string(full.read_text(), variables, searchpath=[full.parent])
 
 
 def render_yaml(path, variables):

@@ -65,18 +65,23 @@
      non-root uid that cannot update a trust store.
      See roles/monitoring/defaults/main.yml.
 #}
+{#
+  Shared macros. WITH CONTEXT is required: without it the macros cannot
+  see `frey` or `identity_protect`, and every router comes out malformed.
+
+  plain_http='redirect' on every call below, because monitoring has no
+  television problem: all of these are read in a browser, so they are
+  HTTPS-only. Grafana in particular MUST be - its OIDC login sets a
+  Secure cookie, so over plain HTTP it would log in and bounce straight
+  back to the portal.
+#}
+{% import 'frey_proxy.j2' as fp with context %}
+{% from 'frey_proxy.j2' import logging with context %}
 {% set m = monitoring %}
 {% set svc = m.services %}
 {% set tz = frey.timezone %}
 {% set run_as = m.user.uid ~ ':' ~ m.user.gid %}
 
-{% macro logging() %}
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-{%- endmacro %}
 
 {#
   The same three-router pattern the media modules use. See the long comment in
@@ -85,43 +90,6 @@
   and redirects to <name>.hub.frey, and a service behind forward auth must be
   HTTPS-only because Authelia's session cookie is Secure.
 #}
-{% macro proxy_labels(route, name, port, aliases=[]) %}
-{% set canonical = [] %}
-{% set legacy = [] %}
-{% set every = [] %}
-{% for h in [route] + aliases %}
-{% set _ = canonical.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
-{% set _ = legacy.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
-{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
-{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
-{% endfor %}
-{% set protected = route in (identity_protect | default([])) %}
-{% set middlewares = ['secure-headers@file'] + (['authelia@file'] if protected else []) %}
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network={{ frey.proxy_network }}"
-      - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
-      - "traefik.http.routers.{{ name }}.rule={{ canonical | join(' || ') }}"
-      - "traefik.http.routers.{{ name }}.entrypoints=websecure"
-      - "traefik.http.routers.{{ name }}.tls=true"
-      - "traefik.http.routers.{{ name }}.middlewares={{ middlewares | join(',') }}"
-      - "traefik.http.routers.{{ name }}-legacy.rule={{ legacy | join(' || ') }}"
-      - "traefik.http.routers.{{ name }}-legacy.entrypoints=websecure"
-      - "traefik.http.routers.{{ name }}-legacy.tls=true"
-      - "traefik.http.routers.{{ name }}-legacy.middlewares=to-canonical@file"
-      - "traefik.http.routers.{{ name }}-legacy.service={{ name }}"
-      - "traefik.http.routers.{{ name }}-http.rule={{ every | join(' || ') }}"
-      - "traefik.http.routers.{{ name }}-http.entrypoints=web"
-      - "traefik.http.routers.{{ name }}-http.service={{ name }}"
-{#
-  Monitoring has no television problem: every one of these is read in a
-  browser, so they are all HTTPS-only and the plain-HTTP router always
-  redirects. Grafana in particular MUST be - its OIDC login sets a Secure
-  cookie, so over HTTP it would log in and bounce straight back to the portal.
-#}
-      - "traefik.http.routers.{{ name }}-http.middlewares=to-canonical@file"
-      - "frey.module=monitoring"
-{%- endmacro %}
 
 networks:
   {{ frey.proxy_network }}:
@@ -156,7 +124,8 @@ services:
       - {{ frey.proxy_network }}
     mem_limit: {{ svc.dockge.mem_limit }}
 {{ logging() }}
-{{ proxy_labels(monitoring_hosts.dockge, 'dockge', svc.dockge.port) }}
+{{ fp.proxy_labels(monitoring_hosts.dockge, 'dockge', svc.dockge.port,
+                   module='monitoring', plain_http='redirect') }}
 {% endif %}
 
 {% if svc.prometheus.enabled | bool %}
@@ -215,7 +184,9 @@ services:
       retries: 5
       start_period: 60s
 {{ logging() }}
-{{ proxy_labels(monitoring_hosts.prometheus, 'prometheus', svc.prometheus.port) }}
+{{ fp.proxy_labels(monitoring_hosts.prometheus, 'prometheus',
+                   svc.prometheus.port,
+                   module='monitoring', plain_http='redirect') }}
 
 {% endif %}
 {% if svc.alertmanager.enabled | bool %}
@@ -260,7 +231,9 @@ services:
       retries: 5
       start_period: 30s
 {{ logging() }}
-{{ proxy_labels(monitoring_hosts.alertmanager, 'alertmanager', svc.alertmanager.port) }}
+{{ fp.proxy_labels(monitoring_hosts.alertmanager, 'alertmanager',
+                   svc.alertmanager.port,
+                   module='monitoring', plain_http='redirect') }}
 
   # ============================================================================
   # ALERT RELAY - the part that works when the van does not
@@ -695,5 +668,6 @@ services:
       retries: 10
       start_period: 60s
 {{ logging() }}
-{{ proxy_labels(monitoring_hosts.grafana, 'grafana', svc.grafana.port) }}
+{{ fp.proxy_labels(monitoring_hosts.grafana, 'grafana', svc.grafana.port,
+                   module='monitoring', plain_http='redirect') }}
 {% endif %}

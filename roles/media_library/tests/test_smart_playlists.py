@@ -12,40 +12,29 @@ mounts some path at /music. If either moves, the playlists stop being found.
 from pathlib import Path
 import json
 import re
+import sys
 import unittest
 
-from ansible.template import Templar, trust_as_template
-from ansible.utils.vars import combine_vars
 import yaml
 
-ROOT = Path(__file__).resolve().parents[3]
-
-
-def trusted(value):
-    if isinstance(value, str):
-        return trust_as_template(value)
-    if isinstance(value, dict):
-        return {k: trusted(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [trusted(v) for v in value]
-    return value
+# CI runs `unittest discover -s roles/*/tests`, so only this directory is on
+# the path - the shared harness has to be added explicitly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'tests'))
+from freyharness import (  # noqa: E402
+    ROOT, inventory_vars, render_string, render_template,
+)
 
 
 class SmartPlaylistTest(unittest.TestCase):
     def setUp(self):
-        paths = [ROOT / 'roles/media_library/defaults/main.yml']
-        paths += sorted(p for p in (ROOT / 'inventory/group_vars/all').glob('*.yml')
-                        if p.name != 'secrets.yml')
-        self.variables = {}
-        for path in paths:
-            self.variables = combine_vars(self.variables, yaml.safe_load(path.read_text()), merge=True)
-        self.variables.update(
+        self.variables = inventory_vars(
+            'media_library',
             identity_secrets={},
-            media_secrets={'jellystat_postgres_password': 'test', 'jellystat_jwt_secret': 'test'})
-        self.templar = Templar(variables=trusted(self.variables))
+            media_secrets={'jellystat_postgres_password': 'test',
+                           'jellystat_jwt_secret': 'test'})
 
     def template(self, expression):
-        return self.templar.template(trust_as_template(expression))
+        return render_string(expression, self.variables)
 
     def playlists(self):
         return self.template('{{ media_library.navidrome.smart_playlists }}')
@@ -57,8 +46,9 @@ class SmartPlaylistTest(unittest.TestCase):
         self.assertTrue(self.playlists())
 
     def test_the_music_directory_written_to_is_the_one_navidrome_mounts(self):
-        compose = yaml.safe_load(self.templar.template(trust_as_template(
-            (ROOT / 'roles/media_library/templates/docker-compose.yml.j2').read_text())))
+        compose = yaml.safe_load(render_template(
+            'roles/media_library/templates/docker-compose.yml.j2',
+            self.variables))
         navidrome = compose['services']['navidrome']
         mounts = [v.split(':') for v in navidrome['volumes']]
         music = [m for m in mounts if m[1] == '/music']
@@ -91,8 +81,9 @@ class SmartPlaylistTest(unittest.TestCase):
 
     def test_auto_import_is_pinned_on_while_playlists_are_shipped(self):
         # Without this the .nsp files are inert, and nothing says why.
-        compose = yaml.safe_load(self.templar.template(trust_as_template(
-            (ROOT / 'roles/media_library/templates/docker-compose.yml.j2').read_text())))
+        compose = yaml.safe_load(render_template(
+            'roles/media_library/templates/docker-compose.yml.j2',
+            self.variables))
         self.assertIn('ND_AUTOIMPORTPLAYLISTS=true',
                       compose['services']['navidrome']['environment'])
 

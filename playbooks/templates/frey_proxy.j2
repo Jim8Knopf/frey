@@ -1,0 +1,109 @@
+{#
+  ============================================================================
+  Shared Jinja macros - managed by Ansible, imported by role templates
+  ============================================================================
+
+  Import it WITH CONTEXT, or the macros cannot see `frey` or
+  `identity_protect` and every router comes out malformed:
+
+      {% import 'frey_proxy.j2' as fp with context %}
+
+  It lives in playbooks/templates/ rather than in a role, because that is the
+  one directory on the template search path of EVERY role: Ansible resolves a
+  template name against the running role's own templates/ and then the
+  playbook's. A role cannot import from another role's templates/.
+
+  Why this file exists: `logging()` was copied byte-for-byte into three
+  compose templates and hand-written inline in four more, and `proxy_labels()`
+  existed as three separate copies, two of which were identical in 33 of 37
+  lines. docs/ADDING_MODULES.md told a new module to copy the macro "from
+  media_acquisition", which is the one of the three least suited to being
+  copied - it is single-host and carries the *arr API router.
+
+  NOT shared, deliberately: media_acquisition keeps its own `proxy_labels`.
+  It takes no aliases, emits `.service` on the canonical router, can omit the
+  `labels:` header so its callers can append, and adds the X-Api-Key `-api`
+  router with the long explanation of why that is safe. Folding those into
+  the macro below would have meant a tenth parameter and three mutually
+  exclusive modes, at which point the reader has to re-derive what their own
+  call produces - which is worse than a second copy.
+#}
+
+{#
+  Docker's json-file log rotation. Identical everywhere on purpose: these are
+  the only limits between a chatty container and a full NVMe.
+#}
+{% macro logging(max_size='10m', max_file='3') %}
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ max_size }}"
+        max-file: "{{ max_file }}"
+{%- endmacro %}
+
+{#
+  The three routers every Frey web service gets.
+
+    route       canonical hostname, without a domain ("jellyfin")
+    name        Traefik router/service name, usually the same
+    port        container port to balance to
+    aliases     extra hostnames that should answer on the same service
+    network     Docker network Traefik reaches it on; defaults to frey_proxy
+    module      value for the frey.module label, used by Dockge and dashboards
+    plain_http  what the port-80 router does for an UNPROTECTED service:
+                  'allow'    serve it (televisions and consoles cannot
+                             install a private CA, so Jellyfin,
+                             Audiobookshelf and Seerr answer plain HTTP on
+                             purpose)
+                  'redirect' always upgrade to the canonical HTTPS URL
+                A PROTECTED service always redirects regardless: Authelia's
+                session cookie is Secure, so over HTTP it would log in and
+                then redirect-loop forever.
+    extra_middlewares
+                prepended before authelia@file on the HTTPS routers. Navidrome
+                uses it for drop-remote-user@file, which blanks a
+                client-supplied Remote-User ahead of forward auth.
+
+  Three routers, not one, because `<name>.frey` must keep resolving and
+  permanently redirect to `<name>.hub.frey`. The `hub` label is not
+  decoration: Authelia's session cookie needs a domain containing a period,
+  and under the Public Suffix List's default rule a bare unknown TLD is itself
+  a public suffix, so `Set-Cookie; Domain=frey` is refused.
+#}
+{% macro proxy_labels(route, name, port, aliases=[], network=None,
+                      module='', plain_http='allow', extra_middlewares=[]) %}
+{% set net = network or frey.proxy_network %}
+{% set canonical = [] %}
+{% set legacy = [] %}
+{% set every = [] %}
+{% for h in [route] + aliases %}
+{% set _ = canonical.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
+{% set _ = legacy.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
+{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
+{% endfor %}
+{% set protected = route in (identity_protect | default([])) %}
+{% set middlewares = ['secure-headers@file'] + extra_middlewares + (['authelia@file'] if protected else []) %}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ net }}"
+      - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
+      - "traefik.http.routers.{{ name }}.rule={{ canonical | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}.tls=true"
+      - "traefik.http.routers.{{ name }}.middlewares={{ middlewares | join(',') }}"
+      - "traefik.http.routers.{{ name }}-legacy.rule={{ legacy | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}-legacy.entrypoints=websecure"
+      - "traefik.http.routers.{{ name }}-legacy.tls=true"
+      - "traefik.http.routers.{{ name }}-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.{{ name }}-legacy.service={{ name }}"
+      - "traefik.http.routers.{{ name }}-http.rule={{ every | join(' || ') }}"
+      - "traefik.http.routers.{{ name }}-http.entrypoints=web"
+      - "traefik.http.routers.{{ name }}-http.service={{ name }}"
+{% if protected or plain_http == 'redirect' %}
+      - "traefik.http.routers.{{ name }}-http.middlewares=to-canonical@file"
+{% else %}
+      - "traefik.http.routers.{{ name }}-http.middlewares=secure-headers@file"
+{% endif %}
+      - "frey.module={{ module }}"
+{%- endmacro %}

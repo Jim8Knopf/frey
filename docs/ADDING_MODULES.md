@@ -41,9 +41,26 @@ frey:
 
 FreyHub DNS resolves `*.frey` to the Pi; connect services to `frey_proxy`
 and use Traefik labels rather than adding DNS entries. Services use HTTPS at
-`<name>.hub.frey`, with the old `<name>.frey` name redirected. Copy the
-`proxy_labels` macro from `roles/media_acquisition/templates/docker-compose.yml.j2`
-to generate canonical HTTPS, legacy and HTTP routers. Protected services must
+`<name>.hub.frey`, with the old `<name>.frey` name redirected. **Import** the
+shared `proxy_labels` macro — do not copy it:
+
+```jinja
+{% import 'frey_proxy.j2' as fp with context %}
+{% from 'frey_proxy.j2' import logging with context %}
+
+{{ fp.proxy_labels('myservice', 'myservice', 8080, module='my_module') }}
+{{ logging() }}
+```
+
+`with context` is required: without it the macro cannot see `frey` or
+`identity_protect`, and the labels come out malformed rather than failing.
+The file lives in `playbooks/templates/`, which is the one directory on every
+role's template search path — a role cannot import from another role's
+`templates/`. `playbooks/templates/frey_proxy.j2` documents every parameter,
+and `tests/test_shared_macros.py` renders every importer to prove the import
+still resolves.
+
+It generates canonical HTTPS, legacy and HTTP routers. Protected services must
 redirect HTTP to HTTPS because Authelia uses secure cookies; unprotected
 services may serve HTTP for clients that cannot trust the Frey CA. Configure
 protection in `identity_services` in `inventory/group_vars/all/identity.yml`.

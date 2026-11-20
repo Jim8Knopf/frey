@@ -196,9 +196,25 @@ period, is not a public suffix, and covers every service.
 
 Adding a web service needs **no DNS change**: join the `frey_proxy` Docker
 network and add Traefik labels. Each service gets three routers (canonical HTTPS,
-legacy `.frey` redirect, plain HTTP) — copy the `proxy_labels` macro from
-`roles/media_acquisition/templates/docker-compose.yml.j2` rather than writing
-them out; it reads `identity_protect` and emits all three correctly.
+legacy `.frey` redirect, plain HTTP) — **import** the shared `proxy_labels`
+macro rather than writing them out; it reads `identity_protect` and emits all
+three correctly:
+
+```jinja
+{% import 'frey_proxy.j2' as fp with context %}
+{{ fp.proxy_labels('myservice', 'myservice', 8080, module='my_module') }}
+```
+
+`playbooks/templates/frey_proxy.j2` is the one place this lives, because
+`playbooks/templates/` is the only directory on *every* role's template search
+path — a role cannot import from another role's `templates/`. **`with context`
+is required**: without it the macro cannot see `frey` or `identity_protect`,
+and the labels render malformed instead of failing.
+`tests/test_shared_macros.py` renders every importer to catch exactly that.
+
+`media_acquisition` keeps its own copy on purpose — it is single-host and adds
+the *arr X-Api-Key router. It is the one to read for that pattern, and the
+wrong one to copy for anything else.
 
 A protected service **cannot** be served over plain HTTP (the session cookie is
 `Secure`). Unprotected ones deliberately keep answering HTTP so televisions and

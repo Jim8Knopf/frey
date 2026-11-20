@@ -13,18 +13,17 @@
   Same design rules as the acquisition stack: no published ports, one /data
   mount, pinned images, every container capped.
 #}
+{#
+  Shared macros. WITH CONTEXT is required: without it the macros cannot
+  see `frey` or `identity_protect`, and every router comes out malformed.
+#}
+{% import 'frey_proxy.j2' as fp with context %}
+{% from 'frey_proxy.j2' import logging with context %}
 {% set m = media_library %}
 {% set svc = m.services %}
 {% set tz = frey.timezone %}
 {% set appdata = media.appdata_dir %}
 
-{% macro logging() %}
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-{%- endmacro %}
 
 {#
   A router can answer on several hostnames. Renaming a service's hostname
@@ -71,41 +70,6 @@
   With identity not deployed, identity_protect is empty, nothing is protected,
   and every service keeps answering plain HTTP as it does today.
 #}
-{% macro proxy_labels(route, name, port, aliases=[], network=frey.proxy_network) %}
-{% set canonical = [] %}
-{% set legacy = [] %}
-{% set every = [] %}
-{% for h in [route] + aliases %}
-{% set _ = canonical.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
-{% set _ = legacy.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
-{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.service_domain ~ '`)') %}
-{% set _ = every.append('Host(`' ~ h ~ '.' ~ frey.local_domain ~ '`)') %}
-{% endfor %}
-{% set protected = route in (identity_protect | default([])) %}
-{% set middlewares = ['secure-headers@file'] + (['drop-remote-user@file'] if name == 'navidrome' else []) + (['authelia@file'] if protected else []) %}
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network={{ network }}"
-      - "traefik.http.services.{{ name }}.loadbalancer.server.port={{ port }}"
-      - "traefik.http.routers.{{ name }}.rule={{ canonical | join(' || ') }}"
-      - "traefik.http.routers.{{ name }}.entrypoints=websecure"
-      - "traefik.http.routers.{{ name }}.tls=true"
-      - "traefik.http.routers.{{ name }}.middlewares={{ middlewares | join(',') }}"
-      - "traefik.http.routers.{{ name }}-legacy.rule={{ legacy | join(' || ') }}"
-      - "traefik.http.routers.{{ name }}-legacy.entrypoints=websecure"
-      - "traefik.http.routers.{{ name }}-legacy.tls=true"
-      - "traefik.http.routers.{{ name }}-legacy.middlewares=to-canonical@file"
-      - "traefik.http.routers.{{ name }}-legacy.service={{ name }}"
-      - "traefik.http.routers.{{ name }}-http.rule={{ every | join(' || ') }}"
-      - "traefik.http.routers.{{ name }}-http.entrypoints=web"
-      - "traefik.http.routers.{{ name }}-http.service={{ name }}"
-{% if protected %}
-      - "traefik.http.routers.{{ name }}-http.middlewares=to-canonical@file"
-{% else %}
-      - "traefik.http.routers.{{ name }}-http.middlewares=secure-headers@file"
-{% endif %}
-      - "frey.module=media_library"
-{%- endmacro %}
 
 networks:
   {{ frey.proxy_network }}:
@@ -166,7 +130,8 @@ services:
       - "{{ device }}"
 {% endfor %}
 {% endif %}
-{{ proxy_labels('jellyfin', 'jellyfin', svc.jellyfin.port) }}
+{{ fp.proxy_labels('jellyfin', 'jellyfin', svc.jellyfin.port,
+                   module='media_library') }}
     mem_limit: {{ svc.jellyfin.mem_limit }}
     cpus: "{{ svc.jellyfin.cpus }}"
     pids_limit: 512
@@ -238,7 +203,10 @@ services:
     networks:
       {{ frey.navidrome_network.name }}:
         ipv4_address: {{ frey.navidrome_network.navidrome_ip }}
-{{ proxy_labels('navidrome', 'navidrome', svc.navidrome.port, network=frey.navidrome_network.name) }}
+{{ fp.proxy_labels('navidrome', 'navidrome', svc.navidrome.port,
+                   network=frey.navidrome_network.name,
+                   module='media_library',
+                   extra_middlewares=['drop-remote-user@file']) }}
     mem_limit: {{ svc.navidrome.mem_limit }}
     cpus: "{{ svc.navidrome.cpus }}"
     pids_limit: 256
@@ -283,7 +251,10 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels(svc.audiobookshelf.route_host, 'audiobookshelf', svc.audiobookshelf.port, svc.audiobookshelf.route_aliases | default([])) }}
+{{ fp.proxy_labels(svc.audiobookshelf.route_host, 'audiobookshelf',
+                   svc.audiobookshelf.port,
+                   svc.audiobookshelf.route_aliases | default([]),
+                   module='media_library') }}
     mem_limit: {{ svc.audiobookshelf.mem_limit }}
     pids_limit: 512
     security_opt:
@@ -322,7 +293,9 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels(svc.seerr.route_host, 'seerr', svc.seerr.port, svc.seerr.route_aliases | default([])) }}
+{{ fp.proxy_labels(svc.seerr.route_host, 'seerr', svc.seerr.port,
+                   svc.seerr.route_aliases | default([]),
+                   module='media_library') }}
     mem_limit: {{ svc.seerr.mem_limit }}
     pids_limit: 512
     security_opt:
@@ -352,7 +325,10 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels(svc.audiobookrequest.route_host, 'audiobookrequest', svc.audiobookrequest.port, svc.audiobookrequest.route_aliases | default([])) }}
+{{ fp.proxy_labels(svc.audiobookrequest.route_host, 'audiobookrequest',
+                   svc.audiobookrequest.port,
+                   svc.audiobookrequest.route_aliases | default([]),
+                   module='media_library') }}
     mem_limit: {{ svc.audiobookrequest.mem_limit }}
     pids_limit: 256
     security_opt:
@@ -390,7 +366,8 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels(svc.readmeabook.route_host, 'readmeabook', svc.readmeabook.port) }}
+{{ fp.proxy_labels(svc.readmeabook.route_host, 'readmeabook',
+                   svc.readmeabook.port, module='media_library') }}
     mem_limit: {{ svc.readmeabook.mem_limit }}
     pids_limit: 512
     security_opt:
@@ -421,7 +398,8 @@ services:
     networks:
       - {{ frey.proxy_network }}
       - {{ media.network.name }}
-{{ proxy_labels('maintainerr', 'maintainerr', svc.maintainerr.port) }}
+{{ fp.proxy_labels('maintainerr', 'maintainerr', svc.maintainerr.port,
+                   module='media_library') }}
     mem_limit: {{ svc.maintainerr.mem_limit }}
     pids_limit: 256
     security_opt:
@@ -497,7 +475,8 @@ services:
     depends_on:
       jellystat-db:
         condition: service_healthy
-{{ proxy_labels('jellystat', 'jellystat', svc.jellystat.port) }}
+{{ fp.proxy_labels('jellystat', 'jellystat', svc.jellystat.port,
+                   module='media_library') }}
     mem_limit: {{ svc.jellystat.mem_limit }}
     pids_limit: 256
     security_opt:

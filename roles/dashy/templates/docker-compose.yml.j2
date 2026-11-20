@@ -1,3 +1,8 @@
+{#
+  Shared log-rotation macro. WITH CONTEXT for consistency with the
+  other imports of this file; the macro itself takes no globals.
+#}
+{% from 'frey_proxy.j2' import logging with context %}
 services:
   certificate-setup:
     image: {{ dashy.image }}
@@ -44,11 +49,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+{{ logging() }}
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network={{ frey.proxy_network }}"

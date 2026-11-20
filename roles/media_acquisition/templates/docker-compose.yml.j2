@@ -25,6 +25,11 @@
   5. EVERY CONTAINER CAPPED. FreyHub is the only way in - no Ethernet, no
      console - so nothing here may OOM the Pi or starve the gateway.
 #}
+{#
+  Shared log-rotation macro. WITH CONTEXT for consistency with the
+  other imports of this file; the macro itself takes no globals.
+#}
+{% from 'frey_proxy.j2' import logging with context %}
 {% set m = media_acquisition %}
 {% set svc = m.services %}
 {% set tz = frey.timezone %}
@@ -32,13 +37,6 @@
 {% set auth_method = m.auth.method | default('External') %}
 {% set auth_required = m.auth.required | default('DisabledForLocalAddresses') %}
 
-{% macro logging() %}
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-{%- endmacro %}
 
 {#
   Point a container at the stack's own resolver.
