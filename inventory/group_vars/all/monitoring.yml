@@ -152,13 +152,17 @@ monitoring_thresholds:
     soc_critical: 82
     for_warning: 10m
     for_critical: 2m
-    # Warning only. There is deliberately no nvme_critical here: a `80` sat
-    # in this block unread, because no critical NVMe temperature rule was
-    # ever written to consume it. Adding the threshold back means adding the
-    # alert in roles/monitoring/templates/rules/host.rules.yml.j2 in the same
-    # change - a threshold nothing reads is worse than no threshold, because
-    # it reads like coverage.
     nvme_warning: 70
+    # Read by FreyNvmeTooHot. This sat here unread for a while, because the
+    # threshold was added and the alert never was - which is worse than no
+    # threshold, since it reads like coverage. If you remove the rule, remove
+    # this with it.
+    #
+    # 80 C is where consumer NVMe controllers begin their own protective
+    # shutdown rather than merely throttling. Note it is NOT the cause of
+    # this drive's dropouts: those are a PCIe transport fault with clean
+    # SMART, and heat has been ruled out (see roles/rpi_nvme/README.md).
+    nvme_critical: 80
 
   power:
     undervoltage_for: 1m

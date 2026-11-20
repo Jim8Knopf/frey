@@ -450,6 +450,29 @@ groups:
             days - but worth knowing while a replacement can be bought
             unhurried.
 
+      # CRITICAL, and it buzzes. Past this point the controller stops merely
+      # throttling and starts protecting itself, which on this drive means an
+      # unclean disappearance - and the root filesystem lives on it, so the
+      # host wedges rather than crashing and only the button recovers it.
+      #
+      # This is NOT the known dropout fault. That one is a PCIe transport
+      # error with immaculate SMART and no thermal component at all; heat was
+      # ruled out (roles/rpi_nvme/README.md). Two separate ways to lose the
+      # disk, and this is the one you can actually see coming.
+      - alert: FreyNvmeTooHot
+        expr: frey_nvme_temperature_celsius > {{ t.temperature.nvme_critical }}
+        for: {{ t.temperature.for_critical }}
+        labels:
+          severity: critical
+        annotations:
+          summary: 'NVMe {{ go }} $labels.device {{ og }} CRITICAL at {{ go }} $value {{ og }} C'
+          description: >-
+            Above {{ t.temperature.nvme_critical }} C, where the controller
+            may shut itself down to protect the NAND. Root is on this drive,
+            so losing it wedges the host. Improve airflow or reduce write
+            load now - Loki and the Prometheus TSDB dominate writes, so
+            monitoring_enable.logs is the fastest lever.
+
       - alert: FreyNvmeHot
         expr: frey_nvme_temperature_celsius > {{ t.temperature.nvme_warning }}
         for: {{ t.temperature.for_warning }}
