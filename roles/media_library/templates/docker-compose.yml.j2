@@ -182,6 +182,7 @@ services:
 
 {% endif %}
 {% if svc.navidrome.enabled | bool %}
+{% set navidrome_subsonic = (identity_services | default({})).get('navidrome', {}).get('subsonic_bypass', false) | bool %}
   navidrome:
     image: {{ svc.navidrome.image }}
     container_name: {{ svc.navidrome.container_name }}
@@ -191,7 +192,27 @@ services:
     environment:
       - TZ={{ tz }}
       - ND_EXTAUTH_TRUSTEDSOURCES={{ frey.navidrome_network.traefik_ip }}/32
+{% if navidrome_subsonic %}
+      # User editing is ON because Subsonic clients are in use. Navidrome gives
+      # an account created by SSO a random password nobody can know, and a
+      # Subsonic client has nothing but a password to offer - so the account
+      # holder has to be able to set one. With editing off the two settings
+      # contradict each other and every Subsonic login fails forever.
+      #
+      # That password is a Navidrome-only credential and must not be the Frey
+      # SSO password: /rest/ accepts it without Authelia, and older Subsonic
+      # clients send it in the query string.
+      - ND_ENABLEUSEREDITING=true
+{% else %}
+      # Authentication is delegated end to end, so a password in Navidrome would
+      # be a credential that cannot be used for anything. Turning editing off
+      # stops anyone setting one and believing it means something.
       - ND_ENABLEUSEREDITING=false
+{% endif %}
+      # The brute-force limiter on failed logins. Pinned, not inherited - see
+      # roles/media_library/defaults/main.yml.
+      - ND_AUTHREQUESTLIMIT={{ svc.navidrome.auth_request_limit }}
+      - ND_AUTHWINDOWLENGTH={{ svc.navidrome.auth_window_length }}
 {% if 'media_acquisition' in frey.modules.enabled and (media_enable.prowlarr | bool or media_enable.sonarr | bool or media_enable.radarr | bool) %}
     # Follow the changing uplink instead of Docker's creation-time
     # resolver. Without this the container keeps whatever upstream the
