@@ -22,6 +22,37 @@
   tags:
     - security
 
+# ---------------------------------------------------------------------------
+# Host clock
+# ---------------------------------------------------------------------------
+# frey.timezone is handed to every container as TZ, but nothing set the HOST's
+# zone, so there were three answers to "what time is it here": the variable,
+# whatever the Pi was imaged with, and - for Immich alone - the host's zone
+# again, because its compose file bind-mounts /etc/localtime read-only. A
+# photo's displayed time could therefore disagree with every log line around
+# it, with nothing in the repository saying why.
+#
+# timedatectl rather than community.general.timezone, so that this needs no
+# collection at all: community.general was otherwise unused and has been
+# dropped from requirements.yml.
+#
+# Safe to change: no timer in this repository uses OnCalendar - every one is
+# interval-based - so moving the zone shifts how timestamps READ and nothing
+# about when anything fires.
+- name: Read the host timezone
+  ansible.builtin.command: timedatectl show --property=Timezone --value
+  register: security_baseline_timezone
+  changed_when: false
+  check_mode: false
+  tags:
+    - security
+
+- name: Set the host timezone to frey.timezone
+  ansible.builtin.command: timedatectl set-timezone {{ frey.timezone | quote }}
+  when: security_baseline_timezone.stdout | trim != frey.timezone
+  tags:
+    - security
+
 - name: Apply kernel network hardening
   ansible.posix.sysctl:
     name: "{{ item.key }}"

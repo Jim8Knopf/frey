@@ -1,8 +1,48 @@
 ---
+# Ansible collections this project needs on the CONTROL machine (the laptop
+# Ansible is driven from), not on the Pi.
+#
+#   ansible-galaxy install -r requirements.yml            # first run
+#   ansible-galaxy install -r requirements.yml --upgrade   # move within the pins
+#
+# WHY THESE ARE PINNED
+#
+# They used to carry no version at all, so what you got depended on the day
+# you ran the install - and a fresh laptop could silently pick up a new major
+# that no longer accepts a module argument the roles pass. That is the same
+# class of failure the image pins exist to prevent, and it is worse here,
+# because it breaks the tool you would use to fix the Pi rather than the Pi.
+#
+# The ranges allow patches and minors (bug fixes, new modules) and refuse a
+# MAJOR, which is where collections make breaking changes. The version in the
+# comment is the one this repository is known to work with - the one CI and
+# the admin laptop were running when the pins were added, 2026-11-20.
+#
+# To move a major deliberately: read that collection's porting guide, raise
+# the ceiling here, then deploy twice and confirm the second run reports
+# 0 changed.
 collections:
-  - name: community.general
+  # docker_container, docker_compose_v2, docker_network, docker_image_pull -
+  # every service module depends on this one.
   - name: community.docker
+    version: ">=5.2.2,<6.0.0"      # known good: 5.2.2
+
+  # ansible.posix.sysctl (always with sysctl_file - Debian 13 does not read
+  # /etc/sysctl.conf) and ansible.posix.mount.
   - name: ansible.posix
+    version: ">=2.2.2,<3.0.0"      # known good: 2.2.2
+
   # Used by frey_pki to issue the Frey CA and the service certificate, and by
   # identity to generate the OIDC token signing key.
   - name: community.crypto
+    version: ">=3.3.0,<4.0.0"      # known good: 3.3.0
+
+# community.general is NOT listed, and that is the fix rather than an
+# omission: nothing in this repository used a single module, filter or lookup
+# from it. It is one of the largest collections in the ecosystem and it was
+# being installed on every laptop and every CI run to be used zero times.
+#
+# If you need it back, the usual reason is community.general.timezone - which
+# roles/security_baseline deliberately does NOT use, preferring
+# `timedatectl set-timezone` so that setting the host clock needs no
+# collection at all.
