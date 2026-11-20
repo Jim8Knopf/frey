@@ -45,20 +45,20 @@ services:
 {% if local_ai.campaign.enabled | bool %}
       # The assistant's own hostname, same gateway, same auth. route.yml
       # dispatches on Host so this reaches the assistant rather than the model.
-      - "traefik.http.routers.campaign.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`)"
-      - "traefik.http.routers.campaign.entrypoints=websecure"
-      - "traefik.http.routers.campaign.tls=true"
-      - "traefik.http.routers.campaign.middlewares=secure-headers@file,authelia@file"
-      - "traefik.http.routers.campaign.service=local-ai"
-      - "traefik.http.routers.campaign-legacy.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
-      - "traefik.http.routers.campaign-legacy.entrypoints=websecure"
-      - "traefik.http.routers.campaign-legacy.tls=true"
-      - "traefik.http.routers.campaign-legacy.middlewares=to-canonical@file"
-      - "traefik.http.routers.campaign-legacy.service=local-ai"
-      - "traefik.http.routers.campaign-http.rule=Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)"
-      - "traefik.http.routers.campaign-http.entrypoints=web"
-      - "traefik.http.routers.campaign-http.middlewares=to-canonical@file"
-      - "traefik.http.routers.campaign-http.service=local-ai"
+      - "traefik.http.routers.assistant.rule=Host(`{{ local_ai.assistant_host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.assistant.entrypoints=websecure"
+      - "traefik.http.routers.assistant.tls=true"
+      - "traefik.http.routers.assistant.middlewares=secure-headers@file,authelia@file"
+      - "traefik.http.routers.assistant.service=local-ai"
+      - "traefik.http.routers.assistant-legacy.rule=Host(`{{ local_ai.assistant_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.assistant-legacy.entrypoints=websecure"
+      - "traefik.http.routers.assistant-legacy.tls=true"
+      - "traefik.http.routers.assistant-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.assistant-legacy.service=local-ai"
+      - "traefik.http.routers.assistant-http.rule=Host(`{{ local_ai.assistant_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.assistant_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.assistant-http.entrypoints=web"
+      - "traefik.http.routers.assistant-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.assistant-http.service=local-ai"
 {% endif %}
 {% if local_ai.hermes.enabled | bool %}
       # Hermes's hostname, same gateway, and DELIBERATELY WITHOUT
@@ -93,6 +93,14 @@ services:
     command:
       - "-m"
       - "/models/{{ m.file }}"
+{% if local_ai.webui.enabled | bool and local_ai_webui_present | default(false) | bool %}
+      # llama.cpp's own UI. Passed ONLY when the assets are actually on disk:
+      # --path at an empty directory makes llama-server serve 404s for its own
+      # UI, which looks exactly like the 415 this was added to fix. A deploy
+      # with no uplink leaves this off rather than half-on.
+      - "--path"
+      - "/ui"
+{% endif %}
 {% if m.mmproj_file is defined and m.enable_vision | default(false) | bool %}
       # Only when vision is explicitly wanted: the projector disables
       # cache_reuse server-wide, which costs minutes of re-prefill on every
@@ -177,6 +185,9 @@ services:
       - "{{ 'on' if m.enable_thinking | bool else 'off' }}"
     volumes:
       - "{{ local_ai.model_dir }}:/models:ro"
+{% if local_ai.webui.enabled | bool and local_ai_webui_present | default(false) | bool %}
+      - "{{ local_ai.webui.dist_dir }}:/ui:ro"
+{% endif %}
     networks:
       - ai_private
     cpus: {{ m.cpus }}
@@ -267,7 +278,7 @@ services:
       - MODEL_NAME=/models/{{ m.file }}
       - CAMPAIGN_SPACE=/notes
       - CAMPAIGN_ROOT={{ c.root }}
-      - CAMPAIGN_CHAT_PAGE={{ c.chat_page }}
+      - CAMPAIGN_TRANSCRIPT=/state/{{ c.transcript_file }}
       - CAMPAIGN_READONLY={{ c.readonly_subdirs | join(',') }}
       - CAMPAIGN_POLL_SECONDS={{ c.poll_seconds }}
       - CAMPAIGN_MODEL_TIMEOUT={{ c.model_timeout }}
@@ -280,16 +291,24 @@ services:
       - BROKER_RES_DIR=/broker/res
 {% endif %}
     volumes:
-      # Nested mounts on purpose, so the WRITE scope is enforced by the mount
-      # table rather than only by the agent's own path checks:
-      #   the space itself is read-only,
-      #   the campaign subtree is read-write,
-      #   .git is read-write because committing needs it and it lives at the
-      #   space root - without this nesting, enabling commits would have meant
-      #   mounting the entire space read-write.
-      - "{{ frey.notes_data_dir }}/spaces/notes:/notes:ro"
-      - "{{ frey.notes_data_dir }}/spaces/notes/{{ c.root }}:/notes/{{ c.root }}"
-      - "{{ frey.notes_data_dir }}/spaces/notes/.git:/notes/.git"
+      # The WHOLE space, read-write, since 2026-11-20. It used to be nested -
+      # space read-only with only the campaign subtree writable - so the
+      # kernel enforced the write scope. Generalising this from a campaign
+      # assistant to a notes assistant gave that up deliberately.
+      #
+      # What that means for anyone reading this later: the write boundary is
+      # now `root` and `readonly_subdirs` INSIDE the agent process, not the
+      # mount table, and git (frey-notes-commit.timer) is the primary backstop
+      # rather than a secondary one. roles/local_ai/tests/
+      # test_assistant_write_scope.py exists because of this move.
+      #
+      # Setting `root` back to a subtree re-narrows the agent but NOT the
+      # mount; restoring the kernel-enforced version means restoring the
+      # nested mounts here too.
+      - "{{ frey.notes_data_dir }}/spaces/notes:/notes"
+      # Its own state, holding the chat transcript. Outside the notes space on
+      # purpose: a conversation log is not a note anyone asked for.
+      - "{{ c.state_dir }}:/state"
       - "{{ local_ai.stack_dir }}/campaign.py:{{ c.script_path }}:ro"
 {% if local_ai.broker.enabled | bool %}
       # The only channel to anything privileged, and read verbs only. Requests
@@ -437,6 +456,144 @@ services:
     cpus: {{ h.cpus }}
     mem_limit: {{ h.mem_limit }}
     security_opt: [no-new-privileges:true]
+{% endif %}
+{% if local_ai.chat.enabled | bool %}
+{% set w = local_ai.chat %}
+  chat:
+    profiles: [chat]
+    image: {{ w.image }}
+    container_name: {{ w.container_name }}
+    restart: unless-stopped
+    environment:
+      - TZ={{ frey.timezone }}
+
+      # THIS FILE IS THE CONFIGURATION, which is not Open WebUI's default.
+      # Most of its settings are PersistentConfig: the environment seeds the
+      # database on first launch and the database wins ever after, so editing
+      # a variable here silently does nothing. That cost real time on
+      # 2026-11-20 - RAG_EMBEDDING_ENGINE below was ignored and the container
+      # kept throwing IncompleteSnapshotError for a model it should no longer
+      # have wanted.
+      #
+      # false makes the environment authoritative on every boot, which is
+      # also the only setting consistent with the rest of Frey: Ansible
+      # generates the config and reverts anything edited underneath it. The
+      # trade is that admin-UI changes to these keys do not stick - put them
+      # in this template instead.
+      - ENABLE_PERSISTENT_CONFIG=false
+
+      # Talks to llama-server directly over ai_private, NOT through the
+      # authenticated gateway: it is a container, and forward auth would
+      # answer it with a login page instead of JSON.
+      - OPENAI_API_BASE_URL=http://model:8080/v1
+      # llama-server needs no key, but Open WebUI will not use the endpoint
+      # with an empty one.
+      - OPENAI_API_KEY=local
+      # There is no Ollama here. Left on, it probes a host that does not
+      # exist on every page load.
+      - ENABLE_OLLAMA_API=false
+
+      # LOGIN COMES FROM AUTHELIA, via the header the forward-auth middleware
+      # already adds (Remote-Email is in authResponseHeaders in
+      # roles/identity/templates/traefik-authelia.yml.j2). Open WebUI
+      # auto-registers and logs in from it, so Frey gains no second password
+      # and no second user list.
+      #
+      # Traefik OVERWRITES these headers from Authelia's response, so a
+      # client cannot spoof them through the proxy. What it does mean is that
+      # anything already on {{ frey.proxy_network }} could set them by
+      # talking to this container directly - true of every forward-auth
+      # service in Frey, and the reason this network is not shared outward.
+      - WEBUI_AUTH_TRUSTED_EMAIL_HEADER=Remote-Email
+      - WEBUI_AUTH_TRUSTED_NAME_HEADER=Remote-Name
+      # ON, and it has to be. With it false Open WebUI cannot complete
+      # ONBOARDING: /api/config reports `"onboarding": true` until an admin
+      # exists, the trusted header does NOT create that first admin, and
+      # /api/v1/auths/signup answers 403 - so there is no path to a first
+      # account at all and every request stays 401. Verified here 2026-11-20
+      # by walking into exactly that dead end.
+      #
+      # Leaving it on is acceptable because it is not the gate: nothing
+      # reaches this container through Traefik without an Authelia session,
+      # and with the trusted header present Open WebUI logs you in
+      # automatically, so the form is not normally even rendered.
+      - ENABLE_LOGIN_FORM=true
+
+      # SIGNUP MUST BE ON, which reads wrong until you see what gates it.
+      # Trusted-header auth REGISTERS the user named in the header, and with
+      # signup disabled it cannot - so with an empty user table every request
+      # answered 401 "Not authenticated" even with a correct Remote-Email
+      # (verified here 2026-11-20, users: 0; upstream issue #16193).
+      #
+      # Authelia is the gate, not this setting: nothing reaches this container
+      # through Traefik without a session, and access is already restricted to
+      # identity_services.local_ai.groups (frey_admins, notes). So "signup"
+      # here means "accept whoever Authelia already vouched for", which is the
+      # behaviour wanted.
+      - ENABLE_SIGNUP=true
+      # The FIRST account becomes admin regardless; without this the second
+      # and later ones land in `pending` and silently cannot use anything
+      # until approved in a UI nobody is watching.
+      - DEFAULT_USER_ROLE=user
+      - WEBUI_URL=https://{{ local_ai.chat_host }}.{{ frey.service_domain }}
+
+      # NO LOCAL EMBEDDING MODEL. This is the important line on this host.
+      #
+      # Open WebUI's default RAG engine is SentenceTransformers, and on
+      # startup it does not fetch "a model" - it runs `Fetching 30 files` and
+      # pulls the WHOLE repo, ONNX and OpenVINO variants included, hundreds of
+      # MB. Measured here 2026-11-20 on campground WiFi: it blocked startup
+      # for over 20 minutes, the container sat `unhealthy` and refused
+      # connections the entire time, and a restart began the same download
+      # again. That is the Immich trap in a new costume.
+      #
+      # Pointing the engine at an OpenAI-compatible URL means no local model
+      # is ever instantiated or downloaded, so startup is immediate and
+      # offline-safe from the first boot. The cost is deliberate and small
+      # here: document upload / RAG will not work, because llama-server is
+      # not started with --embeddings. Chat, conversations and the Thinking
+      # block - the reasons this exists - need none of it.
+      - RAG_EMBEDDING_ENGINE=openai
+      - RAG_OPENAI_API_BASE_URL=http://model:8080/v1
+      - RAG_OPENAI_API_KEY=local
+
+      # Now safe on a FRESH install too, because nothing is waiting on a
+      # download: no update checks, no model fetches, no startup that depends
+      # on an uplink.
+      - OFFLINE_MODE={{ 'true' if w.offline | bool else 'false' }}
+      - HF_HUB_OFFLINE={{ '1' if w.offline | bool else '0' }}
+    volumes:
+      - "{{ w.data_dir }}:/app/backend/data"
+    networks:
+      # ai_private reaches the model. The proxy network is what Traefik
+      # publishes it on, and is also how it reached Hugging Face for the one
+      # embedding-model download that OFFLINE_MODE then makes unnecessary.
+      - ai_private
+      - {{ frey.proxy_network }}
+    cpus: {{ w.cpus }}
+    mem_limit: {{ w.mem_limit }}
+    security_opt: [no-new-privileges:true]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network={{ frey.proxy_network }}"
+      - "traefik.http.services.openwebui.loadbalancer.server.port={{ w.port }}"
+      - "traefik.http.routers.openwebui.rule=Host(`{{ local_ai.chat_host }}.{{ frey.service_domain }}`)"
+      - "traefik.http.routers.openwebui.entrypoints=websecure"
+      - "traefik.http.routers.openwebui.tls=true"
+      - "traefik.http.routers.openwebui.middlewares=secure-headers@file,authelia@file"
+      - "traefik.http.routers.openwebui.service=openwebui"
+      - "traefik.http.routers.openwebui-legacy.rule=Host(`{{ local_ai.chat_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.openwebui-legacy.entrypoints=websecure"
+      - "traefik.http.routers.openwebui-legacy.tls=true"
+      - "traefik.http.routers.openwebui-legacy.middlewares=to-canonical@file"
+      - "traefik.http.routers.openwebui-legacy.service=openwebui"
+      # Plain HTTP redirects rather than serving: this is behind forward auth,
+      # and Authelia's session cookie is Secure, so an HTTP origin would log
+      # in and then loop.
+      - "traefik.http.routers.openwebui-http.rule=Host(`{{ local_ai.chat_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.chat_host }}.{{ frey.local_domain }}`)"
+      - "traefik.http.routers.openwebui-http.entrypoints=web"
+      - "traefik.http.routers.openwebui-http.middlewares=to-canonical@file"
+      - "traefik.http.routers.openwebui-http.service=openwebui"
 {% endif %}
 networks:
   {{ frey.proxy_network }}:

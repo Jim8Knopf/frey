@@ -3,8 +3,8 @@
 # ai.hub.frey        llama.cpp's own chat UI - streaming, token counts, a real
 #                    conversation view. It is simply better than anything
 #                    hand-rolled here, so it owns the main hostname.
-# campaign.hub.frey  the assistant, which has the tools: it reads and writes
-#                    the campaign wiki and can check this machine's health.
+# assistant.hub.frey the agent window, which has the tools: it reads and writes
+#                    your notes and can check this machine's health.
 # hermes.hub.frey    Hermes Agent's dashboard. Unlike the two above it is NOT
 #                    behind forward auth: it is a real OIDC relying party and
 #                    logs in against Authelia itself, so putting Authelia in
@@ -32,7 +32,7 @@ http:
   routers:
 {% if local_ai.campaign.enabled | bool %}
     campaign:
-      rule: Host(`{{ local_ai.campaign_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.campaign_host }}.{{ frey.local_domain }}`)
+      rule: Host(`{{ local_ai.assistant_host }}.{{ frey.service_domain }}`) || Host(`{{ local_ai.assistant_host }}.{{ frey.local_domain }}`)
       service: campaign
 {% endif %}
 {% if local_ai.hermes.enabled | bool %}

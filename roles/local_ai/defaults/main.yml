@@ -18,7 +18,12 @@ local_ai:
   # model's origin cannot shadow it. Must also appear in
   # identity_services.local_ai.hosts, or it has no certificate and no
   # Authelia rule.
-  campaign_host: campaign
+  assistant_host: assistant
+  # Open WebUI, the chat harness. Must also appear in
+  # identity_services.local_ai.hosts or it has no certificate and no Authelia
+  # rule - and because it trusts an Authelia header for login, no Authelia
+  # rule means no way in at all rather than a password prompt.
+  chat_host: chat
   # Hermes Agent's own hostname. Must also appear in
   # identity_services.hermes.hosts, or it has no certificate and no OIDC
   # client - and its redirect_uri in identity.oidc_catalog.hermes is built
@@ -367,6 +372,78 @@ local_ai:
   image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
   gateway_image: "traefik:{{ traefik_version }}"
 
+  # llama.cpp's OWN web UI, restored on ai.hub.frey.
+  #
+  # It is not in the image. The official `ghcr.io/ggml-org/llama.cpp:server-*`
+  # images ship the binary with no embedded web assets, so llama-server
+  # answers `/` and `/index.html` with 415 and ai.hub.frey served nothing at
+  # all - verified on this Pi 2026-11-20, and upstream issue #24107. The
+  # documented fix is to fetch the prebuilt assets and point --path at them.
+  #
+  # Worth having even with Open WebUI deployed: it is 2.6 MB of static files
+  # and no container, it talks straight to llama-server, and it is the thing
+  # that still works when the harness itself is what broke.
+  webui:
+    enabled: true
+    dist_dir: "{{ frey.base_dir }}/appdata/local-ai/ui"
+    url: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest/dist.tar.gz
+    # Downloaded and hashed on 2026-11-20.
+    #
+    # NOTE THE DEVIATION, it is deliberate: this URL says `latest` where
+    # CLAUDE.md requires a pinned revision, because the ggml-org llama-ui
+    # bucket publishes no per-release path and the b12019 GitHub release has
+    # no standalone UI asset (checked - all 38 are platform binaries). The
+    # checksum is what makes that safe: if upstream republishes, the download
+    # FAILS verification and nothing is installed, which is the right failure
+    # for a van. It never silently takes new front-end code.
+    sha256: 76307b9ce95a05875bd7322135ca6c18ea3e987d72833107081bdfb3c920c6cf
+
+  # Open WebUI - the chat harness, at chat.hub.frey.
+  #
+  # Replaces the hand-rolled window as the thing to use day to day. Chosen for
+  # three properties that were verified rather than assumed:
+  #   - it reads llama.cpp's `reasoning_content` and renders it as a
+  #     collapsible Thinking block, so the model's thinking is visible. The
+  #     server already passes `--reasoning off`, which SPLITS the chain of
+  #     thought into exactly that field rather than suppressing it.
+  #   - conversations are stored SERVER-side, so a new chat clears the context
+  #     while old ones stay, and history follows you from phone to laptop.
+  #     llama.cpp's own UI keeps them in browser IndexedDB, which does not.
+  #   - it logs in from Authelia's header, so Frey gains no second password.
+  chat:
+    enabled: true
+    container_name: frey-openwebui
+    image: "ghcr.io/open-webui/open-webui:{{ local_ai_openwebui_version }}"
+    data_dir: "{{ frey.base_dir }}/appdata/local-ai/openwebui"
+    port: 8080
+
+    # Upstream says ~300-500 MB. MEASURED HERE 2026-11-20: 670 MiB after two
+    # hours with one user and light use, so the commonly quoted figure is low
+    # for this build. 1g was the first value and left only a third spare.
+    #
+    # 1.5g because of what a tight cap does on this host specifically: it does
+    # not kill, it throttles, and the symptom turns up somewhere else entirely
+    # (see mem-limits lesson - Byparr sat "Up (healthy)" at its ceiling while
+    # solves went 52s -> 250s). The host has ~4.3 GiB available, so the
+    # headroom is affordable and a silently throttled chat UI is not.
+    mem_limit: 1.5g
+    cpus: 1.0
+
+    # OFFLINE_MODE and HF_HUB_OFFLINE. true is the end state and the right
+    # one for a van: no update checks, no model downloads, nothing that waits
+    # on an uplink at startup.
+    #
+    # BUT IT CANNOT BE TRUE ON A FRESH INSTALL. Open WebUI's default RAG
+    # engine is a local SentenceTransformers model that is downloaded once on
+    # first run; with offline mode already on and nothing cached it fails with
+    # `ValueError: No embedding model is loaded`. This is the same shape as
+    # the Immich trap: a service that deletes or never fetches its own model
+    # cache and then looks healthy while one feature is dead.
+    #
+    # So: first boot with an uplink and this false, let it cache, then set it
+    # true. Done in that order on 2026-11-20, which is why it ships true.
+    offline: true
+
   # The campaign assistant: a tool-using loop that maintains the wiki.
   #
   # You talk to it inside SilverBullet. It is deliberately separate from the
@@ -387,20 +464,68 @@ local_ai:
     uid: 10001
     gid: 10001
 
-    root: Campaigns/Pirate
-    chat_page: Campaigns/Pirate/Chat.md
+    # Empty = the WHOLE notes space. Widened from Campaigns/Pirate on
+    # 2026-11-20: this is a general notes assistant, not a campaign one.
+    # Setting a subtree here narrows writes back in one line, and
+    # roles/local_ai/tests/test_assistant_write_scope.py pins that it still
+    # works - the mount is read-write across the space now, so this knob and
+    # readonly_subdirs are the only scope controls left.
+    root: ""
+
+    # The chat transcript, deliberately OUTSIDE the notes space. It used to be
+    # a page (Campaigns/Pirate/Chat.md), which made every conversation a note
+    # nobody asked for. The window is the interface; this is just its history.
+    state_dir: "{{ frey.base_dir }}/appdata/local-ai/assistant"
+    transcript_file: transcript.md
     # Refused by the agent's own code. The templates define the structure of
     # every page made from them, and the rules draft is where this model has
     # been measured contradicting itself. This pair is the one boundary here
     # enforced by code rather than by a mount, with git as the backstop.
-    readonly_subdirs: [Templates, Rules]
+    # Paths relative to the SPACE now, not to root. They were bare names while
+    # root was the campaign subtree; with root empty a bare "Templates" would
+    # have started meaning a top-level folder that does not exist, silently
+    # dropping the protection. Matched as path prefixes, so subtrees are
+    # covered.
+    readonly_subdirs:
+      - Campaigns/Pirate/Templates
+      - Campaigns/Pirate/Rules
+      # .git used to be a separate mount; it is now inside the read-write
+      # space mount, so name it here. The agent can only ever create `.md`
+      # files, which makes this cheap insurance rather than a live hole - but
+      # the repository that is the undo mechanism should not be writable by
+      # the thing being undone.
+      - .git
 
     poll_seconds: 20
     # A turn can legitimately take many minutes on this hardware.
     model_timeout: 1800
-    max_tokens: 500
+
+    # 2000, not 500. The served model (LFM2.5) is REASONING-NATIVE and that
+    # cannot be switched off - `--reasoning off` only splits the chain of
+    # thought into reasoning_content, it does not stop it being generated, and
+    # it is charged against this budget like any other token.
+    #
+    # Measured 2026-11-20 on the first real turn after generalising this
+    # agent: n_gen reached 484 of a 500 cap and the reply written to the
+    # transcript was literally "_(no answer)_" - the whole budget went to
+    # thinking and none was left for the answer, so the agent looked broken
+    # while the model was working perfectly. A short question put straight to
+    # the model's own UI needs only ~90 tokens, so this is specific to the
+    # agent's larger prompt: more context means more thinking.
+    #
+    # The cost is bounded by generation speed, ~6.8 tok/s measured, so a turn
+    # that really used the whole budget would be ~5 min. Most stop far
+    # earlier, and an empty answer after 2 min is worse than a real one
+    # after 3.
+    max_tokens: 2000
     # Each step is a full model round-trip, so this is a time budget.
-    max_steps: 4
+    # 7, not 4. One step is consumed by each tool round-trip AND one more is
+    # needed to compose the final answer, so at 4 a real run spent all four on
+    # tools and then replied "I stopped after using my tool budget" even
+    # though it had already created the page - which reads as a failure. The
+    # script's own default was raised to 7 for that reason; this line was
+    # still passing 4 and silently overriding it.
+    max_steps: 7
     # Every character of a tool result is prefill latency. See the measured
     # curve in files/campaign.py - time doubles as tokens double.
     tool_result_budget: 2500
