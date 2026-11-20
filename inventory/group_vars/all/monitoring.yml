@@ -32,8 +32,12 @@ monitoring_retention:
   # dropped early - which is the correct failure, rather than a full disk.
   metrics_size: 20GB
 
+  # Loki caps logs by TIME only. There is no size ceiling for logs the way
+  # metrics_size is one for metrics: a `logs_size_mb: 10240` key used to sit
+  # here claiming it was "enforced by the role's own janitor", and no janitor
+  # has ever existed. Removed rather than left to be believed - if a size cap
+  # is wanted, it has to be built.
   logs_time: 336h        # 14 days
-  logs_size_mb: 10240    # 10 GB, enforced by the role's own janitor
 
   # How often metrics are collected. 15s is the useful floor for catching a
   # brown-out or a thermal spike; anything faster mostly stores noise.
@@ -148,8 +152,13 @@ monitoring_thresholds:
     soc_critical: 82
     for_warning: 10m
     for_critical: 2m
+    # Warning only. There is deliberately no nvme_critical here: a `80` sat
+    # in this block unread, because no critical NVMe temperature rule was
+    # ever written to consume it. Adding the threshold back means adding the
+    # alert in roles/monitoring/templates/rules/host.rules.yml.j2 in the same
+    # change - a threshold nothing reads is worse than no threshold, because
+    # it reads like coverage.
     nvme_warning: 70
-    nvme_critical: 80
 
   power:
     undervoltage_for: 1m

@@ -1,37 +1,25 @@
 """Render actual Ansible templates to protect Dockge data, access and switches."""
 from pathlib import Path
+import sys
 import unittest
 
-from ansible.template import Templar, trust_as_template
-from ansible.utils.vars import combine_vars
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def trusted(value):
-    if isinstance(value, str):
-        return trust_as_template(value)
-    if isinstance(value, dict):
-        return {k: trusted(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [trusted(v) for v in value]
-    return value
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from freyharness import inventory_vars, render_string, render_template  # noqa: E402
 
 
 class MonitoringComposeTest(unittest.TestCase):
     def setUp(self):
-        paths = [ROOT / f'roles/{role}/defaults/main.yml' for role in ('monitoring', 'dashy')]
-        paths += sorted(p for p in (ROOT / 'inventory/group_vars/all').glob('*.yml') if p.name != 'secrets.yml')
-        self.variables = {}
-        for path in paths:
-            self.variables = combine_vars(self.variables, yaml.safe_load(path.read_text()), merge=True)
-        self.variables.update(monitoring_secrets={'ntfy_topic': 'test', 'grafana_admin_password': 'test'},
-                              monitoring_grafana_oidc=True, monitoring_grafana_oidc_secret='test')
+        self.variables = inventory_vars(
+            'monitoring', 'dashy',
+            monitoring_secrets={'ntfy_topic': 'test',
+                                'grafana_admin_password': 'test'},
+            monitoring_grafana_oidc=True,
+            monitoring_grafana_oidc_secret='test')
 
     def render(self, path):
-        return Templar(variables=trusted(self.variables)).template(
-            trust_as_template((ROOT / path).read_text()))
+        return render_template(path, self.variables)
 
     def compose(self):
         return yaml.safe_load(self.render('roles/monitoring/templates/docker-compose.yml.j2'))
@@ -52,7 +40,7 @@ class MonitoringComposeTest(unittest.TestCase):
     def test_disabling_dockge_removes_service_probe_and_dashboard_link(self):
         self.variables['monitoring_enable']['dockge'] = False
         self.assertNotIn('dockge', self.compose()['services'])
-        probes = Templar(variables=trusted(self.variables)).template(trust_as_template('{{ monitoring_probe_hostnames }}'))
+        probes = render_string('{{ monitoring_probe_hostnames }}', self.variables)
         self.assertNotIn('dockge', probes)
         dashboard = self.render('roles/dashy/templates/conf.yml.j2')
         self.assertNotIn('dockge.hub.frey', dashboard)

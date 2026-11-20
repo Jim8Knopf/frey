@@ -13,6 +13,15 @@
 # Python cache
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Editor settings. A tracked .vscode/settings.json was invalid JSON (a
+# trailing comma) AND pointed ansibleVault at a root-level group_vars/, the
+# one path that is silently ignored when running playbooks/site.yml - so it
+# was worse than absent. Nothing in CI validates it either, because
+# check-repository-files.py only walks roles/, playbooks/, inventory/ and
+# .github/.
+.vscode/
 
 # Root CA fetched back from the Pi by frey_pki. Public, but generated:
 # re-run the pki tag to get a fresh copy.

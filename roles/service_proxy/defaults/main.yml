@@ -1,6 +1,9 @@
 ---
 service_proxy:
-  bind_address: 10.20.0.1
+  # Derived, not written out: this was a literal 10.20.0.1, the fourth copy of
+  # the AP address in the repo. frey.service_address is itself
+  # network_gateway.downstream.address, so swapping the radios moves this too.
+  bind_address: "{{ frey.service_address }}"
 
   packages:
     - ca-certificates
@@ -19,7 +22,7 @@ service_proxy:
     - docker-compose
 
   docker:
-    data_root: /opt/frey/docker
+    data_root: "{{ frey.base_dir }}/docker"
     default_address_pool: 10.21.0.0/16
     default_address_pool_size: 24
     log_max_size: 10m
@@ -29,8 +32,8 @@ service_proxy:
   traefik:
     image: "traefik:{{ traefik_version }}"
     container_name: frey-traefik
-    network: frey_proxy
-    dynamic_config_dir: /opt/frey/proxy/traefik/dynamic
+    network: "{{ frey.proxy_network }}"
+    dynamic_config_dir: "{{ frey.base_dir }}/proxy/traefik/dynamic"
     dashboard_enabled: false
     exposed_by_default: false
     http_port: 80

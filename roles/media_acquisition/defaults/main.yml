@@ -965,11 +965,11 @@ media_acquisition:
     sonarr:
       template: web-1080p-v4
       quality_profile: WEB-1080p
-    # Scores applied on top of the TRaSH templates.
-    score_overrides:
-      x265_hd: -10000      # browsers transcode HEVC
-      av1: -10000
-      hdr_without_sdr: -10000
+    # There are deliberately no score overrides here. A `score_overrides`
+    # block set x265_hd, av1 and hdr_without_sdr to -10000, never reached
+    # recyclarr.yml.j2, and was redundant anyway: the TRaSH 1080p templates
+    # already score all three heavily negative, which that template's header
+    # calls "the behaviour we want rather than something to override".
 
   # ---------------------------------------------------------------------------
   # SPOKEN LANGUAGE POLICY -> custom format scores

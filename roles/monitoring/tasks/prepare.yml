@@ -5,13 +5,23 @@
       - monitoring.stack_dir | length > 0
       - monitoring.config_dir | length > 0
       - monitoring.textfile_dir | length > 0
-      # Must not collide with FreyHub, the media network (172.28.0.0/16) or
-      # identity (172.29.0.0/24). The archived media role used FreyHub's own
-      # range for a container network, which would have blackholed the access
-      # point - the one service that must never break.
-      - not monitoring.network.subnet.startswith('10.20.0.')
-      - not monitoring.network.subnet.startswith('172.28.')
-      - not monitoring.network.subnet.startswith('172.29.')
+      # Must not collide with FreyHub, the media network or identity. The
+      # archived media role used FreyHub's own range for a container network,
+      # which would have blackholed the access point - the one service that
+      # must never break.
+      #
+      # FreyHub and media are read from the variables that define them, so
+      # moving either cannot silently disarm this check. Identity's subnet
+      # cannot be: it lives in roles/identity/defaults/main.yml, and a role's
+      # defaults are only in scope while that role runs - monitoring runs
+      # later, so referencing it here would resolve to nothing and the
+      # assertion would pass for the wrong reason. It stays a literal, and
+      # moving identity's network means editing this line too.
+      - not monitoring.network.subnet.startswith(
+          network_gateway.downstream.address.rsplit('.', 1)[0] ~ '.')
+      - not monitoring.network.subnet.startswith(
+          media.network.subnet.split('.')[:2] | join('.') ~ '.')
+      - not monitoring.network.subnet.startswith('172.29.')  # roles/identity
       # The central knobs file must be present, or every image tag, threshold
       # and on/off switch silently resolves to nothing.
       - monitoring_versions is defined

@@ -447,8 +447,13 @@ local_ai:
   # The campaign assistant: a tool-using loop that maintains the wiki.
   #
   # You talk to it inside SilverBullet. It is deliberately separate from the
-  # observer - different job, different mounts, different identity - and it
-  # has no broker access and no system verbs at all.
+  # observer - different job, different mounts, different identity.
+  #
+  # It DOES reach the broker, through the two queue mounts in
+  # docker-compose.yml.j2, and that is its only privileged channel: read verbs
+  # only, with /broker/res mounted read-only so it cannot forge a reply to
+  # itself. This comment used to say it "has no broker access and no system
+  # verbs at all", which was wrong in the direction that matters.
   campaign:
     enabled: true
     container_name: frey-campaign-agent
@@ -554,7 +559,7 @@ local_ai:
   # 457 "system memory pressure is elevated" refusals in 24 h and holding
   # 347 MiB to do it.
   #
-  # The cost is min_context below. Hermes enforces a 64,000-token floor in its
+  # The cost is its context floor. Hermes enforces a 64,000-token floor in its
   # own code, so serve.ctx could not drop under 65536 while this was enabled -
   # and that 64K KV cache is ANONYMOUS memory, which outbid the model's own
   # file-backed mmap'd weights: only 1.73 GiB of the 4.98 GiB model file stayed
@@ -608,10 +613,11 @@ local_ai:
     # differs from the cached prefix.
     toolsets: [file]
 
-    # Hermes enforces a 64,000-token floor in its own code
-    # (_enforce_minimum_context raises below it), which is why
-    # serve.ctx above is 65536 and cannot be lowered while this is enabled.
-    min_context: 64000
+    # Hermes enforces a 64,000-token floor in its OWN code
+    # (_enforce_minimum_context raises below it), which is why serve.ctx above
+    # is 65536 and cannot be lowered while this is enabled. That floor is not
+    # settable from here: a `min_context: 64000` key sat in this block reading
+    # as though it were, and nothing ever read it.
 
     # Generous on purpose. Prefill of Hermes's own prompt is minutes, and the
     # default watchdogs assume a fast provider: a 240 s non-streaming timeout
@@ -777,6 +783,19 @@ local_ai:
     enabled: true
     service_name: frey-broker
     script_path: /usr/local/lib/frey/broker.py
+
+    # The group that owns the request queue, and that the agent container is
+    # added to so it can write there.
+    #
+    # Declared HERE, not read out of the observer block, even though the gid
+    # is the same 10002 it has always been. It used to be
+    # `local_ai.observer.gid`, which made live broker code depend on a value
+    # inside a retired component - and the group itself was created only
+    # `when: local_ai.observer.enabled`, which is now never. On the Pi this
+    # survived because the group already existed from before the retirement;
+    # on a rebuild from scratch it would not have.
+    queue_group: frey_local_ai
+    queue_gid: 10002
     base_dir: "{{ frey.base_dir }}/appdata/local-ai/broker"
     req_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/req"
     res_dir: "{{ frey.base_dir }}/appdata/local-ai/broker/res"
@@ -916,7 +935,10 @@ local_ai:
     - frey-campaign-ai-download.service
     - frey-campaign-ai-download.timer
   legacy_stack_dir: "{{ frey.base_dir }}/stacks/campaign-ai"
-  legacy_model_dir: "{{ frey.base_dir }}/appdata/campaign-ai/models"
+  # No legacy_model_dir: the old model file is deliberately left on disk (see
+  # "The retired model file is deliberately left on disk" in tasks/main.yml),
+  # so the path was never read by anything and only looked like a cleanup
+  # that happens.
 
   # Removed by name rather than with `docker compose down`, which skips any
   # service gated behind a profile - the old model was `profiles: [model]`, so

@@ -1,20 +1,23 @@
 # Turn campaign ideas into pages
 
+> **Earlier record.** The `campaign_ai` role was renamed and generalised to
+> `local_ai`, and the measured verdicts that followed are in
+> `docs/LOCAL_AI_EVALUATION.md`, `docs/LOCAL_AI_AGENT_PLAN.md` and
+> `docs/LOCAL_AI_RIGHTSIZING.md`. This file is kept because those three cite
+> it as the prior baseline. The workflow below still describes the assistant,
+> but treat anything about status or readiness as history.
+
 Use this workflow to turn a document or a few rough ideas into linked notes for
 the pirate campaign. The assistant proposes drafts; you decide what becomes a
 campaign page.
 
 ## 1. Choose a small piece
 
-On your phone or computer, open [Campaign assistant](https://campaign-ai.hub.frey)
+On your phone or computer, open [Campaign assistant](https://campaign.hub.frey)
 while connected to Frey. Sign in and start a new chat. Attach one Markdown
 document or paste a short section. The assistant has a limited context window,
 so split long documents into smaller sections and check that it has read the
 whole section you sent.
-
-The assistant is being set up. Its link may show an error until the model has
-finished downloading. File selection and answers still need to be tested on
-your phone.
 
 ## 2. Find the pages
 

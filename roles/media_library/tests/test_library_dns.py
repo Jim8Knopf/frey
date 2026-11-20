@@ -17,13 +17,15 @@ The block is guarded on media_acquisition being enabled, because the resolver
 belongs to that module and the library half must still come up without it.
 """
 from pathlib import Path
+import sys
 import unittest
 
-from ansible.template import Templar, trust_as_template
-from ansible.utils.vars import combine_vars
 import yaml
 
-ROOT = Path(__file__).resolve().parents[3]
+# CI runs `unittest discover -s roles/*/tests`, so only this directory is on
+# the path - the shared harness has to be added explicitly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'tests'))
+from freyharness import ROOT, inventory_vars, render_template  # noqa: E402
 
 # Services that reach the internet: metadata, artwork, requests, update checks.
 # jellystat-db is deliberately absent - it is PostgreSQL and never leaves the
@@ -34,26 +36,10 @@ NEEDS_DNS = {
 }
 
 
-def trusted(value):
-    if isinstance(value, str):
-        return trust_as_template(value)
-    if isinstance(value, dict):
-        return {k: trusted(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [trusted(v) for v in value]
-    return value
-
-
 class LibraryResolverTest(unittest.TestCase):
     def setUp(self):
-        paths = [ROOT / 'roles/media_library/defaults/main.yml']
-        paths += sorted(p for p in (ROOT / 'inventory/group_vars/all').glob('*.yml')
-                        if p.name != 'secrets.yml')
-        self.variables = {}
-        for path in paths:
-            self.variables = combine_vars(
-                self.variables, yaml.safe_load(path.read_text()), merge=True)
-        self.variables.update(
+        self.variables = inventory_vars(
+            'media_library',
             media_secrets={
                 'jellyfin_admin_password': 'x',
                 'qbittorrent_password': 'x',
@@ -63,9 +49,8 @@ class LibraryResolverTest(unittest.TestCase):
         )
 
     def compose(self):
-        rendered = Templar(variables=trusted(self.variables)).template(
-            trust_as_template(
-                (ROOT / 'roles/media_library/templates/docker-compose.yml.j2').read_text()))
+        rendered = render_template(
+            'roles/media_library/templates/docker-compose.yml.j2', self.variables)
         return rendered, yaml.safe_load(rendered)
 
     def test_every_internet_facing_service_follows_the_uplink(self):

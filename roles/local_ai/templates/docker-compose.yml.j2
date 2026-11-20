@@ -264,10 +264,10 @@ services:
     restart: unless-stopped
     user: "{{ c.uid }}:{{ c.gid }}"
 {% if local_ai.broker.enabled | bool %}
-    # Runs as SilverBullet's uid so it can write notes, plus the observer's
-    # group so it can write into the broker's request queue, which is
+    # Runs as SilverBullet's uid so it can write notes, plus the broker's
+    # queue group so it can write into the request queue, which is
     # group-owned by that gid at 0770.
-    group_add: ["{{ local_ai.observer.gid }}"]
+    group_add: ["{{ local_ai.broker.queue_gid }}"]
 {% endif %}
     command: ["python3", "-u", "{{ c.script_path }}"]
     environment:
@@ -318,8 +318,17 @@ services:
       - "{{ local_ai.broker.res_dir }}:/broker/res:ro"
 {% endif %}
     networks:
-      # ai_private only: it needs the model and nothing else. internal, so no
-      # egress - and it has no broker access and no system verbs at all.
+      # ai_private only: it needs the model and nothing else. internal, so it
+      # has no egress and cannot reach the host on any port.
+      #
+      # It DOES have broker access - the two queue mounts above - which is
+      # deliberate and is the only privileged channel it has. The comment here
+      # used to claim the opposite ("no broker access and no system verbs at
+      # all"), four lines below the mounts that grant it, which is the worst
+      # kind of wrong comment: it would have made a reader mis-assess this
+      # container's blast radius. The queues are the boundary, not the
+      # network: requests go in, and /broker/res is read-only here so the
+      # assistant cannot forge a reply to itself.
       - ai_private
     cpus: {{ c.cpus }}
     mem_limit: {{ c.mem_limit }}

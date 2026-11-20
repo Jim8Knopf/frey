@@ -1,5 +1,12 @@
 # Campaign Knowledge and Local Assistant Plan
 
+> **Superseded, kept as the record.** The `campaign_ai` role was renamed and
+> generalised to `local_ai`. What was actually built, measured and then partly
+> retired is in `docs/LOCAL_AI_AGENT_PLAN.md`,
+> `docs/LOCAL_AI_EVALUATION.md` and `docs/LOCAL_AI_RIGHTSIZING.md`; those cite
+> this plan as the prior baseline, which is why it is still here. The status
+> lines below are frozen at the time of writing and are not current.
+
 Status: phases 1–3 are in progress and phase 4 evaluation has started.
 SilverBullet is deployed and the initial rules and campaign structure are in
 the Notes space. Check product
@@ -144,11 +151,13 @@ an isolated local runtime and a background download of Qwen3 1.7B Q4_K_M.
 The model has finished downloading; chat and phone attachments still need a
 real user test. A linked "Turn ideas into pages" guide
 and two reusable prompts are now in the Pirate campaign home; its source is
-`docs/CAMPAIGN_IDEA_WORKFLOW.md`. See `roles/campaign_ai/README.md`.
+`docs/CAMPAIGN_IDEA_WORKFLOW.md`. See `roles/local_ai/README.md` (this role was
+called `campaign_ai` when the line above was written).
 The pinned chat UI bundle contains Markdown and plain-text attachment support;
 the actual phone upload remains untested. A retry timer resumes an incomplete
 model download after a failure or reboot, and
-`scripts/campaign-ai-ready-check.sh` reports download and readiness status.
+`scripts/local-ai-ready-check.sh` reports download and readiness status (it was
+`campaign-ai-ready-check.sh` when this was written).
 On 2026-11-02 the deployed identity configuration no longer contained the
 SilverBullet and assistant rules; the identity role restored them. The assistant
 readiness and anonymous-access checks passed, and a repeat identity deployment

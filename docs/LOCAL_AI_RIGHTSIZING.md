@@ -228,15 +228,22 @@ resident and **not swapping** — against 7 GiB today that *is*.
 
 1. **Merge the branch first** (§5). Everything below edits config that only
    exists there.
-2. **Retire the observer.** `local_ai.observer.enabled: false`.
-   **Trap:** the compose template gates the observer service, but the role has
-   **no `state: absent` cleanup for it** — so the flag alone leaves
-   `frey-local-ai-observer` running as a compose orphan indefinitely. This is
-   the identical trap the role's own `legacy_containers` list exists to handle
-   for `frey-campaign-ai-*`. Add `frey-local-ai-observer` to that list, or
-   remove it by name once. Keep `/drafts` on disk; it is the evidence trail.
-   Retire `scripts/local-ai-observer-check.sh` in the same commit, or it
-   becomes a check asserting the health of a component you removed.
+2. **Retire the observer.** `local_ai.observer.enabled: false`. **Done.**
+   The trap this warned about — the compose template gates the observer
+   service, but nothing removed the container, so the flag alone would leave
+   `frey-local-ai-observer` running as a compose orphan — was handled by the
+   "Remove the containers of disabled components" task in
+   `roles/local_ai/tasks/main.yml`, which runs `state: absent` over the
+   observer, Hermes and the campaign assistant whenever each is disabled. That
+   is more general than the `legacy_containers` list this suggested adding to.
+   `/drafts` stays on disk; it is the evidence trail.
+
+   `scripts/local-ai-observer-check.sh` was kept rather than retired: it
+   detects that the container is absent and exits with a SKIP, so it reports
+   nothing misleading and still works if the observer is ever re-enabled.
+   `scripts/local-ai-broker-check.sh` was the one that broke — it drove the
+   observer container to exercise the broker, and now drives
+   `frey-campaign-agent`, the broker's only surviving client.
 3. **Decide Hermes** (§6). If retired: stop and remove the container, drop its
    profile, then apply the context and memory changes in §3.
 4. **Re-measure**, and only then judge. `smaps_rollup` for `llama-server`

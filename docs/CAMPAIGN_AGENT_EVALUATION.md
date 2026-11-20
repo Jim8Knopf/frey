@@ -1,5 +1,10 @@
 # Campaign draft assistant evaluation
 
+> **Earlier record.** Superseded by `docs/LOCAL_AI_EVALUATION.md`, which
+> measured the real thing on the real hardware; this synthetic baseline is
+> kept because that document cites it. The `campaign_ai` role is now
+> `local_ai`.
+
 This is a small, synthetic baseline for the restricted-agent phase. It does
 not contain campaign notes and does not authorize an assistant to edit them.
 Use the same prompts, model and resource limits when comparing another agent;

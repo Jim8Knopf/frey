@@ -12,8 +12,26 @@ cd "$REPO_ROOT" || exit 0
 
 CIPHERTEXT_MARKER='$ANSIBLE_VAULT'
 
+# Scoped to group_vars/ and host_vars/, where Ansible vault variables actually
+# live. This must stay identical to VAULT_NAME_RE in `pre-commit`, which is
+# the canonical definition and explains the reasoning at length.
+#
+# It is duplicated rather than sourced on purpose: each hook has to work when
+# it is the only file copied somewhere, which is exactly what
+# test-pre-commit.sh does, and a hook that fails to load a shared library is a
+# hook that silently stops protecting anything.
+#
+# The broad version that used to be here - '(^|/)(secrets|vault)\.ya?ml$|
+# secrets\.ya?ml$' - matched the four ordinary task files named
+# roles/*/tasks/secrets.yml, so every single commit printed four warnings
+# telling you to encrypt source code. pre-commit had already found and fixed
+# that same bug; this copy was missed. Following the advice would have made
+# those task files unreadable and undiffable, and four false warnings per
+# commit is how a useful hook teaches people to ignore it.
+VAULT_NAME_RE='(^|/)(group_vars|host_vars)/.*(secrets|vault)[^/]*\.ya?ml$'
+
 git ls-files \
-  | grep -E '(^|/)(secrets|vault)\.ya?ml$|secrets\.ya?ml$' \
+  | grep -E "$VAULT_NAME_RE" \
   | while IFS= read -r file; do
       [ -f "$file" ] || continue
       if ! head -c 20 "$file" 2>/dev/null | grep -qF "$CIPHERTEXT_MARKER"; then

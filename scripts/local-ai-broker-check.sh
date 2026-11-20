@@ -20,7 +20,14 @@ OUT=/tmp/frey-broker-check.txt
 
 # Drive the broker from inside the agent container, so this exercises the real
 # mount and the real uid rather than a convenient shortcut from the host.
-docker exec -i frey-local-ai-observer python3 - > "$OUT" 2>&1 <<'PY'
+#
+# frey-campaign-agent, not frey-local-ai-observer: the observer was retired on
+# 2026-11-18 and the role now runs `state: absent` on it, so this script could
+# not pass at all - every run died on `docker exec` and reported
+# "BROKER CHECK FAILED". The observer's own check script was given a SKIP
+# guard in that same change and this one was missed. The campaign assistant is
+# the broker's only surviving client, and it mounts the same two queues.
+docker exec -i frey-campaign-agent python3 - > "$OUT" 2>&1 <<'PY'
 import json, os, pathlib, time, uuid
 
 REQ = pathlib.Path("/broker/req")

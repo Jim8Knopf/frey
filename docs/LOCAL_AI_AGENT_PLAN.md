@@ -137,7 +137,7 @@ raises around unsafe shutdowns. `frey-traefik` is excluded too: restarting it
 Add a role-time assertion that the generated allowlist never contains
 `immich`, `hostapd`, `dnsmasq`, `frey-traefik`, or anything matching the
 network roles — so a future edit cannot widen it by accident. The repo already
-uses this pattern: `roles/campaign_ai/tasks/main.yml` asserts its own access
+uses this pattern: `roles/local_ai/tasks/main.yml` asserts its own access
 policy before doing anything.
 
 ### M4 — Kernel confinement on the broker. **Revised 2026-11-07: systemd, not AppArmor.**
@@ -195,7 +195,7 @@ bound the damage rather than trusting judgement:
 
 ### M6 — No egress.
 
-Keep `ai_private` as `internal: true`, exactly as `roles/campaign_ai` already
+Keep `ai_private` as `internal: true`, exactly as `roles/local_ai` already
 has it. The agent reaches the broker and the model and nothing else — no
 internet, no host, no other service by address. This is what makes constraint 1
 (broad read) safe: there is no channel to leak to, and the only output is a

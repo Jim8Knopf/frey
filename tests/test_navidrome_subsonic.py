@@ -11,42 +11,29 @@ because any one of them alone is not a safe configuration:
   * the account can hold a password at all, and failed logins are rate limited
 """
 from pathlib import Path
+import sys
 import unittest
 
-from ansible.template import Templar, trust_as_template
-from ansible.utils.vars import combine_vars
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from freyharness import (  # noqa: E402
+    ROOT, inventory_vars, render_string, render_template,
+)
 
 SUBSONIC_RESOURCE = '^/rest([/?].*)?$'
 
 
-def trusted(value):
-    if isinstance(value, str):
-        return trust_as_template(value)
-    if isinstance(value, dict):
-        return {k: trusted(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [trusted(v) for v in value]
-    return value
-
-
 class NavidromeSubsonicTest(unittest.TestCase):
     def setUp(self):
-        paths = [ROOT / f'roles/{role}/defaults/main.yml' for role in ('identity', 'media_library')]
-        paths += sorted(p for p in (ROOT / 'inventory/group_vars/all').glob('*.yml')
-                        if p.name != 'secrets.yml')
-        self.variables = {}
-        for path in paths:
-            self.variables = combine_vars(self.variables, yaml.safe_load(path.read_text()), merge=True)
-        self.variables.update(
+        self.variables = inventory_vars(
+            'identity', 'media_library',
             identity_secrets={},
-            media_secrets={'jellystat_postgres_password': 'test', 'jellystat_jwt_secret': 'test'})
+            media_secrets={'jellystat_postgres_password': 'test',
+                           'jellystat_jwt_secret': 'test'})
 
     def render(self, path):
-        return Templar(variables=trusted(self.variables)).template(
-            trust_as_template((ROOT / path).read_text()))
+        return render_template(path, self.variables)
 
     def authelia_access_control(self):
         # The rendered file is deliberately NOT valid YAML as a whole: every
@@ -105,8 +92,7 @@ class NavidromeSubsonicTest(unittest.TestCase):
     # -- what keeps it safe ---------------------------------------------------
 
     def test_rest_is_https_only_and_strips_client_identity_headers(self):
-        protect = Templar(variables=trusted(self.variables)).template(
-            trust_as_template('{{ identity_protect }}'))
+        protect = render_string('{{ identity_protect }}', self.variables)
         self.assertIn('navidrome', protect)
 
         labels = dict(label.split('=', 1) for label in self.compose()['services']['navidrome']['labels'])

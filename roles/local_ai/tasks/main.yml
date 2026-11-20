@@ -80,6 +80,18 @@
 
 # --- Broker -----------------------------------------------------------------
 
+# Same name and same gid as the observer group above, so this is idempotent
+# whichever of the two is enabled - but gated on the broker, because the
+# broker's request queue is group-owned by it and the broker outlived the
+# observer. Without this, a rebuild with the observer disabled created the
+# queue with a group that did not exist.
+- name: Create the broker queue group
+  ansible.builtin.group:
+    name: "{{ local_ai.broker.queue_group }}"
+    gid: "{{ local_ai.broker.queue_gid }}"
+    system: true
+  when: local_ai.broker.enabled | bool
+
 - name: Create the broker directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -99,7 +111,7 @@
     # capability back.
     - {path: "{{ local_ai.broker.req_dir }}",
        owner: root,
-       group: "{{ local_ai.observer.gid }}", mode: "0770"}
+       group: "{{ local_ai.broker.queue_gid }}", mode: "0770"}
     # Responses are written by root and only read by the agent, which also
     # mounts this read-only - so the agent cannot forge an answer to its own
     # request.
@@ -240,7 +252,24 @@
     internal: true
     state: present
   when:
-    - local_ai.observer.enabled | bool
+    # NOT gated on local_ai.observer.enabled, which is what this used to be.
+    #
+    # monitoring declares this network `external: true` and attaches
+    # Prometheus, Loki, Alertmanager and the relay to it whenever
+    # 'local_ai' is in frey.modules.enabled - it cannot gate on the observer
+    # flag, because a role's defaults are not in scope while another role
+    # runs. So once the observer was retired the two conditions disagreed:
+    # nothing created the network and four containers still asked for it.
+    #
+    # The live Pi survived only because the network already existed from
+    # before the retirement. A rebuild from scratch would have failed the
+    # ENTIRE monitoring stack on
+    # "network ai_observe declared as external, but could not be found" -
+    # losing metrics, logs and alerting at the moment you have least else to
+    # diagnose with.
+    #
+    # Creating it whenever this role runs matches exactly what monitoring
+    # tests for. It is internal, so it grants no egress to anything on it.
     - not ansible_check_mode
 
 # --- Retire the campaign_ai deployment -------------------------------------

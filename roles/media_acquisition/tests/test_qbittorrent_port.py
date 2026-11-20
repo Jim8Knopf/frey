@@ -9,34 +9,22 @@ so the YAML-folding trap documented in docker-compose.yml.j2 cannot come back
 list entry silently folds that entry into the previous value.
 """
 from pathlib import Path
+import sys
 import unittest
 
-from ansible.template import Templar, trust_as_template
-from ansible.utils.vars import combine_vars
+from ansible.template import trust_as_template
 import yaml
 
-ROOT = Path(__file__).resolve().parents[3]
-
-
-def trusted(value):
-    if isinstance(value, str):
-        return trust_as_template(value)
-    if isinstance(value, dict):
-        return {k: trusted(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [trusted(v) for v in value]
-    return value
+# CI runs `unittest discover -s roles/*/tests`, so only this directory is on
+# the path - the shared harness has to be added explicitly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'tests'))
+from freyharness import ROOT, inventory_vars, render_template  # noqa: E402
+from freyharness import templar as make_templar  # noqa: E402
 
 
 class QbittorrentPortTest(unittest.TestCase):
     def setUp(self):
-        paths = [ROOT / 'roles/media_acquisition/defaults/main.yml']
-        paths += sorted(p for p in (ROOT / 'inventory/group_vars/all').glob('*.yml')
-                        if p.name != 'secrets.yml')
-        self.variables = {}
-        for path in paths:
-            self.variables = combine_vars(
-                self.variables, yaml.safe_load(path.read_text()), merge=True)
+        self.variables = inventory_vars('media_acquisition')
         # Supplied at run time by the role rather than by inventory.
         self.variables.update(
             qbittorrent_password_hash='hash',
@@ -47,10 +35,10 @@ class QbittorrentPortTest(unittest.TestCase):
         )
 
     def templar(self):
-        return Templar(variables=trusted(self.variables))
+        return make_templar(self.variables)
 
     def render(self, path):
-        return self.templar().template(trust_as_template((ROOT / path).read_text()))
+        return render_template(path, self.variables)
 
     def gluetun(self):
         return yaml.safe_load(

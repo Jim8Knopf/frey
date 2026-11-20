@@ -1,5 +1,0 @@
-{
-    "ansible.python.interpreterPath": "/usr/bin/python3",
-    "ansibleVault.keypass": ".vault_pass",
-    "ansibleVault.keyfile": "group_vars/all/secrets.yml",
-}
