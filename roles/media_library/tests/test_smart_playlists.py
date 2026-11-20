@@ -97,12 +97,25 @@ class SmartPlaylistTest(unittest.TestCase):
                       compose['services']['navidrome']['environment'])
 
     def test_the_shipped_shuffle_playlist_matches_every_track(self):
-        shuffle = next(p for p in self.playlists() if p['name'] == 'All Songs Shuffled')
+        shuffle = next(p for p in self.playlists() if p['name'] == 'random')
         self.assertEqual(shuffle['rules']['sort'], 'random')
         # playCount > -1 is upstream's idiom for "everything". A value of 0
         # would quietly mean "only tracks somebody has already played", which
         # on a fresh library is an empty playlist.
         self.assertEqual(shuffle['rules']['all'], [{'gt': {'playCount': -1}}])
+
+    def test_every_limit_is_a_number_navidrome_will_honour(self):
+        # The hand-written version of this playlist carried `limit: 500` as a
+        # malformed JSON line; Navidrome dropped it in silence and the cap
+        # never applied. A limit surviving as a STRING is the same class of
+        # failure, so the type is the assertion.
+        for playlist in self.playlists():
+            for key in ('limit', 'limitPercent'):
+                if key in playlist['rules']:
+                    value = playlist['rules'][key]
+                    self.assertIsInstance(value, int)
+                    self.assertNotIsInstance(value, bool)
+                    self.assertGreater(value, 0)
 
     def test_the_task_writes_a_dot_nsp_file_and_is_skippable(self):
         task = re.search(r'- name: Install the Navidrome smart playlists.*?(?=\n- name: )',

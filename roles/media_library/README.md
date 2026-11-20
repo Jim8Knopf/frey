@@ -97,7 +97,7 @@ since. Each entry in `media_library.navidrome.smart_playlists`
 (`roles/media_library/defaults/main.yml`) is written as a `<name>.nsp` file in
 the root of the music library and imported by the scanner.
 
-Frey ships one, `All Songs Shuffled` - the whole library in random order.
+Frey ships one, `random` - the library in random order, capped at 500 tracks.
 `playCount > -1` is upstream's idiom for "every track", because no track can
 have been played a negative number of times. Note that `0` would *not* do the
 same thing: it would mean "only what somebody has already played", which on a
@@ -107,10 +107,14 @@ Declaring them here rather than dropping files on the Pi is the usual reason: a
 file nothing records is a file a rebuild loses. Two things are worth knowing
 before adding more:
 
-- **The examples on navidrome.org contain `// comments`, and a .nsp file is
-  parsed as strict JSON.** Pasting one verbatim gives a playlist that never
-  appears, and the only trace is a line in Navidrome's log. Writing the rules as
-  YAML here sidesteps that entirely - Ansible emits the JSON.
+- **A hand-written .nsp fails one field at a time, in silence.** This happened
+  here: `random.nsp` was written on the Pi with the documentation's
+  commented-out `limit: 500` line uncommented as-is — unquoted, no comma.
+  Navidrome imported the file, dropped that one line, kept the rest, and the
+  playlist worked perfectly at 431 tracks with no cap and nothing logged. The
+  stored rules in `navidrome.db` were the only place the truth was visible.
+  Writing the rules as YAML here is what makes that unexpressible: Ansible
+  emits the JSON, and a test asserts every limit is still a number.
 - **Removing an entry does not delete the file from the Pi.** That is
   deliberate: this directory is the music library, and a module that sweeps
   unrecognised files out of the media tree is a worse idea than an orphaned
