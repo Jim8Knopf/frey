@@ -19,6 +19,11 @@ local_ai:
   # identity_services.local_ai.hosts, or it has no certificate and no
   # Authelia rule.
   assistant_host: assistant
+  # Open WebUI, the chat harness. Must also appear in
+  # identity_services.local_ai.hosts or it has no certificate and no Authelia
+  # rule - and because it trusts an Authelia header for login, no Authelia
+  # rule means no way in at all rather than a password prompt.
+  chat_host: chat
   # Hermes Agent's own hostname. Must also appear in
   # identity_services.hermes.hosts, or it has no certificate and no OIDC
   # client - and its redirect_uri in identity.oidc_catalog.hermes is built
@@ -366,6 +371,72 @@ local_ai:
 
   image: "ghcr.io/ggml-org/llama.cpp:{{ local_ai_llama_version }}"
   gateway_image: "traefik:{{ traefik_version }}"
+
+  # llama.cpp's OWN web UI, restored on ai.hub.frey.
+  #
+  # It is not in the image. The official `ghcr.io/ggml-org/llama.cpp:server-*`
+  # images ship the binary with no embedded web assets, so llama-server
+  # answers `/` and `/index.html` with 415 and ai.hub.frey served nothing at
+  # all - verified on this Pi 2026-11-20, and upstream issue #24107. The
+  # documented fix is to fetch the prebuilt assets and point --path at them.
+  #
+  # Worth having even with Open WebUI deployed: it is 2.6 MB of static files
+  # and no container, it talks straight to llama-server, and it is the thing
+  # that still works when the harness itself is what broke.
+  webui:
+    enabled: true
+    dist_dir: "{{ frey.base_dir }}/appdata/local-ai/ui"
+    url: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest/dist.tar.gz
+    # Downloaded and hashed on 2026-11-20.
+    #
+    # NOTE THE DEVIATION, it is deliberate: this URL says `latest` where
+    # CLAUDE.md requires a pinned revision, because the ggml-org llama-ui
+    # bucket publishes no per-release path and the b12019 GitHub release has
+    # no standalone UI asset (checked - all 38 are platform binaries). The
+    # checksum is what makes that safe: if upstream republishes, the download
+    # FAILS verification and nothing is installed, which is the right failure
+    # for a van. It never silently takes new front-end code.
+    sha256: 76307b9ce95a05875bd7322135ca6c18ea3e987d72833107081bdfb3c920c6cf
+
+  # Open WebUI - the chat harness, at chat.hub.frey.
+  #
+  # Replaces the hand-rolled window as the thing to use day to day. Chosen for
+  # three properties that were verified rather than assumed:
+  #   - it reads llama.cpp's `reasoning_content` and renders it as a
+  #     collapsible Thinking block, so the model's thinking is visible. The
+  #     server already passes `--reasoning off`, which SPLITS the chain of
+  #     thought into exactly that field rather than suppressing it.
+  #   - conversations are stored SERVER-side, so a new chat clears the context
+  #     while old ones stay, and history follows you from phone to laptop.
+  #     llama.cpp's own UI keeps them in browser IndexedDB, which does not.
+  #   - it logs in from Authelia's header, so Frey gains no second password.
+  chat:
+    enabled: true
+    container_name: frey-openwebui
+    image: "ghcr.io/open-webui/open-webui:{{ local_ai_openwebui_version }}"
+    data_dir: "{{ frey.base_dir }}/appdata/local-ai/openwebui"
+    port: 8080
+
+    # Reported upstream at ~300-500 MB. 1g leaves headroom without being the
+    # kind of cap that throttles silently - see the mem_limit note on the
+    # served model for what a tight cap does on this host.
+    mem_limit: 1g
+    cpus: 1.0
+
+    # OFFLINE_MODE and HF_HUB_OFFLINE. true is the end state and the right
+    # one for a van: no update checks, no model downloads, nothing that waits
+    # on an uplink at startup.
+    #
+    # BUT IT CANNOT BE TRUE ON A FRESH INSTALL. Open WebUI's default RAG
+    # engine is a local SentenceTransformers model that is downloaded once on
+    # first run; with offline mode already on and nothing cached it fails with
+    # `ValueError: No embedding model is loaded`. This is the same shape as
+    # the Immich trap: a service that deletes or never fetches its own model
+    # cache and then looks healthy while one feature is dead.
+    #
+    # So: first boot with an uplink and this false, let it cache, then set it
+    # true. Done in that order on 2026-11-20, which is why it ships true.
+    offline: true
 
   # The campaign assistant: a tool-using loop that maintains the wiki.
   #

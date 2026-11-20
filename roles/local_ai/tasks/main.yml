@@ -275,6 +275,7 @@
     - {name: "{{ local_ai.observer.container_name }}", enabled: "{{ local_ai.observer.enabled }}"}
     - {name: "{{ local_ai.hermes.container_name }}", enabled: "{{ local_ai.hermes.enabled }}"}
     - {name: "{{ local_ai.campaign.container_name }}", enabled: "{{ local_ai.campaign.enabled }}"}
+    - {name: "{{ local_ai.chat.container_name }}", enabled: "{{ local_ai.chat.enabled }}"}
   loop_control:
     label: "{{ item.name }}"
   when:
@@ -323,10 +324,95 @@
   community.docker.docker_image_pull:
     name: "{{ item }}"
     pull: not_present
-  loop:
-    - "{{ local_ai.image }}"
-    - "{{ local_ai.gateway_image }}"
+  loop: "{{ ([local_ai.image, local_ai.gateway_image]
+             + ([local_ai.chat.image] if local_ai.chat.enabled | bool else [])) }}"
   when: not ansible_check_mode
+
+# --- llama.cpp's own web UI -------------------------------------------------
+#
+# Not in the image: the official server-* images carry the binary with no web
+# assets, so llama-server answers / with 415 and ai.hub.frey served nothing.
+# Fetched at DEPLOY time rather than by a systemd unit, because a deploy is
+# when an uplink exists; with no uplink the download is skipped and the
+# compose template simply omits --path.
+- name: Create the llama.cpp web UI directory
+  ansible.builtin.file:
+    path: "{{ local_ai.webui.dist_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: local_ai.webui.enabled | bool
+
+- name: Fetch llama.cpp's prebuilt web UI
+  ansible.builtin.get_url:
+    url: "{{ local_ai.webui.url }}"
+    dest: "{{ local_ai.webui.dist_dir }}/dist.tar.gz"
+    checksum: "sha256:{{ local_ai.webui.sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+    # Generous, because this competes with whatever else is using the uplink.
+    # The default 10 s lost this race against a concurrent image pull on the
+    # first real deploy and the UI silently never arrived.
+    timeout: 120
+  # An unreachable Hugging Face must not fail the whole module - a van spends
+  # most of its time with no uplink, and everything else here works without
+  # one. A CHECKSUM mismatch is tolerated here for the same reason and is
+  # harmless: a mismatch means get_url leaves no file, so the unpack below
+  # never runs and nothing unverified is installed.
+  failed_when: false
+  when:
+    - local_ai.webui.enabled | bool
+    - not ansible_check_mode
+
+# Gated on the FILE, not on the fetch's result. `failed_when: false` also
+# forces `.failed` to false, so testing the registered result said "fine"
+# after a download that never happened and the unpack then hard-failed the
+# whole play with "Source ... does not exist". The file either exists or it
+# does not; that is the only reliable signal here.
+- name: Check whether the web UI archive arrived
+  ansible.builtin.stat:
+    path: "{{ local_ai.webui.dist_dir }}/dist.tar.gz"
+  register: local_ai_webui_archive
+  when: local_ai.webui.enabled | bool
+
+- name: Unpack llama.cpp's web UI
+  ansible.builtin.unarchive:
+    src: "{{ local_ai.webui.dist_dir }}/dist.tar.gz"
+    dest: "{{ local_ai.webui.dist_dir }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: "{{ local_ai.webui.dist_dir }}/index.html"
+  when:
+    - local_ai.webui.enabled | bool
+    - not ansible_check_mode
+    - local_ai_webui_archive.stat.exists | default(false)
+
+# index.html is the test, not the tarball: a half-unpacked or failed download
+# must read as "no UI" so --path is left off entirely.
+- name: Check whether the web UI is on disk
+  ansible.builtin.stat:
+    path: "{{ local_ai.webui.dist_dir }}/index.html"
+  register: local_ai_webui_stat
+  when: local_ai.webui.enabled | bool
+
+- name: Record whether the web UI can be served
+  ansible.builtin.set_fact:
+    local_ai_webui_present: "{{ local_ai_webui_stat.stat.exists | default(false) }}"
+
+# --- Open WebUI -------------------------------------------------------------
+
+- name: Create the Open WebUI data directory
+  ansible.builtin.file:
+    path: "{{ local_ai.chat.data_dir }}"
+    state: directory
+    # Open WebUI's image runs as root and writes its SQLite database here.
+    owner: root
+    group: root
+    mode: "0750"
+  when: local_ai.chat.enabled | bool
 
 - name: Install and validate the local AI compose file
   ansible.builtin.template:
@@ -623,6 +709,17 @@
     pull: never
   when:
     - local_ai.hermes.enabled | bool
+    - not ansible_check_mode
+
+- name: Start Open WebUI
+  community.docker.docker_compose_v2:
+    project_src: "{{ local_ai.stack_dir }}"
+    profiles: [chat]
+    services: [chat]
+    state: present
+    pull: never
+  when:
+    - local_ai.chat.enabled | bool
     - not ansible_check_mode
 
 # The gateway owns the session store, and without it Hermes answers normally

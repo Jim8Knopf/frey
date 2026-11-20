@@ -73,10 +73,27 @@ identity_hosts:
 # Emails are @frey on purpose. They are login identifiers, nothing sends mail,
 # and there is no reason to commit real external addresses to a git repository.
 # ==============================================================================
+# A NOTE ON THE EMAIL DOMAIN, because it was wrong here until 2026-11-20.
+#
+# These must be real-looking addresses with a DOT in the domain. `jim@frey` and
+# `j@k` are not valid addresses, and the first app to validate one rejected it
+# outright: Open WebUI answers "The email format you entered is invalid" and,
+# because it keys accounts on email, there was then no way to log in at all.
+#
+# This is the same trap as the session cookie in CLAUDE.md - a bare unknown TLD
+# is not a normal domain, and things that parse addresses or cookies properly
+# refuse it. `hub.frey` has a dot, is already the service domain, and resolves
+# locally, so it is the obvious choice.
+#
+# Changing an address here is not free: ten OIDC clients request the `email`
+# scope, and an app that keys accounts on email can create a SECOND account on
+# the next login. Immich is the one that would matter most and is safe - it
+# links by OIDC subject, not email (see jason's note below) - but check
+# Jellyfin, Audiobookshelf and Mealie after changing these.
 identity_users:
   - username: jim
     name: Jim
-    email: jim@frey
+    email: jim@hub.frey
     groups:
       - frey_admins
       - media
@@ -99,7 +116,10 @@ identity_users:
   # the bootstrap runs with DO_CLEANUP off.
   - username: jason
     name: Jason
-    email: j@k
+    # Was `j@k`, which is not a valid address - see the note at the top of
+    # identity_users. Safe to change for the photo library specifically,
+    # because Immich links the assets by OIDC subject rather than by email.
+    email: jason@hub.frey
     manage_password: false
     groups:
       - frey_admins
@@ -209,7 +229,7 @@ identity_services:
     # SAN and the Authelia rule, so pki and identity must be deployed with (or
     # before) local_ai - the module order in main.yml already guarantees that
     # on a full run.
-    hosts: [ai, assistant]
+    hosts: [ai, assistant, chat]
 
   # Preserve the active Hermes OIDC registration when applying this inventory.
   hermes:

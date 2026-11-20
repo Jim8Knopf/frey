@@ -11,6 +11,17 @@ local_ai_llama_version: "server-b12019"
 # docs/LOCAL_AI_AGENT_PLAN.md 6a before changing this tag, because the prompt
 # size that decides whether it is usable at all is a property of the release.
 local_ai_hermes_version: "v0.23.0"
+# Open WebUI - the chat harness at chat.hub.frey. linux/arm64 confirmed in the
+# manifest from this Pi on 2026-11-20. Released 2026-11-08.
+#
+# Check two things before moving this tag, because both are load-bearing here
+# and neither is obvious from a changelog:
+#   - it still renders llama.cpp's `reasoning_content` as a Thinking block.
+#     That is the whole reason it was chosen over the hand-rolled window.
+#   - WEBUI_AUTH_TRUSTED_EMAIL_HEADER still auto-registers and logs in from a
+#     header. Frey has no second login, so a regression there locks you out
+#     rather than showing a form.
+local_ai_openwebui_version: "v0.13.3"
 # Container image tags for every active Frey service.
 # Edit the tag here, then deploy the affected role (see README.md).
 # Quote new tags, especially tags that resemble numbers.
