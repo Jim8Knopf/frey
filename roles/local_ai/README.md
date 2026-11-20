@@ -10,7 +10,7 @@ Three interfaces share one model, and they share **one llama-server slot**:
 | | |
 | --- | --- |
 | `ai.hub.frey` | the model's own chat UI, and the `/v1` API |
-| `campaign.hub.frey` | the campaign assistant, which reads and writes the notes |
+| `assistant.hub.frey` | the campaign assistant, which reads and writes the notes |
 | `hermes.hub.frey` | Hermes Agent — slower, but a real agent. See below. |
 
 This replaces the `campaign_ai` role. The role name, the module tag, the host
@@ -525,7 +525,7 @@ about the campaign. It cannot write them, and that is a mount flag rather than
 a prompt rule — `touch` inside the container returns
 `Read-only file system`.
 
-Writes stay with the campaign assistant at `campaign.hub.frey`, which runs as
+Writes stay with the campaign assistant at `assistant.hub.frey`, which runs as
 SilverBullet's own uid so the pages it creates are owned by SilverBullet.
 Hermes runs as its own uid (10003); anything it wrote would be owned by 10003
 and SilverBullet could not edit it afterwards. That is a permissions trap worth
@@ -535,7 +535,7 @@ not building.
 
 `llama-server` runs with `parallel_slots: 1`, because two slots split two
 threads and collapsed to 0.59 tok/s. The practical consequence:
-**`ai.hub.frey`, `campaign.hub.frey` and `hermes.hub.frey` evict each other's
+**`ai.hub.frey`, `assistant.hub.frey` and `hermes.hub.frey` evict each other's
 cached prompt.** Alternating between the model's chat UI and Hermes means
 paying Hermes's 11.5-minute cold start again. Staying in one of them is cheap.
 

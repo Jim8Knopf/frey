@@ -13,7 +13,7 @@ campaign page.
 
 ## 1. Choose a small piece
 
-On your phone or computer, open [Campaign assistant](https://campaign.hub.frey)
+On your phone or computer, open [the assistant](https://assistant.hub.frey)
 while connected to Frey. Sign in and start a new chat. Attach one Markdown
 document or paste a short section. The assistant has a limited context window,
 so split long documents into smaller sections and check that it has read the

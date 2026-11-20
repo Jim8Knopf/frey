@@ -501,7 +501,7 @@ Five things only deploying could have found, all now recorded in
   by removing the grant. Grafana still carries the same warning.
 
 Still open, and deliberately not decided here: the single slot. `ai.hub.frey`,
-`campaign.hub.frey` and `hermes.hub.frey` evict each other's cached prompt, so
+`assistant.hub.frey` and `hermes.hub.frey` evict each other's cached prompt, so
 alternating between them re-pays Hermes's cold start. Raising
 `parallel_slots` is not the answer - two slots split two threads and measured
 0.59 tok/s.
